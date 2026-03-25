@@ -20,6 +20,8 @@ use {defmt_rtt as _, panic_probe as _};
 
 mod slip;
 mod slip_net;
+mod identity;
+mod noise;
 
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;

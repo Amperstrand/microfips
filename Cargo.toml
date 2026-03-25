@@ -42,6 +42,9 @@ embassy-net-driver-channel = { path = "../embassy/embassy-net-driver-channel", f
     "defmt",
 ] }
 
+k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa"] }
+sha2 = { version = "0.10", default-features = false, features = ["oid"] }
+
 defmt = "1.0"
 defmt-rtt = "1.0"
 cortex-m = { version = "0.7.6", features = [
