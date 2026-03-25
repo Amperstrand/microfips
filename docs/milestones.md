@@ -50,9 +50,10 @@
 
 ## M5: Bidirectional UDP
 
-- [ ] Open UDP socket on MCU
-- [ ] Send/receive datagrams between VPS and MCU
+- [x] Open UDP socket on MCU
+- [x] Send/receive datagrams between VPS and MCU
 - [ ] Verify payload integrity
+- [ ] Verify end-to-end with VPS tunnel
 
 **Success signal:** MCU sends "hello from MCU" UDP datagram; VPS receives it.
 

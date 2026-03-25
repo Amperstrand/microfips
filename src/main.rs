@@ -4,7 +4,8 @@
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
-use embassy_net::{Ipv6Address, Ipv6Cidr, StackResources, StaticConfigV6};
+use embassy_net::udp::{PacketMetadata, UdpSocket};
+use embassy_net::{Ipv6Address, Ipv6Cidr, Stack, StackResources, StaticConfigV6};
 use embassy_net::Config as NetConfig;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::Hertz;
@@ -13,6 +14,7 @@ use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::Builder;
 use embassy_time::{Duration, Timer};
+use static_cell::StaticCell;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -24,6 +26,9 @@ bind_interrupts!(struct Irqs {
 });
 
 const MCU_IPV6: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+const FIPS_UDP_PORT: u16 = 2121;
+
+static NET_RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -92,8 +97,8 @@ async fn main(_spawner: Spawner) {
         dns_servers: heapless::Vec::new(),
     });
 
-    let mut net_resources = StackResources::<2>::new();
-    let (_stack, mut net_stack_runner) = embassy_net::new(net_device, net_config, &mut net_resources, 0xdeadbeefcafe);
+    let net_resources = NET_RESOURCES.init(StackResources::new());
+    let (stack, mut net_stack_runner) = embassy_net::new(net_device, net_config, net_resources, 0xdeadbeefcafe);
 
     let usb_fut = usb.run();
 
@@ -106,9 +111,41 @@ async fn main(_spawner: Spawner) {
         }
     };
 
+    let udp_fut = udp_echo_task(stack);
+
     let net_fut = async {
-        join(net_stack_runner.run(), net_runner.run(&mut class)).await;
+        join(
+            net_stack_runner.run(),
+            join(net_runner.run(&mut class), udp_fut),
+        )
+        .await;
     };
 
     join(usb_fut, join(blink_fut, net_fut)).await;
+}
+
+async fn udp_echo_task(stack: Stack<'static>) {
+    let mut rx_meta = [PacketMetadata::EMPTY; 4];
+    let mut rx_buffer = [0u8; 1024];
+    let mut tx_meta = [PacketMetadata::EMPTY; 4];
+    let mut tx_buffer = [0u8; 1024];
+
+    let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buffer, &mut tx_meta, &mut tx_buffer);
+    socket.bind(FIPS_UDP_PORT).unwrap();
+    info!("UDP echo listening on port {}", FIPS_UDP_PORT);
+
+    let mut buf = [0u8; 1024];
+    loop {
+        match socket.recv_from(&mut buf).await {
+            Ok((len, meta)) => {
+                info!("UDP rx {} bytes from {}", len, meta.endpoint);
+                if let Err(e) = socket.send_to(&buf[..len], meta.endpoint).await {
+                    warn!("UDP tx error: {:?}", e);
+                }
+            }
+            Err(e) => {
+                warn!("UDP recv error: {:?}", e);
+            }
+        }
+    }
 }

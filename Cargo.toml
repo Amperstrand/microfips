@@ -51,6 +51,7 @@ cortex-m = { version = "0.7.6", features = [
 cortex-m-rt = "0.7.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 heapless = "0.9"
+static_cell = "2"
 smoltcp = { version = "0.13", default-features = false, features = [
     "proto-ipv6",
     "socket-icmp",
