@@ -29,6 +29,18 @@ embassy-time = { path = "../embassy/embassy-time", features = [
 ] }
 embassy-sync = { path = "../embassy/embassy-sync", features = ["defmt"] }
 embassy-futures = { path = "../embassy/embassy-futures" }
+embassy-net = { path = "../embassy/embassy-net", features = [
+    "defmt",
+    "proto-ipv6",
+    "medium-ip",
+    "udp",
+    "icmp",
+    "auto-icmp-echo-reply",
+] }
+embassy-net-driver = { path = "../embassy/embassy-net-driver" }
+embassy-net-driver-channel = { path = "../embassy/embassy-net-driver-channel", features = [
+    "defmt",
+] }
 
 defmt = "1.0"
 defmt-rtt = "1.0"
@@ -39,6 +51,13 @@ cortex-m = { version = "0.7.6", features = [
 cortex-m-rt = "0.7.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 heapless = "0.9"
+smoltcp = { version = "0.13", default-features = false, features = [
+    "proto-ipv6",
+    "socket-icmp",
+    "socket-udp",
+    "medium-ip",
+    "async",
+] }
 
 [patch.crates-io]
 stm32-metapac = { path = "../stm32-data-generated/stm32-metapac" }

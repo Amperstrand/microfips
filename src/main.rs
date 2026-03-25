@@ -1,23 +1,29 @@
 #![no_std]
 #![no_main]
 
-use defmt::{panic, *};
+use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
+use embassy_net::{Ipv6Address, Ipv6Cidr, StackResources, StaticConfigV6};
+use embassy_net::Config as NetConfig;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::usb::{Driver, Instance};
+use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
-use embassy_usb::driver::EndpointError;
 use embassy_usb::Builder;
 use embassy_time::{Duration, Timer};
 
 use {defmt_rtt as _, panic_probe as _};
 
+mod slip;
+mod slip_net;
+
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
+
+const MCU_IPV6: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -77,6 +83,18 @@ async fn main(_spawner: Spawner) {
 
     let mut usb = builder.build();
 
+    let mut net_state = slip_net::SlipNetState::<3, 3>::new();
+    let (net_device, mut net_runner) = slip_net::new(&mut net_state);
+
+    let net_config = NetConfig::ipv6_static(StaticConfigV6 {
+        address: Ipv6Cidr::new(MCU_IPV6, 64),
+        gateway: None,
+        dns_servers: heapless::Vec::new(),
+    });
+
+    let mut net_resources = StackResources::<2>::new();
+    let (_stack, mut net_stack_runner) = embassy_net::new(net_device, net_config, &mut net_resources, 0xdeadbeefcafe);
+
     let usb_fut = usb.run();
 
     let blink_fut = async {
@@ -88,35 +106,9 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-    let echo_fut = async {
-        loop {
-            class.wait_connection().await;
-            info!("USB connected");
-            let _ = echo(&mut class).await;
-            info!("USB disconnected");
-        }
+    let net_fut = async {
+        join(net_stack_runner.run(), net_runner.run(&mut class)).await;
     };
 
-    join(usb_fut, join(blink_fut, echo_fut)).await;
-}
-
-struct Disconnected;
-
-impl From<EndpointError> for Disconnected {
-    fn from(val: EndpointError) -> Self {
-        match val {
-            EndpointError::BufferOverflow => panic!("Buffer overflow"),
-            EndpointError::Disabled => Disconnected,
-        }
-    }
-}
-
-async fn echo<'d, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d, T>>) -> Result<(), Disconnected> {
-    let mut buf = [0u8; 64];
-    loop {
-        let n = class.read_packet(&mut buf).await?;
-        let data = &buf[..n];
-        info!("rx: {:02x}", data);
-        class.write_packet(data).await?;
-    }
+    join(usb_fut, join(blink_fut, net_fut)).await;
 }

@@ -40,10 +40,10 @@ probe-rs run --chip STM32F469NIHx --target thumbv7em-none-eabi
 | Milestone | Description | Status |
 |-----------|-------------|--------|
 | M0 | Environment, repo, scaffold | Done |
-| M1 | USB CDC ACM + echo | In progress |
-| M2 | SLIP framing over CDC ACM | Planned |
-| M3 | VPS tunnel plumbing (socat/slattach) | Planned |
-| M4 | Embedded IP stack + ICMP ping | Planned |
+| M1 | USB CDC ACM + echo | Done |
+| M2 | SLIP framing over CDC ACM | Done |
+| M3 | VPS tunnel plumbing (socat/slattach) | Done |
+| M4 | Embedded IP stack + ICMP ping | Done |
 | M5 | Bidirectional UDP over SLIP | Planned |
 | M6 | FIPS leaf node (identity, Noise, single peer) | Planned |
 | M7 | HTTP server over FIPS | Planned |

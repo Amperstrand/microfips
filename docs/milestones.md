@@ -9,21 +9,21 @@
 
 ## M1: USB CDC ACM + Echo
 
-- [ ] Embassy firmware with clock config (HSE bypass, 168 MHz)
-- [ ] USB OTG FS enumeration with CDC ACM class
-- [ ] LED heartbeat blink (PG6)
-- [ ] Echo received USB packets back to host
-- [ ] defmt logging via RTT
-- [ ] Build verification
+- [x] Embassy firmware with clock config (HSE bypass, 168 MHz)
+- [x] USB OTG FS enumeration with CDC ACM class
+- [x] LED heartbeat blink (PG6)
+- [x] Echo received USB packets back to host
+- [x] defmt logging via RTT
+- [x] Build verification
 - [ ] Flash and verify USB enumeration on host
 
 **Success signal:** `ls /dev/ttyACM*` shows device; `picocom /dev/ttyACM0` echoes text.
 
 ## M2: SLIP Framing
 
-- [ ] SLIP encoder module (async, zero-copy)
-- [ ] SLIP decoder module (async, handles ESC sequences)
-- [ ] Send SLIP-encoded heartbeats from MCU
+- [x] SLIP encoder module (RFC 1055, zero-copy)
+- [x] SLIP decoder module (handles ESC sequences, frame reassembly)
+- [x] SLIP-framed echo over USB CDC ACM
 - [ ] Verify framing with host-side hex dump
 - [ ] Consider refactoring to workspace (microfips-transport crate)
 
@@ -31,7 +31,7 @@
 
 ## M3: VPS Tunnel Plumbing
 
-- [ ] Document exact socat/slattach/ip commands
+- [x] Document exact socat/slattach/ip commands
 - [ ] Test with mock SLIP source on VPS
 - [ ] Verify sl0 interface with IPv6 link-local
 - [ ] Test end-to-end with USB CDC ACM connected
@@ -40,10 +40,11 @@
 
 ## M4: Embedded IP + ICMP Ping
 
-- [ ] Implement embassy-net-driver Device for SLIP-over-CDC-ACM
-- [ ] Create embassy-net Stack with IPv6 + ICMPv6
-- [ ] smoltcp handles ICMPv6 Echo Request/Response
-- [ ] Assign link-local IPv6 address to MCU
+- [x] Implement embassy-net-driver Driver for SLIP-over-CDC-ACM
+- [x] Create embassy-net Stack with IPv6 + ICMPv6
+- [x] smoltcp handles ICMPv6 Echo Request/Response
+- [x] Assign static IPv6 address to MCU (fe80::1)
+- [ ] Verify ping6 from VPS reaches MCU
 
 **Success signal:** `ping6 fe80::1%sl0` from VPS gets replies from MCU.
 
