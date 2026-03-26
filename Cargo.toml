@@ -2,6 +2,9 @@
 members = [".", "crates/microfips-core", "crates/microfips-link"]
 resolver = "2"
 
+[patch.crates-io]
+cortex-m = { path = "../cortex-m-patch" }
+
 [package]
 name = "microfips"
 version = "0.1.0"
