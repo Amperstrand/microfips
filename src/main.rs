@@ -11,7 +11,6 @@ use embassy_net::{Ipv6Address, Ipv6Cidr, Stack, StackResources, StaticConfigV6};
 use embassy_net::Config as NetConfig;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::rng::Rng;
-use embassy_stm32::time::Hertz;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, rng, usb, Config};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
@@ -75,22 +74,18 @@ async fn main(_spawner: Spawner) {
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
-        config.rcc.hse = Some(Hse {
-            freq: Hertz(8_000_000),
-            mode: HseMode::Bypass,
-        });
-        config.rcc.pll_src = PllSource::HSE;
+        config.rcc.pll_src = PllSource::HSI;
         config.rcc.pll = Some(Pll {
-            prediv: PllPreDiv::DIV4,
+            prediv: PllPreDiv::DIV8,
             mul: PllMul::MUL168,
             divp: Some(PllPDiv::DIV2),
             divq: Some(PllQDiv::DIV7),
             divr: None,
         });
+        config.rcc.sys = Sysclk::PLL1_P;
         config.rcc.ahb_pre = AHBPrescaler::DIV1;
         config.rcc.apb1_pre = APBPrescaler::DIV4;
         config.rcc.apb2_pre = APBPrescaler::DIV2;
-        config.rcc.sys = Sysclk::PLL1_P;
         config.rcc.mux.clk48sel = mux::Clk48sel::PLL1_Q;
     }
     let p = embassy_stm32::init(config);
