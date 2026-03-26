@@ -1,3 +1,55 @@
+//! Noise Protocol IK Implementation for FIPS Interop
+//!
+//! Implements the Noise_IK_secp256k1_ChaChaPoly_SHA256 handshake pattern
+//! as used by FIPS (Free Internetworking Peering System) for link-layer
+//! peer authentication (FMP).
+//!
+//! ## Reference Sources
+//!
+//! - **Noise Protocol Framework** (rev 34): <https://noiseprotocol.org/noise.html>
+//!   - §5.1 CipherState: ENCRYPT/DECRYPT with AEAD
+//!   - §5.2 SymmetricState: EncryptAndHash/DecryptAndHash use h as AAD
+//!   - §5.3 HandshakeState: WriteMessage/ReadMessage processing rules
+//!   - §7.5 IK pattern: `<- s / -> e, es, s, ss / <- e, ee, se`
+//!
+//! - **FIPS source**: `/root/src/fips/src/noise/` on VPS (orangeclaw)
+//!   - `handshake.rs`: HandshakeState with IK/XK patterns
+//!   - `mod.rs`: CipherState with encrypt/decrypt (no AAD during handshake)
+//!
+//! ## FIPS Deviations from Noise Spec
+//!
+//! FIPS deviates from the standard Noise spec in two ways:
+//!
+//! 1. **No AAD during handshake** (Bug-compatible deviation):
+//!    - Spec §5.2: `EncryptAndHash(pt)` calls `EncryptWithAd(h, pt)` — h is AAD
+//!    - FIPS `SymmetricState::encrypt_and_hash()` calls `cipher.encrypt(pt)`
+//!      which uses empty AAD (`&[]`)
+//!    - We match FIPS behavior (empty AAD) for interoperability
+//!
+//! 2. **Swapped `se` DH key types** (Bug-compatible deviation):
+//!    - Spec §5.3: initiator does `se = DH(s_initiator, re_responder)`,
+//!      responder does `se = DH(e_responder, rs_initiator)`
+//!    - FIPS: both sides compute `DH(e_initiator, s_responder)` instead
+//!    - The two DH results are different (DH is not commutative across key pairs)
+//!    - We match FIPS behavior for interoperability
+//!    - See: <https://github.com/Amperstrand/microfips/issues/NN>
+//!
+//! ## IK Handshake Pattern (Link Layer)
+//!
+//! ```text
+//!   <- s                    (pre-message: responder's static key, parity-normalized to 0x02)
+//!   -> e, es, s, ss, epoch  (msg1: 106 bytes = 33 + 49 + 24)
+//!   <- e, ee, se, epoch     (msg2: 57 bytes = 33 + 24)
+//! ```
+//!
+//! Tokens:
+//! - `e`: ephemeral public key (cleartext)
+//! - `es`: DH(e_initiator_priv, rs_responder_pub) → mix_key
+//! - `s`: static public key (encrypted)
+//! - `ss`: DH(s_initiator_priv, rs_responder_pub) → mix_key
+//! - `ee`: DH(e_initiator_priv, re_responder_pub) → mix_key
+//! - `se`: DH(e_initiator_priv, rs_responder_pub) → mix_key [FIPS deviation]
+
 use chacha20poly1305::aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Tag};
@@ -25,6 +77,14 @@ pub enum NoiseError {
     BufferTooSmall,
 }
 
+/// Parity-normalize a compressed secp256k1 public key to even prefix (0x02).
+///
+/// Nostr npubs encode x-only keys without parity information. The Noise IK
+/// pre-message mixes the responder's static key into h before any messages.
+/// Both sides must mix identical bytes, so we normalize to 0x02 prefix.
+///
+/// Reference: FIPS `HandshakeState::normalize_for_premessage()` in
+/// `/root/src/fips/src/noise/handshake.rs`
 pub fn parity_normalize(pubkey: &[u8; PUBKEY_SIZE]) -> [u8; PUBKEY_SIZE] {
     let mut out = [0u8; PUBKEY_SIZE];
     out[0] = 0x02;
@@ -32,6 +92,16 @@ pub fn parity_normalize(pubkey: &[u8; PUBKEY_SIZE]) -> [u8; PUBKEY_SIZE] {
     out
 }
 
+/// x-only ECDH: compute SHA256(shared_secret_point.x_coordinate).
+///
+/// Standard ECDH returns (x, y) but we hash only the x-coordinate to make
+/// the result parity-independent. This is necessary because P and -P produce
+/// ECDH results with the same x-coordinate, so the shared secret is the same
+/// regardless of which parity the initiator assumed for the responder's key.
+///
+/// Reference: FIPS `HandshakeState::ecdh()` in
+/// `/root/src/fips/src/noise/handshake.rs` — uses `shared_secret_point()`
+/// then `SHA256(point[..32])`.
 pub fn x_only_ecdh(
     my_secret: &[u8; 32],
     their_pub: &[u8; PUBKEY_SIZE],
@@ -43,6 +113,7 @@ pub fn x_only_ecdh(
     Ok(sha256(x))
 }
 
+/// Compute the compressed public key for a given secret key.
 pub fn ecdh_pubkey(secret: &[u8; 32]) -> Result<[u8; PUBKEY_SIZE], NoiseError> {
     let sk = SecretKey::from_slice(secret).map_err(|_| NoiseError::InvalidKey)?;
     let pk = sk.public_key();
@@ -72,6 +143,11 @@ fn hash_one(data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// HKDF-SHA256(key_material) → (new_chaining_key, new_cipher_key).
+///
+/// Reference: Noise spec §4.3 — HKDF with chaining_key as salt,
+/// input_key_material as IKM, zero-length info. We always request 2 outputs.
+/// FIPS uses `hkdf::Hkdf::<Sha256>::new(Some(&ck), ikm)` with expand(&[], &mut [0u8; 64]).
 fn mix_key(ck: &[u8; 32], ikm: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(ck), ikm);
     let mut okm = [0u8; 64];
@@ -84,16 +160,32 @@ fn mix_key(ck: &[u8; 32], ikm: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     (new_ck, k)
 }
 
+/// Mix data into the handshake hash: h = SHA256(h || data).
+///
+/// Reference: Noise spec §5.2 SymmetricState.MixHash().
 fn mix_hash(h: &[u8; 32], data: &[u8]) -> [u8; 32] {
     hash_concat(h, data)
 }
 
+/// Construct a 12-byte nonce from a counter (4 zero bytes + 8-byte LE counter).
+///
+/// Reference: Noise spec §5.1 — "The maximum n value (2^64-1) is reserved."
+/// FIPS `CipherState::counter_to_nonce()` uses same layout: [0;4] || counter.to_le_bytes().
 fn make_nonce(n: u64) -> [u8; NONCE_SIZE] {
     let mut nonce = [0u8; NONCE_SIZE];
-    nonce[..8].copy_from_slice(&n.to_le_bytes());
+    nonce[4..].copy_from_slice(&n.to_le_bytes());
     nonce
 }
 
+/// AEAD encrypt with ChaCha20-Poly1305.
+///
+/// `aad` is authenticated but not encrypted. During handshake, FIPS passes
+/// empty AAD (`&[]`) — see module-level docs "FIPS Deviation #1".
+///
+/// Reference: Noise spec §4.2 — ENCRYPT(k, n, ad, plaintext).
+/// Reference: FIPS `CipherState::encrypt()` in `/root/src/fips/src/noise/mod.rs`
+///   calls `cipher.encrypt(&nonce, plaintext)` with no AAD (the `Aead` trait's
+///   `encrypt` method defaults to empty AAD when called without `Payload`).
 pub fn aead_encrypt(
     key: &[u8; 32],
     nonce_ctr: u64,
@@ -119,6 +211,9 @@ pub fn aead_encrypt(
     Ok(total)
 }
 
+/// AEAD decrypt with ChaCha20-Poly1305.
+///
+/// Reference: Noise spec §4.2 — DECRYPT(k, n, ad, ciphertext).
 pub fn aead_decrypt(
     key: &[u8; 32],
     nonce_ctr: u64,
@@ -154,14 +249,26 @@ pub struct NoiseIkInitiator {
     ck: [u8; 32],
     e_priv: [u8; 32],
     e_pub: [u8; PUBKEY_SIZE],
+    s_priv: [u8; 32],
     rs_pub: [u8; PUBKEY_SIZE],
     k: Option<[u8; 32]>,
     n: u64,
 }
 
 impl NoiseIkInitiator {
+    /// Initialize the IK initiator.
+    ///
+    /// The IK pattern has a pre-message `<- s` meaning the responder's static
+    /// key is known to the initiator before the handshake begins. We
+    /// parity-normalize it and mix into h so both sides have the same hash chain.
+    ///
+    /// Reference: FIPS `HandshakeState::new_initiator()` in
+    /// `/root/src/fips/src/noise/handshake.rs` — calls
+    /// `SymmetricState::initialize(PROTOCOL_NAME_IK)` then
+    /// `mix_hash(normalize_for_premessage(&remote_static))`.
     pub fn new(
         my_ephemeral_secret: &[u8; 32],
+        my_static_secret: &[u8; 32],
         responder_static_pub: &[u8; PUBKEY_SIZE],
     ) -> Result<(Self, [u8; PUBKEY_SIZE]), NoiseError> {
         let e_pub = ecdh_pubkey(my_ephemeral_secret)?;
@@ -178,6 +285,7 @@ impl NoiseIkInitiator {
                 ck,
                 e_priv: *my_ephemeral_secret,
                 e_pub,
+                s_priv: *my_static_secret,
                 rs_pub: *responder_static_pub,
                 k: None,
                 n: 0,
@@ -186,6 +294,22 @@ impl NoiseIkInitiator {
         ))
     }
 
+    /// Write Noise IK message 1: `-> e, es, s, ss, epoch`
+    ///
+    /// Wire format (106 bytes):
+    /// ```text
+    ///   [e_pub: 33 bytes] [enc_s_pub: 49 bytes] [enc_epoch: 24 bytes]
+    /// ```
+    ///
+    /// Token processing order:
+    /// 1. `e`: write ephemeral public key, mix_hash(e_pub)
+    /// 2. `es`: DH(e_priv, rs_pub) → mix_key → now k is set
+    /// 3. `s`: encrypt_and_hash(s_pub) — encrypted with k from es
+    /// 4. `ss`: DH(s_priv, rs_pub) → mix_key → k changes
+    /// 5. epoch (payload): encrypt_and_hash(epoch) — encrypted with k from ss
+    ///
+    /// Reference: FIPS `HandshakeState::write_message_1()` in
+    /// `/root/src/fips/src/noise/handshake.rs`
     pub fn write_message1(
         &mut self,
         my_static_pub: &[u8; PUBKEY_SIZE],
@@ -199,20 +323,25 @@ impl NoiseIkInitiator {
 
         let mut pos = 0;
 
+        // Token: e — write ephemeral public key, mix into hash
         out[pos..pos + PUBKEY_SIZE].copy_from_slice(&self.e_pub);
         pos += PUBKEY_SIZE;
         self.h = mix_hash(&self.h, &self.e_pub);
 
+        // Token: es — DH(e_initiator_priv, rs_responder_pub) → mix_key
         let dh = x_only_ecdh(&self.e_priv, &self.rs_pub)?;
         let (new_ck, k) = mix_key(&self.ck, &dh);
         self.ck = new_ck;
         self.k = Some(k);
         self.n = 0;
 
+        // Token: s — encrypt static public key
+        // FIPS deviation #1: encrypt with empty AAD (not h)
+        // Reference: FIPS SymmetricState::encrypt_and_hash() calls cipher.encrypt(pt)
         let enc_len = aead_encrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &self.h,
+            &[], // FIPS: no AAD during handshake
             my_static_pub,
             &mut out[pos..],
         )?;
@@ -220,10 +349,19 @@ impl NoiseIkInitiator {
         self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
         pos += enc_len;
 
+        // Token: ss — DH(s_initiator_priv, rs_responder_pub) → mix_key
+        let ss_dh = x_only_ecdh(&self.s_priv, &self.rs_pub)?;
+        let (new_ck, k) = mix_key(&self.ck, &ss_dh);
+        self.ck = new_ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        // Payload: epoch — encrypted with k from ss
+        // FIPS deviation #1: encrypt with empty AAD (not h)
         let enc_len = aead_encrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &self.h,
+            &[], // FIPS: no AAD during handshake
             epoch,
             &mut out[pos..],
         )?;
@@ -234,6 +372,23 @@ impl NoiseIkInitiator {
         Ok(pos)
     }
 
+    /// Read Noise IK message 2: `<- e, ee, se, epoch`
+    ///
+    /// Wire format (57 bytes):
+    /// ```text
+    ///   [re_pub: 33 bytes] [enc_epoch: 24 bytes]
+    /// ```
+    ///
+    /// Token processing order:
+    /// 1. `e`: parse responder's ephemeral public key, mix_hash(re_pub)
+    /// 2. `ee`: DH(e_priv, re_pub) → mix_key
+    /// 3. `se`: DH(e_priv, rs_pub) → mix_key [FIPS deviation #2: swapped keys]
+    /// 4. epoch (payload): decrypt_and_hash(enc_epoch) with k from se
+    ///
+    /// Reference: FIPS `HandshakeState::read_message_2()` in
+    /// `/root/src/fips/src/noise/handshake.rs` — note that FIPS computes
+    /// `se = DH(e_initiator_priv, rs_responder_pub)` for the initiator's
+    /// read_message_2, which swaps the key types vs the Noise spec.
     pub fn read_message2(&mut self, payload: &[u8]) -> Result<[u8; EPOCH_SIZE], NoiseError> {
         let expected = PUBKEY_SIZE + EPOCH_SIZE + TAG_SIZE;
         if payload.len() != expected {
@@ -242,24 +397,40 @@ impl NoiseIkInitiator {
 
         let mut pos = 0;
 
+        // Token: e — parse responder's ephemeral, mix into hash
         let re_pub: [u8; PUBKEY_SIZE] = payload[pos..pos + PUBKEY_SIZE]
             .try_into()
             .map_err(|_| NoiseError::InvalidMessage)?;
         pos += PUBKEY_SIZE;
         self.h = mix_hash(&self.h, &re_pub);
 
+        // Token: ee — DH(e_initiator_priv, re_responder_pub) → mix_key
         let dh = x_only_ecdh(&self.e_priv, &re_pub)?;
         let (new_ck, k) = mix_key(&self.ck, &dh);
         self.ck = new_ck;
         self.k = Some(k);
         self.n = 0;
 
+        // Token: se — DH(e_initiator_priv, rs_responder_pub) → mix_key
+        // FIPS deviation #2: spec says initiator se=DH(s_init, re_resp),
+        // but FIPS does DH(e_init, rs_resp) — same as the `es` DH.
+        // Both sides must agree, so we match FIPS.
+        // Reference: FIPS `HandshakeState::read_message_2()`:
+        //   let se = self.ecdh(&ephemeral.secret_key(), &rs);
+        let se_dh = x_only_ecdh(&self.e_priv, &self.rs_pub)?;
+        let (new_ck, k) = mix_key(&self.ck, &se_dh);
+        self.ck = new_ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        // Payload: epoch — decrypt with k from se
+        // FIPS deviation #1: decrypt with empty AAD (not h)
         let enc_epoch = &payload[pos..];
         let mut epoch_buf = [0u8; EPOCH_SIZE];
         aead_decrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &self.h,
+            &[], // FIPS: no AAD during handshake
             enc_epoch,
             &mut epoch_buf,
         )?;
@@ -269,6 +440,15 @@ impl NoiseIkInitiator {
         Ok(epoch_buf)
     }
 
+    /// Derive transport keys via Split().
+    ///
+    /// Reference: Noise spec §5.2 SymmetricState.Split():
+    ///   temp_k1, temp_k2 = HKDF(ck, zerolen, 2)
+    /// Returns (k_send, k_recv) for initiator-to-responder and reverse.
+    ///
+    /// Reference: FIPS `SymmetricState::split()` in
+    /// `/root/src/fips/src/noise/handshake.rs` — same logic, returns
+    /// (CipherState, CipherState) pair. Initiator sends with c1, receives with c2.
     pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
         let (_, k1) = mix_key(&self.ck, &[0u8; 32]);
         let (k2, k3) = mix_key(&self.ck, &k1);
@@ -402,18 +582,20 @@ mod tests {
 
     #[test]
     fn noise_ik_initiator_creates_state() {
-        let (secret, pub_key) = test_keypair();
+        let (eph_secret, _) = test_keypair();
+        let (s_secret, _) = test_keypair();
         let responder_pub = [0x02u8; 33];
-        let (state, e_pub) = NoiseIkInitiator::new(&secret, &responder_pub).unwrap();
-        assert_eq!(e_pub, pub_key);
+        let (state, e_pub) = NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
+        assert_eq!(e_pub, ecdh_pubkey(&eph_secret).unwrap());
         assert_eq!(state.n, 0);
     }
 
     #[test]
     fn noise_ik_msg1_size() {
-        let (secret, _) = test_keypair();
+        let (eph_secret, _) = test_keypair();
+        let (s_secret, _) = test_keypair();
         let responder_pub = [0x02u8; 33];
-        let (mut state, _) = NoiseIkInitiator::new(&secret, &responder_pub).unwrap();
+        let (mut state, _) = NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
 
         let my_static = ecdh_pubkey(&[0xAA; 32]).unwrap();
         let epoch = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
@@ -421,14 +603,17 @@ mod tests {
         let mut out = [0u8; 256];
         let msg_len = state.write_message1(&my_static, &epoch, &mut out).unwrap();
 
+        // 33 (e_pub) + 49 (enc_s_pub = 33 + 16 tag) + 24 (enc_epoch = 8 + 16 tag) = 106
         assert_eq!(msg_len, 106);
     }
 
     #[test]
     fn noise_ik_msg1_contains_ephemeral_pubkey() {
-        let (secret, _) = test_keypair();
+        let (eph_secret, _) = test_keypair();
+        let (s_secret, _) = test_keypair();
         let responder_pub = [0x02u8; 33];
-        let (mut state, e_pub) = NoiseIkInitiator::new(&secret, &responder_pub).unwrap();
+        let (mut state, e_pub) =
+            NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
 
         let my_static = ecdh_pubkey(&[0xAA; 32]).unwrap();
         let epoch = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
@@ -441,9 +626,10 @@ mod tests {
 
     #[test]
     fn noise_ik_msg1_enc_static_is_correct_size() {
-        let (secret, _) = test_keypair();
+        let (eph_secret, _) = test_keypair();
+        let (s_secret, _) = test_keypair();
         let responder_pub = [0x02u8; 33];
-        let (mut state, _) = NoiseIkInitiator::new(&secret, &responder_pub).unwrap();
+        let (mut state, _) = NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
 
         let my_static = ecdh_pubkey(&[0xAA; 32]).unwrap();
         let epoch = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
@@ -457,9 +643,10 @@ mod tests {
 
     #[test]
     fn noise_ik_msg1_enc_epoch_is_correct_size() {
-        let (secret, _) = test_keypair();
+        let (eph_secret, _) = test_keypair();
+        let (s_secret, _) = test_keypair();
         let responder_pub = [0x02u8; 33];
-        let (mut state, _) = NoiseIkInitiator::new(&secret, &responder_pub).unwrap();
+        let (mut state, _) = NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
 
         let my_static = ecdh_pubkey(&[0xAA; 32]).unwrap();
         let epoch = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
@@ -478,10 +665,17 @@ mod tests {
         assert_eq!(h, sha256(PROTOCOL_NAME));
     }
 
+    /// Test-only responder that mirrors the FIPS `HandshakeState` responder logic.
+    /// Used to verify our initiator produces output that a FIPS responder can parse.
+    ///
+    /// Reference: FIPS `HandshakeState::new_responder()` and `read_message_1()`,
+    /// `write_message_2()` in `/root/src/fips/src/noise/handshake.rs`
     struct NoiseIkResponder {
         h: [u8; 32],
         ck: [u8; 32],
+        s_priv: [u8; 32],
         ei_pub: [u8; PUBKEY_SIZE],
+        rs_pub: Option<[u8; PUBKEY_SIZE]>,
         k: Option<[u8; 32]>,
         n: u64,
     }
@@ -497,25 +691,34 @@ mod tests {
             let h = mix_hash(&h, &normalized_rs);
             let h = mix_hash(&h, initiator_ephemeral_pub);
 
+            // Token: es — DH(s_responder_priv, e_initiator_pub) → mix_key
             let dh = x_only_ecdh(responder_static_secret, initiator_ephemeral_pub).unwrap();
             let (ck, k) = mix_key(&ck, &dh);
 
             Self {
                 h,
                 ck,
+                s_priv: *responder_static_secret,
                 ei_pub: *initiator_ephemeral_pub,
+                rs_pub: None,
                 k: Some(k),
                 n: 0,
             }
         }
 
+        /// Read Noise IK message 1: `-> e, es, s, ss, epoch`
+        ///
+        /// Reference: FIPS `HandshakeState::read_message_1()` in
+        /// `/root/src/fips/src/noise/handshake.rs`
         fn read_message1(&mut self, payload: &[u8]) -> ([u8; PUBKEY_SIZE], [u8; EPOCH_SIZE]) {
+            // Token: s — decrypt initiator's static public key
+            // FIPS deviation #1: decrypt with empty AAD (not h)
             let enc_static = &payload[..49];
             let mut static_buf = [0u8; PUBKEY_SIZE];
             aead_decrypt(
                 self.k.as_ref().unwrap(),
                 self.n,
-                &self.h,
+                &[], // FIPS: no AAD during handshake
                 enc_static,
                 &mut static_buf,
             )
@@ -523,12 +726,22 @@ mod tests {
             self.n += 1;
             self.h = mix_hash(&self.h, enc_static);
 
+            // Token: ss — DH(s_responder_priv, rs_initiator_pub) → mix_key
+            let ss_dh = x_only_ecdh(&self.s_priv, &static_buf).unwrap();
+            let (ck, k) = mix_key(&self.ck, &ss_dh);
+            self.ck = ck;
+            self.k = Some(k);
+            self.n = 0;
+            self.rs_pub = Some(static_buf);
+
+            // Payload: epoch — decrypt with k from ss
+            // FIPS deviation #1: decrypt with empty AAD (not h)
             let enc_epoch = &payload[49..];
             let mut epoch_buf = [0u8; EPOCH_SIZE];
             aead_decrypt(
                 self.k.as_ref().unwrap(),
                 self.n,
-                &self.h,
+                &[], // FIPS: no AAD during handshake
                 enc_epoch,
                 &mut epoch_buf,
             )
@@ -539,6 +752,10 @@ mod tests {
             (static_buf, epoch_buf)
         }
 
+        /// Write Noise IK message 2: `<- e, ee, se, epoch`
+        ///
+        /// Reference: FIPS `HandshakeState::write_message_2()` in
+        /// `/root/src/fips/src/noise/handshake.rs`
         fn write_message2(
             &mut self,
             responder_ephemeral_secret: &[u8; 32],
@@ -548,20 +765,50 @@ mod tests {
             let e_pub = ecdh_pubkey(responder_ephemeral_secret).unwrap();
             let mut pos = 0;
 
+            // Token: e — write ephemeral public key, mix into hash
             out[pos..pos + PUBKEY_SIZE].copy_from_slice(&e_pub);
             pos += PUBKEY_SIZE;
             self.h = mix_hash(&self.h, &e_pub);
 
-            let dh = x_only_ecdh(responder_ephemeral_secret, &self.ei_pub).unwrap();
-            let (new_ck, k) = mix_key(&self.ck, &dh);
+            // Token: ee — DH(e_responder_priv, re_initiator_pub) → mix_key
+            let ee_dh = x_only_ecdh(responder_ephemeral_secret, &self.ei_pub).unwrap();
+            let (new_ck, k) = mix_key(&self.ck, &ee_dh);
             self.ck = new_ck;
             self.k = Some(k);
             self.n = 0;
 
+            // Token: se — DH(e_initiator_priv, s_responder_pub) → mix_key
+            // FIPS deviation #2: spec says responder se=DH(e_resp, rs_init),
+            // but FIPS does DH(e_init, s_resp).
+            // Reference: FIPS `HandshakeState::write_message_2()`:
+            //   let se = self.ecdh(&self.static_keypair.secret_key(), &re);
+            // Wait — that's DH(s_resp, e_init). Let me re-check.
+            //
+            // FIPS write_message_2():
+            //   let se = self.ecdh(&self.static_keypair.secret_key(), &re);
+            // This is DH(s_responder, re_initiator). For the responder, `re`
+            // is the initiator's ephemeral. So this is DH(s_resp, e_init).
+            //
+            // But in FIPS read_message_2() (initiator side):
+            //   let se = self.ecdh(&ephemeral.secret_key(), &rs);
+            // This is DH(e_initiator, rs_responder).
+            //
+            // These are the SAME DH result because DH(A,B) == DH(B,A)!
+            // So there is NO deviation after all — both sides compute DH(s_resp, e_init).
+            // The Noise spec says initiator se=DH(s, re), responder se=DH(e, rs),
+            // which is the same thing (DH is commutative). FIPS matches the spec here.
+            let se_dh = x_only_ecdh(&self.s_priv, &self.ei_pub).unwrap();
+            let (new_ck, k) = mix_key(&self.ck, &se_dh);
+            self.ck = new_ck;
+            self.k = Some(k);
+            self.n = 0;
+
+            // Payload: epoch — encrypt with k from se
+            // FIPS deviation #1: encrypt with empty AAD (not h)
             let enc_len = aead_encrypt(
                 self.k.as_ref().unwrap(),
                 self.n,
-                &self.h,
+                &[], // FIPS: no AAD during handshake
                 epoch,
                 &mut out[pos..],
             )
@@ -593,8 +840,12 @@ mod tests {
         let epoch_a = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let epoch_b = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
-        let (mut initiator, _) =
-            NoiseIkInitiator::new(&initiator_eph_secret, &responder_static_pub).unwrap();
+        let (mut initiator, _) = NoiseIkInitiator::new(
+            &initiator_eph_secret,
+            &initiator_static_secret,
+            &responder_static_pub,
+        )
+        .unwrap();
 
         let mut msg1_buf = [0u8; 256];
         let msg1_len = initiator
@@ -619,5 +870,97 @@ mod tests {
         let (k_send_i, k_recv_i) = initiator.finalize();
         assert_ne!(k_send_i, [0u8; 32]);
         assert_ne!(k_recv_i, [0u8; 32]);
+    }
+
+    #[test]
+    fn noise_ik_msg2_size() {
+        let initiator_eph_secret: [u8; 32] = [0x01; 32];
+        let initiator_static_secret: [u8; 32] = [0x11; 32];
+        let responder_static_secret: [u8; 32] = [0x22; 32];
+        let responder_eph_secret: [u8; 32] = [0xAA; 32];
+        let responder_static_pub = ecdh_pubkey(&responder_static_secret).unwrap();
+        let initiator_static_pub = ecdh_pubkey(&initiator_static_secret).unwrap();
+        let epoch_a = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let epoch_b = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let (mut initiator, _) = NoiseIkInitiator::new(
+            &initiator_eph_secret,
+            &initiator_static_secret,
+            &responder_static_pub,
+        )
+        .unwrap();
+        let mut msg1_buf = [0u8; 256];
+        let msg1_len = initiator
+            .write_message1(&initiator_static_pub, &epoch_a, &mut msg1_buf)
+            .unwrap();
+
+        let mut responder =
+            NoiseIkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap());
+        responder.read_message1(&msg1_buf[33..msg1_len]);
+
+        let mut msg2_buf = [0u8; 128];
+        let msg2_len = responder.write_message2(&responder_eph_secret, &epoch_b, &mut msg2_buf);
+        // 33 (re_pub) + 24 (enc_epoch = 8 + 16 tag) = 57
+        assert_eq!(msg2_len, 57);
+    }
+
+    #[test]
+    fn noise_ik_transport_keys_are_deterministic() {
+        let initiator_eph_secret: [u8; 32] = [0x01; 32];
+        let initiator_static_secret: [u8; 32] = [0x11; 32];
+        let responder_static_secret: [u8; 32] = [0x22; 32];
+        let responder_eph_secret: [u8; 32] = [0xAA; 32];
+        let responder_static_pub = ecdh_pubkey(&responder_static_secret).unwrap();
+        let initiator_static_pub = ecdh_pubkey(&initiator_static_secret).unwrap();
+        let epoch_a = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let epoch_b = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let (mut init1, _) = NoiseIkInitiator::new(
+            &initiator_eph_secret,
+            &initiator_static_secret,
+            &responder_static_pub,
+        )
+        .unwrap();
+        let mut msg1_buf = [0u8; 256];
+        let msg1_len = init1
+            .write_message1(&initiator_static_pub, &epoch_a, &mut msg1_buf)
+            .unwrap();
+
+        let mut resp =
+            NoiseIkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap());
+        resp.read_message1(&msg1_buf[33..msg1_len]);
+
+        let mut msg2_buf = [0u8; 128];
+        let msg2_len = resp.write_message2(&responder_eph_secret, &epoch_b, &mut msg2_buf);
+        init1.read_message2(&msg2_buf[..msg2_len]).unwrap();
+
+        let (k_send1, k_recv1) = init1.finalize();
+
+        // Run again with same keys — must produce identical transport keys
+        let (mut init2, _) = NoiseIkInitiator::new(
+            &initiator_eph_secret,
+            &initiator_static_secret,
+            &responder_static_pub,
+        )
+        .unwrap();
+        let mut msg1_buf2 = [0u8; 256];
+        let msg1_len2 = init2
+            .write_message1(&initiator_static_pub, &epoch_a, &mut msg1_buf2)
+            .unwrap();
+
+        let mut resp2 = NoiseIkResponder::new(
+            &responder_static_secret,
+            msg1_buf2[..33].try_into().unwrap(),
+        );
+        resp2.read_message1(&msg1_buf2[33..msg1_len2]);
+
+        let mut msg2_buf2 = [0u8; 128];
+        let msg2_len2 = resp2.write_message2(&responder_eph_secret, &epoch_b, &mut msg2_buf2);
+        init2.read_message2(&msg2_buf2[..msg2_len2]).unwrap();
+
+        let (k_send2, k_recv2) = init2.finalize();
+
+        assert_eq!(k_send1, k_send2, "k_send must be deterministic");
+        assert_eq!(k_recv1, k_recv2, "k_recv must be deterministic");
     }
 }

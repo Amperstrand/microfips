@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/microfips-core"]
+members = [".", "crates/microfips-core", "crates/microfips-link"]
 resolver = "2"
 
 [package]

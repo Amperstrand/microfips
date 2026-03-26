@@ -2,7 +2,7 @@ pub const FMP_VERSION: u8 = 0;
 pub const COMMON_PREFIX_SIZE: usize = 4;
 pub const IDX_SIZE: usize = 4;
 pub const ESTABLISHED_HEADER_SIZE: usize = 16;
-pub const INNER_HEADER_SIZE: usize = 5;
+pub const INNER_HEADER_SIZE: usize = 5; // 4-byte timestamp + at least 1 byte msg_type
 pub const ENCRYPTED_MIN_SIZE: usize = 32;
 
 pub const HANDSHAKE_MSG1_SIZE: usize = 106;

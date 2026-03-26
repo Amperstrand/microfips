@@ -5,7 +5,7 @@ use embassy_net_driver_channel as ch;
 use embassy_net_driver_channel::driver::LinkState;
 use embassy_usb::class::cdc_acm::CdcAcmClass;
 
-use crate::slip::SlipDecoder;
+use microfips_core::slip::SlipDecoder;
 
 const MTU: usize = 1500;
 
@@ -82,7 +82,7 @@ impl<'d> SlipNetRunner<'d> {
                                 }
                             }
                             Ok(None) => {}
-                            Err(crate::slip::DecodeError::FrameTooLong) => {
+                            Err(microfips_core::slip::DecodeError::FrameTooLong) => {
                                 warn!("SLIP decode error, resetting");
                                 decoder.reset();
                             }
