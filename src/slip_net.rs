@@ -1,8 +1,9 @@
-use defmt::{info, warn};
+use defmt::{error, info, warn};
 
 use embassy_futures::select::{Either, select};
 use embassy_net_driver_channel as ch;
 use embassy_net_driver_channel::driver::LinkState;
+use embassy_time::{Duration, Timer};
 use embassy_usb::class::cdc_acm::CdcAcmClass;
 
 use microfips_core::slip::SlipDecoder;
@@ -41,13 +42,26 @@ impl<'d> SlipNetRunner<'d> {
         let mut frame_buf = [0u8; MTU];
         let mut enc_buf = [0u8; MTU * 2];
         let mut decoder = SlipDecoder::new();
+        let mut diag_timer = embassy_time::Ticker::every(Duration::from_secs(5));
 
         loop {
+            info!("SLIP net: waiting for USB connection...");
             class.wait_connection().await;
-            info!("SLIP net: USB connected");
+            info!("SLIP net: USB connected! Sending immediate test");
+            let test = [0xC0u8, 0xAA, 0xBB, 0xCC, 0xC0];
+            match class.write_packet(&test).await {
+                Ok(()) => info!("SLIP net: IMMEDIATE TEST TX OK"),
+                Err(e) => error!("SLIP net: IMMEDIATE TEST TX FAILED: {:?}", e),
+            }
+            info!("SLIP net: link UP");
             self.ch.set_link_state(LinkState::Up);
 
-            let result = self.run_connected(class, &mut rx_buf, &mut frame_buf, &mut enc_buf, &mut decoder).await;
+            while self.ch.try_tx_buf().is_some() {
+                warn!("SLIP net: draining stale TX packet");
+                self.ch.tx_done();
+            }
+
+            let result = self.run_connected(class, &mut rx_buf, &mut frame_buf, &mut enc_buf, &mut decoder, &mut diag_timer).await;
 
             match result {
                 Err(NetError::Disconnected) => info!("SLIP net: USB disconnected"),
@@ -66,13 +80,21 @@ impl<'d> SlipNetRunner<'d> {
         frame_buf: &mut [u8; MTU],
         enc_buf: &mut [u8; MTU * 2],
         decoder: &mut SlipDecoder,
+        diag_timer: &mut embassy_time::Ticker,
     ) -> Result<(), NetError> {
         loop {
-            match select(class.read_packet(rx_buf), self.ch.tx_buf()).await {
-                Either::First(Ok(n)) => {
+            match select(
+                select(class.read_packet(rx_buf), self.ch.tx_buf()),
+                diag_timer.next(),
+            )
+            .await
+            {
+                Either::First(Either::First(Ok(n))) => {
+                    info!("SLIP net: USB rx {} bytes", n);
                     for &byte in &rx_buf[..n] {
                         match decoder.feed(byte, frame_buf) {
                             Ok(Some(frame)) => {
+                                info!("SLIP net: decoded frame {}B", frame.len());
                                 if let Some(buf) = self.ch.try_rx_buf() {
                                     let len = frame.len().min(buf.len());
                                     buf[..len].copy_from_slice(&frame[..len]);
@@ -89,11 +111,23 @@ impl<'d> SlipNetRunner<'d> {
                         }
                     }
                 }
-                Either::First(Err(_)) => return Err(NetError::Disconnected),
-                Either::Second(pkt) => {
+                Either::First(Either::First(Err(_))) => return Err(NetError::Disconnected),
+                Either::First(Either::Second(pkt)) => {
+                    info!("SLIP net: TX pkt {}B", pkt.len());
                     let enc_len = SlipDecoder::encode(pkt, enc_buf);
-                    class.write_packet(&enc_buf[..enc_len]).await.map_err(|_| NetError::Disconnected)?;
+                    match class.write_packet(&enc_buf[..enc_len]).await {
+                        Ok(()) => info!("SLIP net: USB tx {}B OK", enc_len),
+                        Err(e) => error!("SLIP net: USB tx FAILED: {:?}", e),
+                    }
                     self.ch.tx_done();
+                }
+                Either::Second(()) => {
+                    info!("SLIP net: diag tick, sending test bytes");
+                    let test = [0xC0u8, 0x01, 0xC0];
+                    match class.write_packet(&test).await {
+                        Ok(()) => info!("SLIP net: test tx OK"),
+                        Err(e) => error!("SLIP net: test tx FAILED: {:?}", e),
+                    }
                 }
             }
         }
