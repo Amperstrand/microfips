@@ -29,7 +29,7 @@ fn main() {
     };
 
     let local_pub = noise::ecdh_pubkey(&local_secret).expect("failed to compute pubkey");
-    println!("Local pubkey: {}", hex::encode(&local_pub));
+    println!("Local pubkey: {}", hex::encode(local_pub));
 
     let mut rng = rand::rng();
     let mut eph_bytes = [0u8; 32];
@@ -49,7 +49,7 @@ fn main() {
         noise::NoiseIkInitiator::new(&eph_secret_bytes, &local_secret, &vps_pub_compressed)
             .expect("failed to create Noise state");
 
-    println!("Ephemeral pubkey: {}", hex::encode(&e_pub));
+    println!("Ephemeral pubkey: {}", hex::encode(e_pub));
 
     let epoch: [u8; 8] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
@@ -96,8 +96,8 @@ fn main() {
                                         received_epoch
                                     );
                                     let (k_send, k_recv) = noise_state.finalize();
-                                    println!("k_send: {}", hex::encode(&k_send));
-                                    println!("k_recv: {}", hex::encode(&k_recv));
+                                    println!("k_send: {}", hex::encode(k_send));
+                                    println!("k_recv: {}", hex::encode(k_recv));
                                 }
                                 Err(e) => {
                                     println!("Failed to read Noise msg2: {:?}", e);

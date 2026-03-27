@@ -106,7 +106,7 @@ pub fn build_established(
     let inner_len = INNER_HEADER_SIZE + inner_payload.len();
     let encrypted_len = inner_len + crate::noise::TAG_SIZE;
     let payload_len = IDX_SIZE + 8 + encrypted_len;
-    let total = COMMON_PREFIX_SIZE + payload_len as usize;
+    let total = COMMON_PREFIX_SIZE + payload_len;
 
     assert!(out.len() >= total);
 
@@ -143,7 +143,7 @@ pub fn build_established(
     total
 }
 
-pub fn parse_message(data: &[u8]) -> Option<FmpMessage> {
+pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
     let (phase, _flags, _payload_len) = parse_prefix(data)?;
     let payload = &data[COMMON_PREFIX_SIZE..];
 

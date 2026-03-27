@@ -20,6 +20,12 @@ pub struct SlipDecoder {
     pos: usize,
 }
 
+impl Default for SlipDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SlipDecoder {
     pub const fn new() -> Self {
         Self {

@@ -55,6 +55,7 @@
 //! - `ee`: DH(e_initiator_priv, re_responder_pub) → mix_key
 //! - `se`: DH(e_initiator_priv, rs_responder_pub) → mix_key [FIPS deviation]
 
+#[allow(deprecated)]
 use chacha20poly1305::aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Tag};
@@ -191,6 +192,7 @@ fn make_nonce(n: u64) -> [u8; NONCE_SIZE] {
 /// Reference: FIPS `CipherState::encrypt()` in `/root/src/fips/src/noise/mod.rs`
 ///   calls `cipher.encrypt(&nonce, plaintext)` with no AAD (the `Aead` trait's
 ///   `encrypt` method defaults to empty AAD when called without `Payload`).
+#[allow(deprecated)]
 pub fn aead_encrypt(
     key: &[u8; 32],
     nonce_ctr: u64,
@@ -219,6 +221,7 @@ pub fn aead_encrypt(
 /// AEAD decrypt with ChaCha20-Poly1305.
 ///
 /// Reference: Noise spec §4.2 — DECRYPT(k, n, ad, ciphertext).
+#[allow(deprecated)]
 pub fn aead_decrypt(
     key: &[u8; 32],
     nonce_ctr: u64,
@@ -249,6 +252,7 @@ pub fn aead_decrypt(
     Ok(pt_len)
 }
 
+#[derive(Clone)]
 pub struct NoiseIkInitiator {
     h: [u8; 32],
     ck: [u8; 32],
@@ -1097,7 +1101,7 @@ mod tests {
         //                 e3, 5e, 61, 6d, 7a, e8, 6f, ce, e2, 68, a2, f7, 49, 45, 2b, 68, 42]
         assert_eq!(mcu_pub[0], 0x02);
         assert_eq!(mcu_pub[1], 0x63); // matches RTT log: pub: [02, 63, 56, 96, ...]
-                                      // The exact pubkey depends on k256's compressed encoding — just verify it's valid
+        // The exact pubkey depends on k256's compressed encoding — just verify it's valid
         assert_eq!(mcu_pub.len(), 33);
     }
 
