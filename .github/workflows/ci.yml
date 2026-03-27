@@ -81,8 +81,6 @@ jobs:
           components: rust-src
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: firmware
 
       - name: Clone embassy fork
         run: |
@@ -94,9 +92,10 @@ jobs:
 
       - name: Patch Cargo.toml for CI paths
         run: |
-          sed -i 's|path = "../../../embassy/|path = "'$HOME'/embassy/|g' crates/microfips-fw/Cargo.toml
+          sed -i 's|path = "../../../embassy/|path = "'$HOME'/embassy/|g' crates/microfips/Cargo.toml
+          sed -i 's|members = \[|members = ["crates/microfips", |' Cargo.toml
 
-      - run: cargo build -p microfips-fw --release --target thumbv7em-none-eabi
+      - run: cargo build -p microfips --release --target thumbv7em-none-eabi
 
       - name: Check binary size
         run: |
