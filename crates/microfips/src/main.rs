@@ -191,13 +191,6 @@ async fn cdc_send_frame<'d, T: embassy_stm32::usb::Instance + 'd>(
     cdc_write(class, payload).await
 }
 
-async fn send_trace<'d, T: embassy_stm32::usb::Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    marker: u8,
-) {
-    let _ = cdc_send_frame(class, &[marker]).await;
-}
-
 async fn fips_task<'d, T: embassy_stm32::usb::Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
     led: &mut Output<'static>,
@@ -205,8 +198,8 @@ async fn fips_task<'d, T: embassy_stm32::usb::Instance + 'd>(
     pre_noise_st: &'static noise::NoiseIkInitiator,
 ) {
     let mut rbuf = [0u8; 2048];
-    let mut rpos = 0usize;
-    let mut rlen = 0usize;
+    let mut rpos: usize;
+    let mut rlen: usize;
 
     loop {
         class.wait_connection().await;
