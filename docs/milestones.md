@@ -2,79 +2,94 @@
 
 ## M0: Environment & Workspace
 
-- [x] Confirm board (STM32F469I-DISCO) and tooling (probe-rs, thumbv7em-none-eabihf)
+- [x] Confirm board (STM32F469I-DISCO) and tooling
 - [x] Create git repo and GitHub remote
 - [x] Create project scaffold and documentation
-- [x] Verify toolchain targets are installed
+- [x] Pin nightly Rust (`nightly-2025-09-01`, 1.91) for smoltcp/cortex-m compat
+- [x] Patch cortex-m 0.7.7 for nightly asm syntax
+
+**Success signal:** `cargo build --target thumbv7em-none-eabi` succeeds.
 
 ## M1: USB CDC ACM + Echo
 
-- [x] Embassy firmware with clock config (HSE bypass, 168 MHz)
-- [x] USB OTG FS enumeration with CDC ACM class
-- [x] LED heartbeat blink (PG6)
-- [x] Echo received USB packets back to host
-- [x] defmt logging via RTT
-- [x] Build verification
-- [ ] Flash and verify USB enumeration on host
+- [x] Embassy firmware with clock config (HSI 16 MHz, 168 MHz sys, 48 MHz USB)
+- [x] USB OTG FS enumeration with CDC ACM class (VID:PID = c0de:cafe)
+- [x] LED on PG6 during active connection
+- [x] Bidirectional CDC echo (multiple packet sizes including 64B + ZLP)
+- [x] USB enumeration works with st-flash (probe-rs breaks USB — see AGENTS.md)
+- [x] Embassy fork fully reverted to upstream (4 USB "fixes" were misdiagnosis)
 
-**Success signal:** `ls /dev/ttyACM*` shows device; `picocom /dev/ttyACM0` echoes text.
+**Success signal:** `ls /dev/ttyACM*` shows device; echo test passes.
 
-## M2: SLIP Framing
+## M2: Length-Prefixed Framing
 
-- [x] SLIP encoder module (RFC 1055, zero-copy)
-- [x] SLIP decoder module (handles ESC sequences, frame reassembly)
-- [x] SLIP-framed echo over USB CDC ACM
-- [ ] Verify framing with host-side hex dump
-- [ ] Consider refactoring to workspace (microfips-transport crate)
+- [x] `cdc_send_frame()`: 2-byte LE header + payload + ZLP handling
+- [x] `recv_frame()`: reassembly from 64B USB packets with timeout
+- [x] Buffer compaction for partial reads
+- [x] EP_OUT buffer increased from 256B to 1024B (StaticCell, matches micronuts)
 
-**Success signal:** Host receives valid SLIP frames from MCU.
+**Success signal:** Multi-packet frames sent and received correctly over CDC.
 
-## M3: VPS Tunnel Plumbing
+## M3: Host-Side Handshake Test
 
-- [x] Document exact socat/slattach/ip commands
-- [ ] Test with mock SLIP source on VPS
-- [ ] Verify sl0 interface with IPv6 link-local
-- [ ] Test end-to-end with USB CDC ACM connected
+- [x] `microfips-link` crate: Noise IK handshake over raw UDP
+- [x] Proven against live VPS: sends MSG1, receives MSG2 (69B)
+- [x] VPS promotes MCU identity to active peer
+- [x] Transport keys derived correctly
 
-**Success signal:** `ping6 -I sl0 fe80::2` works locally on VPS.
+**Success signal:** `cargo run -p microfips-link <vps-host>:2121` completes handshake.
 
-## M4: Embedded IP + ICMP Ping
+## M4: MCU Handshake with Live VPS
 
-- [x] Implement embassy-net-driver Driver for SLIP-over-CDC-ACM
-- [x] Create embassy-net Stack with IPv6 + ICMPv6
-- [x] smoltcp handles ICMPv6 Echo Request/Response
-- [x] Assign static IPv6 address to MCU (fe80::1)
-- [ ] Verify ping6 from VPS reaches MCU
+- [x] MCU sends MSG1 (114B) through USB → proxy → tunnel → bridge → FIPS
+- [x] Bridge receives MSG2 (69B) from FIPS, writes to tunnel → proxy → CDC
+- [x] MCU does NOT panic (PANIC_LINE = 0)
+- [x] `finalize()` fixed to match FIPS `split()` — single HKDF with empty IKM
+- [x] ESTABLISHED format fixed to match FIPS wire format: `[receiver_idx:4][counter:8]`
+- [x] Receive path uses `counter` from header (not local counter) for AEAD nonce
+- [x] Non-ESTABLISHED messages ignored in steady state (other peers through bridge)
+- [x] Firmware compiled and flashed to MCU
+- [ ] Hardware test: MCU completes handshake with live VPS (blocked by kernel TTY hang)
 
-**Success signal:** `ping6 fe80::1%sl0` from VPS gets replies from MCU.
+**Current blocker:** Kernel TTY hang from USB sysfs manipulation (2026-03-27).
+Firmware is ready — needs host reboot to clear TTY zombie, then hardware test
+should work immediately (sim proved protocol correct for 70+ seconds).
 
-## M5: Bidirectional UDP
+**Success signal:** VPS journalctl shows "Connection promoted to active peer"
+followed by sustained heartbeat exchange (no "link dead timeout").
 
-- [x] Open UDP socket on MCU
-- [x] Send/receive datagrams between VPS and MCU
-- [ ] Verify payload integrity
-- [ ] Verify end-to-end with VPS tunnel
+## M5: Host-Side Full Lifecycle Simulator
 
-**Success signal:** MCU sends "hello from MCU" UDP datagram; VPS receives it.
+- [x] `microfips-sim` crate: simulates MCU FIPS lifecycle on host (std, no embassy)
+- [x] Uses same `microfips-core` protocol code as firmware
+- [x] Length-prefixed framing over stdin/stdout and TCP
+- [x] `--listen PORT` mode for direct TCP bridge testing
+- [x] Full lifecycle: handshake → heartbeat loop → reconnection
+- [x] Sustained heartbeat exchange proven for 70+ seconds against live VPS
+- [x] Non-ESTABLISHED messages from other peers ignored gracefully
+- [x] Read timeout set on TcpStream so heartbeat timer fires
 
-## M6: FIPS Leaf Node
+**Success signal:** `cargo run -p microfips-sim --listen 45679` completes handshake and
+maintains heartbeat exchange when connected through SSH tunnel + VPS bridge.
 
-- [ ] Generate secp256k1 keypair (k256 crate)
-- [ ] Persist keypair to flash
-- [ ] Derive npub and fd00::/8 IPv6 address
-- [ ] Implement Noise IK handshake (link layer)
-- [ ] Implement Noise XK handshake (session layer)
-- [ ] FMP: single-peer link, no transit
-- [ ] FSP: single session to VPS peer, port 256
-- [ ] Wire format compatible with stock FIPS
+**Status: DONE — sim is a proven FIPS leaf node.**
 
-**Success signal:** MCU appears as FIPS peer on VPS `fipsctl show peers`.
+## M6: MCU Full Lifecycle
 
-## M7: HTTP Server
+- [x] Firmware compiled with all protocol fixes (finalize, ESTABLISHED format, counter)
+- [x] Firmware flashed to MCU
+- [ ] MCU completes handshake with live VPS (blocked by kernel TTY, needs reboot)
+- [ ] MCU sends heartbeats every 10s, VPS responds
+- [ ] MCU processes incoming ESTABLISHED messages (heartbeat, disconnect)
+- [ ] Reconnection after USB disconnect
+- [ ] Long-running stability (10+ minutes sustained)
+
+**Status: Firmware ready, awaiting hardware test after reboot.**
+
+## M7: HTTP Status Page
 
 - [ ] Tiny HTTP/1.1 server over FIPS session
-- [ ] Serve "hello fips" response
-- [ ] Include node status (uptime, peer state, address)
-- [ ] Optional: sensor data endpoint
+- [ ] Serve status page with node info (uptime, peer state, address)
+- [ ] End-to-end test: request from another FIPS peer
 
-**Success signal:** `curl http://npub1xxx.fips` from VPS returns status page.
+**Success signal:** `curl http://<fips-addr>` from VPS returns status page.

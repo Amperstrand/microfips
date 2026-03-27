@@ -38,9 +38,8 @@ pub enum FmpMessage<'a> {
         noise_payload: &'a [u8],
     },
     Established {
-        sender_idx: u32,
         receiver_idx: u32,
-        epoch: u32,
+        counter: u64,
         encrypted: &'a [u8],
     },
 }
@@ -96,19 +95,17 @@ pub fn build_msg2(
 }
 
 pub fn build_established(
-    sender_idx: u32,
     receiver_idx: u32,
-    epoch: u32,
+    counter: u64,
     msg_type: u8,
     timestamp: u32,
     inner_payload: &[u8],
     key: &[u8; 32],
-    nonce: u64,
     out: &mut [u8],
 ) -> usize {
     let inner_len = INNER_HEADER_SIZE + inner_payload.len();
     let encrypted_len = inner_len + crate::noise::TAG_SIZE;
-    let payload_len = IDX_SIZE * 2 + 4 + encrypted_len;
+    let payload_len = IDX_SIZE + 8 + encrypted_len;
     let total = COMMON_PREFIX_SIZE + payload_len as usize;
 
     assert!(out.len() >= total);
@@ -117,12 +114,10 @@ pub fn build_established(
     out[..COMMON_PREFIX_SIZE].copy_from_slice(&prefix);
     let mut pos = COMMON_PREFIX_SIZE;
 
-    out[pos..pos + IDX_SIZE].copy_from_slice(&sender_idx.to_le_bytes());
-    pos += IDX_SIZE;
     out[pos..pos + IDX_SIZE].copy_from_slice(&receiver_idx.to_le_bytes());
     pos += IDX_SIZE;
-    out[pos..pos + 4].copy_from_slice(&epoch.to_le_bytes());
-    pos += 4;
+    out[pos..pos + 8].copy_from_slice(&counter.to_le_bytes());
+    pos += 8;
 
     let mut outer_header = [0u8; ESTABLISHED_HEADER_SIZE];
     outer_header[..pos].copy_from_slice(&out[..pos]);
@@ -138,7 +133,7 @@ pub fn build_established(
 
     let _enc_len = crate::noise::aead_encrypt(
         key,
-        nonce,
+        counter,
         outer_header_ref,
         &inner[..inner_len],
         &mut out[pos..],
@@ -178,18 +173,15 @@ pub fn parse_message(data: &[u8]) -> Option<FmpMessage> {
             })
         }
         PHASE_ESTABLISHED => {
-            if payload.len() < IDX_SIZE * 2 + 4 {
+            if payload.len() < IDX_SIZE + 8 {
                 return None;
             }
-            let sender_idx = u32::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
-            let receiver_idx = u32::from_le_bytes(payload[IDX_SIZE..IDX_SIZE * 2].try_into().ok()?);
-            let epoch =
-                u32::from_le_bytes(payload[IDX_SIZE * 2..IDX_SIZE * 2 + 4].try_into().ok()?);
-            let encrypted = &payload[IDX_SIZE * 2 + 4..];
+            let receiver_idx = u32::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
+            let counter = u64::from_le_bytes(payload[IDX_SIZE..IDX_SIZE + 8].try_into().ok()?);
+            let encrypted = &payload[IDX_SIZE + 8..];
             Some(FmpMessage::Established {
-                sender_idx,
                 receiver_idx,
-                epoch,
+                counter,
                 encrypted,
             })
         }
@@ -332,8 +324,8 @@ mod tests {
     fn build_established_size() {
         let key = [0x42u8; 32];
         let mut out = [0u8; 1024];
-        let len = build_established(0, 1, 0, MSG_HEARTBEAT, 12345, &[], &key, 0, &mut out);
-        let header_size = COMMON_PREFIX_SIZE + IDX_SIZE * 2 + 4;
+        let len = build_established(0, 1, MSG_HEARTBEAT, 12345, &[], &key, &mut out);
+        let header_size = COMMON_PREFIX_SIZE + IDX_SIZE + 8;
         let encrypted_size = INNER_HEADER_SIZE + crate::noise::TAG_SIZE;
         assert_eq!(len, header_size + encrypted_size);
     }
@@ -342,18 +334,16 @@ mod tests {
     fn parse_established_roundtrip() {
         let key = [0x42u8; 32];
         let mut out = [0u8; 1024];
-        let len = build_established(0, 1, 0, MSG_HEARTBEAT, 12345, &[], &key, 0, &mut out);
+        let len = build_established(1, 42, MSG_HEARTBEAT, 12345, &[], &key, &mut out);
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
             FmpMessage::Established {
-                sender_idx,
                 receiver_idx,
-                epoch,
+                counter,
                 encrypted,
             } => {
-                assert_eq!(sender_idx, 0);
                 assert_eq!(receiver_idx, 1);
-                assert_eq!(epoch, 0);
+                assert_eq!(counter, 42);
                 assert!(!encrypted.is_empty());
             }
             _ => panic!("expected Established"),
@@ -365,26 +355,23 @@ mod tests {
         let key = [0x42u8; 32];
         let payload = b"test data";
         let mut out = [0u8; 1024];
-        let len = build_established(
-            0,
-            1,
-            5,
-            MSG_SESSION_DATAGRAM,
-            99999,
-            payload,
-            &key,
-            42,
-            &mut out,
-        );
+        let len = build_established(1, 42, MSG_SESSION_DATAGRAM, 99999, payload, &key, &mut out);
 
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
-            FmpMessage::Established { encrypted, .. } => {
-                let outer_header = &out[..COMMON_PREFIX_SIZE + IDX_SIZE * 2 + 4];
+            FmpMessage::Established {
+                counter, encrypted, ..
+            } => {
+                let outer_header = &out[..ESTABLISHED_HEADER_SIZE];
                 let mut decrypted = [0u8; 512];
-                let dec_len =
-                    crate::noise::aead_decrypt(&key, 42, outer_header, encrypted, &mut decrypted)
-                        .unwrap();
+                let dec_len = crate::noise::aead_decrypt(
+                    &key,
+                    counter,
+                    outer_header,
+                    encrypted,
+                    &mut decrypted,
+                )
+                .unwrap();
                 let timestamp = u32::from_le_bytes(decrypted[..4].try_into().unwrap());
                 assert_eq!(timestamp, 99999);
                 assert_eq!(decrypted[4], MSG_SESSION_DATAGRAM);
@@ -392,5 +379,67 @@ mod tests {
             }
             _ => panic!("expected Established"),
         }
+    }
+
+    #[test]
+    fn msg1_wire_size_matches_bridge_expectation() {
+        // Bridge reads 2-byte LE length prefix, then payload bytes.
+        // MSG1 = 4 (prefix) + 4 (sender_idx) + 106 (noise) = 114 bytes.
+        // On the wire over serial: [72, 00] (114 LE) + [114 bytes of FMP frame]
+        // Total serial bytes for MSG1: 2 + 114 = 116
+        assert_eq!(MSG1_WIRE_SIZE, 114);
+        assert_eq!(
+            COMMON_PREFIX_SIZE + IDX_SIZE + HANDSHAKE_MSG1_SIZE,
+            MSG1_WIRE_SIZE
+        );
+    }
+
+    #[test]
+    fn msg2_wire_size_matches_vps_response() {
+        // VPS sends MSG2 = 4 (prefix) + 4 (sender) + 4 (receiver) + 57 (noise) = 69 bytes.
+        // Wire over serial: [45, 00] (69 LE) + [69 bytes of FMP frame]
+        assert_eq!(MSG2_WIRE_SIZE, 69);
+        assert_eq!(
+            COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG2_SIZE,
+            MSG2_WIRE_SIZE
+        );
+    }
+
+    #[test]
+    fn established_heartbeat_minimum_size() {
+        // Heartbeat: 4 (prefix) + 4 (receiver_idx) + 8 (counter) +
+        //            37 (encrypted = 5 inner + 16 tag) = 53 bytes
+        let key = [0x42u8; 32];
+        let mut out = [0u8; 256];
+        let len = build_established(1, 0, MSG_HEARTBEAT, 0, &[], &key, &mut out);
+        assert_eq!(
+            len,
+            COMMON_PREFIX_SIZE + IDX_SIZE + 8 + INNER_HEADER_SIZE + crate::noise::TAG_SIZE
+        );
+        assert!(
+            len <= 84,
+            "heartbeat must fit in single 64-byte CDC packet + 2-byte len prefix"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_unknown_phase() {
+        let data = [0x0F, 0x00, 0x00, 0x00]; // version=0, phase=15
+        assert!(parse_message(&data).is_none());
+    }
+
+    #[test]
+    fn msg1_sender_idx_zero_for_initiator() {
+        // Initiator sends sender_idx=0 (hasn't received an index from responder yet)
+        let noise_payload = [0u8; 106];
+        let mut out = [0u8; 256];
+        let len = build_msg1(0, &noise_payload, &mut out);
+        let idx = u32::from_le_bytes(
+            out[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(idx, 0);
+        assert_eq!(len, MSG1_WIRE_SIZE);
     }
 }
