@@ -58,9 +58,7 @@ def open_port(args):
     else:
         for attempt in range(40):
             try:
-                ser = serial.Serial(args.serial, args.baud, timeout=0)
-                ser.dtr = True
-                ser.rts = True
+                ser = serial.Serial(args.serial, args.baud, timeout=0, dsrdtr=False, rtscts=False)
                 return ser
             except (serial.SerialException, FileNotFoundError, OSError):
                 time.sleep(0.25)
@@ -162,13 +160,13 @@ def main():
     print(f"Bridge: {src} <-> {args.udp_host}:{args.udp_port}", file=sys.stderr)
 
     if args.reset:
-        print(f"Resetting MCU via probe-rs...", file=sys.stderr)
+        print(f"Resetting MCU via st-flash...", file=sys.stderr)
         subprocess.run(
-            ["probe-rs", "reset", "--chip", args.probe_chip, "--connect-under-reset"],
+            ["st-flash", "--connect-under-reset", "reset"],
             check=True,
             capture_output=True,
         )
-        time.sleep(0.5)
+        time.sleep(1.5)
 
     ser = open_port(args)
     print(f"Connected: {src}", file=sys.stderr)
