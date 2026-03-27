@@ -5,9 +5,6 @@
 - [x] Confirm board (STM32F469I-DISCO) and tooling
 - [x] Create git repo and GitHub remote
 - [x] Create project scaffold and documentation
-- [x] Pin nightly Rust (`nightly-2025-09-01`, 1.91) for smoltcp/cortex-m compat
-- [x] Patch cortex-m 0.7.7 for nightly asm syntax
-
 **Success signal:** `cargo build --target thumbv7em-none-eabi` succeeds.
 
 ## M1: USB CDC ACM + Echo

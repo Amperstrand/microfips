@@ -7,4 +7,3 @@ pub mod fmp;
 pub mod fsp;
 pub mod identity;
 pub mod noise;
-pub mod slip;

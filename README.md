@@ -9,28 +9,16 @@ framing, Noise_IK handshake, and a no_std FIPS protocol stack.
 ## Current Status
 
 **What works:**
+- 55 unit tests pass for protocol logic (Noise, FMP, FSP, identity)
+- Host-side handshake test (`microfips-link`) proven against live VPS, returns proper exit codes
+- Host-side simulator (`microfips-sim`) proven 70+ seconds sustained heartbeat against live VPS
 - USB CDC ACM enumeration and bidirectional data transfer
-- FIPS Noise_IK handshake: complete end-to-end on sim (proven 70+ seconds)
-- Three critical protocol bugs found and fixed (see below)
-- Host-side handshake test (`microfips-link`) proven against live VPS
-- 71 unit tests pass for protocol logic (Noise, FMP, FSP, SLIP, identity)
-- Bridge-on-VPS architecture verified: full MSG1/MSG2/heartbeat exchange on sim
-- Firmware compiled and flashed to MCU, ready for hardware test
+- Firmware builds for `thumbv7em-none-eabi` (207 KB, CI verified with .text validation)
+- CI pipeline: 5 jobs all green (test, build-host, lint, sim-smoke, build-firmware, summary)
 
 **Current blocker:**
-- Hardware test blocked by kernel TTY hang caused by USB sysfs manipulation during
-  debugging (2026-03-27). Requires host reboot to clear. See AGENTS.md for details.
-  The firmware is already flashed and proven correct via sim — after reboot, hardware
-  test should work immediately.
-
-**Three bugs fixed this session:**
-1. `finalize()` used wrong HKDF (two calls with `[0;32]` + `k1` instead of single
-   call with empty IKM). Produced completely wrong transport keys.
-2. ESTABLISHED wire format was `[sender_idx:4][receiver_idx:4][epoch:4]` but FIPS
-   uses `[receiver_idx:4][counter:8]`. Heartbeats were silently dropped by FIPS.
-3. Sim had no TcpStream read timeout — heartbeat timer never fired.
-
-**See [docs/milestones.md](docs/milestones.md) for detailed milestone tracking.**
+- Hardware heartbeat exchange: EPENA gets stuck after first `write_packet()` (MSG1).
+  EPENA recovery code is in the embassy fork but not yet proven on hardware.
 
 ## Architecture
 
@@ -63,7 +51,6 @@ All data over CDC ACM uses **length-prefixed frames**: `[2-byte LE length][paylo
 ## MCU Identity
 
 ```
-Seed:    b'microfips-stm32fips-test-seed-001'
 Secret:  ac68af89462e7ed26ff670c186b4eeb53c4e82d72c8ef6cec4e676c7843f832e
 Pubkey:  02633860dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842
 npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
@@ -74,68 +61,54 @@ npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
 ### Unit tests (no hardware)
 
 ```sh
-cargo test -p microfips-core                    # 71 tests: Noise, FMP, FSP, SLIP, identity
+cargo test -p microfips-core                    # 55 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture     # verbose output
-```
-
-### Host-side simulator (no hardware, tests against live VPS)
-
-The `microfips-sim` crate simulates the MCU's full FIPS lifecycle (handshake +
-heartbeat loop) on the host, using the same `microfips-core` protocol code.
-It speaks length-prefixed framing over stdin/stdout and can be piped through
-`fips_bridge.py --tcp` to test against the VPS without any hardware.
-
-```sh
-cargo run -p microfips-sim                      # local framing test
-# See tools/test_sim_vps.sh for VPS integration test
 ```
 
 ### Host-side VPS handshake (no hardware, raw UDP)
 
 ```sh
 cargo run -p microfips-link                     # sends MSG1 to VPS via UDP
+# Exit 0 = success, 1 = timeout (expected from unconfigured IP), 2 = error
+```
+
+### Host-side simulator (no hardware)
+
+```sh
+cargo run -p microfips-sim -- --listen 45679    # TCP server mode
+cargo run -p microfips-sim 127.0.0.1:45679      # TCP client mode
+cargo run -p microfips-sim                      # stdio mode
 ```
 
 ### Hardware (STM32F469)
+
+See AGENTS.md for the full hardware test procedure.
 
 ```sh
 # Flash (use st-flash, NOT probe-rs — see AGENTS.md)
 arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabi/release/microfips microfips.bin
 st-flash --connect-under-reset write microfips.bin 0x08000000
-
-# After reboot, run the hardware test:
-# 1. Reset MCU
-st-flash --connect-under-reset reset && sleep 7
-
-# 2. Start serial TCP proxy on host
-python3 tools/serial_tcp_proxy.py --serial /dev/ttyACM1 --port 45679 &
-
-# 3. Start SSH reverse tunnel (VPS:45679 → host:45679)
-sshpass -p 'Elci9quadAd' ssh -o StrictHostKeyChecking=no -fN -R 45679:127.0.0.1:45679 \
-  -o ServerAliveInterval=30 routstr@orangeclaw.dns4sats.xyz
-
-# 4. Start bridge on VPS
-sshpass -p 'Elci9quadAd' ssh -o StrictHostKeyChecking=no routstr@orangeclaw.dns4sats.xyz \
-  'nohup python3 /tmp/fips_bridge.py --tcp 127.0.0.1:45679 > /tmp/bridge_hw.log 2>&1 &'
-
-# 5. Wait 30s, check bridge log for CDC->UDP (MSG1) and UDP->CDC (MSG2 + heartbeats)
-sleep 30
-sshpass -p 'Elci9quadAd' ssh -o StrictHostKeyChecking=no routstr@orangeclaw.dns4sats.xyz \
-  'cat /tmp/bridge_hw.log'
-
-# 6. Check FIPS journal for no "link dead timeout"
-sshpass -p 'Elci9quadAd' ssh -o StrictHostKeyChecking=no routstr@orangeclaw.dns4sats.xyz \
-  "echo Elci9quadAd | sudo -S journalctl -u fips --no-pager -n 10 --since '2 min ago'"
 ```
 
 ## Build
 
-Requires nightly Rust pinned to `nightly-2025-09-01` (1.91), `thumbv7em-none-eabi`
-target, and `arm-none-eabi-objcopy`.
+Requires nightly Rust, `thumbv7em-none-eabi` target, and `arm-none-eabi-objcopy`.
 
 ```sh
-cargo build --release --target thumbv7em-none-eabi
+# Add firmware to workspace members first (excluded by default for CI)
+# In Cargo.toml: members = [..., "crates/microfips"]
+cargo build -p microfips --release --target thumbv7em-none-eabi
 ```
+
+## CI
+
+GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
+- **Unit Tests** — 55 tests in `microfips-core`
+- **Build Host Tools** — `microfips-link` + `microfips-sim` release binaries + artifacts
+- **Lint & Format** — clippy + rustfmt on core, link, sim
+- **Simulator Smoke** — verify sim starts and exits cleanly on EOF
+- **Build Firmware** — clones embassy fork, cross-builds for `thumbv7em-none-eabi`, validates .text size
+- **Summary** — aggregate status table
 
 ## Hardware
 
@@ -155,24 +128,26 @@ cargo build --release --target thumbv7em-none-eabi
 | M1 | USB CDC ACM enumeration + echo | Done |
 | M2 | Length-prefixed framing over CDC | Done |
 | M3 | Host-side handshake test (`microfips-link`) | Done |
-| M4 | MCU handshake with live VPS | In Progress (blocked by kernel TTY, firmware ready) |
-| M5 | Host-side full lifecycle simulator (`microfips-sim`) | Done (sim proven 70+ seconds) |
-| M6 | MCU full lifecycle (handshake + heartbeat exchange) | Pending (firmware ready, needs hardware test) |
+| M4 | MCU handshake with live VPS | Done (MSG1 sent, MSG2 received, keys derived) |
+| M5 | Host-side full lifecycle simulator (`microfips-sim`) | Done (proven 70+ seconds) |
+| M6 | MCU full lifecycle (handshake + heartbeat exchange) | In Progress (EPENA stuck bug) |
 | M7 | HTTP status page over FIPS session | Planned |
-
-See [docs/milestones.md](docs/milestones.md) for details.
 
 ## Project Layout
 
 ```
 microfips/
-  Cargo.toml                    # Workspace root, patch cortex-m
+  Cargo.toml                    # Workspace: core, link, sim (firmware excluded for CI)
   AGENTS.md                     # Build/flash/test/debug reference
-  src/main.rs                   # MCU firmware (FIPS leaf node)
+  rust-toolchain.toml           # Nightly Rust (no pinned date)
   crates/
-    microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, SLIP, identity
-    microfips-link/             # Host-side handshake test (UDP, proven against VPS)
-    microfips-sim/              # Host-side full lifecycle simulator (framing over stdio)
+    microfips/                  # MCU firmware (package name: microfips)
+      build.rs                  # Linker flags: --nmagic, -Tlink.x, -Tdefmt.x
+      .cargo/config.toml        # probe-rs runner config (local debug only)
+      src/main.rs               # FIPS leaf node firmware
+    microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, identity
+    microfips-link/             # Host-side handshake test (UDP, exit codes)
+    microfips-sim/              # Host-side full lifecycle simulator (framing over stdio/TCP)
   tools/
     fips_bridge.py              # CDC/TCP <-> UDP bridge (runs on VPS)
     serial_tcp_proxy.py         # Serial <-> TCP proxy (runs on host)
