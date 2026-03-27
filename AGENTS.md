@@ -257,7 +257,18 @@ physically disconnect/reconnect the cable. Never touch `/sys/bus/usb/drivers/usb
 
 ## Nightly Toolchain
 
-Pinned to `nightly-2025-09-01` (1.91). Required by smoltcp 0.13 and cortex-m compatibility.
+Uses `nightly` (latest). No pinned date — smoltcp/embassy-net removed; firmware only needs
+embassy USB + executor which work on any recent nightly. CI uses `dtolnay/rust-toolchain@v1`
+with `toolchain: nightly`.
+
+## CI Pipeline
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
+- **test**: `cargo test -p microfips-core` (71 tests)
+- **build-host**: `cargo build -p microfips-link --release` + upload artifact
+- **lint**: `cargo clippy` + `cargo fmt --check` on host crates
+- **build-firmware**: clones `Amperstrand/embassy` fork at `c0289d7a8`, builds for `thumbv7em-none-eabi`
+- **fips-integration**: runs `fips-handshake` against `217.77.8.91:2121` (continue-on-error — FIPS only responds to configured peers)
 
 ## VPS Access
 
