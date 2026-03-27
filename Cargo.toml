@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/microfips-core", "crates/microfips-link"]
+members = [".", "crates/microfips-core", "crates/microfips-link", "crates/microfips-sim"]
 resolver = "2"
 
 [patch.crates-io]
