@@ -90,7 +90,7 @@ impl<R: Read> Framed<R> {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "eof",
-                    ))
+                    ));
                 }
                 Ok(n) => {
                     if self.rbuf.len() + n > self.rbuf.capacity() {
@@ -121,6 +121,7 @@ fn sim_err(e: noise::NoiseError) -> Box<dyn std::error::Error> {
     format!("{:?}", e).into()
 }
 
+#[allow(clippy::type_complexity)]
 fn handshake<R: Read, W: Write>(
     framed: &mut Framed<R>,
     out: &mut W,
@@ -179,7 +180,7 @@ fn steady<R: Read, W: Write>(
     ks: &[u8; 32],
     kr: &[u8; 32],
     them: u32,
-    us: u32,
+    _us: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut next_hb = Instant::now() + Duration::from_secs(HB_SECS);
     let mut hb_count = 0u32;
@@ -283,7 +284,7 @@ fn main() {
 
     let my_pub = noise::ecdh_pubkey(&MCU_SECRET).unwrap();
     eprintln!("[SIM] microfips simulator starting");
-    eprintln!("[SIM] local pubkey: {}", hex::encode(&my_pub));
+    eprintln!("[SIM] local pubkey: {}", hex::encode(my_pub));
 
     if let Some(port) = listen_port {
         eprintln!("[SIM] mode: listen, port: {}", port);

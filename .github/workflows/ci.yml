@@ -19,7 +19,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly
-          components: rust-src
 
       - uses: Swatinem/rust-cache@v2
 
@@ -34,16 +33,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly
-          components: rust-src
 
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo build -p microfips-link --release
+      - run: cargo build -p microfips-sim --release
 
       - uses: actions/upload-artifact@v4
         with:
           name: fips-handshake
           path: target/release/fips-handshake
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microfips-sim
+          path: target/release/microfips-sim
           retention-days: 7
 
   lint:
@@ -55,15 +60,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly
-          components: rust-src, clippy, rustfmt
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -p microfips-core -p microfips-link -- --check
+        run: cargo fmt -p microfips-core -p microfips-link -p microfips-sim -- --check
 
       - name: Run clippy
-        run: cargo clippy -p microfips-core -p microfips-link -- -D warnings
+        run: cargo clippy -p microfips-core -p microfips-link -p microfips-sim -- -D warnings
+
+  sim-smoke:
+    name: Simulator Smoke Test
+    runs-on: ubuntu-latest
+    needs: [build-host]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: microfips-sim
+          path: ./bin
+
+      - run: chmod +x ./bin/microfips-sim
+
+      - name: Verify simulator starts and exits cleanly on EOF
+        timeout-minutes: 1
+        run: |
+          timeout 5 ./bin/microfips-sim </dev/null 2>&1 | head -5
+          echo "sim exited with code $?"
 
   build-firmware:
     name: Build Firmware
@@ -82,6 +107,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install ARM tools
+        run: sudo apt-get update -qq && sudo apt-get install -yqq gcc-arm-none-eabi
+
       - name: Clone embassy fork
         run: |
           git clone --filter=blob:none \
@@ -97,12 +125,20 @@ jobs:
 
       - run: cargo build -p microfips --release --target thumbv7em-none-eabi
 
-      - name: Check binary size
+      - name: Validate firmware binary
         run: |
           BINARY="target/thumbv7em-none-eabi/release/microfips"
-          SIZE=$(stat -c%s "$BINARY")
-          echo "Firmware size: $SIZE bytes ($(($SIZE / 1024)) KB)"
-          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          ELF_SIZE=$(stat -c%s "$BINARY")
+          TEXT_SIZE=$(arm-none-eabi-size "$BINARY" | tail -1 | awk '{print $1}')
+          echo "ELF size: $ELF_SIZE bytes ($(($ELF_SIZE / 1024)) KB)"
+          echo ".text size: $TEXT_SIZE bytes"
+          if [ "$TEXT_SIZE" -lt 10000 ]; then
+            echo "::error::Firmware .text is only ${TEXT_SIZE}B — linker script not applied"
+            exit 1
+          fi
+          if [ "$TEXT_SIZE" -gt 200000 ]; then
+            echo "::warning::Firmware .text is ${TEXT_SIZE}B — unexpectedly large"
+          fi
         id: size
 
       - uses: actions/upload-artifact@v4
@@ -111,40 +147,10 @@ jobs:
           path: target/thumbv7em-none-eabi/release/microfips
           retention-days: 7
 
-  fips-integration:
-    name: FIPS Integration Test
-    runs-on: ubuntu-latest
-    needs: [build-host, test]
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: fips-handshake
-          path: ./bin
-
-      - run: chmod +x ./bin/fips-handshake
-
-      - name: Run FIPS handshake against public node
-        timeout-minutes: 1
-        run: |
-          echo "Testing Noise IK handshake against fips-test-node (217.77.8.91:2121)"
-          echo "Note: FIPS only responds to configured peers, so timeout is expected from CI."
-          ./bin/fips-handshake 217.77.8.91:2121 || {
-            EXIT=$?
-            if [ $EXIT -eq 1 ]; then
-              echo "::warning::FIPS integration test timed out (expected — CI IP not configured as peer)"
-              exit 0
-            fi
-            exit $EXIT
-          }
-          echo "::notice::FIPS handshake succeeded!"
-
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, build-host, lint, build-firmware, fips-integration]
+    needs: [test, build-host, lint, sim-smoke, build-firmware]
     if: always()
     steps:
       - run: |
@@ -155,7 +161,7 @@ jobs:
           echo "| Unit Tests | \`${{ needs.test.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build Host Tools | \`${{ needs.build-host.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Lint & Format | \`${{ needs.lint.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Simulator Smoke | \`${{ needs.sim-smoke.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build Firmware | \`${{ needs.build-firmware.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"

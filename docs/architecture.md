@@ -257,11 +257,13 @@ HSE bypass hangs on this board. Do NOT use HSE.
 
 ```
 microfips/
-  Cargo.toml                    # Workspace root, patch cortex-m
+  Cargo.toml                    # Workspace root
   AGENTS.md                     # Build/flash/test/debug reference
-  src/main.rs                   # MCU firmware (FIPS leaf node)
   crates/
-    microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, SLIP, identity
+    microfips/                  # MCU firmware (package name: microfips)
+      build.rs                  # Linker flags: --nmagic, -Tlink.x, -Tdefmt.x
+      src/main.rs               # FIPS leaf node firmware
+    microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, identity
     microfips-link/             # Host-side handshake test (UDP, proven against VPS)
     microfips-sim/              # Host-side full lifecycle simulator (stdio framing)
   tools/
@@ -274,10 +276,9 @@ microfips/
     adr/                        # Architecture decision records
 ```
 
-## External Dependencies (Patched)
+## External Dependencies
 
-| Crate | Version | Patch | Reason |
-|-------|---------|-------|--------|
-| `cortex-m` | 0.7.7 (patched) | `cortex-m-patch/` | Nightly asm `inout("r0")` → `inout(reg)` |
-| `embassy-*` | upstream | `embassy/` | No patches — fork was fully reverted |
-| `stm32-metapac` | generated | `stm32-data-generated/` | defmt 0.3→1.0 version bump |
+| Crate | Version | Notes |
+|-------|---------|-------|
+| `embassy-*` | fork | `Amperstrand/embassy` at `c0289d7a8` — 4 patches for STM32F4 USB OTG |
+| `stm32-metapac` | generated | Chip register definitions via `stm32-data-generated` |
