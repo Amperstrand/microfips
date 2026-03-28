@@ -141,6 +141,46 @@ vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 mi
 **CRITICAL: Do NOT use `pkill -f` patterns.** They kill the current SSH session running
 the test. Only use `kill $SPECIFIC_PID`. Use `disown` on background SSH sessions.
 
+### Hardware testing procedure (CRITICAL — read before every hardware test)
+
+**Pipeline startup order matters.** The MCU's `wait_connection()` blocks until a USB
+serial port is opened with DTR asserted. If the proxy isn't running, the MCU sits in
+`wait_connection()` forever and never sends MSG1.
+
+**Correct order:**
+1. Clean all stale processes (proxy, tunnel, bridge, FIPS restart)
+2. Start serial TCP proxy (this opens the serial port → asserts DTR → MCU proceeds)
+3. Start SSH reverse tunnel
+4. Upload and start bridge on VPS
+5. Wait for handshake results (MCU sends MSG1 ~0.5s after proxy opens port)
+
+**WRONG order — do NOT do this:**
+- Resetting MCU before proxy is running → MCU enters `wait_connection()`, no DTR, blocks
+- Using `st-flash reset` while proxy/tunnel/bridge are active → kills USB, proxy gets
+  `[Errno 5] Input/output error`, bridge gets BrokenPipe, cascade failure
+- Starting pipeline, resetting MCU, then checking — USB re-enumerates on different
+  ttyACM number, proxy holds stale fd
+
+**Never use `st-flash reset` during a live test.** It halts the CPU via SWD, kills the
+USB device, and the proxy/bridge lose their connections. Only reset BEFORE starting
+the pipeline, or not at all (the MCU's `run()` loop handles retries automatically).
+
+**MCU retry timing:** CONNECT_DELAY (500ms) + RECV_TIMEOUT (30s) + RETRY_SECS (3s) =
+~33.5s per handshake cycle. If you miss MSG1, wait ~34s for the next attempt.
+
+**Use the test script.** `scripts/test_hw_handshake.sh` handles cleanup, enumeration,
+pipeline startup, and result checking in the correct order. Prefer it over manual setup.
+
+**Bridge reconnect bug (known):** When one of the bridge's two threads dies (e.g.,
+`serial_to_udp` gets BrokenPipe), the reconnect loop only triggers when BOTH threads
+die. If only one dies, the bridge hangs. Workaround: kill and restart the entire bridge
+process instead of relying on reconnect.
+
+**probe-rs and USB coexistence:** `probe-rs read --connect-under-reset` halts the CPU
+to read memory. This is safe for post-mortem debugging (CPU is in reset). But do NOT
+attach probe-rs/RTT while USB CDC traffic is active — the periodic CPU halts break
+USB transfers.
+
 ## LED State Machine
 
 The STM32F469I-DISCO has 4 user LEDs for debug feedback (no debugger needed):
