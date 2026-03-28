@@ -93,7 +93,10 @@ impl<T: Transport, R: CryptoRng, H: NodeHandler> Node<T, R, H> {
     }
 
     async fn session(&mut self) -> Result<(), ProtocolError> {
-        self.transport.wait_ready().await.map_err(|_| ProtocolError::Disconnected)?;
+        self.transport
+            .wait_ready()
+            .await
+            .map_err(|_| ProtocolError::Disconnected)?;
         self.handler.on_state(NodeState::Connected);
         Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
 
@@ -122,8 +125,7 @@ impl<T: Transport, R: CryptoRng, H: NodeHandler> Node<T, R, H> {
         let mut eph = [0u8; 32];
         self.rng.fill_bytes(&mut eph);
         let (mut noise_st, _e_pub) =
-            noise::NoiseIkInitiator::new(&eph, &self.secret, &self.peer_pub)
-                .expect("noise init");
+            noise::NoiseIkInitiator::new(&eph, &self.secret, &self.peer_pub).expect("noise init");
 
         let epoch: [u8; noise::EPOCH_SIZE] = [0x01, 0, 0, 0, 0, 0, 0, 0];
 
@@ -189,10 +191,9 @@ impl<T: Transport, R: CryptoRng, H: NodeHandler> Node<T, R, H> {
                         if self.rlen - self.rpos < 2 {
                             break;
                         }
-                        let ml = u16::from_le_bytes([
-                            self.rbuf[self.rpos],
-                            self.rbuf[self.rpos + 1],
-                        ]) as usize;
+                        let ml =
+                            u16::from_le_bytes([self.rbuf[self.rpos], self.rbuf[self.rpos + 1]])
+                                as usize;
                         if ml == 0 || ml > framing::MAX_FRAME {
                             self.rpos = self.rlen;
                             break;
@@ -215,8 +216,7 @@ impl<T: Transport, R: CryptoRng, H: NodeHandler> Node<T, R, H> {
                             FrameAction::Respond(n) => {
                                 let c = send_ctr;
                                 send_ctr += 1;
-                                let ts =
-                                    embassy_time::Instant::now().as_millis() as u32;
+                                let ts = embassy_time::Instant::now().as_millis() as u32;
                                 let mut out = [0u8; 256];
                                 let fl = fmp::build_established(
                                     them,
@@ -237,8 +237,7 @@ impl<T: Transport, R: CryptoRng, H: NodeHandler> Node<T, R, H> {
                         self.rlen = 0;
                     }
                     if embassy_time::Instant::now() >= next_hb {
-                        next_hb =
-                            self.send_heartbeat(ks, them, &mut send_ctr).await;
+                        next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
                     }
                 }
                 Either::First(Err(_)) => {
@@ -270,13 +269,12 @@ impl<T: Transport, R: CryptoRng, H: NodeHandler> Node<T, R, H> {
             } => {
                 let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
                 let mut dec = [0u8; 2048];
-                let dl =
-                    match microfips_core::noise::aead_decrypt(
-                        kr, counter, hdr, encrypted, &mut dec,
-                    ) {
-                        Ok(l) => l,
-                        Err(_) => return FrameAction::Skipped,
-                    };
+                let dl = match microfips_core::noise::aead_decrypt(
+                    kr, counter, hdr, encrypted, &mut dec,
+                ) {
+                    Ok(l) => l,
+                    Err(_) => return FrameAction::Skipped,
+                };
                 if dl < fmp::INNER_HEADER_SIZE {
                     return FrameAction::Skipped;
                 }
@@ -342,10 +340,8 @@ impl<T: Transport, R: CryptoRng, H: NodeHandler> Node<T, R, H> {
                 if self.rlen - self.rpos < 2 {
                     true
                 } else {
-                    let ml = u16::from_le_bytes([
-                        self.rbuf[self.rpos],
-                        self.rbuf[self.rpos + 1],
-                    ]) as usize;
+                    let ml = u16::from_le_bytes([self.rbuf[self.rpos], self.rbuf[self.rpos + 1]])
+                        as usize;
                     if ml == 0 || ml > framing::MAX_FRAME {
                         self.rpos = self.rlen;
                         true
@@ -485,12 +481,7 @@ mod tests {
         let transport = crate::transport::mock::MockTransport::new(fresh_inner());
 
         block_on(async {
-            let mut node = Node::new(
-                transport,
-                TestRng::new(&[0u8; 32]),
-                [0u8; 32],
-                [0u8; 33],
-            );
+            let mut node = Node::new(transport, TestRng::new(&[0u8; 32]), [0u8; 32], [0u8; 33]);
             node.send_frame(b"hello").await.unwrap();
 
             let tx = inner().tx.lock().unwrap();
@@ -509,12 +500,7 @@ mod tests {
         let transport = crate::transport::mock::MockTransport::new(inner());
 
         block_on(async {
-            let mut node = Node::new(
-                transport,
-                TestRng::new(&[0u8; 32]),
-                [0u8; 32],
-                [0u8; 33],
-            );
+            let mut node = Node::new(transport, TestRng::new(&[0u8; 32]), [0u8; 32], [0u8; 33]);
 
             let frame: std::vec::Vec<u8> = {
                 let mut v = (3u16).to_le_bytes().to_vec();

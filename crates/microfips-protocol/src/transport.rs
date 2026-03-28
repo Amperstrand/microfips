@@ -130,8 +130,8 @@ impl<T: Transport> FrameReader<T> {
 
 #[cfg(any(test, feature = "std"))]
 pub mod mock {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::vec::Vec;
 
     use embassy_time::{Duration, Timer};

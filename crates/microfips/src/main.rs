@@ -33,7 +33,8 @@ static STAT_STATE: AtomicU32 = AtomicU32::new(0);
 static STAT_DATA_RX: AtomicU32 = AtomicU32::new(0);
 static STAT_DATA_TX: AtomicU32 = AtomicU32::new(0);
 
-const HTTP_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
+const HTTP_RESPONSE: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
 
 const S_BOOT: u32 = 0;
 const S_USB_READY: u32 = 1;
