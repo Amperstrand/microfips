@@ -1,5 +1,7 @@
 #!/bin/bash
-echo "Elci9quadAd" | sudo -S bash -c 'cat > /etc/fips/fips-bootstrap.yaml << ENDOFFILE
+set -e
+: "${VPS_PASS:?ERROR: VPS_PASS not set}"
+echo "$VPS_PASS" | sudo -S bash -c 'cat > /etc/fips/fips-bootstrap.yaml << ENDOFFILE
 node:
   identity:
     persistent: true
@@ -38,7 +40,7 @@ peers:
     connect_policy: auto_connect
 ENDOFFILE'
 
-echo "Elci9quadAd" | sudo -S systemctl restart fips
+echo "$VPS_PASS" | sudo -S systemctl restart fips
 sleep 2
-echo "Elci9quadAd" | sudo -S systemctl status fips --no-pager
+echo "$VPS_PASS" | sudo -S systemctl status fips --no-pager
 ss -ulnp | grep 2121
