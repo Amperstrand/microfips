@@ -166,7 +166,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         }
     }
 
-    fn handle_frame(&self, kr: &[u8; 32], data: &[u8]) -> FrameResult {
+    pub(crate) fn handle_frame(&self, kr: &[u8; 32], data: &[u8]) -> FrameResult {
         use microfips_core::fmp;
 
         let m = match fmp::parse_message(data) {
@@ -295,7 +295,8 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
     }
 }
 
-enum FrameResult {
+#[derive(Debug, PartialEq)]
+pub(crate) enum FrameResult {
     Ok,
     PeerDC,
     Skipped,
@@ -427,4 +428,98 @@ mod tests {
             assert_eq!(&out[..3], b"abc");
         });
     }
+
+    #[test]
+    fn test_handle_frame_heartbeat() {
+        use microfips_core::fmp;
+
+        let key: [u8; 32] = [0x42; 32];
+        let ts: u32 = 12345;
+        let mut out = [0u8; 256];
+        let fl = fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, ts, &[], &key, &mut out);
+
+        let node = Node::new(
+            crate::transport::mock::MockTransport::new(fresh_inner()),
+            TestRng::new(&[0u8; 32]),
+            [0u8; 32],
+            [0u8; 33],
+        );
+        let result = node.handle_frame(&key, &out[..fl]);
+        assert_eq!(result, FrameResult::Ok);
+    }
+
+    #[test]
+    fn test_handle_frame_disconnect() {
+        use microfips_core::fmp;
+
+        let key: [u8; 32] = [0x42; 32];
+        let ts: u32 = 54321;
+        let mut out = [0u8; 256];
+        let fl = fmp::build_established(0, 1, fmp::MSG_DISCONNECT, ts, &[], &key, &mut out);
+
+        let node = Node::new(
+            crate::transport::mock::MockTransport::new(fresh_inner()),
+            TestRng::new(&[0u8; 32]),
+            [0u8; 32],
+            [0u8; 33],
+        );
+        let result = node.handle_frame(&key, &out[..fl]);
+        assert_eq!(result, FrameResult::PeerDC);
+    }
+
+    #[test]
+    fn test_handle_frame_unknown_type_skipped() {
+        use microfips_core::fmp;
+
+        let key: [u8; 32] = [0x42; 32];
+        let ts: u32 = 99999;
+        let mut out = [0u8; 256];
+        let fl = fmp::build_established(0, 2, 0x05, ts, b"unknown", &key, &mut out);
+
+        let node = Node::new(
+            crate::transport::mock::MockTransport::new(fresh_inner()),
+            TestRng::new(&[0u8; 32]),
+            [0u8; 32],
+            [0u8; 33],
+        );
+        let result = node.handle_frame(&key, &out[..fl]);
+        assert_eq!(result, FrameResult::Skipped);
+    }
+
+    #[test]
+    fn test_handle_frame_wrong_key_skipped() {
+        use microfips_core::fmp;
+
+        let key_a: [u8; 32] = [0x42; 32];
+        let key_b: [u8; 32] = [0x99; 32];
+        let mut out = [0u8; 256];
+        let fl = fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, 100, &[], &key_a, &mut out);
+
+        let node = Node::new(
+            crate::transport::mock::MockTransport::new(fresh_inner()),
+            TestRng::new(&[0u8; 32]),
+            [0u8; 32],
+            [0u8; 33],
+        );
+        let result = node.handle_frame(&key_b, &out[..fl]);
+        assert_eq!(result, FrameResult::Skipped);
+    }
+
+    #[test]
+    fn test_handle_frame_garbage_skipped() {
+        let node = Node::new(
+            crate::transport::mock::MockTransport::new(fresh_inner()),
+            TestRng::new(&[0u8; 32]),
+            [0u8; 32],
+            [0u8; 33],
+        );
+        let key: [u8; 32] = [0x42; 32];
+        assert_eq!(node.handle_frame(&key, &[]), FrameResult::Skipped);
+        assert_eq!(node.handle_frame(&key, &[0x00]), FrameResult::Skipped);
+        assert_eq!(node.handle_frame(&key, &[0xFF; 4]), FrameResult::Skipped);
+    }
+
+    // NOTE: test_handshake_with_mock_responder requires refactoring handshake()
+    // into separate build_msg1/process_msg2 methods, or a mock transport
+    // that doesn't echo send->rx. Post-merge TODO.
 }
