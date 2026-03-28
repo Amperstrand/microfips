@@ -6,6 +6,7 @@ description = "Minimal FIPS leaf node on STM32F469I-DISCO"
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
+microfips-protocol = { path = "../microfips-protocol" }
 embassy-stm32 = { version = "0.6.0", features = [
     "defmt",
     "stm32f469ni",

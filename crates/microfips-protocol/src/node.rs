@@ -10,9 +10,43 @@ pub const RECV_TIMEOUT_MS: u64 = 30_000;
 pub const RETRY_SECS: u64 = 3;
 pub const CONNECT_DELAY_MS: u64 = 500;
 
-pub struct Node<T: Transport, R: CryptoRng> {
+/// Protocol state reported to the handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeState {
+    Connected,
+    HandshakeStarted,
+    HandshakeComplete,
+    HeartbeatSent,
+    HeartbeatReceived,
+    Error,
+    Disconnected,
+}
+
+/// Callback interface for protocol events and incoming data.
+pub trait NodeHandler {
+    /// Called when the protocol state changes.
+    fn on_state(&mut self, state: NodeState);
+
+    /// Called when a session datagram is received (after decryption).
+    /// Write the response payload into `response` and return `Some(len)`
+    /// to send a reply, or `None` to stay silent.
+    fn on_datagram(&mut self, payload: &[u8], response: &mut [u8]) -> Option<usize>;
+}
+
+/// Default handler that ignores all events.
+pub struct NoopHandler;
+
+impl NodeHandler for NoopHandler {
+    fn on_state(&mut self, _state: NodeState) {}
+    fn on_datagram(&mut self, _payload: &[u8], _response: &mut [u8]) -> Option<usize> {
+        None
+    }
+}
+
+pub struct Node<T: Transport, R: CryptoRng, H: NodeHandler = NoopHandler> {
     transport: T,
     rng: R,
+    handler: H,
     secret: [u8; 32],
     peer_pub: [u8; 33],
     rbuf: [u8; 2048],
@@ -20,11 +54,24 @@ pub struct Node<T: Transport, R: CryptoRng> {
     rlen: usize,
 }
 
-impl<T: Transport, R: CryptoRng> Node<T, R> {
+impl<T: Transport, R: CryptoRng> Node<T, R, NoopHandler> {
     pub fn new(transport: T, rng: R, secret: [u8; 32], peer_pub: [u8; 33]) -> Self {
+        Self::with_handler(transport, rng, secret, peer_pub, NoopHandler)
+    }
+}
+
+impl<T: Transport, R: CryptoRng, H: NodeHandler> Node<T, R, H> {
+    pub fn with_handler(
+        transport: T,
+        rng: R,
+        secret: [u8; 32],
+        peer_pub: [u8; 33],
+        handler: H,
+    ) -> Self {
         Self {
             transport,
             rng,
+            handler,
             secret,
             peer_pub,
             rbuf: [0u8; 2048],
@@ -40,19 +87,30 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
     pub async fn run(&mut self) -> ! {
         loop {
             let _ = self.session().await;
+            self.handler.on_state(NodeState::Disconnected);
             Timer::after(Duration::from_secs(RETRY_SECS)).await;
         }
     }
 
     async fn session(&mut self) -> Result<(), ProtocolError> {
         self.transport.wait_ready().await.map_err(|_| ProtocolError::Disconnected)?;
+        self.handler.on_state(NodeState::Connected);
         Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
 
         self.rpos = 0;
         self.rlen = 0;
 
-        let (ks, kr, them) = self.handshake().await?;
-        self.steady(&ks, &kr, them).await
+        let result = self.handshake().await;
+        match result {
+            Ok((ks, kr, them)) => {
+                self.handler.on_state(NodeState::HandshakeComplete);
+                self.steady(&ks, &kr, them).await
+            }
+            Err(e) => {
+                self.handler.on_state(NodeState::Error);
+                Err(e)
+            }
+        }
     }
 
     async fn handshake(&mut self) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
@@ -78,6 +136,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1);
 
         self.send_frame(&f1[..f1len]).await?;
+        self.handler.on_state(NodeState::HandshakeStarted);
 
         let mut mb = [0u8; 2048];
         loop {
@@ -106,6 +165,8 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         kr: &[u8; 32],
         them: u32,
     ) -> Result<(), ProtocolError> {
+        use microfips_core::fmp;
+
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
         let mut send_ctr: u64 = 0;
 
@@ -124,7 +185,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                     self.rbuf[self.rlen..self.rlen + n].copy_from_slice(&rx[..n]);
                     self.rlen += n;
 
-            while self.rpos < self.rlen {
+                    while self.rpos < self.rlen {
                         if self.rlen - self.rpos < 2 {
                             break;
                         }
@@ -141,11 +202,35 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                         }
                         let s = self.rpos + 2;
                         let e = s + ml;
-                        match self.handle_frame(kr, &self.rbuf[s..e]) {
-                            FrameResult::PeerDC => return Ok(()),
-                            FrameResult::Ok | FrameResult::Skipped => {}
-                        }
+                        let mut resp_buf = [0u8; 256];
+                        let action = Self::process_frame(
+                            &mut self.handler,
+                            kr,
+                            &self.rbuf[s..e],
+                            &mut resp_buf,
+                        );
                         self.rpos = e;
+                        match action {
+                            FrameAction::PeerDC => return Ok(()),
+                            FrameAction::Respond(n) => {
+                                let c = send_ctr;
+                                send_ctr += 1;
+                                let ts =
+                                    embassy_time::Instant::now().as_millis() as u32;
+                                let mut out = [0u8; 256];
+                                let fl = fmp::build_established(
+                                    them,
+                                    c,
+                                    fmp::MSG_SESSION_DATAGRAM,
+                                    ts,
+                                    &resp_buf[..n],
+                                    ks,
+                                    &mut out,
+                                );
+                                let _ = self.send_frame(&out[..fl]).await;
+                            }
+                            FrameAction::Ok | FrameAction::Skipped => {}
+                        }
                     }
                     if self.rpos >= self.rlen {
                         self.rpos = 0;
@@ -166,12 +251,17 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         }
     }
 
-    fn handle_frame(&self, kr: &[u8; 32], data: &[u8]) -> FrameResult {
+    fn process_frame(
+        handler: &mut H,
+        kr: &[u8; 32],
+        data: &[u8],
+        resp_buf: &mut [u8],
+    ) -> FrameAction {
         use microfips_core::fmp;
 
         let m = match fmp::parse_message(data) {
             Some(m) => m,
-            None => return FrameResult::Skipped,
+            None => return FrameAction::Skipped,
         };
 
         match m {
@@ -185,18 +275,28 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                         kr, counter, hdr, encrypted, &mut dec,
                     ) {
                         Ok(l) => l,
-                        Err(_) => return FrameResult::Skipped,
+                        Err(_) => return FrameAction::Skipped,
                     };
                 if dl < fmp::INNER_HEADER_SIZE {
-                    return FrameResult::Skipped;
+                    return FrameAction::Skipped;
                 }
                 match dec[4] {
-                    fmp::MSG_HEARTBEAT => FrameResult::Ok,
-                    fmp::MSG_DISCONNECT => FrameResult::PeerDC,
-                    _ => FrameResult::Skipped,
+                    fmp::MSG_HEARTBEAT => {
+                        handler.on_state(NodeState::HeartbeatReceived);
+                        FrameAction::Ok
+                    }
+                    fmp::MSG_DISCONNECT => FrameAction::PeerDC,
+                    fmp::MSG_SESSION_DATAGRAM => {
+                        let payload = &dec[fmp::INNER_HEADER_SIZE..dl];
+                        match handler.on_datagram(payload, resp_buf) {
+                            Some(n) => FrameAction::Respond(n),
+                            None => FrameAction::Ok,
+                        }
+                    }
+                    _ => FrameAction::Skipped,
                 }
             }
-            _ => FrameResult::Skipped,
+            _ => FrameAction::Skipped,
         }
     }
 
@@ -215,6 +315,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         let fl = fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut out);
 
         let _ = self.send_frame(&out[..fl]).await;
+        self.handler.on_state(NodeState::HeartbeatSent);
 
         embassy_time::Instant::now() + Duration::from_secs(HB_SECS)
     }
@@ -295,10 +396,11 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
     }
 }
 
-enum FrameResult {
+enum FrameAction {
     Ok,
     PeerDC,
     Skipped,
+    Respond(usize),
 }
 
 #[cfg(test)]
