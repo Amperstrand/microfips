@@ -442,4 +442,105 @@ mod tests {
         assert_eq!(idx, 0);
         assert_eq!(len, MSG1_WIRE_SIZE);
     }
+
+    #[test]
+    fn msg1_noise_payload_structure() {
+        // Noise IK MSG1 payload: 33 (e_pub) + 49 (enc_s = 33 pubkey + 16 tag) + 24 (enc_epoch = 8 epoch + 16 tag) = 106
+        assert_eq!(
+            HANDSHAKE_MSG1_SIZE,
+            crate::noise::PUBKEY_SIZE
+                + (crate::noise::PUBKEY_SIZE + crate::noise::TAG_SIZE)
+                + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
+        );
+        assert_eq!(HANDSHAKE_MSG1_SIZE, 106);
+    }
+
+    #[test]
+    fn msg2_noise_payload_structure() {
+        // Noise IK MSG2 payload: 33 (re_pub) + 24 (enc_epoch = 8 epoch + 16 tag) = 57
+        assert_eq!(
+            HANDSHAKE_MSG2_SIZE,
+            crate::noise::PUBKEY_SIZE + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
+        );
+        assert_eq!(HANDSHAKE_MSG2_SIZE, 57);
+    }
+
+    #[test]
+    fn established_heartbeat_exact_size() {
+        // Heartbeat with no inner payload:
+        // 4 (prefix) + 4 (receiver_idx) + 8 (counter) + 5 (inner: 4 ts + 1 msg_type) + 16 (tag) = 37
+        let expected =
+            COMMON_PREFIX_SIZE + IDX_SIZE + 8 + INNER_HEADER_SIZE + crate::noise::TAG_SIZE;
+        assert_eq!(expected, 37);
+        assert_eq!(
+            expected,
+            ESTABLISHED_HEADER_SIZE + INNER_HEADER_SIZE + crate::noise::TAG_SIZE
+        );
+    }
+
+    #[test]
+    fn noise_ik_initiator_msg1_exact_size() {
+        // Full Noise IK initiator produces exactly 106 bytes for write_message1
+        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE};
+        let eph_secret = [0x01u8; 32];
+        let s_secret = [0x11u8; 32];
+        let responder_pub = [0x02u8; PUBKEY_SIZE];
+        let (mut initiator, _) =
+            NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
+        let my_static = crate::noise::ecdh_pubkey(&s_secret).unwrap();
+        let epoch = [0u8; EPOCH_SIZE];
+        let mut out = [0u8; 256];
+        let n = initiator
+            .write_message1(&my_static, &epoch, &mut out)
+            .unwrap();
+        assert_eq!(n, HANDSHAKE_MSG1_SIZE);
+        assert_eq!(n, 106);
+    }
+
+    #[test]
+    fn parse_msg1_noise_payload_sections() {
+        // Build a real MSG1, parse it, verify noise_payload has correct structure
+        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE, TAG_SIZE};
+        let eph_secret = [0x01u8; 32];
+        let s_secret = [0x11u8; 32];
+        let responder_pub = [0x02u8; PUBKEY_SIZE];
+        let (mut initiator, _) =
+            NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
+        let my_static = crate::noise::ecdh_pubkey(&s_secret).unwrap();
+        let epoch = [0u8; EPOCH_SIZE];
+        let mut noise_out = [0u8; 128];
+        let noise_len = initiator
+            .write_message1(&my_static, &epoch, &mut noise_out)
+            .unwrap();
+        assert_eq!(noise_len, 106);
+
+        // Wrap in FMP MSG1 frame
+        let mut fmp_out = [0u8; 256];
+        let fmp_len = build_msg1(0, &noise_out[..noise_len], &mut fmp_out);
+        assert_eq!(fmp_len, MSG1_WIRE_SIZE);
+
+        // Parse and verify noise_payload section offsets
+        let msg = parse_message(&fmp_out[..fmp_len]).unwrap();
+        match msg {
+            FmpMessage::Msg1 { noise_payload, .. } => {
+                assert_eq!(noise_payload.len(), 106);
+                // e_pub at offset 0, 33 bytes
+                assert_eq!(&noise_payload[..PUBKEY_SIZE], &noise_out[..PUBKEY_SIZE]);
+                // enc_static at offset 33, 49 bytes (33 pubkey + 16 tag)
+                let enc_static_len = PUBKEY_SIZE + TAG_SIZE;
+                assert_eq!(
+                    &noise_payload[PUBKEY_SIZE..PUBKEY_SIZE + enc_static_len],
+                    &noise_out[PUBKEY_SIZE..PUBKEY_SIZE + enc_static_len]
+                );
+                // enc_epoch at offset 82, 24 bytes (8 epoch + 16 tag)
+                let enc_epoch_len = EPOCH_SIZE + TAG_SIZE;
+                let epoch_offset = PUBKEY_SIZE + enc_static_len;
+                assert_eq!(
+                    &noise_payload[epoch_offset..epoch_offset + enc_epoch_len],
+                    &noise_out[epoch_offset..epoch_offset + enc_epoch_len]
+                );
+            }
+            _ => panic!("expected Msg1"),
+        }
+    }
 }
