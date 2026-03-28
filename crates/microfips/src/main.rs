@@ -33,6 +33,8 @@ static STAT_HB_TX: AtomicU32 = AtomicU32::new(0);
 static STAT_HB_RX: AtomicU32 = AtomicU32::new(0);
 static STAT_USB_ERR: AtomicU32 = AtomicU32::new(0);
 static STAT_STATE: AtomicU32 = AtomicU32::new(0);
+static STAT_RECV_PKT: AtomicU32 = AtomicU32::new(0);
+static STAT_RECV_FRAME: AtomicU32 = AtomicU32::new(0);
 
 const S_BOOT: u32 = 0;
 const S_USB_READY: u32 = 1;
@@ -62,7 +64,8 @@ bind_interrupts!(struct Irqs {
 
 const HB_SECS: u64 = 10;
 const RETRY_SECS: u64 = 3;
-const CONNECT_DELAY_MS: u64 = 15_000;
+const CONNECT_DELAY_MS: u64 = 500;
+const RECV_TIMEOUT_SECS: u64 = 10;
 const CDC_PKT: usize = 64;
 
 const MCU_SECRET: [u8; 32] = [
@@ -375,39 +378,37 @@ async fn recv_frame<'d, T: embassy_stm32::usb::Instance + 'd>(
     loop {
         if *rpos < *rlen {
             if *rlen - *rpos < 2 {
-                compact(rbuf, rpos, rlen);
-                continue;
+            } else {
+                let ml = u16::from_le_bytes([rbuf[*rpos], rbuf[*rpos + 1]]) as usize;
+                if ml == 0 || ml > 1500 {
+                    *rpos = *rlen;
+                } else if *rlen - *rpos - 2 < ml {
+                } else {
+                    let s = *rpos + 2;
+                    let e = s + ml;
+                    let l = ml.min(out.len());
+                    out[..l].copy_from_slice(&rbuf[s..s + l]);
+                    *rpos = e;
+                    if *rpos >= *rlen {
+                        *rpos = 0;
+                        *rlen = 0;
+                    }
+                    STAT_RECV_FRAME.fetch_add(1, Ordering::Relaxed);
+                    return Ok(l);
+                }
             }
-            let ml = u16::from_le_bytes([rbuf[*rpos], rbuf[*rpos + 1]]) as usize;
-            if ml == 0 || ml > 1500 {
-                *rpos = *rlen;
-                compact(rbuf, rpos, rlen);
-                continue;
-            }
-            if *rlen - *rpos - 2 < ml {
-                compact(rbuf, rpos, rlen);
-                continue;
-            }
-            let s = *rpos + 2;
-            let e = s + ml;
-            let l = ml.min(out.len());
-            out[..l].copy_from_slice(&rbuf[s..s + l]);
-            *rpos = e;
-            if *rpos >= *rlen {
-                *rpos = 0;
-                *rlen = 0;
-            }
-            return Ok(l);
         }
+
         compact(rbuf, rpos, rlen);
         let mut rx = [0u8; CDC_PKT];
         match embassy_futures::select::select(
             class.read_packet(&mut rx),
-            Timer::after(Duration::from_secs(30)),
+            Timer::after(Duration::from_secs(RECV_TIMEOUT_SECS)),
         )
         .await
         {
             embassy_futures::select::Either::First(Ok(n)) => {
+                STAT_RECV_PKT.fetch_add(1, Ordering::Relaxed);
                 if *rlen + n > rbuf.len() {
                     *rlen = 0;
                     *rpos = 0;
