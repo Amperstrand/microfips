@@ -100,10 +100,11 @@ print('all pass')
 See `scripts/test_hw_handshake.sh` for the full automated procedure. The manual steps are:
 
 ```bash
-# 0. CLEANUP — kill all stale processes
-pkill -9 -f serial_tcp_proxy 2>/dev/null
-pkill -9 -f "ssh.*45679" 2>/dev/null
-vssh 'pkill -9 -f fips_bridge 2>/dev/null; echo $VPS_PASS | sudo -S fuser -k 45679/tcp 2>/dev/null'
+# 0. CLEANUP — kill stale processes by PID (NOT pkill -f — kills test's own SSH)
+# If you have saved PIDs from a previous run:
+kill $PROXY_PID $TUNNEL_PID 2>/dev/null
+fuser -k 45679/tcp 2>/dev/null  # local port cleanup
+vssh 'pkill -f fips_bridge 2>/dev/null; echo $VPS_PASS | sudo -S fuser -k 45679/tcp 2>/dev/null'
 vssh "echo $VPS_PASS | sudo -S systemctl restart fips"
 
 # 1. Verify USB (after MCU reset + 7s enumeration wait)
@@ -133,6 +134,12 @@ vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 mi
 
 **Expected in bridge log:** `CDC->UDP: frame#1 114B` (MSG1), `UDP->CDC: frame#1 69B` (MSG2)
 **Expected in VPS journal:** `Connection promoted to active peer`, no `link dead timeout`
+**Bridge has diagnostic alive logs:** `>> alive, buf=0B, frames=N, rx=NB` every 10s
+
+### Process management for hardware tests
+
+**CRITICAL: Do NOT use `pkill -f` patterns.** They kill the current SSH session running
+the test. Only use `kill $SPECIFIC_PID`. Use `disown` on background SSH sessions.
 
 ## LED State Machine
 
@@ -188,8 +195,8 @@ See GitHub issue #6 for investigation details.
    traffic. The 4 LEDs encode the full state machine (see table above).
 
 3. **Use atomic counters for post-mortem debugging.** `STAT_MSG1_TX`, `STAT_MSG2_RX`,
-   `STAT_HB_TX`, `STAT_HB_RX`, `STAT_USB_ERR`, `STAT_STATE` can be read after reset
-   via probe-rs (not live — only in reset/halt).
+   `STAT_HB_TX`, `STAT_HB_RX`, `STAT_USB_ERR`, `STAT_STATE`, `STAT_RECV_PKT`,
+   `STAT_RECV_FRAME` can be read after reset via probe-rs (not live — only in reset/halt).
 
 4. **Isolate variables before escalating.** If USB fails, first test without probe-rs.
    Only blame firmware after eliminating external variables.
@@ -264,37 +271,45 @@ Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` wit
 
 ## Known Bugs
 
-### MCU silently drops MSG2 (critical, #6) — ROOT CAUSE FOUND
+### RESOLVED: MCU silently drops MSG2 (#6, closed)
 
-The MCU sends MSG1 (114B) through the full chain and FIPS responds with MSG2 (69B),
-but the MCU never processes it. The MCU retries MSG1 every ~33s indefinitely.
+**Root cause was THREE bugs, not one:**
 
-**Root cause:** `recv_frame()` in firmware `main.rs` discards the frame header when the
-body is incomplete. The condition `self.rlen - self.rpos - 2 < ml` (not enough data yet)
-was grouped with `ml == 0 || ml > MAX_FRAME` (invalid frame) and both paths set
-`self.rpos = self.rlen`, discarding the partial frame. The 71-byte MSG2 (2B header + 69B
-payload) arriving across USB 64-byte packet boundaries triggers this: first 64B arrive,
-header says 69B body, only 62B available → header discarded, second packet arrives
-but header is gone.
+1. **recv_frame infinite loop (critical):** The framing "fix" (7f4d093) introduced an infinite
+   loop where `continue` skipped `read_packet` on incomplete multi-packet frames. MSG2 (71B)
+   arrives as 64B+7B USB packets. The incomplete-frame case did `compact + continue` which
+   looped back without ever calling `read_packet`. The MCU spun forever, 30s timeout never
+   fired. **Fix (bb97936):** restructure to always fall through to `read_packet` when more
+   data is needed. No code path loops back without either returning or awaiting I/O.
 
-**Fix:** Only skip invalid frames (ml==0, ml>MAX_FRAME). When the frame is simply
-incomplete, keep the header in the buffer and wait for more data. This fix is in
-`microfips-protocol` (transport.rs, node.rs) and proven by 10 passing tests including
-a 1400-byte multi-packet frame test. Needs to be backported to firmware `main.rs`.
+2. **Handshake loop discarded non-Msg2 (7f4d093):** Stale FIPS data (heartbeat retransmits
+   from previous sessions) arriving before MSG2 caused immediate `Err(Invalid)` return.
+   **Fix:** loop `recv_frame` until Msg2 received, skip other message types.
 
-**Evidence:**
-- `microfips-protocol` tests prove the fix (10/10 pass including large frame test)
-- Host-side simulator works perfectly with same protocol code (45+ seconds sustained)
-- Bridge log confirms CDC→UDP (MSG1) and UDP→CDC (MSG2) bidirectional flow
-- VPS journal confirms "Connection promoted to active peer"
+3. **steady() inline framing had same pattern (7f4d093):** Used `continue` in a `while` loop
+   instead of `break`. Fixed with `break`.
 
-### Proxy serial port open is slow
+### RESOLVED: Bridge stops forwarding CDC->UDP (#11, closed)
+
+**Root cause:** Two bugs in the Python bridge.
+
+1. **Thread race on reconnect:** When one thread died, the bridge started new threads while
+   the old surviving thread was still running. Two `serial_to_udp` threads reading from the
+   same TCP socket split data between them, corrupting frames. **Fix (a76156e):** set
+   `state['stop']=True` and join BOTH threads with generous timeouts before reconnecting.
+
+2. **CPU spinning:** `serial_to_udp` looped with no sleep when idle, starving `udp_to_serial`
+   under Python GIL contention. **Fix:** `time.sleep(0.001)` in the idle path.
+
+### Proxy serial port open is slow (#8, open)
 
 `serial.Serial()` takes 5-10 seconds to open `/dev/ttyACM*`. The MCU sends MSG1 ~0.5s
-after enumeration. If the proxy isn't open yet, MSG1 is lost. Workaround: use the proxy's
-`--reset` flag which resets the MCU then auto-detects and opens the port.
+after enumeration. If the proxy isn't open yet, MSG1 is lost. The MCU's retry loop (500ms
+CONNECT_DELAY + 10s recv timeout + 3s RETRY_SECS = ~13.5s per cycle) handles this, but
+the first attempt always misses. Fix: add reconnection logic to proxy or use a control
+byte to trigger handshake start.
 
-### Proxy cannot survive USB device reset
+### Proxy cannot survive USB device reset (#8, open)
 
 When the MCU resets (SWD or power), the USB device disappears. The proxy gets ENODEV on
 serial write and the serial reader thread dies. The proxy needs reconnection logic.
