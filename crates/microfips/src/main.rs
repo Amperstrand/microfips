@@ -8,7 +8,6 @@ use defmt_rtt as _;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
-use embassy_futures::yield_now;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::rng::Rng;
 use embassy_stm32::usb::Driver;
@@ -20,8 +19,8 @@ use embassy_usb::driver::EndpointError;
 use static_cell::StaticCell;
 
 use microfips_core::fmp;
-use microfips_core::noise;
-use noise::EPOCH_SIZE;
+use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
+use microfips_protocol::transport::{CryptoRng, Transport};
 
 static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
 #[used]
@@ -34,17 +33,10 @@ static STAT_HB_RX: AtomicU32 = AtomicU32::new(0);
 static STAT_USB_ERR: AtomicU32 = AtomicU32::new(0);
 static STAT_STATE: AtomicU32 = AtomicU32::new(0);
 static STAT_RECV_PKT: AtomicU32 = AtomicU32::new(0);
-static STAT_RECV_FRAME: AtomicU32 = AtomicU32::new(0);
 static STAT_DATA_RX: AtomicU32 = AtomicU32::new(0);
 static STAT_DATA_TX: AtomicU32 = AtomicU32::new(0);
 
 const HTTP_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
-
-enum HandleAction {
-    None,
-    Respond(&'static [u8]),
-    Disconnect,
-}
 
 const S_BOOT: u32 = 0;
 const S_USB_READY: u32 = 1;
@@ -72,10 +64,6 @@ bind_interrupts!(struct Irqs {
     HASH_RNG => rng::InterruptHandler<peripherals::RNG>;
 });
 
-const HB_SECS: u64 = 10;
-const RETRY_SECS: u64 = 3;
-const CONNECT_DELAY_MS: u64 = 500;
-const RECV_TIMEOUT_SECS: u64 = 10;
 const CDC_PKT: usize = 64;
 
 const MCU_SECRET: [u8; 32] = [
@@ -91,13 +79,73 @@ const VPS_PUB: [u8; 33] = [
 
 static GLOBAL_RNG: StaticCell<Rng<'static, peripherals::RNG>> = StaticCell::new();
 static EP_OUT_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
-static SEND_COUNTER: AtomicU32 = AtomicU32::new(0);
-static PRE_MSG1: StaticCell<[u8; fmp::MSG1_WIRE_SIZE]> = StaticCell::new();
-static PRE_NOISE_ST: StaticCell<noise::NoiseIkInitiator> = StaticCell::new();
 
-fn next_ctr() -> u64 {
-    SEND_COUNTER.fetch_add(1, Ordering::Relaxed) as u64
+// ---------------------------------------------------------------------------
+// Transport adapter: wraps CDC ACM class for the protocol crate's Transport trait
+// ---------------------------------------------------------------------------
+
+struct CdcTransport<'d> {
+    class: &'d mut CdcAcmClass<'d, Driver<'d, peripherals::USB_OTG_FS>>,
 }
+
+impl Transport for CdcTransport<'_> {
+    type Error = EndpointError;
+
+    async fn wait_ready(&mut self) -> Result<(), Self::Error> {
+        self.class.wait_connection().await;
+        Ok(())
+    }
+
+    async fn send(&mut self, data: &[u8]) -> Result<(), Self::Error> {
+        let mut off = 0;
+        while off < data.len() {
+            let end = core::cmp::min(off + CDC_PKT, data.len());
+            match self.class.write_packet(&data[off..end]).await {
+                Ok(()) => {}
+                Err(e) => {
+                    STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
+                    return Err(e);
+                }
+            }
+            off = end;
+        }
+        if !data.is_empty() && data.len().is_multiple_of(CDC_PKT) {
+            self.class.write_packet(&[]).await.inspect_err(|_| {
+                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        match self.class.read_packet(buf).await {
+            Ok(n) => {
+                STAT_RECV_PKT.fetch_add(1, Ordering::Relaxed);
+                Ok(n)
+            }
+            Err(e) => {
+                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
+                Err(e)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RNG adapter: wraps embassy hardware RNG for the protocol crate's CryptoRng trait
+// ---------------------------------------------------------------------------
+
+struct HwRng(&'static mut Rng<'static, peripherals::RNG>);
+
+impl CryptoRng for HwRng {
+    fn fill_bytes(&mut self, buf: &mut [u8]) {
+        self.0.fill_bytes(buf);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LED state machine (hardware-specific, kept in firmware)
+// ---------------------------------------------------------------------------
 
 struct Leds {
     green: Output<'static>,
@@ -170,6 +218,70 @@ impl Leds {
     }
 }
 
+// ---------------------------------------------------------------------------
+// NodeHandler: bridges protocol events to LEDs, stats, and app logic
+// ---------------------------------------------------------------------------
+
+struct FipsHandler<'a> {
+    leds: &'a mut Leds,
+}
+
+impl NodeHandler for FipsHandler<'_> {
+    async fn on_event(&mut self, event: NodeEvent) {
+        match event {
+            NodeEvent::Connected => {
+                self.leds.set_state(S_USB_READY);
+            }
+            NodeEvent::Msg1Sent => {
+                STAT_MSG1_TX.fetch_add(1, Ordering::Relaxed);
+                self.leds.set_state(S_MSG1_SENT);
+                embassy_futures::yield_now().await;
+            }
+            NodeEvent::HandshakeOk => {
+                STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
+                self.leds.set_state(S_HANDSHAKE_OK);
+                Timer::after(Duration::from_millis(500)).await;
+            }
+            NodeEvent::HeartbeatSent => {
+                STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
+                self.leds.set_state(S_HB_TX);
+                self.leds.set_state(S_HANDSHAKE_OK);
+            }
+            NodeEvent::HeartbeatRecv => {
+                STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
+                self.leds.set_state(S_HB_RX);
+            }
+            NodeEvent::Disconnected => {
+                self.leds.set_state(S_DISCONNECTED);
+            }
+            NodeEvent::Error => {
+                self.leds.set_state(S_ERR);
+            }
+        }
+    }
+
+    fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
+        match msg_type {
+            fmp::MSG_SESSION_DATAGRAM => {
+                STAT_DATA_RX.fetch_add(1, Ordering::Relaxed);
+                if payload.len() >= 3 && &payload[..3] == b"GET" {
+                    STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
+                    let rlen = HTTP_RESPONSE.len().min(resp.len());
+                    resp[..rlen].copy_from_slice(&HTTP_RESPONSE[..rlen]);
+                    HandleResult::SendDatagram(rlen)
+                } else {
+                    HandleResult::None
+                }
+            }
+            _ => HandleResult::None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main entry point
+// ---------------------------------------------------------------------------
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let mut config = Config::default();
@@ -203,25 +315,6 @@ async fn main(_spawner: Spawner) {
 
     let rng = GLOBAL_RNG.init(Rng::new(p.RNG, Irqs));
 
-    let my_pub = noise::ecdh_pubkey(&MCU_SECRET).unwrap();
-
-    leds.blink_green_once();
-
-    let mut eph = [0u8; 32];
-    rng.fill_bytes(&mut eph);
-    let (mut noise_st, _e_pub) =
-        noise::NoiseIkInitiator::new(&eph, &MCU_SECRET, &VPS_PUB).expect("noise init");
-    let epoch: [u8; EPOCH_SIZE] = [0x01, 0, 0, 0, 0, 0, 0, 0];
-    let mut n1 = [0u8; 256];
-    let n1len = noise_st
-        .write_message1(&my_pub, &epoch, &mut n1)
-        .expect("write_message1");
-    let mut f1 = [0u8; 256];
-    let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1);
-    let pre_msg1: [u8; fmp::MSG1_WIRE_SIZE] = f1[..f1len].try_into().expect("msg1 size");
-    let pre_msg1 = PRE_MSG1.init(pre_msg1);
-    let pre_noise_st = PRE_NOISE_ST.init(noise_st);
-
     leds.blink_green_once();
 
     let ep_out_buf = EP_OUT_BUF.init([0u8; 1024]);
@@ -252,332 +345,15 @@ async fn main(_spawner: Spawner) {
     let mut class = CdcAcmClass::new(&mut builder, &mut cdc_st, CDC_PKT as u16);
     let mut usb = builder.build();
 
+    leds.blink_green_once();
+
+    let transport = CdcTransport { class: &mut class };
+    let hw_rng = HwRng(rng);
+    let mut node = Node::new(transport, hw_rng, MCU_SECRET, VPS_PUB);
+    let mut handler = FipsHandler { leds: &mut leds };
+
     let usb_fut = usb.run();
-    let fips_fut = fips_task(&mut class, &mut leds, pre_msg1, pre_noise_st);
+    let fips_fut = node.run(&mut handler);
 
     join(usb_fut, fips_fut).await;
-}
-
-#[derive(defmt::Format)]
-enum Err {
-    Disconnected,
-    Timeout,
-    Invalid,
-    Decrypt,
-    PeerDC,
-}
-
-impl From<EndpointError> for Err {
-    fn from(v: EndpointError) -> Self {
-        match v {
-            EndpointError::BufferOverflow => panic!("overflow"),
-            EndpointError::Disabled => Err::Disconnected,
-        }
-    }
-}
-
-async fn cdc_write<'d, T: embassy_stm32::usb::Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    data: &[u8],
-) -> Result<(), Err> {
-    let mut off = 0;
-    while off < data.len() {
-        let end = core::cmp::min(off + CDC_PKT, data.len());
-        class.write_packet(&data[off..end]).await?;
-        off = end;
-    }
-    if !data.is_empty() && data.len() % CDC_PKT == 0 {
-        class.write_packet(&[]).await?;
-    }
-    Ok(())
-}
-
-async fn cdc_send_frame<'d, T: embassy_stm32::usb::Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    payload: &[u8],
-) -> Result<(), Err> {
-    let hdr = (payload.len() as u16).to_le_bytes();
-    cdc_write(class, &hdr).await?;
-    cdc_write(class, payload).await
-}
-
-async fn fips_task<'d, T: embassy_stm32::usb::Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    leds: &mut Leds,
-    pre_msg1: &'static [u8; fmp::MSG1_WIRE_SIZE],
-    pre_noise_st: &'static noise::NoiseIkInitiator,
-) {
-    let mut rbuf = [0u8; 2048];
-    let mut rpos: usize;
-    let mut rlen: usize;
-
-    loop {
-        class.wait_connection().await;
-        Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
-        leds.set_state(S_USB_READY);
-
-        rpos = 0;
-        rlen = 0;
-
-        match handshake(
-            class,
-            pre_msg1,
-            pre_noise_st,
-            &mut rbuf,
-            &mut rpos,
-            &mut rlen,
-        )
-        .await
-        {
-            Ok((ks, kr, them, _us)) => {
-                leds.set_state(S_HANDSHAKE_OK);
-                Timer::after(Duration::from_millis(500)).await;
-                let _ = steady(class, leds, &ks, &kr, them, &mut rbuf, &mut rpos, &mut rlen).await;
-                leds.set_state(S_DISCONNECTED);
-            }
-            Err(_) => {
-                leds.set_state(S_ERR);
-            }
-        }
-        Timer::after(Duration::from_secs(RETRY_SECS)).await;
-    }
-}
-
-async fn handshake<'d, T: embassy_stm32::usb::Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    pre_msg1: &[u8; fmp::MSG1_WIRE_SIZE],
-    pre_noise_st: &noise::NoiseIkInitiator,
-    rbuf: &mut [u8],
-    rpos: &mut usize,
-    rlen: &mut usize,
-) -> Result<([u8; 32], [u8; 32], u32, u32), Err> {
-    cdc_send_frame(class, pre_msg1).await?;
-    STAT_MSG1_TX.fetch_add(1, Ordering::Relaxed);
-    yield_now().await;
-
-    let mut mb = [0u8; 2048];
-    loop {
-        let ml = recv_frame(class, rbuf, rpos, rlen, &mut mb).await?;
-        let m = fmp::parse_message(&mb[..ml]).ok_or(Err::Invalid)?;
-        match m {
-            fmp::FmpMessage::Msg2 {
-                sender_idx,
-                receiver_idx,
-                noise_payload,
-            } => {
-                yield_now().await;
-                let mut st = pre_noise_st.clone();
-                st.read_message2(noise_payload).map_err(|_| Err::Decrypt)?;
-                yield_now().await;
-                let (ks, kr) = st.finalize();
-                STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
-                return Ok((ks, kr, sender_idx, receiver_idx));
-            }
-            _ => continue,
-        }
-    }
-}
-
-async fn recv_frame<'d, T: embassy_stm32::usb::Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    rbuf: &mut [u8],
-    rpos: &mut usize,
-    rlen: &mut usize,
-    out: &mut [u8],
-) -> Result<usize, Err> {
-    loop {
-        if *rpos < *rlen {
-            if *rlen - *rpos < 2 {
-            } else {
-                let ml = u16::from_le_bytes([rbuf[*rpos], rbuf[*rpos + 1]]) as usize;
-                if ml == 0 || ml > 1500 {
-                    *rpos = *rlen;
-                } else if *rlen - *rpos - 2 < ml {
-                } else {
-                    let s = *rpos + 2;
-                    let e = s + ml;
-                    let l = ml.min(out.len());
-                    out[..l].copy_from_slice(&rbuf[s..s + l]);
-                    *rpos = e;
-                    if *rpos >= *rlen {
-                        *rpos = 0;
-                        *rlen = 0;
-                    }
-                    STAT_RECV_FRAME.fetch_add(1, Ordering::Relaxed);
-                    return Ok(l);
-                }
-            }
-        }
-
-        compact(rbuf, rpos, rlen);
-        let mut rx = [0u8; CDC_PKT];
-        match embassy_futures::select::select(
-            class.read_packet(&mut rx),
-            Timer::after(Duration::from_secs(RECV_TIMEOUT_SECS)),
-        )
-        .await
-        {
-            embassy_futures::select::Either::First(Ok(n)) => {
-                STAT_RECV_PKT.fetch_add(1, Ordering::Relaxed);
-                if *rlen + n > rbuf.len() {
-                    *rlen = 0;
-                    *rpos = 0;
-                    continue;
-                }
-                rbuf[*rlen..*rlen + n].copy_from_slice(&rx[..n]);
-                *rlen += n;
-            }
-            embassy_futures::select::Either::First(Err(e)) => {
-                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
-                return Err(e.into());
-            }
-            embassy_futures::select::Either::Second(()) => return Err(Err::Timeout),
-        }
-    }
-}
-
-fn compact(buf: &mut [u8], pos: &mut usize, len: &mut usize) {
-    if *pos > 0 && *pos < *len {
-        let remaining = *len - *pos;
-        buf.copy_within(*pos..*len, 0);
-        *pos = 0;
-        *len = remaining;
-    }
-}
-
-async fn steady<'d, T: embassy_stm32::usb::Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    leds: &mut Leds,
-    ks: &[u8; 32],
-    kr: &[u8; 32],
-    them: u32,
-    rbuf: &mut [u8],
-    rpos: &mut usize,
-    rlen: &mut usize,
-) -> Result<(), Err> {
-    let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
-
-    loop {
-        let mut rx = [0u8; CDC_PKT];
-        let rx_fut = class.read_packet(&mut rx);
-        let hb_fut = Timer::at(next_hb);
-        match embassy_futures::select::select(rx_fut, hb_fut).await {
-            embassy_futures::select::Either::First(Ok(n)) => {
-                if *rlen + n > rbuf.len() {
-                    *rlen = 0;
-                    *rpos = 0;
-                    continue;
-                }
-                rbuf[*rlen..*rlen + n].copy_from_slice(&rx[..n]);
-                *rlen += n;
-
-                while *rpos < *rlen {
-                    if *rlen - *rpos < 2 {
-                        break;
-                    }
-                    let ml = u16::from_le_bytes([rbuf[*rpos], rbuf[*rpos + 1]]) as usize;
-                    if ml == 0 || ml > 1500 {
-                        *rpos = *rlen;
-                        break;
-                    }
-                    if *rlen - *rpos - 2 < ml {
-                        break;
-                    }
-                    let s = *rpos + 2;
-                    let e = s + ml;
-                    match handle(kr, leds, &rbuf[s..e]) {
-                        HandleAction::None => {}
-                        HandleAction::Respond(payload) => {
-                            STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
-                            let c = next_ctr();
-                            let ts = embassy_time::Instant::now().as_millis() as u32;
-                            let mut out = [0u8; 256];
-                            let fl = fmp::build_established(
-                                them, c, fmp::MSG_SESSION_DATAGRAM, ts, payload, ks, &mut out,
-                            );
-                            let _ = cdc_send_frame(class, &out[..fl]).await;
-                        }
-                        HandleAction::Disconnect => {
-                            return Ok(());
-                        }
-                    }
-                    *rpos = e;
-                }
-                if *rpos >= *rlen {
-                    *rpos = 0;
-                    *rlen = 0;
-                }
-                if embassy_time::Instant::now() >= next_hb {
-                    next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
-                    let c = next_ctr();
-                    let ts = embassy_time::Instant::now().as_millis() as u32;
-                    let mut out = [0u8; 256];
-                    let fl =
-                        fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut out);
-                    let _ = cdc_send_frame(class, &out[..fl]).await;
-                    STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
-                    leds.set_state(S_HB_TX);
-                    leds.set_state(S_HANDSHAKE_OK);
-                }
-            }
-            embassy_futures::select::Either::First(Err(e)) => {
-                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
-                return Err(e.into());
-            }
-            embassy_futures::select::Either::Second(()) => {
-                next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
-                let c = next_ctr();
-                let ts = embassy_time::Instant::now().as_millis() as u32;
-                let mut out = [0u8; 256];
-                let fl = fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut out);
-                let _ = cdc_send_frame(class, &out[..fl]).await;
-                STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
-                leds.set_state(S_HB_TX);
-                leds.set_state(S_HANDSHAKE_OK);
-            }
-        }
-    }
-}
-
-fn handle(kr: &[u8; 32], leds: &mut Leds, data: &[u8]) -> HandleAction {
-    let m = match fmp::parse_message(data) {
-        Some(m) => m,
-        None => return HandleAction::None,
-    };
-    match m {
-        fmp::FmpMessage::Established {
-            counter, encrypted, ..
-        } => {
-            let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
-            let mut dec = [0u8; 2048];
-            let dl = match noise::aead_decrypt(kr, counter, hdr, encrypted, &mut dec) {
-                Ok(l) => l,
-                Err(_) => return HandleAction::None,
-            };
-            if dl < fmp::INNER_HEADER_SIZE {
-                return HandleAction::None;
-            }
-            match dec[4] {
-                fmp::MSG_HEARTBEAT => {
-                    STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
-                    leds.set_state(S_HB_RX);
-                    HandleAction::None
-                }
-                fmp::MSG_DISCONNECT => {
-                    HandleAction::Disconnect
-                }
-                fmp::MSG_SESSION_DATAGRAM => {
-                    STAT_DATA_RX.fetch_add(1, Ordering::Relaxed);
-                    let payload = &dec[fmp::INNER_HEADER_SIZE..dl];
-                    if payload.len() >= 3 && &payload[..3] == b"GET" {
-                        HandleAction::Respond(HTTP_RESPONSE)
-                    } else {
-                        HandleAction::None
-                    }
-                }
-                _ => HandleAction::None,
-            }
-        }
-        _ => HandleAction::None,
-    }
 }

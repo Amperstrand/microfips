@@ -10,6 +10,57 @@ pub const RECV_TIMEOUT_MS: u64 = 30_000;
 pub const RETRY_SECS: u64 = 3;
 pub const CONNECT_DELAY_MS: u64 = 500;
 
+/// Protocol state events emitted to the handler.
+pub enum NodeEvent {
+    /// Transport is ready (wait_ready completed).
+    Connected,
+    /// MSG1 (handshake initiation) has been sent.
+    Msg1Sent,
+    /// Handshake completed successfully, keys derived.
+    HandshakeOk,
+    /// A heartbeat was transmitted to the peer.
+    HeartbeatSent,
+    /// A heartbeat was received from the peer.
+    HeartbeatRecv,
+    /// Session ended after steady state.
+    Disconnected,
+    /// Handshake failed.
+    Error,
+}
+
+/// Result from the handler's message callback.
+pub enum HandleResult {
+    /// No response needed.
+    None,
+    /// Send a session datagram response of the given length (written into resp buffer).
+    SendDatagram(usize),
+    /// Request disconnect.
+    Disconnect,
+}
+
+/// Callback interface for protocol events and application message handling.
+pub trait NodeHandler {
+    /// Called on protocol state transitions. Async to allow yielding or delays.
+    fn on_event(&mut self, event: NodeEvent) -> impl core::future::Future<Output = ()>;
+
+    /// Called when a decrypted established message is received (not heartbeat/disconnect).
+    /// `msg_type` is the FIPS inner message type byte.
+    /// `payload` is the decrypted payload after the 5-byte inner header.
+    /// Write any response into `resp` and return `HandleResult::SendDatagram(len)`.
+    fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult;
+}
+
+/// No-op handler that ignores all events and messages.
+pub struct NoopHandler;
+
+impl NodeHandler for NoopHandler {
+    async fn on_event(&mut self, _event: NodeEvent) {}
+
+    fn on_message(&mut self, _msg_type: u8, _payload: &[u8], _resp: &mut [u8]) -> HandleResult {
+        HandleResult::None
+    }
+}
+
 pub struct Node<T: Transport, R: CryptoRng> {
     transport: T,
     rng: R,
@@ -37,25 +88,36 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         &mut self.transport
     }
 
-    pub async fn run(&mut self) -> ! {
+    pub async fn run<H: NodeHandler>(&mut self, handler: &mut H) -> ! {
         loop {
-            let _ = self.session().await;
+            let _ = self.session(handler).await;
             Timer::after(Duration::from_secs(RETRY_SECS)).await;
         }
     }
 
-    async fn session(&mut self) -> Result<(), ProtocolError> {
+    async fn session<H: NodeHandler>(&mut self, handler: &mut H) -> Result<(), ProtocolError> {
         self.transport.wait_ready().await.map_err(|_| ProtocolError::Disconnected)?;
         Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
+        handler.on_event(NodeEvent::Connected).await;
 
         self.rpos = 0;
         self.rlen = 0;
 
-        let (ks, kr, them) = self.handshake().await?;
-        self.steady(&ks, &kr, them).await
+        match self.handshake(handler).await {
+            Ok((ks, kr, them)) => {
+                handler.on_event(NodeEvent::HandshakeOk).await;
+                let result = self.steady(&ks, &kr, them, handler).await;
+                handler.on_event(NodeEvent::Disconnected).await;
+                result
+            }
+            Err(e) => {
+                handler.on_event(NodeEvent::Error).await;
+                Err(e)
+            }
+        }
     }
 
-    async fn handshake(&mut self) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
+    async fn handshake<H: NodeHandler>(&mut self, handler: &mut H) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
         use microfips_core::fmp;
         use microfips_core::noise;
 
@@ -78,6 +140,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1);
 
         self.send_frame(&f1[..f1len]).await?;
+        handler.on_event(NodeEvent::Msg1Sent).await;
 
         let mut mb = [0u8; 2048];
         loop {
@@ -100,11 +163,12 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         }
     }
 
-    async fn steady(
+    async fn steady<H: NodeHandler>(
         &mut self,
         ks: &[u8; 32],
         kr: &[u8; 32],
         them: u32,
+        handler: &mut H,
     ) -> Result<(), ProtocolError> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
         let mut send_ctr: u64 = 0;
@@ -124,7 +188,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                     self.rbuf[self.rlen..self.rlen + n].copy_from_slice(&rx[..n]);
                     self.rlen += n;
 
-            while self.rpos < self.rlen {
+                    while self.rpos < self.rlen {
                         if self.rlen - self.rpos < 2 {
                             break;
                         }
@@ -141,11 +205,30 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                         }
                         let s = self.rpos + 2;
                         let e = s + ml;
-                        match self.handle_frame(kr, &self.rbuf[s..e]) {
-                            FrameResult::PeerDC => return Ok(()),
-                            FrameResult::Ok | FrameResult::Skipped => {}
-                        }
+
+                        let mut resp_buf = [0u8; 256];
+                        let result = handle_frame_inner(kr, &self.rbuf[s..e], handler, &mut resp_buf);
                         self.rpos = e;
+
+                        match result {
+                            FrameHandleResult::Continue => {}
+                            FrameHandleResult::HeartbeatRecv => {
+                                handler.on_event(NodeEvent::HeartbeatRecv).await;
+                            }
+                            FrameHandleResult::PeerDC => return Ok(()),
+                            FrameHandleResult::SendDatagram(len) => {
+                                use microfips_core::fmp;
+                                let c = send_ctr;
+                                send_ctr += 1;
+                                let ts = embassy_time::Instant::now().as_millis() as u32;
+                                let mut out = [0u8; 256];
+                                let fl = fmp::build_established(
+                                    them, c, fmp::MSG_SESSION_DATAGRAM, ts,
+                                    &resp_buf[..len], ks, &mut out,
+                                );
+                                let _ = self.send_frame(&out[..fl]).await;
+                            }
+                        }
                     }
                     if self.rpos >= self.rlen {
                         self.rpos = 0;
@@ -154,6 +237,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                     if embassy_time::Instant::now() >= next_hb {
                         next_hb =
                             self.send_heartbeat(ks, them, &mut send_ctr).await;
+                        handler.on_event(NodeEvent::HeartbeatSent).await;
                     }
                 }
                 Either::First(Err(_)) => {
@@ -161,42 +245,9 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                 }
                 Either::Second(()) => {
                     next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
+                    handler.on_event(NodeEvent::HeartbeatSent).await;
                 }
             }
-        }
-    }
-
-    fn handle_frame(&self, kr: &[u8; 32], data: &[u8]) -> FrameResult {
-        use microfips_core::fmp;
-
-        let m = match fmp::parse_message(data) {
-            Some(m) => m,
-            None => return FrameResult::Skipped,
-        };
-
-        match m {
-            fmp::FmpMessage::Established {
-                counter, encrypted, ..
-            } => {
-                let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
-                let mut dec = [0u8; 2048];
-                let dl =
-                    match microfips_core::noise::aead_decrypt(
-                        kr, counter, hdr, encrypted, &mut dec,
-                    ) {
-                        Ok(l) => l,
-                        Err(_) => return FrameResult::Skipped,
-                    };
-                if dl < fmp::INNER_HEADER_SIZE {
-                    return FrameResult::Skipped;
-                }
-                match dec[4] {
-                    fmp::MSG_HEARTBEAT => FrameResult::Ok,
-                    fmp::MSG_DISCONNECT => FrameResult::PeerDC,
-                    _ => FrameResult::Skipped,
-                }
-            }
-            _ => FrameResult::Skipped,
         }
     }
 
@@ -295,10 +346,57 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
     }
 }
 
-enum FrameResult {
-    Ok,
+fn handle_frame_inner<H: NodeHandler>(
+    kr: &[u8; 32],
+    data: &[u8],
+    handler: &mut H,
+    resp: &mut [u8],
+) -> FrameHandleResult {
+    use microfips_core::fmp;
+
+    let m = match fmp::parse_message(data) {
+        Some(m) => m,
+        None => return FrameHandleResult::Continue,
+    };
+
+    match m {
+        fmp::FmpMessage::Established {
+            counter, encrypted, ..
+        } => {
+            let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
+            let mut dec = [0u8; 2048];
+            let dl = match microfips_core::noise::aead_decrypt(
+                kr, counter, hdr, encrypted, &mut dec,
+            ) {
+                Ok(l) => l,
+                Err(_) => return FrameHandleResult::Continue,
+            };
+            if dl < fmp::INNER_HEADER_SIZE {
+                return FrameHandleResult::Continue;
+            }
+            let msg_type = dec[4];
+            match msg_type {
+                fmp::MSG_HEARTBEAT => FrameHandleResult::HeartbeatRecv,
+                fmp::MSG_DISCONNECT => FrameHandleResult::PeerDC,
+                _ => {
+                    let payload = &dec[fmp::INNER_HEADER_SIZE..dl];
+                    match handler.on_message(msg_type, payload, resp) {
+                        HandleResult::None => FrameHandleResult::Continue,
+                        HandleResult::SendDatagram(len) => FrameHandleResult::SendDatagram(len),
+                        HandleResult::Disconnect => FrameHandleResult::PeerDC,
+                    }
+                }
+            }
+        }
+        _ => FrameHandleResult::Continue,
+    }
+}
+
+enum FrameHandleResult {
+    Continue,
+    HeartbeatRecv,
     PeerDC,
-    Skipped,
+    SendDatagram(usize),
 }
 
 #[cfg(test)]
