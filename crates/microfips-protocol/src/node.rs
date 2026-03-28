@@ -80,22 +80,23 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         self.send_frame(&f1[..f1len]).await?;
 
         let mut mb = [0u8; 2048];
-        let ml = self.recv_frame(&mut mb, RECV_TIMEOUT_MS as u32).await?;
-
-        let m = fmp::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
-        match m {
-            fmp::FmpMessage::Msg2 {
-                sender_idx,
-                noise_payload,
-                ..
-            } => {
-                let mut st = noise_st.clone();
-                st.read_message2(noise_payload)
-                    .map_err(|_| ProtocolError::DecryptFailed)?;
-                let (ks, kr) = st.finalize();
-                Ok((ks, kr, sender_idx))
+        loop {
+            let ml = self.recv_frame(&mut mb, RECV_TIMEOUT_MS as u32).await?;
+            let m = fmp::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
+            match m {
+                fmp::FmpMessage::Msg2 {
+                    sender_idx,
+                    noise_payload,
+                    ..
+                } => {
+                    let mut st = noise_st.clone();
+                    st.read_message2(noise_payload)
+                        .map_err(|_| ProtocolError::DecryptFailed)?;
+                    let (ks, kr) = st.finalize();
+                    return Ok((ks, kr, sender_idx));
+                }
+                _ => continue,
             }
-            _ => Err(ProtocolError::InvalidMessage),
         }
     }
 
