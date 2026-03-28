@@ -82,18 +82,11 @@ pass() {
 
 cleanup() {
     echo "[cleanup] Killing stale processes..."
-    pkill -9 -f serial_tcp_proxy 2>/dev/null || true
-    pkill -9 -f "ssh.*${TCP_PORT}" 2>/dev/null || true
+    [ -n "${PROXY_PID:-}" ] && kill -9 "$PROXY_PID" 2>/dev/null || true
+    [ -n "${TUNNEL_PID:-}" ] && kill -9 "$TUNNEL_PID" 2>/dev/null || true
     ssh "pkill -9 -f fips_bridge 2>/dev/null; echo $VPS_PASS | sudo -S fuser -k ${TCP_PORT}/tcp 2>/dev/null" 2>/dev/null || true
     sleep 1
-    # Verify cleanup
-    local stale
-    stale=$(ps aux | grep -E "serial_tcp_proxy|fips_bridge|ssh.*${TCP_PORT}" | grep -v grep | wc -l)
-    if [ "$stale" -gt 0 ]; then
-        echo "[cleanup] WARNING: $stale stale process(es) remain"
-    else
-        echo "[cleanup] All processes cleaned"
-    fi
+    echo "[cleanup] Done"
 }
 
 ##################################################
@@ -167,7 +160,7 @@ echo ""
 echo "=== Phase 3: Start serial_tcp_proxy ==="
 
 # Kill any existing proxy (should be clean from phase 0)
-pkill -9 -f serial_tcp_proxy 2>/dev/null || true
+[ -n "${PROXY_PID:-}" ] && kill -9 "$PROXY_PID" 2>/dev/null || true
 sleep 0.5
 
 python3 tools/serial_tcp_proxy.py --serial "$MCU_PORT" --port "$TCP_PORT" > "$PROXY_LOG" 2>&1 &
@@ -192,24 +185,25 @@ echo ""
 echo "=== Phase 4: SSH Tunnel + Bridge ==="
 
 echo "[1/3] Starting SSH reverse tunnel..."
-# Kill any existing tunnels
-pkill -9 -f "ssh.*${TCP_PORT}" 2>/dev/null || true
-sleep 0.5
+# Kill any existing tunnels (PID-based only)
+if [ -n "${TUNNEL_PID:-}" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    kill -9 "$TUNNEL_PID" 2>/dev/null || true
+    sleep 0.5
+fi
 
 sshpass -p "$VPS_PASS" ssh $SSH_OPTS -fN \
     -R "${TCP_PORT}:127.0.0.1:${TCP_PORT}" \
     -o ServerAliveInterval=30 \
     -o ExitOnForwardFailure=yes \
     "$VPS_USER@$VPS_HOST" 2>&1
+TUNNEL_PID=$(ps aux | grep "ssh.*${TCP_PORT}" | grep -v grep | awk '{print $2}' | head -1)
 
 sleep 1
 
-# Verify exactly one tunnel
-TUNNEL_COUNT=$(ps aux | grep "ssh.*${TCP_PORT}" | grep -v grep | wc -l)
-if [ "$TUNNEL_COUNT" -ne 1 ]; then
-    fail "Expected 1 SSH tunnel, found $TUNNEL_COUNT"
+if [ -z "$TUNNEL_PID" ] || ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    fail "SSH tunnel failed to start"
 fi
-pass "SSH tunnel established"
+pass "SSH tunnel established (PID $TUNNEL_PID)"
 
 echo "[2/3] Uploading bridge to VPS..."
 sshpass -p "$VPS_PASS" scp $SSH_OPTS tools/fips_bridge.py "$VPS_USER@$VPS_HOST":/tmp/fips_bridge.py
@@ -243,19 +237,14 @@ pass "Proxy-TCP-Bridge link established"
 # PHASE 5: HANDSHAKE CHECK
 ##################################################
 echo ""
-echo "=== Phase 5: Handshake (waiting 20s for MSG1/MSG2) ==="
+echo "=== Phase 5: Handshake (waiting for MSG1/MSG2) ==="
 
-# Reset MCU to send MSG1 into live chain
-echo "[1/4] Resetting MCU (chain is now live)..."
-st-flash --connect-under-reset reset 2>&1 | tail -1
+echo "[1/3] Waiting for MCU to send MSG1 (CONNECT_DELAY_MS=15s + enumeration)..."
+echo "       Proxy/tunnel/bridge are already live, so MSG1 will flow through."
 
-# Wait for MCU to re-enumerate and send MSG1
-echo "[2/4] Waiting for MCU re-enumeration..."
-sleep 10
-
-# Check proxy received data from MCU
-PROXY_RX=$(grep "CDC RX" "$PROXY_LOG" | tail -5)
-echo "Proxy CDC RX log: $PROXY_RX"
+# Phase 2 reset was at ~T=0. USB enum at ~T=4. CONNECT_DELAY=15s so MSG1 at ~T=19.
+# Proxy started at ~T=5, tunnel+bridge at ~T=8. All ready before T=19.
+sleep 20
 
 # Check bridge received and forwarded MSG1
 BRIDGE_LOG=$(ssh "cat $BRIDGE_LOG_REMOTE 2>/dev/null")
@@ -264,19 +253,28 @@ echo "Bridge log:"
 echo "$BRIDGE_LOG"
 echo ""
 
-echo "[3/4] Checking MSG1 flow..."
+echo "[2/3] Checking MSG1 flow..."
 if echo "$BRIDGE_LOG" | grep -q "CDC->UDP:.*114B"; then
     pass "MSG1: MCU -> proxy -> tunnel -> bridge -> FIPS (114B)"
 else
-    echo "WARNING: No MSG1 in bridge log. Proxy may have lost serial port on MCU reset."
-    echo "This is a known issue — proxy crashes when USB device resets."
+    echo "WARNING: No MSG1 in bridge log."
+    echo "Proxy may not have been ready when MCU sent MSG1, or MCU didn't enumerate."
+    PROXY_RX=$(grep "CDC RX" "$PROXY_LOG" | tail -5)
+    echo "Proxy CDC RX log: $PROXY_RX"
 fi
 
-echo "[4/4] Checking MSG2 flow and VPS promotion..."
+echo "[3/3] Checking MSG2 flow and VPS promotion..."
 if echo "$BRIDGE_LOG" | grep -q "UDP->CDC:.*69B"; then
     pass "MSG2: FIPS -> bridge -> tunnel -> proxy -> MCU (69B)"
 else
-    echo "WARNING: No MSG2 in bridge log yet."
+    echo "WARNING: No MSG2 in bridge log yet. Waiting 10 more seconds..."
+    sleep 10
+    BRIDGE_LOG=$(ssh "cat $BRIDGE_LOG_REMOTE 2>/dev/null")
+    if echo "$BRIDGE_LOG" | grep -q "UDP->CDC:.*69B"; then
+        pass "MSG2: FIPS -> bridge -> tunnel -> proxy -> MCU (69B)"
+    else
+        echo "FAIL: No MSG2 received after 30s total."
+    fi
 fi
 
 VPS_JOURNAL=$(ssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 5 --since '1 min ago'" 2>/dev/null)
@@ -315,7 +313,7 @@ if [ "$DO_CLEANUP" = true ]; then
 else
     echo "Processes left running (--no-cleanup). Manual cleanup:"
     echo "  kill $PROXY_PID  # proxy"
-    echo "  pkill -f 'ssh.*${TCP_PORT}'  # tunnel"
+    echo "  kill $TUNNEL_PID  # tunnel"
     echo "  ssh $SSH_OPTS $VPS_USER@$VPS_HOST 'pkill -f fips_bridge'  # bridge"
 fi
 
