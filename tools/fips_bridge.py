@@ -92,6 +92,7 @@ def serial_to_udp(ser, send_sock, log_prefix, state):
     """Read length-prefixed frames from serial/TCP, forward as raw UDP to FIPS."""
     buf = b""
     frame_count = 0
+    last_alive = time.time()
     while not state["stop"]:
         try:
             if hasattr(ser, "_update_waiting"):
@@ -118,6 +119,11 @@ def serial_to_udp(ser, send_sock, log_prefix, state):
                         file=sys.stderr,
                     )
                     send_sock.sendto(frame, state["udp_peer"])
+            else:
+                if time.time() - last_alive >= 10:
+                    print(f"{ts()} {log_prefix} alive, buf={len(buf)}B, frames={frame_count}, rx={ser.rx_bytes}B", file=sys.stderr)
+                    last_alive = time.time()
+                time.sleep(0.001)
         except (ConnectionResetError, BrokenPipeError, OSError) as e:
             print(f"{ts()} {log_prefix} disconnected: {e}", file=sys.stderr)
             break
@@ -129,6 +135,7 @@ def serial_to_udp(ser, send_sock, log_prefix, state):
 def udp_to_serial(ser, udp_sock, log_prefix, state):
     """Receive raw UDP from FIPS, wrap in length prefix, forward to serial/TCP."""
     frame_count = 0
+    last_alive = time.time()
     while not state["stop"]:
         try:
             udp_sock.settimeout(30)
@@ -145,9 +152,15 @@ def udp_to_serial(ser, udp_sock, log_prefix, state):
                 file=sys.stderr,
             )
         except socket.timeout:
+            if time.time() - last_alive >= 30:
+                print(f"{ts()} {log_prefix} alive (timeout), frames={frame_count}, tx={ser.tx_bytes}B", file=sys.stderr)
+                last_alive = time.time()
             continue
         except (ConnectionResetError, BrokenPipeError, OSError) as e:
             print(f"{ts()} {log_prefix} CDC disconnected: {e}", file=sys.stderr)
+            break
+        except Exception as e:
+            print(f"{ts()} {log_prefix} error: {e}", file=sys.stderr)
             break
         except Exception as e:
             print(f"{ts()} {log_prefix} error: {e}", file=sys.stderr)
@@ -191,6 +204,7 @@ def main():
             sys.exit(1)
         print(f"{ts()} UDP bound on {args.bind}:{args.local_port} (attempt #{reconnect_count})", file=sys.stderr)
 
+        state["stop"] = False
         t1 = threading.Thread(target=serial_to_udp, args=(ser, udp_sock, ">>", state), daemon=True)
         t2 = threading.Thread(target=udp_to_serial, args=(ser, udp_sock, "<<", state), daemon=True)
         t1.start()
@@ -198,20 +212,23 @@ def main():
 
         try:
             t1.join(timeout=120)
-            t2.join(timeout=1)
         except KeyboardInterrupt:
             print(f"\n{ts()} Interrupted", file=sys.stderr)
             state["stop"] = True
             break
 
-        if t1.is_alive() and t2.is_alive():
-            continue
+        state["stop"] = True
+        t1.join(timeout=5)
+        t2.join(timeout=35)
 
-        print(f"{ts()} Connection lost, reconnecting...", file=sys.stderr)
+        print(f"{ts()} Thread exited (t1_alive={t1.is_alive()}, t2_alive={t2.is_alive()})", file=sys.stderr)
         reconnect_count += 1
         udp_sock.close()
         time.sleep(0.5)
-        ser.close()
+        try:
+            ser.close()
+        except Exception:
+            pass
         ser = open_port(args)
         print(f"{ts()} Reconnected: {src} (attempt #{reconnect_count})", file=sys.stderr)
 
