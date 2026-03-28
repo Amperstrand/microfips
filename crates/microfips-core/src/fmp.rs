@@ -114,25 +114,30 @@ pub const MSG_HEARTBEAT: u8 = 0x51;
 /// Inner message type: FSP session datagram.
 pub const MSG_SESSION_DATAGRAM: u8 = 0x00;
 /// Inner message type: sender report.
-// TODO: MSG_SENDER_REPORT is defined but never used in parsing or sending.
-// Validate when FIPS starts using sender reports.
+// TODO(FIPS-WIRE): MSG_SENDER_REPORT is defined in the FIPS wire protocol but
+// is NOT implemented in microfips. When FIPS starts sending sender reports,
+// `parse_message` and `handle_frame_inner` must be extended to handle them.
+// Currently no FIPS peer sends this message type.
 pub const MSG_SENDER_REPORT: u8 = 0x01;
 /// Inner message type: receiver report.
-// TODO: MSG_RECEIVER_REPORT is defined but never used in parsing or sending.
-// Validate when FIPS starts using receiver reports.
+// TODO(FIPS-WIRE): MSG_RECEIVER_REPORT is defined in the FIPS wire protocol but
+// is NOT implemented in microfips. Same status as MSG_SENDER_REPORT.
 pub const MSG_RECEIVER_REPORT: u8 = 0x02;
 /// Inner message type: peer disconnect.
 pub const MSG_DISCONNECT: u8 = 0x50;
 
 /// Flag: key epoch change.
-// TODO: FLAG_KEY_EPOCH is defined but never checked during parsing.
-// Should be validated when FIPS starts using key epoch rotation.
+// TODO(FIPS-WIRE): FLAG_KEY_EPOCH is defined in the FIPS wire protocol but is
+// NOT checked during frame parsing. When FIPS implements key epoch rotation,
+// `parse_message` must validate this flag and trigger re-keying.
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
 /// Flag: congestion notification.
-// TODO: FLAG_CONGESTION is defined but never checked during parsing.
+// TODO(FIPS-WIRE): FLAG_CONGESTION is defined in the FIPS wire protocol but
+// is NOT checked during parsing. Reserved for future congestion control.
 pub const FLAG_CONGESTION: u8 = 0x02;
 /// Flag: spin bit (for RTT measurement).
-// TODO: FLAG_SPIN is defined but never checked during parsing.
+// TODO(FIPS-WIRE): FLAG_SPIN is defined in the FIPS wire protocol but is NOT
+// checked during parsing. Reserved for future latency measurement.
 pub const FLAG_SPIN: u8 = 0x04;
 
 /// Parsed FMP message. The three variants correspond to the three phase types.
