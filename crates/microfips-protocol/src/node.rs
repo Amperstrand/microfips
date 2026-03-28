@@ -1,3 +1,24 @@
+//! Node — FIPS leaf node protocol state machine.
+//!
+//! Implements the full protocol lifecycle for a FIPS leaf node:
+//!
+//! ```text
+//!   Connected → Msg1Sent → HandshakeOk → steady (HeartbeatSent/HeartbeatRecv) → Disconnected
+//!        ↑                                                                            |
+//!        └────────────────────────── retry after RETRY_SECS ──────────────────────────┘
+//! ```
+//!
+//! The handshake uses Noise IK (see [`microfips_core::noise::NoiseIkInitiator`])
+//! wrapped in FMP framing (see [`microfips_core::fmp`]). After handshake, the
+//! steady state sends periodic heartbeats and handles AEAD-encrypted messages.
+//!
+//! ## Framing
+//!
+//! Note: `Node` reimplements the `[u16 LE length] [payload]` framing logic
+//! from [`crate::transport::FrameReader`] / [`crate::transport::FrameWriter`]
+//! inline for the handshake and steady-state loops.
+//! TODO: Unify with `FrameReader`/`FrameWriter` to eliminate duplication.
+
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
 
@@ -119,6 +140,20 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         }
     }
 
+    /// Perform the Noise IK handshake.
+    ///
+    /// 1. Generate ephemeral keypair
+    /// 2. Build Noise IK msg1 (`-> e, es, s, ss, epoch`)
+    /// 3. Wrap in FMP MSG1 frame and send
+    /// 4. Wait for FMP MSG2 frame containing Noise IK msg2 (`<- e, ee, se, epoch`)
+    /// 5. Derive transport keys via `Split()`
+    ///
+    /// Reference: [Noise spec] §7.5 — IK pattern.
+    /// Reference: [`microfips_core::fmp`] for FMP framing.
+    ///
+    /// Note: `noise_st.clone()` is used so we can retry msg2 reads without
+    /// re-sending msg1. The cloned state duplicates secret key material and
+    /// should be dropped after use.
     async fn handshake<H: NodeHandler>(&mut self, handler: &mut H) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
         use microfips_core::fmp;
         use microfips_core::noise;
@@ -165,6 +200,17 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         }
     }
 
+    /// Steady-state loop: send heartbeats and handle incoming ESTABLISHED frames.
+    ///
+    /// Uses `ks` (send key) for encrypting outgoing frames and `kr` (recv key)
+    /// for decrypting incoming frames. `them` is the peer's sender_idx for
+    /// addressing outgoing frames.
+    ///
+    /// Reference: [`microfips_core::fmp::build_established`] for ESTABLISHED
+    /// frame format.
+    ///
+    /// The `send_ctr` (u64) serves as both the AEAD nonce and the wire sequence
+    /// number. At 10s heartbeat intervals, 2^64 wraps in ~584 billion years.
     async fn steady<H: NodeHandler>(
         &mut self,
         ks: &[u8; 32],
@@ -271,6 +317,10 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         embassy_time::Instant::now() + Duration::from_secs(HB_SECS)
     }
 
+    /// Send a length-prefixed frame (inline implementation).
+    ///
+    /// Duplicates [`crate::transport::FrameWriter::send_frame`] logic.
+    /// TODO: Refactor Node to use FrameWriter instead of reimplementing framing.
     async fn send_frame(&mut self, payload: &[u8]) -> Result<(), ProtocolError> {
         let hdr = (payload.len() as u16).to_le_bytes();
         self.transport
@@ -283,6 +333,10 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
             .map_err(|_| ProtocolError::Disconnected)
     }
 
+    /// Receive a length-prefixed frame with timeout (inline implementation).
+    ///
+    /// Duplicates [`crate::transport::FrameReader::recv_frame`] logic.
+    /// TODO: Refactor Node to use FrameReader instead of reimplementing framing.
     async fn recv_frame(
         &mut self,
         out: &mut [u8],
@@ -347,6 +401,18 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
     }
 }
 
+/// Process a single received ESTABLISHED frame.
+///
+/// Decrypts the AEAD payload using `kr` (recv key) with the frame's counter
+/// as nonce and the 16-byte header as AAD. Then dispatches on the inner
+/// message type byte (offset 4 in the decrypted payload):
+///
+/// - `MSG_HEARTBEAT` (0x51): keepalive, no action needed
+/// - `MSG_DISCONNECT` (0x50): peer requested disconnect
+/// - Other (e.g. `MSG_SESSION_DATAGRAM` 0x00): delegate to handler
+///
+/// TODO: This duplicates decryption logic from the simulator's `handle_frame`.
+/// Consider unifying into a shared function.
 fn handle_frame_inner<H: NodeHandler>(
     kr: &[u8; 32],
     data: &[u8],

@@ -7,18 +7,35 @@ use embassy_time::{Duration, Timer};
 use crate::error::ProtocolError;
 use crate::framing;
 
+/// Trait for cryptographic random number generation.
 pub trait CryptoRng {
+    /// Fill `buf` with cryptographically random bytes.
     fn fill_bytes(&mut self, buf: &mut [u8]);
 }
 
+/// Abstraction over the physical transport layer.
+///
+/// Implementations exist for:
+/// - USB CDC ACM on STM32 MCU (`CdcTransport` in firmware `main.rs`)
+/// - TCP sockets on host (`TcpTransport` in `microfips-sim`)
+/// - Mock transports for testing
 pub trait Transport {
     type Error: Debug;
 
+    /// Wait until the transport is ready for communication.
     fn wait_ready(&mut self) -> impl Future<Output = Result<(), Self::Error>>;
+    /// Send data over the transport.
     fn send(&mut self, data: &[u8]) -> impl Future<Output = Result<(), Self::Error>>;
+    /// Receive data from the transport into `buf`. Returns bytes read.
     fn recv(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Self::Error>>;
 }
 
+/// Length-prefixed frame writer.
+///
+/// Framing format: `[u16 LE length] [payload]`.
+/// This is a microfips-specific framing layer for transport over USB CDC/TCP,
+/// NOT part of the FIPS wire protocol itself. FIPS uses UDP datagrams which
+/// are self-framing.
 pub struct FrameWriter<T: Transport> {
     transport: T,
 }
@@ -28,6 +45,10 @@ impl<T: Transport> FrameWriter<T> {
         Self { transport }
     }
 
+    /// Send a length-prefixed frame: `[u16 LE length] [payload]`.
+    ///
+    /// This framing format is used over the serial/TCP bridge to the VPS.
+    /// It is NOT part of the FIPS protocol — FIPS uses UDP datagrams.
     pub async fn send_frame(&mut self, payload: &[u8]) -> Result<(), ProtocolError> {
         let hdr = (payload.len() as u16).to_le_bytes();
         self.transport
@@ -45,6 +66,10 @@ impl<T: Transport> FrameWriter<T> {
     }
 }
 
+/// Length-prefixed frame reader with internal buffering.
+///
+/// Reads `[u16 LE length] [payload]` frames from the transport, handling
+/// partial reads and reassembly.
 pub struct FrameReader<T: Transport> {
     transport: T,
     rbuf: [u8; 2048],
@@ -62,6 +87,10 @@ impl<T: Transport> FrameReader<T> {
         }
     }
 
+    /// Receive a complete frame, with timeout.
+    ///
+    /// Reads `[u16 LE length] [payload]` from the transport, buffering partial
+    /// reads until a complete frame is available.
     pub async fn recv_frame(
         &mut self,
         out: &mut [u8],

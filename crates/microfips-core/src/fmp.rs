@@ -1,31 +1,111 @@
+//! FMP — FIPS Mesh Protocol (link-layer framing).
+//!
+//! FMP is the link-layer framing protocol for Noise-encrypted peer
+//! communication in FIPS. It wraps Noise handshake messages (IK pattern) and
+//! AEAD-encrypted data frames with a common 4-byte prefix and peer index fields.
+//!
+//! ## Wire Format
+//!
+//! All FMP frames start with a 4-byte common prefix:
+//! ```text
+//!   [version:4 | phase:4] [flags:8] [payload_len:16 LE]
+//! ```
+//! - `version`: upper nibble of byte 0 (currently 0)
+//! - `phase`: lower nibble of byte 0 (0x00=ESTABLISHED, 0x01=MSG1, 0x02=MSG2)
+//! - `flags`: byte 1 (FLAG_KEY_EPOCH, FLAG_CONGESTION, FLAG_SPIN)
+//! - `payload_len`: bytes 2-3, little-endian u16
+//!
+//! FIPS: `/root/src/fips/src/` — wire format definition (exact source file TBD).
+//!
+//! ## Message Types
+//!
+//! - **MSG1** (phase 0x01): `prefix(4) + sender_idx(4) + noise_payload(106) = 114 bytes`
+//!   Reference: [Noise spec] §7.5 — IK msg1 structure.
+//! - **MSG2** (phase 0x02): `prefix(4) + sender_idx(4) + receiver_idx(4) + noise_payload(57) = 69 bytes`
+//!   Reference: [Noise spec] §7.5 — IK msg2 structure.
+//! - **ESTABLISHED** (phase 0x00): `prefix(4) + receiver_idx(4) + counter(8) + AEAD(inner)`
+//!   The AEAD nonce IS the counter field from the header (not a separate local
+//!   counter). AAD = first 16 bytes of the frame (prefix + receiver_idx + counter).
+//!
+//! ## Inner Message Types (after AEAD decryption of ESTABLISHED)
+//!
+//! Inner format: `[timestamp:4 LE] [msg_type:1] [payload:...]`
+//! - `MSG_HEARTBEAT` (0x51): keepalive, no payload
+//! - `MSG_DISCONNECT` (0x50): peer disconnecting
+//! - `MSG_SESSION_DATAGRAM` (0x00): FSP session data
+
+/// FMP version number. Upper nibble of byte 0.
 pub const FMP_VERSION: u8 = 0;
+
+/// Common prefix size: [version|phase][flags][payload_len_lo][payload_len_hi].
 pub const COMMON_PREFIX_SIZE: usize = 4;
+
+/// Peer index size (u32 LE).
 pub const IDX_SIZE: usize = 4;
+
+/// ESTABLISHED frame header: prefix(4) + receiver_idx(4) + counter(8) = 16 bytes.
+/// Used as AAD for AEAD encryption/decryption of established frames.
 pub const ESTABLISHED_HEADER_SIZE: usize = 16;
-pub const INNER_HEADER_SIZE: usize = 5; // 4-byte timestamp + at least 1 byte msg_type
+
+/// Inner header: timestamp(4) + msg_type(1) = 5 bytes.
+pub const INNER_HEADER_SIZE: usize = 5;
+
+/// Minimum encrypted payload size (inner_header + AEAD tag).
 pub const ENCRYPTED_MIN_SIZE: usize = 32;
 
+/// Noise IK msg1 payload size.
+/// Verified: 33(e) + 49(enc_s = 33 + 16 tag) + 24(enc_epoch = 8 + 16 tag) = 106.
+/// Reference: [Noise spec] §7.5 — IK pattern msg1.
 pub const HANDSHAKE_MSG1_SIZE: usize = 106;
+
+/// Noise IK msg2 payload size.
+/// Verified: 33(e) + 24(enc_epoch = 8 + 16 tag) = 57.
+/// Reference: [Noise spec] §7.5 — IK pattern msg2.
 pub const HANDSHAKE_MSG2_SIZE: usize = 57;
+
+/// Encrypted epoch size: 8(epoch) + 16(tag) = 24.
 pub const EPOCH_ENCRYPTED_SIZE: usize = 24;
 
+/// Total MSG1 wire size: prefix(4) + sender_idx(4) + noise(106) = 114.
 pub const MSG1_WIRE_SIZE: usize = 114;
+
+/// Total MSG2 wire size: prefix(4) + sender_idx(4) + receiver_idx(4) + noise(57) = 69.
 pub const MSG2_WIRE_SIZE: usize = 69;
 
+/// Phase byte for ESTABLISHED data frames.
 pub const PHASE_ESTABLISHED: u8 = 0x00;
+/// Phase byte for handshake MSG1 (initiator → responder).
 pub const PHASE_MSG1: u8 = 0x01;
+/// Phase byte for handshake MSG2 (responder → initiator).
 pub const PHASE_MSG2: u8 = 0x02;
 
+/// Inner message type: heartbeat keepalive (no payload).
 pub const MSG_HEARTBEAT: u8 = 0x51;
+/// Inner message type: FSP session datagram.
 pub const MSG_SESSION_DATAGRAM: u8 = 0x00;
+/// Inner message type: sender report.
+// TODO: MSG_SENDER_REPORT is defined but never used in parsing or sending.
+// Validate when FIPS starts using sender reports.
 pub const MSG_SENDER_REPORT: u8 = 0x01;
+/// Inner message type: receiver report.
+// TODO: MSG_RECEIVER_REPORT is defined but never used in parsing or sending.
+// Validate when FIPS starts using receiver reports.
 pub const MSG_RECEIVER_REPORT: u8 = 0x02;
+/// Inner message type: peer disconnect.
 pub const MSG_DISCONNECT: u8 = 0x50;
 
+/// Flag: key epoch change.
+// TODO: FLAG_KEY_EPOCH is defined but never checked during parsing.
+// Should be validated when FIPS starts using key epoch rotation.
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
+/// Flag: congestion notification.
+// TODO: FLAG_CONGESTION is defined but never checked during parsing.
 pub const FLAG_CONGESTION: u8 = 0x02;
+/// Flag: spin bit (for RTT measurement).
+// TODO: FLAG_SPIN is defined but never checked during parsing.
 pub const FLAG_SPIN: u8 = 0x04;
 
+/// Parsed FMP message. The three variants correspond to the three phase types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FmpMessage<'a> {
     Msg1 {
@@ -44,11 +124,16 @@ pub enum FmpMessage<'a> {
     },
 }
 
+/// Build the 4-byte FMP common prefix.
+///
+/// Wire format: `[version:4 | phase:4] [flags:8] [payload_len:16 LE]`
 pub fn build_prefix(phase: u8, flags: u8, payload_len: u16) -> [u8; COMMON_PREFIX_SIZE] {
     let byte0 = (FMP_VERSION << 4) | (phase & 0x0F);
     [byte0, flags, payload_len as u8, (payload_len >> 8) as u8]
 }
 
+/// Parse the 4-byte FMP common prefix. Returns `(phase, flags, payload_len)`.
+/// Returns `None` if the data is too short or version doesn't match.
 pub fn parse_prefix(data: &[u8]) -> Option<(u8, u8, u16)> {
     if data.len() < COMMON_PREFIX_SIZE {
         return None;
@@ -63,6 +148,10 @@ pub fn parse_prefix(data: &[u8]) -> Option<(u8, u8, u16)> {
     Some((phase, flags, payload_len))
 }
 
+/// Build MSG1 frame: `prefix(4) + sender_idx(4) + noise_payload`.
+///
+/// MSG1 = FMP prefix(4) + sender_idx(4) + Noise IK msg1 payload(106) = 114 bytes.
+/// Reference: [Noise spec] §7.5 — IK msg1 structure.
 pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> usize {
     let needed = COMMON_PREFIX_SIZE + IDX_SIZE + noise_payload.len();
     assert!(out.len() >= needed);
@@ -75,6 +164,11 @@ pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> usiz
     needed
 }
 
+/// Build MSG2 frame: `prefix(4) + sender_idx(4) + receiver_idx(4) + noise_payload`.
+///
+/// MSG2 = FMP prefix(4) + sender_idx(4) + receiver_idx(4) + Noise IK msg2
+/// payload(57) = 69 bytes.
+/// Reference: [Noise spec] §7.5 — IK msg2 structure.
 pub fn build_msg2(
     sender_idx: u32,
     receiver_idx: u32,
@@ -94,6 +188,19 @@ pub fn build_msg2(
     needed
 }
 
+/// Build ESTABLISHED frame with AEAD encryption.
+///
+/// Wire format: `prefix(4) + receiver_idx(4) + counter(8) + AEAD(inner)`.
+///
+/// The AEAD nonce IS the `counter` field from the header (same value used both
+/// as the wire sequence number and the ChaCha20 nonce). This is how FIPS does
+/// it — the counter serves double duty.
+///
+/// AAD = first 16 bytes of the frame (prefix + receiver_idx + counter), i.e.
+/// [`ESTABLISHED_HEADER_SIZE`] bytes.
+///
+/// The `send_ctr` is u64. At 10-second heartbeat intervals, 2^64 wraps in
+/// ~584 billion years — not a practical concern.
 pub fn build_established(
     receiver_idx: u32,
     counter: u64,
@@ -143,6 +250,10 @@ pub fn build_established(
     total
 }
 
+/// Parse an FMP frame into one of three message types based on the phase byte.
+///
+/// Returns `None` if the frame is too short, version is wrong, or phase is
+/// unrecognized.
 pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
     let (phase, _flags, _payload_len) = parse_prefix(data)?;
     let payload = &data[COMMON_PREFIX_SIZE..];

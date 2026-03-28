@@ -1,3 +1,6 @@
+/// Compact a buffer by moving remaining data to the front.
+///
+/// Used by the framing layer to reclaim space after consumed bytes.
 pub fn compact(buf: &mut [u8], pos: &mut usize, len: &mut usize) {
     if *pos > 0 && *pos < *len {
         let remaining = *len - *pos;
@@ -7,6 +10,9 @@ pub fn compact(buf: &mut [u8], pos: &mut usize, len: &mut usize) {
     }
 }
 
+/// Maximum frame payload size. Should match the FIPS MTU.
+///
+/// FIPS: maximum frame size is 1500 bytes (standard Ethernet MTU).
 pub const MAX_FRAME: usize = 1500;
 
 #[cfg(test)]

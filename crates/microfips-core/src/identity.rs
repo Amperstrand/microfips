@@ -1,8 +1,33 @@
+//! FIPS identity and address derivation.
+//!
+//! FIPS nodes are identified by secp256k1 public keys (from Nostr npubs).
+//! Network addresses are derived deterministically from these keys:
+//!
+//! 1. **Node address**: `SHA256(x_only_pubkey)[0..16]` — 16-byte identifier
+//!    FIPS: node address derivation in the FIPS source.
+//! 2. **FIPS address**: `0xfd || node_addr[0..15]` — 16-byte IPv6-like ULA
+//!    address with `0xfd` prefix (RFC 4193 Unique Local Address space).
+//!
+//! ## References
+//!
+//! - **FIPS 180-4**: Secure Hash Standard (SHA-256)
+//! - **RFC 4193**: Unique Local IPv6 Unicast Addresses (ULA prefix `fc00::/7`,
+//!   FIPS uses `fd00::/8`)
+
 use sha2::{Digest, Sha256};
 
+/// 16-byte node address derived from a public key.
+///
+/// Derivation: `SHA256(x_only_pubkey)[0..16]`.
+///
+/// FIPS: node address derivation function in the FIPS source computes
+/// `SHA256(pubkey_x_bytes)` and truncates to 16 bytes.
 pub struct NodeAddr(pub [u8; 16]);
 
 impl NodeAddr {
+    /// Derive a node address from an x-only (32-byte) public key.
+    ///
+    /// Computes `SHA256(x_only)[0..16]`.
     pub fn from_pubkey_x(x_only: &[u8; 32]) -> Self {
         let hash = Sha256::digest(x_only);
         let mut addr = [0u8; 16];
@@ -15,9 +40,19 @@ impl NodeAddr {
     }
 }
 
+/// 16-byte FIPS network address (IPv6-like ULA).
+///
+/// Derivation: `0xfd || node_addr[0..15]`.
+///
+/// The `0xfd` prefix places FIPS addresses in the IPv6 Unique Local Address
+/// space (RFC 4193, `fc00::/7`). FIPS uses the `fd00::/8` subset.
 pub struct FipsAddress(pub [u8; 16]);
 
 impl FipsAddress {
+    /// Create a FIPS address from a node address.
+    ///
+    /// Prepends `0xfd` (ULA prefix) and takes the first 15 bytes of the node
+    /// address to form a 16-byte IPv6-compatible address.
     pub fn from_node_addr(node_addr: &NodeAddr) -> Self {
         let mut bytes = [0u8; 16];
         bytes[0] = 0xfd;
@@ -30,6 +65,9 @@ impl FipsAddress {
     }
 }
 
+/// Compute SHA-256 hash of `input`.
+///
+/// Reference: FIPS 180-4 — Secure Hash Standard.
 pub fn sha256(input: &[u8]) -> [u8; 32] {
     let hash = Sha256::digest(input);
     let mut result = [0u8; 32];

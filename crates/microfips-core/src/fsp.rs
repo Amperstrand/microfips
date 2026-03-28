@@ -1,32 +1,94 @@
+//! FSP — FIPS Session Protocol (end-to-end encrypted sessions).
+//!
+//! FSP provides session-layer encryption on top of the FMP link layer. It uses
+//! the Noise XK handshake pattern for key agreement between endpoints that may
+//! be multiple hops apart in the FIPS mesh.
+//!
+//! **Status: PLANNED** — FSP is implemented but not yet tested against live FIPS.
+//!
+//! ## Session Phases
+//!
+//! - `SESSION_SETUP` (0x01): Initiator sends XK msg1 + routing coordinates
+//! - `SESSION_ACK` (0x02): Responder sends XK msg2 + routing coordinates
+//! - `SESSION_MSG3` (0x03): Initiator sends XK msg3 (completes handshake)
+//! - `ESTABLISHED` (0x00): AEAD-encrypted session data
+//!
+//! ## Wire Format
+//!
+//! All FSP frames share the same 4-byte prefix as FMP:
+//! `[version:4 | phase:4] [flags:8] [payload_len:16 LE]`
+//!
+//! ## Protocol Constants
+//!
+//! - `FIPS_UDP_PORT` (2121): FIPS daemon UDP listen port on VPS.
+//! - `FIPS_IPV6_OVERHEAD` (77): IPv6 + UDP + FMP overhead for MTU calculation.
+//! - `FSP_PORT_IPV6_SHIM` (256): Magic port number that signals the payload
+//!   contains an [`Ipv6Shim`] header instead of raw application data.
+
+/// FSP version number (upper nibble of byte 0).
 pub const FSP_VERSION: u8 = 0;
+
+/// FSP common prefix size (same layout as FMP).
 pub const FSP_COMMON_PREFIX_SIZE: usize = 4;
+
+/// FSP header size (prefix + additional header fields).
 pub const FSP_HEADER_SIZE: usize = 12;
+
+/// FSP inner header size for established data.
 pub const FSP_INNER_HEADER_SIZE: usize = 6;
+
+/// Minimum encrypted payload size.
 pub const FSP_ENCRYPTED_MIN_SIZE: usize = 28;
 
+/// Magic port number indicating the datagram payload contains an [`Ipv6Shim`].
 pub const FSP_PORT_IPV6_SHIM: u16 = 256;
 
+/// Noise XK msg1 size (just the ephemeral public key).
+/// Verified: 33(e) = 33. Matches [`crate::noise::NoiseXkInitiator::write_message1`] output.
 pub const XK_HANDSHAKE_MSG1_SIZE: usize = 33;
+
+/// Noise XK msg2 size.
+/// Verified: 33(e) + 24(enc_epoch = 8 + 16 tag) = 57.
+/// Matches [`crate::noise::NoiseXkInitiator::read_message2`] expected input.
 pub const XK_HANDSHAKE_MSG2_SIZE: usize = 57;
+
+/// Noise XK msg3 size.
+/// Verified: 49(enc_s = 33 + 16 tag) + 24(enc_epoch = 8 + 16 tag) = 73.
+/// Matches [`crate::noise::NoiseXkInitiator::write_message3`] output.
 pub const XK_HANDSHAKE_MSG3_SIZE: usize = 73;
 
+/// Phase byte: established (AEAD-encrypted session data).
 pub const PHASE_ESTABLISHED: u8 = 0x00;
+/// Phase byte: session setup (XK msg1 + routing coordinates).
 pub const PHASE_SESSION_SETUP: u8 = 0x01;
+/// Phase byte: session acknowledgement (XK msg2 + routing coordinates).
 pub const PHASE_SESSION_ACK: u8 = 0x02;
+/// Phase byte: session message 3 (XK msg3, completes handshake).
 pub const PHASE_SESSION_MSG3: u8 = 0x03;
 
+/// Inner message type for session data.
 pub const FSP_MSG_DATA: u8 = 0x10;
 
+/// Flag: routing coordinates are present in the frame.
 pub const FLAG_COORDS_PRESENT: u8 = 0x01;
+/// Flag: key epoch change.
 pub const FLAG_KEY_EPOCH: u8 = 0x02;
+/// Flag: payload is unencrypted (for debugging/setup).
 pub const FLAG_UNENCRYPTED: u8 = 0x04;
 
+/// FIPS daemon UDP port.
 pub const FIPS_UDP_PORT: u16 = 2121;
+
+/// IPv6 + UDP + FMP overhead for MTU calculations.
 pub const FIPS_IPV6_OVERHEAD: usize = 77;
 
+/// FSP datagram header: src_port(2) + dst_port(2) = 4 bytes.
 pub const FSP_DATAGRAM_HEADER_SIZE: usize = 4;
+
+/// Node address size (16 bytes, derived from SHA256 of public key).
 pub const NODE_ADDR_SIZE: usize = 16;
 
+/// FSP error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspError {
     BufferTooSmall,
@@ -47,6 +109,18 @@ fn fsp_prefix(phase: u8, flags: u8, payload_len: u16) -> [u8; FSP_COMMON_PREFIX_
     ]
 }
 
+/// Build a SESSION_SETUP frame (XK msg1 + routing coordinates).
+///
+/// Wire format after prefix:
+/// ```text
+///   [session_flags:1]
+///   [src_count:2 LE] [src_coords: src_count × 16 bytes]
+///   [dst_count:2 LE] [dst_coords: dst_count × 16 bytes]
+///   [handshake_len:2 LE] [handshake: handshake_len bytes]
+/// ```
+///
+/// `src_coords` and `dest_coords` are 16-byte node addresses (see
+/// [`crate::identity::NodeAddr`]).
 pub fn build_session_setup(
     session_flags: u8,
     src_coords: &[[u8; NODE_ADDR_SIZE]],
@@ -98,6 +172,7 @@ pub fn build_session_setup(
     Ok(pos)
 }
 
+/// Parse a SESSION_SETUP frame. Returns `(session_flags, handshake_data)`.
 pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -142,6 +217,9 @@ pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
     Ok((session_flags, &body[pos..pos + hs_len]))
 }
 
+/// Build a SESSION_ACK frame (XK msg2 + routing coordinates).
+///
+/// Same wire format as SESSION_SETUP but with phase = SESSION_ACK.
 pub fn build_session_ack(
     src_coords: &[[u8; NODE_ADDR_SIZE]],
     dest_coords: &[[u8; NODE_ADDR_SIZE]],
@@ -192,6 +270,7 @@ pub fn build_session_ack(
     Ok(pos)
 }
 
+/// Parse a SESSION_ACK frame. Returns the handshake data.
 pub fn parse_session_ack(data: &[u8]) -> Result<&[u8], FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -236,6 +315,12 @@ pub fn parse_session_ack(data: &[u8]) -> Result<&[u8], FspError> {
     Ok(&body[pos..pos + hs_len])
 }
 
+/// Build a SESSION_MSG3 frame (XK msg3, completes the 3-message XK handshake).
+///
+/// Wire format after prefix: `[flags:1] [handshake_len:2 LE] [handshake]`
+///
+/// This carries the third XK handshake message containing the initiator's
+/// encrypted static key and epoch. See [`crate::noise::NoiseXkInitiator::write_message3`].
 pub fn build_session_msg3(handshake: &[u8], out: &mut [u8]) -> Result<usize, FspError> {
     let body_len = 1 + 2 + handshake.len();
     let total = FSP_COMMON_PREFIX_SIZE + body_len;
@@ -257,6 +342,7 @@ pub fn build_session_msg3(handshake: &[u8], out: &mut [u8]) -> Result<usize, Fsp
     Ok(pos)
 }
 
+/// Parse a SESSION_MSG3 frame. Returns the handshake data.
 pub fn parse_session_msg3(data: &[u8]) -> Result<&[u8], FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -283,6 +369,12 @@ pub fn parse_session_msg3(data: &[u8]) -> Result<&[u8], FspError> {
     Ok(&body[3..3 + hs_len])
 }
 
+/// FSP datagram: wraps session data with source and destination ports.
+///
+/// Wire format: `[src_port:2 LE] [dst_port:2 LE] [payload]`
+///
+/// When `src_port` or `dst_port` equals [`FSP_PORT_IPV6_SHIM`] (256), the
+/// payload contains an [`Ipv6Shim`] header instead of raw application data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FspDatagram<'a> {
     pub src_port: u16,
@@ -315,6 +407,13 @@ impl<'a> FspDatagram<'a> {
     }
 }
 
+/// Minimal IPv6-like shim header for carrying FSP datagrams over the FIPS mesh.
+///
+/// Wire format: `[reserved:4 bytes (zeros)] [next_header:1] [hop_limit:1] [payload]`
+///
+/// FIPS uses this as a lightweight IPv6 header for routing FSP datagrams
+/// through multi-hop mesh paths. The `next_header` follows standard IPv6
+/// next-header numbering (e.g., 58 = ICMPv6, 17 = UDP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv6Shim<'a> {
     pub next_header: u8,
