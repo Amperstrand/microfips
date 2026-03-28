@@ -16,22 +16,29 @@ framing, Noise_IK handshake, and a no_std FIPS protocol stack.
 - USB CDC ACM enumeration with upstream embassy crates.io v0.6.0
 - Firmware builds for `thumbv7em-none-eabi` (110 KB, CI verified)
 - CI pipeline: all jobs green
-- Full-chain data flow proven: MCU sends MSG1 (114B) through CDC → proxy → SSH tunnel → bridge → FIPS
-- VPS confirms "Connection promoted to active peer" and responds with MSG2 (69B)
+- **MCU completes IK handshake with live VPS** — MSG1 sent, MSG2 received, Noise IK finalize, transport keys derived
+- **MCU sends heartbeats every ~10s** — proven on hardware, FIPS accepts them
 - 4-LED state machine for visual debugging (boot, usb_ready, msg1_sent, handshake_ok, hb_tx, hb_rx, err, disconnected)
+
+**Known issue — bridge stops forwarding CDC->UDP after ~40s (#10):**
+The MCU sends heartbeats continuously, but the bridge's `serial_to_udp` thread stops forwarding
+them to FIPS after ~40s. FIPS then times out the peer at 30s. Root cause under investigation.
+The bridge's `udp_to_serial` direction (FIPS→MCU) continues working. Hypothesis: TCP socket
+buffering or the bridge's `TcpSerial.read(1)` byte-at-a-time pattern causes data loss.
 
 **Fork issue resolved (2026-03-28):**
 The `Amperstrand/embassy` fork (commit `c0289d7a8`) breaks USB enumeration on STM32F469.
 Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
 Only `embassy-usb-synopsys-otg/src/lib.rs` was modified in the fork (4 patches).
 
-**Framing bug found and fixed (2026-03-28):**
-`recv_frame()` discarded the frame header when the body was incomplete (setting `rpos = rlen`
-for "not enough data yet"). This is the root cause of the MCU MSG2 drop (#6). The 71-byte
-MSG2 frame (2B header + 69B payload) arriving across USB 64-byte packet boundaries would
-trigger the incomplete-frame path, losing the header. Fix: only skip invalid frames
-(ml==0, ml>MAX_FRAME); wait for more data when the frame is simply incomplete.
-The fix is in `microfips-protocol` and needs to be backported to the firmware `main.rs`.
+**Three firmware bugs found and fixed (2026-03-28):**
+1. **Infinite loop in `recv_frame` (critical):** The framing fix introduced a loop where
+   `continue` skipped `read_packet` on incomplete multi-packet frames. MSG2 (71B) arrives
+   as 64B+7B USB packets, triggering the incomplete path. The MCU spun forever.
+   Fix: restructure to always fall through to `read_packet` when more data is needed.
+2. **Handshake loop discarded non-Msg2 frames:** Stale FIPS data (heartbeat retransmits)
+   arriving before MSG2 caused immediate `Err(Invalid)` return. Fix: loop until Msg2 received.
+3. **`steady()` inline framing matched the same bug pattern:** Fixed with `break` instead of `continue`.
 
 **Known infrastructure issues:**
 - `serial_tcp_proxy.py` takes 5-10s to open serial port (pyserial delay), causing it to miss
@@ -159,8 +166,14 @@ GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
 | M3 | Host-side handshake test (`microfips-link`) | Done |
 | M4 | MCU handshake with live VPS | Done (MSG1 sent, MSG2 received, keys derived) |
 | M5 | Host-side full lifecycle simulator (`microfips-sim`) | Done (proven 45+ seconds sustained heartbeat) |
-| M6 | MCU full lifecycle (handshake + heartbeat exchange) | **Unblocked** — framing bug found and fixed in protocol crate, needs firmware backport |
-| M6.5 | Host-side transport trait for firmware protocol testing | Done — `microfips-protocol` crate with Transport trait, MockTransport, 10 tests |
+| M6 | MCU full lifecycle (handshake + heartbeat exchange) | **In progress** — handshake works, heartbeats sent for ~40s, bridge forwarding issue under investigation |
+| M6.1 | MCU MSG1 reaches FIPS through full chain | Done |
+| M6.2 | FIPS promotes MCU to active peer | Done |
+| M6.3 | MSG2 returns through full chain to MCU serial | Done |
+| M6.4 | MCU recv_frame handles multi-packet MSG2 | Done (infinite loop fix) |
+| M6.5 | MCU handshake completes (Noise IK finalize) | Done |
+| M6.6 | MCU sends first heartbeat | Done |
+| M6.7 | Sustained heartbeat exchange (10+ min) | **Testing** — bridge stops forwarding after ~40s |
 | M7 | HTTP status page over FIPS session | Planned |
 
 ## Project Layout
