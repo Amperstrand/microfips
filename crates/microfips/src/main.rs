@@ -68,9 +68,13 @@ const CDC_PKT: usize = 64;
 
 /// Test identity secret key, derived from seed `b'microfips-stm32fips-test-seed-001'`.
 ///
-/// WARNING: This is a hardcoded test key. For production use, this MUST be
+/// 🔴 SECURITY: This is a hardcoded test key. For production use, this MUST be
 /// replaced with a securely generated and stored per-device secret key
 /// (e.g., from flash option bytes or a secure element).
+///
+/// ⚠ FIPS GAP [FIPS-140-3 §8.1]: Hardcoded keys violate FIPS 140-3 key
+/// management requirements. Keys must be generated using an approved DRBG
+/// (SP 800-90A) and stored in a protected area with access controls.
 const MCU_SECRET: [u8; 32] = [
     0xac, 0x68, 0xaf, 0x89, 0x46, 0x2e, 0x7e, 0xd2, 0x6f, 0xf6, 0x70, 0xc1, 0x86, 0xb4, 0xee, 0xb5,
     0x3c, 0x4e, 0x82, 0xd7, 0x2c, 0x8e, 0xf6, 0xce, 0xc4, 0xe6, 0x76, 0xc7, 0x84, 0x3f, 0x83, 0x2e,

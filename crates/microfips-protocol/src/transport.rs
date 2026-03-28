@@ -91,6 +91,20 @@ impl<T: Transport> FrameReader<T> {
     ///
     /// Reads `[u16 LE length] [payload]` from the transport, buffering partial
     /// reads until a complete frame is available.
+    ///
+    /// ## Buffer Overflow Protection
+    ///
+    /// If the declared frame length exceeds `MAX_FRAME` (1500), the data is
+    /// discarded (rpos = rlen, forcing a refill). If incoming data would exceed
+    /// the 2048-byte buffer, the buffer is reset (rlen=0, rpos=0) dropping all
+    /// buffered data. These are safe — no out-of-bounds write can occur.
+    ///
+    /// ## Frame Reassembly Timeout
+    ///
+    /// The `timeout_ms` parameter applies to each individual `transport.recv()`
+    /// call, NOT to the total time spent assembling a complete frame. An attacker
+    /// sending 1-byte-at-a-time within the timeout window could keep the reader
+    /// busy indefinitely. TODO: Add a total assembly timeout for defense.
     pub async fn recv_frame(
         &mut self,
         out: &mut [u8],

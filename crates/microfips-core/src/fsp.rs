@@ -6,6 +6,32 @@
 //!
 //! **Status: PLANNED** — FSP is implemented but not yet tested against live FIPS.
 //!
+//! # Security Review
+//!
+//! ## Ephemeral Key Reuse
+//!
+//! [NOISE-§14.1]: "Reuse of ephemeral keys is catastrophic." FSP runs a second
+//! Noise_XK handshake over the already-encrypted FMP channel. Each XK session
+//! MUST use fresh ephemeral keys — reuse would destroy the forward secrecy
+//! properties. Callers must generate new ephemeral secrets via `CryptoRng` for
+//! each `NoiseXkInitiator::new()` invocation.
+//!
+//! ## Address Collision Resistance
+//!
+//! Node addresses are `SHA256(x_only_pubkey)[0..16]` = 128 bits. Birthday bound
+//! collision probability: `2^64` nodes needed for 50% collision chance. This is
+//! acceptable for the FIPS mesh's expected scale.
+//!
+//! ## Independence from Link Layer
+//!
+//! The FSP Noise_XK handshake is independent of the FMP Noise_IK handshake:
+//! different protocol name strings, fresh ephemeral keys, and separate chaining
+//! keys. No key material is shared between layers — this is correct per Noise
+//! best practices.
+//!
+//! ⚠ FIPS GAP [FIPS-140-3 §9.9]: No self-tests for the XK handshake crypto.
+//! Same gaps as the IK handshake (see `noise.rs` FIPS 140-3 compliance table).
+//!
 //! ## Session Phases
 //!
 //! - `SESSION_SETUP` (0x01): Initiator sends XK msg1 + routing coordinates

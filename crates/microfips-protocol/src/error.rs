@@ -1,3 +1,11 @@
+/// Protocol-level errors.
+///
+/// ⚠ FIPS GAP [FIPS-140-3 §9.9]: On any cryptographic error (e.g.,
+/// `DecryptFailed`), FIPS 140-3 requires the module to enter a critical error
+/// state: zeroize all Sensitive Security Parameters (SSPs), cease all
+/// cryptographic operations, and indicate the error condition. Currently these
+/// errors propagate as `Result::Err` with no SSP zeroization or module halt.
+/// Required: Implement a critical error state handler per ISO 19790 §9.9.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolError {
     Disconnected,

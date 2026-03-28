@@ -12,6 +12,34 @@
 //! wrapped in FMP framing (see [`microfips_core::fmp`]). After handshake, the
 //! steady state sends periodic heartbeats and handles AEAD-encrypted messages.
 //!
+//! # Security Review
+//!
+//! ## DoS and Retry Behavior
+//!
+//! The `run()` loop retries indefinitely with `RETRY_SECS = 3` second intervals.
+//! There is NO maximum retry count — a DoS attack causing repeated handshake
+//! failures would cause infinite reconnection attempts with no exponential
+//! backoff. Compare with WireGuard's cookie mechanism (RFC 8439 + WireGuard
+//! whitepaper §5.4) which provides DoS mitigation.
+//!
+//! ## Heartbeat Timer
+//!
+//! Heartbeats are sent every `HB_SECS = 10` seconds. There is NO maximum
+//! missed heartbeat count before declaring disconnection — the steady loop
+//! relies solely on transport-layer errors or explicit `MSG_DISCONNECT`. If
+//! the peer silently stops responding, the node will continue sending
+//! heartbeats indefinitely. Compare with WireGuard which uses a 3-minute
+//! rekey timer with exponential backoff, and declares a peer dead after
+//! 180 seconds of silence.
+//!
+//! ## Key Zeroization on Disconnect
+//!
+//! ⚠ FIPS GAP [FIPS-140-3 §8.3.2]: When `session()` ends (handshake failure
+//! or `steady()` exit), the transport keys `ks` and `kr` go out of scope but
+//! are NOT zeroized. They remain on the stack until overwritten by subsequent
+//! calls. FIPS 140-3 §8.3.2 requires SSP zeroization when the module enters
+//! an error state or when keys are no longer needed.
+//!
 //! ## Framing
 //!
 //! Note: `Node` reimplements the `[u16 LE length] [payload]` framing logic
@@ -148,12 +176,16 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
     /// 4. Wait for FMP MSG2 frame containing Noise IK msg2 (`<- e, ee, se, epoch`)
     /// 5. Derive transport keys via `Split()`
     ///
-    /// Reference: [Noise spec] §7.5 — IK pattern.
+    /// [NOISE-§7.5]: IK pattern handshake.
     /// Reference: [`microfips_core::fmp`] for FMP framing.
     ///
     /// Note: `noise_st.clone()` is used so we can retry msg2 reads without
     /// re-sending msg1. The cloned state duplicates secret key material and
     /// should be dropped after use.
+    ///
+    /// ⚠ FIPS GAP [FIPS-140-3 §8.3.2]: The `noise_st` and `st` (clone) contain
+    /// ephemeral and static private keys that are not zeroized when they go out
+    /// of scope. The ephemeral key `eph` (32 bytes on stack) is also not zeroized.
     async fn handshake<H: NodeHandler>(&mut self, handler: &mut H) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
         use microfips_core::fmp;
         use microfips_core::noise;
@@ -210,7 +242,14 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
     /// frame format.
     ///
     /// The `send_ctr` (u64) serves as both the AEAD nonce and the wire sequence
-    /// number. At 10s heartbeat intervals, 2^64 wraps in ~584 billion years.
+    /// number. [NOISE-§14.4]: Counter MUST NOT wrap to zero. At 10s heartbeat
+    /// intervals, 2^64 wraps in ~584 billion years — not a concern. However,
+    /// there is no explicit overflow check.
+    ///
+    /// [NOISE-§14.7]: No receive-counter validation or anti-replay window is
+    /// maintained. Replayed ESTABLISHED frames would be accepted. This is
+    /// acceptable for heartbeat-only traffic but MUST be addressed before
+    /// carrying application data. WireGuard uses a sliding-window bitmap.
     async fn steady<H: NodeHandler>(
         &mut self,
         ks: &[u8; 32],

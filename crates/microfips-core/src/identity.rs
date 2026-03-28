@@ -8,6 +8,27 @@
 //! 2. **FIPS address**: `0xfd || node_addr[0..15]` — 16-byte IPv6-like ULA
 //!    address with `0xfd` prefix (RFC 4193 Unique Local Address space).
 //!
+//! # Security Review
+//!
+//! ## Address Derivation Analysis
+//!
+//! The derivation `SHA256(x_only_pubkey)[0..16]` truncates a 256-bit hash to
+//! 128 bits. Comparison with other systems:
+//! - **Bitcoin** uses HASH160 = RIPEMD160(SHA256(pubkey)) → 160 bits
+//! - **Tor** uses SHA3-256(ed25519_pubkey) truncated to 256 bits (full hash)
+//! - **IPv6 SLAAC** uses modified EUI-64 from MAC → 64 bits
+//!
+//! Collision resistance: 128-bit truncation provides `2^64` birthday-bound
+//! security. For a mesh network with up to `2^32` (~4 billion) nodes, the
+//! collision probability is approximately `2^32 * 2^32 / 2^128 = 2^-64`,
+//! which is negligible.
+//!
+//! ## FIPS Address Space
+//!
+//! The `0xfd` prefix places addresses in the IPv6 ULA space (RFC 4193,
+//! `fc00::/7`, specifically `fd00::/8`). This ensures FIPS addresses don't
+//! conflict with routable IPv6 addresses.
+//!
 //! ## References
 //!
 //! - **FIPS 180-4**: Secure Hash Standard (SHA-256)

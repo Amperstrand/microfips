@@ -4,6 +4,36 @@
 //! communication in FIPS. It wraps Noise handshake messages (IK pattern) and
 //! AEAD-encrypted data frames with a common 4-byte prefix and peer index fields.
 //!
+//! # Security Review
+//!
+//! ## Nonce/Counter Management
+//!
+//! [NOISE-§14.4]: The counter used as the AEAD nonce MUST be monotonically
+//! increasing and MUST NOT wrap around to zero. The implementation uses a
+//! `u64` counter which at 10s heartbeat intervals would take ~584 billion
+//! years to wrap — acceptable. However, there is no explicit check for
+//! the maximum nonce value `2^64 - 1` (reserved for rekey per §5.1).
+//!
+//! ## Replay Protection
+//!
+//! [NOISE-§14.7]: The current implementation does NOT perform replay detection
+//! on incoming ESTABLISHED frames. A replayed heartbeat from a previous counter
+//! value would be accepted as valid (same key, valid counter, valid MAC). For
+//! full replay protection, maintain a receive-counter window (e.g., WireGuard's
+//! anti-replay bitmap). This is acceptable for the current heartbeat-only use
+//! case but MUST be addressed before carrying application data.
+//!
+//! ## Heartbeat Binding
+//!
+//! Heartbeat frames are bound to the session via the transport keys derived
+//! from `Split()`. A heartbeat from a previous session would fail AEAD
+//! decryption because the keys differ. Within a session, heartbeats are bound
+//! to their counter value (AEAD nonce) and the frame header (AAD).
+//!
+//! ⚠ FIPS GAP [FIPS-140-3 §9.9]: No self-tests for the AEAD encryption used
+//! in ESTABLISHED frames. The `aead_encrypt`/`aead_decrypt` functions should
+//! pass a known-answer test (RFC 8439 §2.8.2) before first use.
+//!
 //! ## Wire Format
 //!
 //! All FMP frames start with a 4-byte common prefix:
@@ -199,8 +229,11 @@ pub fn build_msg2(
 /// AAD = first 16 bytes of the frame (prefix + receiver_idx + counter), i.e.
 /// [`ESTABLISHED_HEADER_SIZE`] bytes.
 ///
-/// The `send_ctr` is u64. At 10-second heartbeat intervals, 2^64 wraps in
-/// ~584 billion years — not a practical concern.
+/// [NOISE-§14.4]: Nonce MUST be unique per key. The `send_ctr` is u64; at 10s
+/// heartbeat intervals, 2^64 wraps in ~584 billion years — not a concern.
+///
+/// [SP 800-38D §8.2]: If migrating to AES-GCM, nonce uniqueness requirements
+/// are stricter (96-bit nonce, 2^32 invocations max for random nonces).
 pub fn build_established(
     receiver_idx: u32,
     counter: u64,

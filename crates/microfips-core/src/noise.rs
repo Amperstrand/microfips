@@ -4,6 +4,46 @@
 //! - **Noise_IK_secp256k1_ChaChaPoly_SHA256** for link-layer (FMP)
 //! - **Noise_XK_secp256k1_ChaChaPoly_SHA256** for session-layer (FSP)
 //!
+//! # Cryptographic Review Summary
+//!
+//! ## Deviation Table — Noise Protocol Framework Compliance
+//!
+//! | # | Spec Section | Deviation | Severity | Impact | Fix |
+//! |---|-------------|-----------|----------|--------|-----|
+//! | 1 | §5.2 (EncryptAndHash) | Empty AAD during handshake instead of `h` | HIGH | Weakens handshake binding; not interoperable with spec-compliant Noise. See `snow` crate for correct behavior. | Use `h` as AAD — but breaks FIPS interop |
+//! | 2 | §7.5 (IK `se` token) | Initiator computes `DH(e,rs)` not `DH(s,re)` | MEDIUM | Different transcript vs spec; interops only with FIPS, not generic Noise IK | Would require FIPS-side change |
+//! | 3 | §7.9 (XK msg2 `se`) | Missing `se` DH in `read_message2` | HIGH | XK transport keys differ from spec; untested against live FIPS | Add `se = DH(e_init, rs_resp)` before decrypt in msg2 |
+//! | 4 | §5.2 (InitializeSymmetric) | Protocol name < HASHLEN; uses `HASH(name)` directly, not zero-padded | LOW | Correct per spec: when `len(name) <= HASHLEN`, `h = HASH(name)` is valid. Spec says pad only when `len(name) > HASHLEN`. | None needed |
+//! | 5 | §13 (DH function) | Custom `SHA256(x_coordinate)` DH instead of raw ECDH | LOW | Non-standard but valid per §13 allowance for custom DH; required for FIPS interop | Document only |
+//! | 6 | §5.1 (CipherState nonce) | Nonce format `[0x00;4] || LE64(n)` | OK | Matches Noise spec §5.1 and RFC 8439 §2.3 | None |
+//!
+//! ## FIPS 140-3 Compliance Gap Table
+//!
+//! | # | FIPS 140-3 Section | Gap | Recommendation |
+//! |---|-------------------|-----|----------------|
+//! | F1 | §9.9 (Conditional self-tests) | No KAT for ChaCha20-Poly1305 | Add RFC 8439 §2.8.2 test vectors as power-on self-test |
+//! | F2 | §9.9 (Conditional self-tests) | No KAT for SHA-256 | Add FIPS 180-4 Appendix B test vectors |
+//! | F3 | §9.9 (Conditional self-tests) | No KAT for HKDF-SHA256 | Add RFC 5869 Appendix A Test Case 1 vectors |
+//! | F4 | §9.9 (Conditional self-tests) | No KAT for secp256k1 ECDH | Add known base-point multiplication vectors |
+//! | F5 | SP 800-56A §5.6.2.1 | No pair-wise consistency test after keygen | DH(sk, G) then verify pk matches |
+//! | F6 | SP 800-90B §4.1.1 | No continuous RNG test (stuck-at) | Check RNG output blocks for all-zeros |
+//! | F7 | §9.10 (Power-on self-tests) | No firmware integrity test | Hash code section at boot |
+//! | F8 | §8.3.2 (Key zeroization) | No zeroization of ephemeral/session keys on drop | Use `zeroize` crate or volatile writes |
+//! | F9 | §9.9 (Error state) | On self-test failure: returns `Err` but no SSP zeroization or halt | Implement critical error state per ISO 19790 §9.9 |
+//! | F10 | SP 800-56A Rev 3 | secp256k1 not FIPS-approved | Migrate to P-256 or P-384 for FIPS validation |
+//! | F11 | SP 800-38D | ChaCha20-Poly1305 not FIPS-approved | Migrate to AES-256-GCM for FIPS validation |
+//! | F12 | SP 800-56C Rev 2 | HKDF-SHA256 (RFC 5869) not FIPS-approved KDF | Use SP 800-108 or SP 800-56C compliant KDF |
+//!
+//! ## Approved Algorithm Audit (FIPS 140-3 / SP 800-140 series)
+//!
+//! | Component | Currently Used | FIPS-Approved Alternative | Spec Reference |
+//! |-----------|---------------|--------------------------|----------------|
+//! | DH | secp256k1 ECDH (custom x-only) | ECDH P-256/P-384 (SP 800-56A Rev 3) | SP 800-56A §5.7 |
+//! | KDF | HKDF-SHA256 (RFC 5869) | SP 800-56C Rev 2 / SP 800-108 | SP 800-56C §4 |
+//! | AEAD | ChaCha20-Poly1305 (RFC 8439) | AES-256-GCM (SP 800-38D) | SP 800-38D |
+//! | Hash | SHA-256 | SHA-256 (**already approved**) | FIPS 180-4 |
+//! | DRBG | Hardware RNG / `CryptoRng` trait | SP 800-90A CTR/HMAC DRBG | SP 800-90A |
+//!
 //! ## Reference Sources
 //!
 //! - **Noise Protocol Framework** (rev 34): <https://noiseprotocol.org/noise.html>
@@ -14,12 +54,18 @@
 //!   - §7.5: IK pattern: `<- s / -> e, es, s, ss / <- e, ee, se`
 //!   - §7.9: XK pattern: `<- s / -> e, es / <- e, ee, se / -> s, se`
 //!   - §13: DH functions — allows custom DH definitions
+//!   - §14: Security considerations — nonce reuse, key reuse, replay
 //! - **RFC 5869**: HMAC-based Extract-and-Expand Key Derivation Function (HKDF)
 //!   — underlying construction for `mix_key` and `Split`
-//! - **RFC 7539**: ChaCha20 and Poly1305 for IETF Protocols — AEAD construction
-//!   used by ChaChaPoly
+//! - **RFC 8439** (obsoletes RFC 7539): ChaCha20 and Poly1305 for IETF Protocols
+//!   — AEAD construction. §2.8 defines the AEAD interface, §2.3 defines nonce.
+//! - **RFC 5116**: An Interface and Algorithms for Authenticated Encryption
+//!   — generic AEAD interface referenced by Noise spec.
 //! - **RFC 7748**: Elliptic Curves for Security — ECDH function (adapted with
 //!   x-only hash for FIPS; see [`x_only_ecdh`])
+//! - **RFC 6090**: Fundamental Elliptic Curve Cryptography Algorithms — ECDH
+//!   security requirements and cofactor considerations.
+//! - **SEC 1 v2** (Certicom): secp256k1 point encoding and arithmetic.
 //! - **FIPS source** (VPS: orangeclaw): `/root/src/fips/src/noise/`
 //!   - `handshake.rs`: `HandshakeState` with `new_initiator()`,
 //!     `write_message_1()`, `read_message_2()`, `normalize_for_premessage()`,
@@ -27,6 +73,19 @@
 //!   - `mod.rs`: `SymmetricState` with `initialize()`, `split()`,
 //!     `encrypt_and_hash()`, `decrypt_and_hash()`; `CipherState` with
 //!     `encrypt()`, `decrypt()`, `counter_to_nonce()`
+//!
+//! ## Reference Implementations
+//!
+//! - **snow** (Rust, <https://github.com/mcginty/snow>): The most mature Rust
+//!   Noise implementation. Correctly passes `h` as AAD during handshake.
+//!   See `snow/src/cipherstate.rs` and `snow/src/symmetricstate.rs`.
+//! - **WireGuard** (<https://www.wireguard.com/>): Uses
+//!   `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`. Correctly passes `h` as AAD.
+//!   See `wireguard-go/noise_transport.go`.
+//! - **noise-c** (Rust, <https://github.com/rust-noise/noise>): Lower-level
+//!   implementation useful for token-by-token verification.
+//! - **flynn/noise** (Go, <https://github.com/flynn/noise>): Clean
+//!   implementation for cross-verifying the state machine.
 //!
 //! ## FIPS Deviations from Noise Spec
 //!
@@ -39,6 +98,20 @@
 //!   empty AAD when called without a `Payload` struct.
 //! - We match FIPS behavior (empty AAD) for interoperability.
 //! - FIPS: `/root/src/fips/src/noise/mod.rs` — `CipherState::encrypt()`
+//!
+//! ⚠ DEVIATION [NOISE-§5.2]: The Noise spec requires `h` as AAD for all
+//! `EncryptWithAd`/`DecryptWithAd` calls during handshake. This implementation
+//! uses empty AAD (`&[]`), which deviates from the spec. The `snow` crate
+//! (v0.10.0) correctly passes `h` as AAD — see:
+//!   <https://github.com/mcginty/snow/blob/main/src/cipherstate.rs>
+//! WireGuard also correctly passes `h` as AAD:
+//!   <https://git.zx2c4.com/wireguard-go/tree/device/noise-protocol.go>
+//! Security impact: Without `h` as AAD, the handshake ciphertext is not
+//! cryptographically bound to the transcript hash. An attacker who can
+//! manipulate the transcript may be able to cause both sides to derive
+//! different `h` values while still completing the handshake. In practice,
+//! the chaining key `ck` still binds the DH results, so exploitation is
+//! limited — but the spec's security proofs (Noise §7.7) assume `h`-as-AAD.
 //!
 //! ### Deviation #2: `se` token uses different key pairings (FIPS-compatible)
 //!
@@ -54,6 +127,16 @@
 //! chaining key differs from what a spec-compliant Noise implementation would
 //! produce — meaning this implementation is NOT interoperable with generic Noise
 //! IK implementations, only with FIPS.
+//!
+//! ⚠ DEVIATION [NOISE-§7.5]: The Noise spec §7.1 defines `se` as: "DH(s, re) if
+//! initiator, DH(e, rs) if responder". Our initiator computes `DH(e, rs)` for `se`
+//! which is the responder's formula, not the initiator's. This produces a different
+//! shared secret than `DH(s, re)` in general. The `snow` crate correctly uses
+//! `DH(s, re)` for the initiator's `se` token.
+//! Security impact: Reduces the handshake's security properties from the Noise §7.7
+//! table — specifically, the `se` token is meant to provide identity-hiding and
+//! key-compromise impersonation resistance that depends on the *static* key being
+//! used by the initiator. Using `e` instead weakens these properties.
 //!
 //! Note: `DH(e_init, rs_resp) = DH(s_resp, e_init)` by ECDH commutativity, so
 //! both sides derive the same key. See test `se_and_es_produce_different_keys`.
@@ -95,6 +178,25 @@
 //!   duplicates secret key material. This is used for the retry loop in
 //!   `Node::handshake()` (node.rs line ~157: `let mut st = noise_st.clone()`).
 //!   The cloned state should be dropped promptly after use.
+//!
+//! ⚠ FIPS GAP [FIPS-140-3 §8.3.2]: Ephemeral and session keys are NOT zeroized
+//! on drop. `NoiseIkInitiator`, `NoiseXkInitiator`, and transport keys derived
+//! from `finalize()` persist in memory until overwritten. FIPS 140-3 §8.3.2
+//! requires zeroization of all Sensitive Security Parameters (SSPs) when they
+//! are no longer needed. Use the `zeroize` crate (`Zeroize` trait + `ZeroizeOnDrop`
+//! derive) or explicit `core::ptr::write_volatile` on `no_std`.
+//!
+//! ⚠ FIPS GAP [FIPS-140-3 §9.9, §9.10]: This module has ZERO power-on or
+//! conditional self-tests. FIPS 140-3 requires:
+//! - Known-answer tests for all crypto algorithms before first use
+//! - Pair-wise consistency test after key generation (SP 800-56A §5.6.2.1)
+//! - Continuous RNG test (SP 800-90B §4.1.1)
+//! - Software/firmware integrity test at boot
+//! Test vectors are available from:
+//! - ChaCha20-Poly1305: RFC 8439 §2.8.2
+//! - SHA-256: FIPS 180-4 Appendix B
+//! - HKDF: RFC 5869 Appendix A Test Case 1
+//! - secp256k1 ECDH: known base-point multiplication vectors
 
 #[allow(deprecated)]
 use chacha20poly1305::aead::generic_array::GenericArray;
@@ -132,6 +234,12 @@ pub const PROTOCOL_NAME: &[u8] = b"Noise_IK_secp256k1_ChaChaPoly_SHA256";
 /// Reference: [Noise spec] §5.2
 pub const PROTOCOL_NAME_XK: &[u8] = b"Noise_XK_secp256k1_ChaChaPoly_SHA256";
 
+/// Noise protocol errors.
+///
+/// ⚠ FIPS GAP [FIPS-140-3 §9.9]: On any error, FIPS 140-3 requires the module
+/// to enter a critical error state: zeroize all SSPs, cease all crypto
+/// operations, and indicate the error. Currently these errors are returned as
+/// `Result::Err` with no SSP zeroization or module halt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoiseError {
     InvalidKey,
@@ -172,11 +280,23 @@ pub fn parity_normalize(pubkey: &[u8; PUBKEY_SIZE]) -> [u8; PUBKEY_SIZE] {
 /// This deviates from standard secp256k1 Noise patterns (which return the raw
 /// x-coordinate without hashing) but is required for FIPS interoperability.
 ///
-/// Reference: [RFC 7748] §6.1 — ECDH shared secret derivation (adapted here
-/// with x-only hash).
+/// Reference: [RFC 7748] §5 — X25519 DH (analogous construction for Curve25519).
+/// Reference: [RFC 6090] — ECDH security requirements. The SHA256 wrapping
+/// serves as a key-derivation step, which is actually best practice per
+/// NIST SP 800-56A Rev 3 §5.8 (one-step KDF after ECDH).
+/// Reference: SEC 1 v2 — secp256k1 point encoding and arithmetic.
 ///
 /// FIPS: `/root/src/fips/src/noise/handshake.rs` — `HandshakeState::ecdh()`
 /// uses `shared_secret_point()` then `SHA256(point[..32])`.
+///
+/// ⚠ FIPS GAP [SP 800-56A §5.6.2.1]: No pair-wise consistency test is
+/// performed after key generation to verify `DH(sk, G) == pk`. FIPS 140-3
+/// requires this for all DH key pairs.
+///
+/// Security analysis: The SHA256 wrapping is beneficial — it acts as a
+/// key-extraction step per NIST guidance, and resolves any cofactor issues
+/// inherent in secp256k1 (cofactor=1, so no issue in practice). The DHLEN=32
+/// output (SHA256 digest) satisfies Noise spec §13 requirements.
 pub fn x_only_ecdh(
     my_secret: &[u8; 32],
     their_pub: &[u8; PUBKEY_SIZE],
@@ -200,6 +320,11 @@ pub fn ecdh_pubkey(secret: &[u8; 32]) -> Result<[u8; PUBKEY_SIZE], NoiseError> {
 }
 
 /// SHA256(a || b) — concatenated hash used by `mix_hash`.
+///
+/// [NOISE-§5.2]: `MixHash(data)` is defined as `h = HASH(h || data)`.
+/// This function computes the underlying `HASH(a || b)` operation.
+///
+/// Reference: FIPS 180-4 (SHA-256), Noise spec §12.2 (HASHLEN=32, BLOCKLEN=64).
 fn hash_concat(a: &[u8], b: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(a);
@@ -237,8 +362,10 @@ fn mix_key(ck: &[u8; 32], ikm: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
 
 /// Mix data into the handshake hash: `h = SHA256(h || data)`.
 ///
-/// Reference: [Noise spec] §5.2 — `SymmetricState.MixHash(data)`:
-///   `h = HASH(h || data)`
+/// [NOISE-§5.2]: `SymmetricState.MixHash(data)`: `h = HASH(h || data)`.
+/// Verified: This implementation correctly computes `SHA256(h || data)`.
+///
+/// Reference: Noise spec §12.2 — HASH=SHA-256, HASHLEN=32.
 fn mix_hash(h: &[u8; 32], data: &[u8]) -> [u8; 32] {
     hash_concat(h, data)
 }
@@ -247,9 +374,15 @@ fn mix_hash(h: &[u8; 32], data: &[u8]) -> [u8; 32] {
 ///
 /// Layout: `[0x00; 4] || counter.to_le_bytes()` (4 zero bytes + 8-byte LE).
 ///
-/// Reference: [Noise spec] §5.1 — "nonce n [...] 32-bit [...] set to zero,
-/// followed by a little-endian 64-bit value". The maximum n value (2^64-1)
-/// is reserved for rekey.
+/// [NOISE-§5.1]: "nonce n [...] 32-bit [...] set to zero, followed by a
+/// little-endian 64-bit value". The maximum n value (2^64-1) is reserved
+/// for rekey per §5.1.
+///
+/// Reference: [RFC 8439] §2.3 — ChaCha20 uses a 96-bit (12-byte) nonce.
+/// The Noise spec's nonce layout matches this directly.
+///
+/// [NOISE-§14.4]: Nonce MUST NOT wrap around to zero. At 10s heartbeat
+/// intervals, 2^64 wraps in ~584 billion years — not a concern.
 ///
 /// FIPS: `/root/src/fips/src/noise/mod.rs` — `CipherState::counter_to_nonce()`
 /// uses the same layout: `[0;4] || counter.to_le_bytes()`.
@@ -261,14 +394,21 @@ fn make_nonce(n: u64) -> [u8; NONCE_SIZE] {
 
 /// AEAD encrypt with ChaCha20-Poly1305.
 ///
-/// Reference: [Noise spec] §4.2 — `ENCRYPT(k, n, ad, plaintext)`:
-///   Returns `ciphertext || tag`.
-/// Reference: [RFC 7539] §2.8 — AEAD construction using ChaCha20 for
-///   encryption and Poly1305 for authentication.
+/// [NOISE-§4.2]: `ENCRYPT(k, n, ad, plaintext)` returns `ciphertext || tag`.
+///
+/// Reference: [RFC 8439] §2.8 — AEAD_CHACHA20_POLY1305 construction:
+///   - ChaCha20 encrypts plaintext with key `k` and nonce `n`
+///   - Poly1305 authenticates `(ad, ciphertext)` producing 16-byte tag
+/// Reference: [RFC 5116] — Generic AEAD interface.
 ///
 /// `aad` is authenticated but not encrypted. During handshake, FIPS passes
 /// empty AAD (`&[]`) instead of the hash state `h` — see module-level docs
 /// "Deviation #1: No AAD during handshake".
+///
+/// ⚠ DEVIATION [NOISE-§5.2, §7.3]: The Noise spec §7.3 states: "If k is
+/// nonempty, the payload is encrypted using EncryptWithAd(h, payload)."
+/// This means the handshake hash `h` MUST be the AAD. Currently it's not.
+/// The `snow` crate correctly passes `h` as AAD.
 ///
 /// FIPS: `/root/src/fips/src/noise/mod.rs` — `CipherState::encrypt()` calls
 /// `cipher.encrypt(&nonce, plaintext)` with no AAD (the `Aead` trait's
@@ -301,8 +441,12 @@ pub fn aead_encrypt(
 
 /// AEAD decrypt with ChaCha20-Poly1305.
 ///
-/// Reference: [Noise spec] §4.2 — `DECRYPT(k, n, ad, ciphertext)`.
-/// Reference: [RFC 7539] §2.8 — AEAD decryption and tag verification.
+/// [NOISE-§4.2]: `DECRYPT(k, n, ad, ciphertext)` returns plaintext or error.
+///
+/// Reference: [RFC 8439] §2.8 — AEAD decryption and tag verification.
+/// Reference: [RFC 5116] — Generic AEAD interface.
+///
+/// Same AAD deviation as [`aead_encrypt`] applies here.
 #[allow(deprecated)]
 pub fn aead_decrypt(
     key: &[u8; 32],
@@ -336,37 +480,50 @@ pub fn aead_decrypt(
 
 /// Noise IK initiator state machine.
 ///
-/// Reference: [Noise spec] §5.3 — `HandshakeState` maintains `(s, e, rs, re)`
-/// key pairs plus `SymmetricState(ck, h, k, n)`.
+/// [NOISE-§5.3]: `HandshakeState` maintains `(s, e, rs, re)` key pairs plus
+/// `SymmetricState(ck, h, k, n)`.
 ///
 /// Security: `e_priv` and `s_priv` hold sensitive key material. In `no_std`
 /// without `alloc`, zeroize-on-drop is not implemented. `Clone` is derived
 /// for the retry loop in `Node::handshake()` — cloned state should be dropped
 /// after use.
+///
+/// ⚠ FIPS GAP [FIPS-140-3 §8.3.2]: Private key fields `e_priv` and `s_priv`
+/// are never zeroized. The `Clone` derive duplicates these secrets.
+/// Required: implement `Drop` with volatile zeroing, or use `zeroize` crate.
 #[derive(Clone)]
 pub struct NoiseIkInitiator {
     h: [u8; 32],
     ck: [u8; 32],
-    e_priv: [u8; 32],  // SECRET: ephemeral private key
+    e_priv: [u8; 32],  // 🔴 SECURITY: SECRET ephemeral private key — not zeroized on drop
     e_pub: [u8; PUBKEY_SIZE],
-    s_priv: [u8; 32],  // SECRET: static private key
+    s_priv: [u8; 32],  // 🔴 SECURITY: SECRET static private key — not zeroized on drop
     rs_pub: [u8; PUBKEY_SIZE],
-    k: Option<[u8; 32]>,
+    k: Option<[u8; 32]>,  // 🔴 SECURITY: derived session key material — not zeroized on drop
     n: u64,
 }
 
 impl NoiseIkInitiator {
     /// Initialize the IK initiator.
     ///
-    /// Reference: [Noise spec] §5.3 `Initialize(handshake_pattern, ...)`:
-    ///   1. `h = HASH(protocol_name)` — SHA256 of the protocol name string
-    ///   2. `ck = h` — chaining key starts as copy of h
-    ///   3. Process pre-messages: IK has `<- s` so `MixHash(rs_normalized)`
+    /// [NOISE-§5.3] `Initialize(handshake_pattern, ...)`:
+    ///   1. `h = HASH(protocol_name)` — SHA256 of the protocol name string.
+    ///      Per §5.2, if `len(protocol_name) <= HASHLEN` (36 <= 32 is FALSE),
+    ///      then `h = HASH(protocol_name)`. Our protocol name is 36 bytes which
+    ///      is > HASHLEN=32, so the spec says `h = HASH(protocol_name)` after
+    ///      padding to HASHLEN. Since len > HASHLEN, we hash directly — this is
+    ///      correct per spec: "If `len(protocol_name)` is greater than
+    ///      HASHLEN, then `h = HASH(protocol_name)`".
+    ///   2. `ck = h` — chaining key starts as copy of h.
+    ///   3. Process pre-messages: IK has `<- s` so `MixHash(rs_normalized)`.
     ///
     /// The IK pattern has a pre-message `<- s` meaning the responder's static
     /// key is known to the initiator before the handshake begins. We
     /// parity-normalize it (see [`parity_normalize`]) and mix into h so both
     /// sides have the same hash chain.
+    ///
+    /// Verified against `snow` crate `HandshakeState::new()`:
+    ///   <https://github.com/mcginty/snow/blob/main/src/handshakestate.rs>
     ///
     /// FIPS: `/root/src/fips/src/noise/handshake.rs` —
     /// `HandshakeState::new_initiator()` calls
@@ -590,7 +747,7 @@ impl NoiseIkInitiator {
 ///
 /// Implements `Noise_XK_secp256k1_ChaChaPoly_SHA256`.
 ///
-/// Reference: [Noise spec] §7.9 — XK pattern:
+/// [NOISE-§7.9] — XK pattern:
 /// ```text
 ///   <- s                       (pre-message: responder's static key)
 ///   -> e, es                   (msg1: 33 bytes)
@@ -601,26 +758,31 @@ impl NoiseIkInitiator {
 /// The initiator knows the responder's static key upfront (from the link-layer
 /// peer index). No AAD during handshake (FIPS deviation, same as IK).
 ///
-/// TODO(SPEC): XK `read_message2` only performs `ee = DH(e, re)` before
-/// decrypting the epoch. Per Noise spec §7.9, msg2 tokens are `<- e, ee, se`
+/// 🔴 SECURITY [NOISE-§7.9]: XK `read_message2` only performs `ee = DH(e, re)`
+/// before decrypting the epoch. Per Noise spec §7.9, msg2 tokens are `<- e, ee, se`
 /// where `se = DH(e_init, rs_resp)` from the initiator's perspective. The `se`
 /// DH is MISSING from `read_message2`. The test responder (`NoiseXkResponder`
 /// in tests) also omits `se` in `write_message2`, so the handshake succeeds
 /// in tests. If FIPS's XK responder also omits `se` in msg2, this is a FIPS
-/// deviation that must be documented. If FIPS includes it, this is a BUG.
+/// deviation that must be documented. If FIPS includes it, this is a BUG that
+/// will cause XK handshakes to fail against live FIPS.
 /// XK is currently PLANNED/untested against live FIPS.
+///
+/// [NOISE-§14.1]: FSP runs a second Noise_XK handshake over the already-encrypted
+/// FMP channel. Ephemeral keys MUST be fresh for each handshake — reuse is
+/// catastrophic. Verify that callers generate new ephemeral keys per session.
 ///
 /// Security: see [`NoiseIkInitiator`] for key material handling notes.
 #[derive(Clone)]
 pub struct NoiseXkInitiator {
     h: [u8; 32],
     ck: [u8; 32],
-    e_priv: [u8; 32],  // SECRET: ephemeral private key
+    e_priv: [u8; 32],  // 🔴 SECURITY: SECRET ephemeral private key — not zeroized on drop
     e_pub: [u8; PUBKEY_SIZE],
-    s_priv: [u8; 32],  // SECRET: static private key
+    s_priv: [u8; 32],  // 🔴 SECURITY: SECRET static private key — not zeroized on drop
     rs_pub: [u8; PUBKEY_SIZE],
     re_pub: Option<[u8; PUBKEY_SIZE]>,
-    k: Option<[u8; 32]>,
+    k: Option<[u8; 32]>,  // 🔴 SECURITY: derived session key material — not zeroized on drop
     n: u64,
 }
 
@@ -1039,16 +1201,21 @@ mod responder_pub {
 
     /// Noise IK Responder for testing and future use.
     ///
-    /// Reference: [Noise spec] §7.5 — IK responder processes:
+    /// [NOISE-§7.5] — IK responder processes:
     ///   pre-message `<- s`: mix own static key
     ///   msg1 `-> e, es, s, ss, epoch`: read tokens
     ///   msg2 `<- e, ee, se, epoch`: write tokens
+    ///
+    /// The responder's `se` computation in `write_message2` is `DH(s_resp, ei_init)`
+    /// which per spec §7.1 is correct: for the responder, `se = DH(s, re)` where
+    /// `re` = initiator's ephemeral. (Note: the *initiator's* `se` is the deviant
+    /// one — see Deviation #2 in module docs.)
     ///
     /// FIPS: `/root/src/fips/src/noise/handshake.rs` — responder-side handling.
     pub struct NoiseIkResponder {
         h: [u8; 32],
         ck: [u8; 32],
-        s_priv: [u8; 32],  // SECRET: responder's static private key
+        s_priv: [u8; 32],  // 🔴 SECURITY: SECRET responder's static private key
         ei_pub: [u8; PUBKEY_SIZE],
         rs_pub: Option<[u8; PUBKEY_SIZE]>,
         k: Option<[u8; 32]>,
