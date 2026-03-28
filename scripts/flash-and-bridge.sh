@@ -1,8 +1,9 @@
 #!/bin/bash
 set -e
+: "${VPS_PASS:?ERROR: VPS_PASS not set}"
 
 VPS="routstr@orangeclaw.dns4sats.xyz"
-VPASS="Elci9quadAd"
+VPASS="${VPS_PASS}"
 VPS_SSH="sshpass -p '$VPASS' ssh -o StrictHostKeyChecking=no $VPS"
 
 echo "=== Step 1: Flash MCU ==="

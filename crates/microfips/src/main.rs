@@ -4,8 +4,8 @@
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use defmt::{info, warn};
 use defmt_rtt as _;
+
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
@@ -27,11 +27,28 @@ static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
 #[used]
 static _PANIC_LINE_KEEP: &AtomicU32 = &PANIC_LINE;
 
+static STAT_MSG1_TX: AtomicU32 = AtomicU32::new(0);
+static STAT_MSG2_RX: AtomicU32 = AtomicU32::new(0);
+static STAT_HB_TX: AtomicU32 = AtomicU32::new(0);
+static STAT_HB_RX: AtomicU32 = AtomicU32::new(0);
+static STAT_USB_ERR: AtomicU32 = AtomicU32::new(0);
+static STAT_STATE: AtomicU32 = AtomicU32::new(0);
+
+const S_BOOT: u32 = 0;
+const S_USB_READY: u32 = 1;
+const S_MSG1_SENT: u32 = 2;
+const S_HANDSHAKE_OK: u32 = 3;
+const S_HB_TX: u32 = 4;
+const S_HB_RX: u32 = 5;
+const S_ERR: u32 = 6;
+const S_DISCONNECTED: u32 = 7;
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     if let Some(loc) = info.location() {
         PANIC_LINE.store(loc.line(), Ordering::Relaxed);
     }
+    STAT_STATE.store(S_ERR, Ordering::Relaxed);
     loop {
         cortex_m::asm::delay(500_000);
         cortex_m::asm::delay(500_000);
@@ -68,10 +85,79 @@ fn next_ctr() -> u64 {
     SEND_COUNTER.fetch_add(1, Ordering::Relaxed) as u64
 }
 
+struct Leds {
+    green: Output<'static>,
+    orange: Output<'static>,
+    red: Output<'static>,
+    blue: Output<'static>,
+}
+
+impl Leds {
+    fn set_state(&mut self, state: u32) {
+        STAT_STATE.store(state, Ordering::Relaxed);
+        match state {
+            S_BOOT => {
+                self.green.set_low();
+                self.orange.set_low();
+                self.red.set_low();
+                self.blue.set_low();
+            }
+            S_USB_READY => {
+                self.green.set_high();
+                self.orange.set_low();
+                self.red.set_low();
+                self.blue.set_low();
+            }
+            S_MSG1_SENT => {
+                self.green.set_high();
+                self.orange.set_high();
+                self.red.set_low();
+                self.blue.set_low();
+            }
+            S_HANDSHAKE_OK => {
+                self.green.set_high();
+                self.orange.set_high();
+                self.red.set_low();
+                self.blue.set_high();
+            }
+            S_HB_TX => {
+                self.green.set_high();
+                self.orange.set_high();
+                self.red.set_low();
+                self.blue.set_low();
+            }
+            S_HB_RX => {
+                self.green.set_high();
+                self.orange.set_high();
+                self.red.set_high();
+                self.blue.set_high();
+            }
+            S_ERR => {
+                self.green.set_low();
+                self.orange.set_low();
+                self.red.set_high();
+                self.blue.set_low();
+            }
+            S_DISCONNECTED => {
+                self.green.set_low();
+                self.orange.set_low();
+                self.red.set_low();
+                self.blue.set_low();
+            }
+            _ => {}
+        }
+    }
+
+    fn blink_green_once(&mut self) {
+        self.green.set_high();
+        cortex_m::asm::delay(8_000_000);
+        self.green.set_low();
+        cortex_m::asm::delay(8_000_000);
+    }
+}
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    info!("microfips");
-
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
@@ -91,13 +177,22 @@ async fn main(_spawner: Spawner) {
     }
     let p = embassy_stm32::init(config);
 
+    let mut leds = Leds {
+        green: Output::new(p.PG6, Level::Low, Speed::Low),
+        orange: Output::new(p.PD4, Level::Low, Speed::Low),
+        red: Output::new(p.PD5, Level::Low, Speed::Low),
+        blue: Output::new(p.PK3, Level::Low, Speed::Low),
+    };
+
+    leds.blink_green_once();
+    leds.blink_green_once();
+
     let rng = GLOBAL_RNG.init(Rng::new(p.RNG, Irqs));
-    let mut led = Output::new(p.PG6, Level::Low, Speed::Low);
 
     let my_pub = noise::ecdh_pubkey(&MCU_SECRET).unwrap();
-    info!("pub: {:02x}", my_pub);
 
-    info!("precomputing msg1...");
+    leds.blink_green_once();
+
     let mut eph = [0u8; 32];
     rng.fill_bytes(&mut eph);
     let (mut noise_st, _e_pub) =
@@ -112,7 +207,8 @@ async fn main(_spawner: Spawner) {
     let pre_msg1: [u8; fmp::MSG1_WIRE_SIZE] = f1[..f1len].try_into().expect("msg1 size");
     let pre_msg1 = PRE_MSG1.init(pre_msg1);
     let pre_noise_st = PRE_NOISE_ST.init(noise_st);
-    info!("msg1 ready");
+
+    leds.blink_green_once();
 
     let ep_out_buf = EP_OUT_BUF.init([0u8; 1024]);
     let mut usb_cfg = embassy_stm32::usb::Config::default();
@@ -143,7 +239,7 @@ async fn main(_spawner: Spawner) {
     let mut usb = builder.build();
 
     let usb_fut = usb.run();
-    let fips_fut = fips_task(&mut class, &mut led, pre_msg1, pre_noise_st);
+    let fips_fut = fips_task(&mut class, &mut leds, pre_msg1, pre_noise_st);
 
     join(usb_fut, fips_fut).await;
 }
@@ -193,7 +289,7 @@ async fn cdc_send_frame<'d, T: embassy_stm32::usb::Instance + 'd>(
 
 async fn fips_task<'d, T: embassy_stm32::usb::Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    led: &mut Output<'static>,
+    leds: &mut Leds,
     pre_msg1: &'static [u8; fmp::MSG1_WIRE_SIZE],
     pre_noise_st: &'static noise::NoiseIkInitiator,
 ) {
@@ -204,7 +300,7 @@ async fn fips_task<'d, T: embassy_stm32::usb::Instance + 'd>(
     loop {
         class.wait_connection().await;
         Timer::after(Duration::from_millis(500)).await;
-        led.set_high();
+        leds.set_state(S_USB_READY);
 
         rpos = 0;
         rlen = 0;
@@ -220,15 +316,15 @@ async fn fips_task<'d, T: embassy_stm32::usb::Instance + 'd>(
         .await
         {
             Ok((ks, kr, them, _us)) => {
-                info!("handshake ok");
-                let _ = steady(class, &ks, &kr, them, &mut rbuf, &mut rpos, &mut rlen).await;
-                warn!("steady ended, retrying...");
+                leds.set_state(S_HANDSHAKE_OK);
+                Timer::after(Duration::from_millis(500)).await;
+                let _ = steady(class, leds, &ks, &kr, them, &mut rbuf, &mut rpos, &mut rlen).await;
+                leds.set_state(S_DISCONNECTED);
             }
-            Err(e) => {
-                warn!("handshake failed: {:?}", e);
+            Err(_) => {
+                leds.set_state(S_ERR);
             }
         }
-        led.set_low();
         Timer::after(Duration::from_secs(RETRY_SECS)).await;
     }
 }
@@ -242,6 +338,7 @@ async fn handshake<'d, T: embassy_stm32::usb::Instance + 'd>(
     rlen: &mut usize,
 ) -> Result<([u8; 32], [u8; 32], u32, u32), Err> {
     cdc_send_frame(class, pre_msg1).await?;
+    STAT_MSG1_TX.fetch_add(1, Ordering::Relaxed);
     yield_now().await;
 
     let mut mb = [0u8; 2048];
@@ -259,12 +356,10 @@ async fn handshake<'d, T: embassy_stm32::usb::Instance + 'd>(
             st.read_message2(noise_payload).map_err(|_| Err::Decrypt)?;
             yield_now().await;
             let (ks, kr) = st.finalize();
+            STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
             Ok((ks, kr, sender_idx, receiver_idx))
         }
-        _ => {
-            warn!("not msg2");
-            Err(Err::Invalid)
-        }
+        _ => Err(Err::Invalid),
     }
 }
 
@@ -315,7 +410,10 @@ async fn recv_frame<'d, T: embassy_stm32::usb::Instance + 'd>(
                 rbuf[*rlen..*rlen + n].copy_from_slice(&rx[..n]);
                 *rlen += n;
             }
-            embassy_futures::select::Either::First(Err(e)) => return Err(e.into()),
+            embassy_futures::select::Either::First(Err(e)) => {
+                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
+                return Err(e.into());
+            }
             embassy_futures::select::Either::Second(()) => return Err(Err::Timeout),
         }
     }
@@ -332,6 +430,7 @@ fn compact(buf: &mut [u8], pos: &mut usize, len: &mut usize) {
 
 async fn steady<'d, T: embassy_stm32::usb::Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+    leds: &mut Leds,
     ks: &[u8; 32],
     kr: &[u8; 32],
     them: u32,
@@ -366,11 +465,8 @@ async fn steady<'d, T: embassy_stm32::usb::Instance + 'd>(
                     }
                     let s = *rpos + 2;
                     let e = s + ml;
-                    if let Err(e) = handle(kr, &rbuf[s..e]) {
-                        if matches!(e, Err::PeerDC) {
-                            return Ok(());
-                        }
-                        warn!("frame: {:?}", e);
+                    if let Err(Err::PeerDC) = handle(kr, leds, &rbuf[s..e]) {
+                        return Ok(());
                     }
                     *rpos = e;
                 }
@@ -386,9 +482,15 @@ async fn steady<'d, T: embassy_stm32::usb::Instance + 'd>(
                     let fl =
                         fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut out);
                     let _ = cdc_send_frame(class, &out[..fl]).await;
+                    STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
+                    leds.set_state(S_HB_TX);
+                    leds.set_state(S_HANDSHAKE_OK);
                 }
             }
-            embassy_futures::select::Either::First(Err(e)) => return Err(e.into()),
+            embassy_futures::select::Either::First(Err(e)) => {
+                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
+                return Err(e.into());
+            }
             embassy_futures::select::Either::Second(()) => {
                 next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
                 let c = next_ctr();
@@ -396,12 +498,15 @@ async fn steady<'d, T: embassy_stm32::usb::Instance + 'd>(
                 let mut out = [0u8; 256];
                 let fl = fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut out);
                 let _ = cdc_send_frame(class, &out[..fl]).await;
+                STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
+                leds.set_state(S_HB_TX);
+                leds.set_state(S_HANDSHAKE_OK);
             }
         }
     }
 }
 
-fn handle(kr: &[u8; 32], data: &[u8]) -> Result<(), Err> {
+fn handle(kr: &[u8; 32], leds: &mut Leds, data: &[u8]) -> Result<(), Err> {
     let m = fmp::parse_message(data).ok_or(Err::Invalid)?;
     match m {
         fmp::FmpMessage::Established {
@@ -415,12 +520,14 @@ fn handle(kr: &[u8; 32], data: &[u8]) -> Result<(), Err> {
                 return Err(Err::Invalid);
             }
             match dec[4] {
-                fmp::MSG_HEARTBEAT => info!("HB rx"),
+                fmp::MSG_HEARTBEAT => {
+                    STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
+                    leds.set_state(S_HB_RX);
+                }
                 fmp::MSG_DISCONNECT => {
-                    info!("DC rx");
                     return Err(Err::PeerDC);
                 }
-                t => info!("msg 0x{:02x} {}B", t, dl - fmp::INNER_HEADER_SIZE),
+                _ => {}
             }
             Ok(())
         }

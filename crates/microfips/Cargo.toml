@@ -6,7 +6,7 @@ description = "Minimal FIPS leaf node on STM32F469I-DISCO"
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
-embassy-stm32 = { path = "../../../embassy/embassy-stm32", features = [
+embassy-stm32 = { version = "0.6.0", features = [
     "defmt",
     "stm32f469ni",
     "unstable-pac",
@@ -14,21 +14,21 @@ embassy-stm32 = { path = "../../../embassy/embassy-stm32", features = [
     "time-driver-any",
     "exti",
 ] }
-embassy-usb = { path = "../../../embassy/embassy-usb", features = ["defmt"] }
-embassy-usb-synopsys-otg = { path = "../../../embassy/embassy-usb-synopsys-otg", features = ["defmt"] }
-embassy-executor = { path = "../../../embassy/embassy-executor", features = [
+embassy-usb = { version = "0.6.0", features = ["defmt"] }
+embassy-usb-synopsys-otg = { version = "0.3.2", features = ["defmt"] }
+embassy-executor = { version = "0.10.0", features = [
     "platform-cortex-m",
     "executor-thread",
     "executor-interrupt",
     "defmt",
 ] }
-embassy-time = { path = "../../../embassy/embassy-time", features = [
+embassy-time = { version = "0.5.1", features = [
     "defmt",
     "defmt-timestamp-uptime",
     "tick-hz-32_768",
 ] }
-embassy-sync = { path = "../../../embassy/embassy-sync", features = ["defmt"] }
-embassy-futures = { path = "../../../embassy/embassy-futures" }
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
+embassy-futures = { version = "0.1.2" }
 
 defmt = "1.0"
 defmt-rtt = "1.0"

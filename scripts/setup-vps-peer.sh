@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+: "${VPS_PASS:?ERROR: VPS_PASS not set}"
 
 sudo tee /etc/fips/fips-bootstrap.yaml << 'ENDOFFILE'
 node:

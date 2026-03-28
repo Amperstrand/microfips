@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+: "${VPS_PASS:?ERROR: VPS_PASS not set}"
 
 echo "Creating systemd service..."
 sudo tee /etc/systemd/system/fips.service << 'ENDOFFILE'

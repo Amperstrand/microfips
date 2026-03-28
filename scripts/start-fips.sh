@@ -1,5 +1,7 @@
 #!/bin/bash
-echo "Elci9quadAd" | sudo -S bash -c 'cat > /etc/systemd/system/fips.service << ENDOFFILE
+set -e
+: "${VPS_PASS:?ERROR: VPS_PASS not set}"
+echo "$VPS_PASS" | sudo -S bash -c 'cat > /etc/systemd/system/fips.service << ENDOFFILE
 [Unit]
 Description=FIPS Daemon
 After=network.target
@@ -16,9 +18,9 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ENDOFFILE'
 
-echo "Elci9quadAd" | sudo -S systemctl daemon-reload
-echo "Elci9quadAd" | sudo -S systemctl enable fips
-echo "Elci9quadAd" | sudo -S systemctl start fips
+echo "$VPS_PASS" | sudo -S systemctl daemon-reload
+echo "$VPS_PASS" | sudo -S systemctl enable fips
+echo "$VPS_PASS" | sudo -S systemctl start fips
 sleep 2
-echo "Elci9quadAd" | sudo -S systemctl status fips --no-pager
+echo "$VPS_PASS" | sudo -S systemctl status fips --no-pager
 ss -ulnp | grep 2121
