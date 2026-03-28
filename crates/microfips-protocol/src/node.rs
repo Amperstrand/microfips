@@ -69,6 +69,7 @@ pub struct Node<T: Transport, R: CryptoRng> {
     rbuf: [u8; 2048],
     rpos: usize,
     rlen: usize,
+    resp_buf: [u8; 256],
 }
 
 impl<T: Transport, R: CryptoRng> Node<T, R> {
@@ -81,6 +82,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
             rbuf: [0u8; 2048],
             rpos: 0,
             rlen: 0,
+            resp_buf: [0u8; 256],
         }
     }
 
@@ -206,17 +208,16 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                         let s = self.rpos + 2;
                         let e = s + ml;
 
-                        let mut resp_buf = [0u8; 256];
-                        let result = handle_frame_inner(kr, &self.rbuf[s..e], handler, &mut resp_buf);
+                        let result = handle_frame_inner(kr, &self.rbuf[s..e], handler, &mut self.resp_buf);
                         self.rpos = e;
 
                         match result {
-                            FrameHandleResult::Continue => {}
-                            FrameHandleResult::HeartbeatRecv => {
+                            FrameAction::Continue => {}
+                            FrameAction::HeartbeatRecv => {
                                 handler.on_event(NodeEvent::HeartbeatRecv).await;
                             }
-                            FrameHandleResult::PeerDC => return Ok(()),
-                            FrameHandleResult::SendDatagram(len) => {
+                            FrameAction::PeerDC => return Ok(()),
+                            FrameAction::SendDatagram(len) => {
                                 use microfips_core::fmp;
                                 let c = send_ctr;
                                 send_ctr += 1;
@@ -224,7 +225,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                                 let mut out = [0u8; 256];
                                 let fl = fmp::build_established(
                                     them, c, fmp::MSG_SESSION_DATAGRAM, ts,
-                                    &resp_buf[..len], ks, &mut out,
+                                    &self.resp_buf[..len], ks, &mut out,
                                 );
                                 let _ = self.send_frame(&out[..fl]).await;
                             }
@@ -351,12 +352,12 @@ fn handle_frame_inner<H: NodeHandler>(
     data: &[u8],
     handler: &mut H,
     resp: &mut [u8],
-) -> FrameHandleResult {
+) -> FrameAction {
     use microfips_core::fmp;
 
     let m = match fmp::parse_message(data) {
         Some(m) => m,
-        None => return FrameHandleResult::Continue,
+        None => return FrameAction::Continue,
     };
 
     match m {
@@ -369,30 +370,30 @@ fn handle_frame_inner<H: NodeHandler>(
                 kr, counter, hdr, encrypted, &mut dec,
             ) {
                 Ok(l) => l,
-                Err(_) => return FrameHandleResult::Continue,
+                Err(_) => return FrameAction::Continue,
             };
             if dl < fmp::INNER_HEADER_SIZE {
-                return FrameHandleResult::Continue;
+                return FrameAction::Continue;
             }
             let msg_type = dec[4];
             match msg_type {
-                fmp::MSG_HEARTBEAT => FrameHandleResult::HeartbeatRecv,
-                fmp::MSG_DISCONNECT => FrameHandleResult::PeerDC,
+                fmp::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
+                fmp::MSG_DISCONNECT => FrameAction::PeerDC,
                 _ => {
                     let payload = &dec[fmp::INNER_HEADER_SIZE..dl];
                     match handler.on_message(msg_type, payload, resp) {
-                        HandleResult::None => FrameHandleResult::Continue,
-                        HandleResult::SendDatagram(len) => FrameHandleResult::SendDatagram(len),
-                        HandleResult::Disconnect => FrameHandleResult::PeerDC,
+                        HandleResult::None => FrameAction::Continue,
+                        HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
+                        HandleResult::Disconnect => FrameAction::PeerDC,
                     }
                 }
             }
         }
-        _ => FrameHandleResult::Continue,
+        _ => FrameAction::Continue,
     }
 }
 
-enum FrameHandleResult {
+enum FrameAction {
     Continue,
     HeartbeatRecv,
     PeerDC,
