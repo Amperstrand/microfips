@@ -211,7 +211,8 @@ def main():
         t2.start()
 
         try:
-            t1.join(timeout=120)
+            while t1.is_alive() and t2.is_alive():
+                t1.join(timeout=30)
         except KeyboardInterrupt:
             print(f"\n{ts()} Interrupted", file=sys.stderr)
             state["stop"] = True
