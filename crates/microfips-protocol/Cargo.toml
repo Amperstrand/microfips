@@ -11,6 +11,7 @@ embassy-futures = "0.1.2"
 
 [dev-dependencies]
 embassy-executor = { version = "0.10.0", features = ["platform-std", "executor-thread"] }
+microfips-core = { path = "../microfips-core", features = ["std", "responder"] }
 
 [features]
 default = []
