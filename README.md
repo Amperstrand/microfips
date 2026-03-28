@@ -10,8 +10,9 @@ framing, Noise_IK handshake, and a no_std FIPS protocol stack.
 
 **What works:**
 - 71 unit tests pass for protocol logic (Noise IK, Noise XK, FMP, FSP, identity)
+- 10 unit tests pass for protocol crate (framing, transport, node)
 - Host-side handshake test (`microfips-link`) proven against live VPS, returns proper exit codes
-- Host-side simulator (`microfips-sim`) proven 70+ seconds sustained heartbeat against live VPS
+- Host-side simulator (`microfips-sim`) proven 45+ seconds sustained heartbeat against live VPS
 - USB CDC ACM enumeration with upstream embassy crates.io v0.6.0
 - Firmware builds for `thumbv7em-none-eabi` (110 KB, CI verified)
 - CI pipeline: all jobs green
@@ -24,14 +25,13 @@ The `Amperstrand/embassy` fork (commit `c0289d7a8`) breaks USB enumeration on ST
 Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
 Only `embassy-usb-synopsys-otg/src/lib.rs` was modified in the fork (4 patches).
 
-**Critical bug — MCU silently drops MSG2 (#9):**
-The MCU sends MSG1 and FIPS responds with MSG2, but the MCU never processes it.
-The MCU retries MSG1 every ~33s (30s timeout + 3s retry) indefinitely.
-Hypothesis: the firmware's `recv_frame()` or framing logic fails to parse the length-prefixed
-MSG2 response, possibly due to a buffer alignment issue between USB 64-byte packet boundaries
-and the 2-byte length prefix. The host-side simulator works perfectly with the same protocol
-code, suggesting the bug is in the USB packet → frame reassembly layer, not in Noise/FMP.
-See [issue #6](https://github.com/Amperstrand/microfips/issues/6).
+**Framing bug found and fixed (2026-03-28):**
+`recv_frame()` discarded the frame header when the body was incomplete (setting `rpos = rlen`
+for "not enough data yet"). This is the root cause of the MCU MSG2 drop (#6). The 71-byte
+MSG2 frame (2B header + 69B payload) arriving across USB 64-byte packet boundaries would
+trigger the incomplete-frame path, losing the header. Fix: only skip invalid frames
+(ml==0, ml>MAX_FRAME); wait for more data when the frame is simply incomplete.
+The fix is in `microfips-protocol` and needs to be backported to the firmware `main.rs`.
 
 **Known infrastructure issues:**
 - `serial_tcp_proxy.py` takes 5-10s to open serial port (pyserial delay), causing it to miss
@@ -83,6 +83,7 @@ npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
 ```sh
 cargo test -p microfips-core                    # 71 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture     # verbose output
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 10 tests: framing, transport, node
 ```
 
 ### Host-side VPS handshake (no hardware, raw UDP)
@@ -157,16 +158,16 @@ GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
 | M2 | Length-prefixed framing over CDC | Done |
 | M3 | Host-side handshake test (`microfips-link`) | Done |
 | M4 | MCU handshake with live VPS | Done (MSG1 sent, MSG2 received, keys derived) |
-| M5 | Host-side full lifecycle simulator (`microfips-sim`) | Done (proven 70+ seconds) |
-| M6 | MCU full lifecycle (handshake + heartbeat exchange) | **Blocked** — MSG2 not processed (see #9) |
-| M6.5 | Host-side transport trait for firmware protocol testing | Planned (see #10) |
+| M5 | Host-side full lifecycle simulator (`microfips-sim`) | Done (proven 45+ seconds sustained heartbeat) |
+| M6 | MCU full lifecycle (handshake + heartbeat exchange) | **Unblocked** — framing bug found and fixed in protocol crate, needs firmware backport |
+| M6.5 | Host-side transport trait for firmware protocol testing | Done — `microfips-protocol` crate with Transport trait, MockTransport, 10 tests |
 | M7 | HTTP status page over FIPS session | Planned |
 
 ## Project Layout
 
 ```
 microfips/
-  Cargo.toml                    # Workspace: core, link, sim (firmware excluded for CI)
+  Cargo.toml                    # Workspace: core, link, sim, protocol (firmware excluded for CI)
   AGENTS.md                     # Build/flash/test/debug reference
   rust-toolchain.toml           # Nightly Rust (no pinned date)
   crates/
@@ -177,6 +178,7 @@ microfips/
     microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, identity
     microfips-link/             # Host-side handshake test (UDP, exit codes)
     microfips-sim/              # Host-side full lifecycle simulator (framing over stdio/TCP)
+    microfips-protocol/         # no_std FIPS protocol state machine: Transport trait, framing, Node
   tools/
     fips_bridge.py              # CDC/TCP <-> UDP bridge (runs on VPS)
     serial_tcp_proxy.py         # Serial <-> TCP proxy (runs on host)

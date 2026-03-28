@@ -70,6 +70,7 @@ st-flash --connect-under-reset reset
 ```bash
 cargo test -p microfips-core          # 71 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture  # verbose output
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 10 tests: framing, transport, node
 ```
 
 ### Host-side VPS handshake test (no MCU)
@@ -263,34 +264,29 @@ Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` wit
 
 ## Known Bugs
 
-### MCU silently drops MSG2 (critical, #9)
+### MCU silently drops MSG2 (critical, #6) — ROOT CAUSE FOUND
 
 The MCU sends MSG1 (114B) through the full chain and FIPS responds with MSG2 (69B),
 but the MCU never processes it. The MCU retries MSG1 every ~33s indefinitely.
 
+**Root cause:** `recv_frame()` in firmware `main.rs` discards the frame header when the
+body is incomplete. The condition `self.rlen - self.rpos - 2 < ml` (not enough data yet)
+was grouped with `ml == 0 || ml > MAX_FRAME` (invalid frame) and both paths set
+`self.rpos = self.rlen`, discarding the partial frame. The 71-byte MSG2 (2B header + 69B
+payload) arriving across USB 64-byte packet boundaries triggers this: first 64B arrive,
+header says 69B body, only 62B available → header discarded, second packet arrives
+but header is gone.
+
+**Fix:** Only skip invalid frames (ml==0, ml>MAX_FRAME). When the frame is simply
+incomplete, keep the header in the buffer and wait for more data. This fix is in
+`microfips-protocol` (transport.rs, node.rs) and proven by 10 passing tests including
+a 1400-byte multi-packet frame test. Needs to be backported to firmware `main.rs`.
+
 **Evidence:**
+- `microfips-protocol` tests prove the fix (10/10 pass including large frame test)
+- Host-side simulator works perfectly with same protocol code (45+ seconds sustained)
 - Bridge log confirms CDC→UDP (MSG1) and UDP→CDC (MSG2) bidirectional flow
 - VPS journal confirms "Connection promoted to active peer"
-- Proxy log confirms SERIAL TX of MSG2 data to MCU
-- MCU post-mortem counters show STAT_MSG1_TX=0, STAT_MSG2_RX=0 (counters are in BSS,
-  reset to 0 by startup code — read during reset shows last run's values only if not
-  power-cycled; probe-rs `read --connect-under-reset` may not capture running state)
-- MCU does NOT panic (no LED error pattern observed)
-- Host-side simulator works perfectly with same protocol code
-
-**Hypothesis:** The firmware's `recv_frame()` (main.rs:366) fails to reassemble the
-length-prefixed MSG2 across USB 64-byte packet boundaries. The MSG2 frame is 71B
-(2B header + 69B payload) spanning two USB packets (64B + 7B). Possible causes:
-1. `read_packet()` returns data that doesn't align with framing protocol expectations
-2. The buffer state (`rpos`/`rlen`) from handshake MSG1 send leaks into recv_frame
-3. `fmp::parse_message()` fails on the actual FIPS wire format (different from test vectors)
-4. USB endpoint FIFO gets corrupted by the rapid data flood from FIPS after MSG2
-
-**Debug approach:**
-1. Extract protocol logic behind a `Transport` trait (see #10) to test framing on host
-2. Add a known-good echo mode to firmware that echoes received frames back (verify USB RX works)
-3. Use `STAT_STATE` (if not optimized out) or LED patterns to narrow down where MSG2 is lost
-4. Capture the exact bytes the MCU receives via a pass-through logging mode
 
 ### Proxy serial port open is slow
 

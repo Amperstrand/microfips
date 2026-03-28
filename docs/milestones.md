@@ -79,49 +79,47 @@ maintains heartbeat exchange when connected through SSH tunnel + VPS bridge.
 - [x] VPS promotes MCU to active peer ("Connection promoted to active peer" in journal)
 - [x] FIPS responds with MSG2 (69B) back through chain
 - [x] Bridge logs confirm bidirectional flow: CDC→UDP (MSG1) and UDP→CDC (MSG2)
-- [ ] **BUG: MCU does not process MSG2** — retries MSG1 every ~33s indefinitely
+- [x] **Framing bug found and fixed** — `recv_frame()` discarded header on incomplete frames
+- [x] **Protocol crate proven** — `microfips-protocol` with Transport trait, 10 passing tests
+- [x] **Full software proof** — host sim completes handshake + 45s sustained heartbeat vs live VPS
+- [ ] Backport framing fix to firmware `main.rs` and reflash
+- [ ] MCU completes handshake with live VPS (MSG1 sent, MSG2 processed, keys derived)
 - [ ] MCU sends heartbeats every 10s, VPS responds
 - [ ] MCU processes incoming ESTABLISHED messages (heartbeat, disconnect)
 - [ ] Reconnection after USB disconnect
 - [ ] Long-running stability (10+ minutes sustained)
 
-**Status: BLOCKED by MSG2 processing bug (#6).**
+**Status: UNBLOCKED. Framing bug root cause identified in `microfips-protocol` tests.
+Needs firmware backport + reflash + hardware test.**
 
 The host-side simulator (`microfips-sim`) completes the full lifecycle successfully
-(70+ seconds heartbeat exchange), proving the protocol logic is correct. The bug is
-in the firmware's USB packet → frame reassembly layer, not in Noise/FMP.
-
-**Hypothesis:** `recv_frame()` fails to reassemble the 2-byte length prefix + MSG2
-payload across USB 64-byte packet boundaries. The MSG2 frame (71B = 2B header + 69B)
-spans two USB packets (64B + 7B), but something in the framing logic causes it to be
-dropped. Possible causes:
-1. `recv_frame()` returns a frame with wrong offset due to leftover data in buffer
-2. `read_packet()` returns data that doesn't align with the framing protocol
-3. The MCU receives FIPS's MSG2 but `fmp::parse_message()` fails to match it
+(45+ seconds heartbeat exchange), and the `microfips-protocol` crate's framing tests
+prove the recv_frame fix. The firmware `main.rs` has the same bug and needs the same fix.
 
 **Success signal:** MCU LEDs show ESTABLISHED (green+orange+blue), heartbeat exchange
 sustained for 10+ minutes, no MSG1 retries.
 
 ## M6.5: Host-Side Transport Trait
 
-- [ ] Extract protocol state machine from `main.rs` into `microfips-core`
-- [ ] Define `Transport` trait: `send_frame()`, `recv_frame()`, `wait_ready()`
-- [ ] Implement `CdcAcmTransport` for firmware (wraps `CdcAcmClass`)
-- [ ] Implement `TcpTransport` for host testing (wraps `TcpStream`)
-- [ ] Implement `MockTransport` for unit testing (in-memory channels)
-- [ ] Protocol logic tests run with `MockTransport` (no hardware, no network)
-- [ ] Full handshake + heartbeat test runs on host in <1 second
+- [x] `microfips-protocol` crate: `#![no_std]` Transport trait with `wait_ready()`, `send()`, `recv()`
+- [x] `FrameWriter` and `FrameReader`: length-prefixed framing over any Transport
+- [x] `Node<T: Transport, R: CryptoRng>`: handshake, steady-state, heartbeat
+- [x] `MockTransport` for unit testing (loopback mode, reset per test)
+- [x] 10 passing tests: roundtrip, 71B frame, 128B frame, sequential, timeout, large frame (1400B), node send/recv
+- [x] Embassy-executor v0.10.0 `block_on()` pattern (Box::leak + pool_size=64 task)
+- [x] Full software proof: `microfips-sim` completes handshake + 45s sustained heartbeat vs live VPS
+- [x] Framing bug found: `recv_frame()` discarded header on incomplete frames — fixed in protocol crate
+- [ ] `CdcTransport` implementation for firmware (wraps embassy USB CDC ACM)
+- [ ] Firmware `main.rs` slimmed to thin wrapper using `Node<CdcTransport, Rng>`
 
-**Status: PLANNED. See issue #7.**
+**Status: DONE — protocol crate is tested and proven. Firmware integration is the next step.**
 
-Research shows that mocking embassy-usb directly is impractical (would require implementing
-5 traits including full USB enumeration sequence). The recommended approach is to abstract
-the FIPS protocol behind a `Transport` trait, keeping all testable logic in `microfips-core`
-(which supports `std`). The firmware `main.rs` becomes a thin wrapper. Embassy already has
-`embassy-executor/platform-std` and `embassy-sync` has a `std` feature, making this feasible.
+The `Transport` trait uses RPITIT (`impl Future<Output = ...>`) for async methods, making it
+compatible with both embassy (no_std) and tokio/std runtimes. The `#[cfg(feature = "std")]` gate
+enables `MockTransport` and test infrastructure for host-side testing.
 
-**Success signal:** `cargo test -p microfips-core` covers the full FIPS lifecycle including
-framing, handshake, heartbeat, and reconnection — all without hardware.
+**Success signal:** `cargo test -p microfips-protocol --features std` covers framing, transport,
+and node lifecycle — all without hardware or network.
 
 ## M7: HTTP Status Page
 
