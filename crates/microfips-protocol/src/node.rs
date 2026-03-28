@@ -633,4 +633,144 @@ mod tests {
     // NOTE: test_handshake_with_mock_responder requires refactoring handshake()
     // into separate build_msg1/process_msg2 methods, or a mock transport
     // that doesn't echo send->rx. Post-merge TODO.
+
+    #[test]
+    fn test_handshake_with_responder() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::fmp;
+        use microfips_core::noise::{NoiseIkResponder, ecdh_pubkey, PUBKEY_SIZE};
+
+        let initiator_secret: [u8; 32] = [0x11; 32];
+        let responder_secret: [u8; 32] = [0x22; 32];
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, mut resp_transport) = channel_pair();
+
+        block_on(async move {
+            let responder = async {
+                let mut hdr = [0u8; 2];
+                let mut total = 0;
+                while total < 2 {
+                    total += resp_transport.recv(&mut hdr[total..]).await.unwrap();
+                }
+                let msg1_len = u16::from_le_bytes(hdr) as usize;
+                let mut buf = [0u8; 256];
+                total = 0;
+                while total < msg1_len {
+                    total += resp_transport.recv(&mut buf[total..]).await.unwrap();
+                }
+
+                let msg = fmp::parse_message(&buf[..msg1_len]).unwrap();
+                let noise_payload = match msg {
+                    fmp::FmpMessage::Msg1 { noise_payload, .. } => noise_payload,
+                    _ => panic!("expected Msg1"),
+                };
+
+                let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
+                let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub);
+                let (_init_pub, epoch) = resp.read_message1(&noise_payload[PUBKEY_SIZE..]);
+
+                let resp_eph: [u8; 32] = [0x33; 32];
+                let mut msg2_noise = [0u8; 128];
+                let msg2_noise_len = resp.write_message2(&resp_eph, &epoch, &mut msg2_noise);
+
+                let mut msg2_buf = [0u8; 256];
+                let msg2_len = fmp::build_msg2(1, 0, &msg2_noise[..msg2_noise_len], &mut msg2_buf);
+
+                let frame_hdr = (msg2_len as u16).to_le_bytes();
+                resp_transport.send(&frame_hdr).await.unwrap();
+                resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
+            };
+
+            let initiator = async move {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::new(&[0x01; 32]),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = NoopTestHandler;
+                let result = node.handshake(&mut handler).await;
+                assert!(result.is_ok(), "handshake should succeed");
+                let (ks, kr, them) = result.unwrap();
+                assert_eq!(them, 1, "responder sender_idx should be 1");
+                assert_eq!(ks.len(), 32);
+                assert_eq!(kr.len(), 32);
+            };
+
+            join(responder, initiator).await;
+        });
+    }
+
+    #[test]
+    fn test_handshake_msg1_wire_size() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::fmp;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret: [u8; 32] = [0x11; 32];
+        let responder_secret: [u8; 32] = [0x22; 32];
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, mut resp_transport) = channel_pair();
+
+        block_on(async move {
+            let responder = async move {
+                let mut hdr = [0u8; 2];
+                let mut total = 0;
+                while total < 2 {
+                    total += resp_transport.recv(&mut hdr[total..]).await.unwrap();
+                }
+                let msg1_len = u16::from_le_bytes(hdr) as usize;
+                assert_eq!(msg1_len, fmp::MSG1_WIRE_SIZE, "MSG1 should be 114 bytes on wire");
+                let mut buf = [0u8; 256];
+                total = 0;
+                while total < msg1_len {
+                    total += resp_transport.recv(&mut buf[total..]).await.unwrap();
+                }
+                let msg = fmp::parse_message(&buf[..msg1_len]).unwrap();
+                match msg {
+                    fmp::FmpMessage::Msg1 { sender_idx, noise_payload, .. } => {
+                        assert_eq!(sender_idx, 0, "initiator sender_idx should be 0");
+                        assert_eq!(noise_payload.len(), 106);
+                    }
+                    _ => panic!("expected Msg1"),
+                }
+            };
+
+            let initiator = async move {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::new(&[0x01; 32]),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = NoopTestHandler;
+                let _ = node.handshake(&mut handler).await;
+            };
+
+            join(responder, initiator).await;
+        });
+    }
+
+    #[test]
+    fn test_handshake_timeout_on_no_response() {
+        use crate::transport::channel::pair as channel_pair;
+
+        let (init_transport, _resp_transport) = channel_pair();
+
+        block_on(async move {
+            let mut node = Node::new(
+                init_transport,
+                TestRng::new(&[0x01; 32]),
+                [0x11; 32],
+                [0x02; 33],
+            );
+            let mut handler = NoopTestHandler;
+            let result = node.handshake(&mut handler).await;
+            assert_eq!(result, Err(ProtocolError::Timeout));
+        });
+    }
 }
