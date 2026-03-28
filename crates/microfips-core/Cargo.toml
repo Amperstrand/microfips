@@ -17,3 +17,4 @@ hex = "0.4"
 [features]
 default = []
 std = ["sha2/std", "k256/std", "chacha20poly1305/std", "hkdf/std", "hmac/std"]
+responder = []
