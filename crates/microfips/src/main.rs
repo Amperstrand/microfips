@@ -62,6 +62,7 @@ bind_interrupts!(struct Irqs {
 
 const HB_SECS: u64 = 10;
 const RETRY_SECS: u64 = 3;
+const CONNECT_DELAY_MS: u64 = 15_000;
 const CDC_PKT: usize = 64;
 
 const MCU_SECRET: [u8; 32] = [
@@ -299,7 +300,7 @@ async fn fips_task<'d, T: embassy_stm32::usb::Instance + 'd>(
 
     loop {
         class.wait_connection().await;
-        Timer::after(Duration::from_millis(500)).await;
+        Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
         leds.set_state(S_USB_READY);
 
         rpos = 0;
@@ -342,24 +343,25 @@ async fn handshake<'d, T: embassy_stm32::usb::Instance + 'd>(
     yield_now().await;
 
     let mut mb = [0u8; 2048];
-    let ml = recv_frame(class, rbuf, rpos, rlen, &mut mb).await?;
-
-    let m = fmp::parse_message(&mb[..ml]).ok_or(Err::Invalid)?;
-    match m {
-        fmp::FmpMessage::Msg2 {
-            sender_idx,
-            receiver_idx,
-            noise_payload,
-        } => {
-            yield_now().await;
-            let mut st = pre_noise_st.clone();
-            st.read_message2(noise_payload).map_err(|_| Err::Decrypt)?;
-            yield_now().await;
-            let (ks, kr) = st.finalize();
-            STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
-            Ok((ks, kr, sender_idx, receiver_idx))
+    loop {
+        let ml = recv_frame(class, rbuf, rpos, rlen, &mut mb).await?;
+        let m = fmp::parse_message(&mb[..ml]).ok_or(Err::Invalid)?;
+        match m {
+            fmp::FmpMessage::Msg2 {
+                sender_idx,
+                receiver_idx,
+                noise_payload,
+            } => {
+                yield_now().await;
+                let mut st = pre_noise_st.clone();
+                st.read_message2(noise_payload).map_err(|_| Err::Decrypt)?;
+                yield_now().await;
+                let (ks, kr) = st.finalize();
+                STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
+                return Ok((ks, kr, sender_idx, receiver_idx));
+            }
+            _ => continue,
         }
-        _ => Err(Err::Invalid),
     }
 }
 
@@ -377,8 +379,12 @@ async fn recv_frame<'d, T: embassy_stm32::usb::Instance + 'd>(
                 continue;
             }
             let ml = u16::from_le_bytes([rbuf[*rpos], rbuf[*rpos + 1]]) as usize;
-            if ml == 0 || ml > 1500 || *rlen - *rpos - 2 < ml {
+            if ml == 0 || ml > 1500 {
                 *rpos = *rlen;
+                compact(rbuf, rpos, rlen);
+                continue;
+            }
+            if *rlen - *rpos - 2 < ml {
                 compact(rbuf, rpos, rlen);
                 continue;
             }
@@ -459,8 +465,11 @@ async fn steady<'d, T: embassy_stm32::usb::Instance + 'd>(
                         break;
                     }
                     let ml = u16::from_le_bytes([rbuf[*rpos], rbuf[*rpos + 1]]) as usize;
-                    if ml == 0 || ml > 1500 || *rlen - *rpos - 2 < ml {
+                    if ml == 0 || ml > 1500 {
                         *rpos = *rlen;
+                        break;
+                    }
+                    if *rlen - *rpos - 2 < ml {
                         break;
                     }
                     let s = *rpos + 2;
