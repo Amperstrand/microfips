@@ -35,6 +35,16 @@ static STAT_USB_ERR: AtomicU32 = AtomicU32::new(0);
 static STAT_STATE: AtomicU32 = AtomicU32::new(0);
 static STAT_RECV_PKT: AtomicU32 = AtomicU32::new(0);
 static STAT_RECV_FRAME: AtomicU32 = AtomicU32::new(0);
+static STAT_DATA_RX: AtomicU32 = AtomicU32::new(0);
+static STAT_DATA_TX: AtomicU32 = AtomicU32::new(0);
+
+const HTTP_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
+
+enum HandleAction {
+    None,
+    Respond(&'static [u8]),
+    Disconnect,
+}
 
 const S_BOOT: u32 = 0;
 const S_USB_READY: u32 = 1;
@@ -74,9 +84,9 @@ const MCU_SECRET: [u8; 32] = [
 ];
 
 const VPS_PUB: [u8; 33] = [
-    0x02, 0x0e, 0x7a, 0x0d, 0xa0, 0x1a, 0x25, 0x5c, 0xde, 0x10, 0x6a, 0x20, 0x2e, 0xf4, 0xf5, 0x73,
-    0x67, 0x6e, 0xf9, 0xe2, 0x4f, 0x1c, 0x81, 0x76, 0xd0, 0x3a, 0xe8, 0x3a, 0x2a, 0x3a, 0x03, 0x7d,
-    0x21,
+    0x03, 0x41, 0x5f, 0x38, 0xf9, 0xae, 0x39, 0xf2, 0x41, 0xdf, 0x21, 0xf1, 0x7b, 0xe4, 0x0a, 0x07,
+    0xcf, 0x2a, 0xa6, 0xa8, 0x9e, 0xe7, 0x14, 0xf7, 0x48, 0x17, 0xc3, 0x0f, 0xf4, 0x84, 0xb2, 0x49,
+    0x02,
 ];
 
 static GLOBAL_RNG: StaticCell<Rng<'static, peripherals::RNG>> = StaticCell::new();
@@ -475,8 +485,21 @@ async fn steady<'d, T: embassy_stm32::usb::Instance + 'd>(
                     }
                     let s = *rpos + 2;
                     let e = s + ml;
-                    if let Err(Err::PeerDC) = handle(kr, leds, &rbuf[s..e]) {
-                        return Ok(());
+                    match handle(kr, leds, &rbuf[s..e]) {
+                        HandleAction::None => {}
+                        HandleAction::Respond(payload) => {
+                            STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
+                            let c = next_ctr();
+                            let ts = embassy_time::Instant::now().as_millis() as u32;
+                            let mut out = [0u8; 256];
+                            let fl = fmp::build_established(
+                                them, c, fmp::MSG_SESSION_DATAGRAM, ts, payload, ks, &mut out,
+                            );
+                            let _ = cdc_send_frame(class, &out[..fl]).await;
+                        }
+                        HandleAction::Disconnect => {
+                            return Ok(());
+                        }
                     }
                     *rpos = e;
                 }
@@ -516,31 +539,45 @@ async fn steady<'d, T: embassy_stm32::usb::Instance + 'd>(
     }
 }
 
-fn handle(kr: &[u8; 32], leds: &mut Leds, data: &[u8]) -> Result<(), Err> {
-    let m = fmp::parse_message(data).ok_or(Err::Invalid)?;
+fn handle(kr: &[u8; 32], leds: &mut Leds, data: &[u8]) -> HandleAction {
+    let m = match fmp::parse_message(data) {
+        Some(m) => m,
+        None => return HandleAction::None,
+    };
     match m {
         fmp::FmpMessage::Established {
             counter, encrypted, ..
         } => {
             let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
             let mut dec = [0u8; 2048];
-            let dl = noise::aead_decrypt(kr, counter, hdr, encrypted, &mut dec)
-                .map_err(|_| Err::Decrypt)?;
+            let dl = match noise::aead_decrypt(kr, counter, hdr, encrypted, &mut dec) {
+                Ok(l) => l,
+                Err(_) => return HandleAction::None,
+            };
             if dl < fmp::INNER_HEADER_SIZE {
-                return Err(Err::Invalid);
+                return HandleAction::None;
             }
             match dec[4] {
                 fmp::MSG_HEARTBEAT => {
                     STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
                     leds.set_state(S_HB_RX);
+                    HandleAction::None
                 }
                 fmp::MSG_DISCONNECT => {
-                    return Err(Err::PeerDC);
+                    HandleAction::Disconnect
                 }
-                _ => {}
+                fmp::MSG_SESSION_DATAGRAM => {
+                    STAT_DATA_RX.fetch_add(1, Ordering::Relaxed);
+                    let payload = &dec[fmp::INNER_HEADER_SIZE..dl];
+                    if payload.len() >= 3 && &payload[..3] == b"GET" {
+                        HandleAction::Respond(HTTP_RESPONSE)
+                    } else {
+                        HandleAction::None
+                    }
+                }
+                _ => HandleAction::None,
             }
-            Ok(())
         }
-        _ => Err(Err::Invalid),
+        _ => HandleAction::None,
     }
 }
