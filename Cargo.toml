@@ -1,3 +1,6 @@
 [workspace]
-members = ["crates/microfips-core", "crates/microfips-link", "crates/microfips-sim", "crates/microfips", "crates/microfips-protocol", "crates/microfips-http-test"]
+members = ["crates/microfips-core", "crates/microfips-link", "crates/microfips-sim", "crates/microfips", "crates/microfips-protocol", "crates/microfips-http-test", "crates/microfips-esp32"]
 resolver = "2"
+
+[workspace.metadata.esp32]
+runner = "espflash flash --monitor -p /dev/ttyUSB0 --chip esp32"

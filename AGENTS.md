@@ -2,8 +2,10 @@
 
 ## Project
 
-Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO.
-USB CDC ACM → length-prefixed framing → Python bridge (serial↔UDP) → VPS running stock FIPS.
+Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
+Both MCUs use length-prefixed framing → Python bridge (serial↔UDP) → VPS running stock FIPS.
+- **STM32F469I-DISCO:** USB CDC ACM transport
+- **ESP32-D0WD:** UART transport (CP210x USB-serial)
 
 ## VPS Access
 
@@ -19,19 +21,30 @@ vssh() { sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_
 vscp() { sshpass -p "$VPS_PASS" scp -o StrictHostKeyChecking=no "$1" "$VPS_USER@$VPS_HOST:$2"; }
 ```
 
-VPS FIPS binds `0.0.0.0:2121`, MCU peer configured at `127.0.0.1:31337`.
+VPS FIPS binds `0.0.0.0:2121`, MCU peers configured at `127.0.0.1:31337` (STM32) and `127.0.0.1:31338` (ESP32).
 FIPS logs: `vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 30 --since '5 min ago'"`
 
 ## Build
+
+### STM32F469
 
 ```bash
 cargo build --release --target thumbv7em-none-eabi
 # Output: target/thumbv7em-none-eabi/release/microfips
 ```
 
+### ESP32-D0WD
+
+Requires the Espressif Rust toolchain (installed via `espup`, activated with `RUSTUP_TOOLCHAIN=esp`):
+
+```bash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
+# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
+```
+
 ## Flash and Run
 
-### CRITICAL: Do NOT use probe-rs during USB testing
+### CRITICAL: Do NOT use probe-rs during USB testing (STM32)
 
 probe-rs halts the CPU periodically for RTT reads. When the CPU is halted mid-USB-transfer,
 the USB connection drops. This manifests as device disappearing from lsusb, /dev/ttyACM*
@@ -58,10 +71,32 @@ st-flash --connect-under-reset reset
 - Reading/writing flash option bytes (carefully — see warnings below)
 - `probe-rs download --chip STM32F469NIHx --connect-under-reset` (flashing only, then detach immediately)
 
-### SWD recovery when USB is active
+### SWD recovery when USB is active (STM32)
 
 ```bash
 st-flash --connect-under-reset reset
+```
+
+### ESP32 flash and monitor
+
+Do NOT use probe-rs with ESP32. Use `espflash` from the Espressif toolchain.
+
+```bash
+# Flash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+
+# Monitor (optional, after flash)
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash monitor -p /dev/ttyUSB0 --chip esp32
+```
+
+**ESP32 serial port:** `/dev/ttyUSB0` (CP210x USB-serial), NOT `/dev/ttyACM*`.
+Always detect by VID:PID `10c4:ea60` (Silicon Labs CP210x):
+
+```bash
+for p in /dev/ttyUSB*; do
+    vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2)
+    [ "$vid" = "10c4/ea60/100" ] && echo "ESP32 on $p"
+done
 ```
 
 ## Testing
@@ -136,6 +171,43 @@ vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 mi
 **Expected in VPS journal:** `Connection promoted to active peer`, no `link dead timeout`
 **Bridge has diagnostic alive logs:** `>> alive, buf=0B, frames=N, rx=NB` every 10s
 
+### Bridge + ESP32 + VPS handshake test (hardware)
+
+Manual steps for ESP32 (uses port 45680, VPS peer port 31338):
+
+```bash
+# 0. CLEANUP — kill stale processes
+kill $PROXY_PID $TUNNEL_PID 2>/dev/null
+fuser -k 45680/tcp 2>/dev/null
+vssh 'pkill -f fips_bridge 2>/dev/null; echo $VPS_PASS | sudo -S fuser -k 45680/tcp 2>/dev/null'
+vssh "echo $VPS_PASS | sudo -S systemctl restart fips"
+
+# 1. Verify ESP32 serial port (CP210x, NOT ttyACM*)
+for p in /dev/ttyUSB*; do
+    vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2)
+    [ "$vid" = "10c4/ea60/100" ] && echo "ESP32 on $p"
+done
+
+# 2. Start serial TCP proxy on host
+python3 tools/serial_tcp_proxy.py --serial /dev/ttyUSB0 --port 45680 &
+
+# 3. SSH reverse tunnel: VPS:45680 → host:45680
+sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no -fN \
+  -R 45680:127.0.0.1:45680 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+  $VPS_USER@$VPS_HOST
+
+# 4. Upload and start bridge on VPS (ESP32 uses --local-port 31338)
+vscp tools/fips_bridge.py :/tmp/fips_bridge.py
+vssh 'nohup python3 /tmp/fips_bridge.py --tcp 127.0.0.1:45680 --local-port 31338 > /tmp/bridge_esp32.log 2>&1 &'
+
+# 5. Check results (after ~10s)
+vssh 'cat /tmp/bridge_esp32.log'
+vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 min ago'"
+```
+
+**Note:** ESP32 does not use USB CDC, so there is no DTR-based `wait_connection()` blocking.
+The proxy can be started at any time; the ESP32 immediately begins sending MSG1 once booted.
+
 ### Process management for hardware tests
 
 **CRITICAL: Do NOT use `pkill -f` patterns.** They kill the current SSH session running
@@ -209,6 +281,23 @@ probe-rs read --chip STM32F469NIHx --connect-under-reset b32 <STAT_STATE_addr> 1
 # STAT_STATE values: 0=boot, 1=usb_ready, 2=msg1_sent, 3=handshake_ok, 4=hb_tx, 5=hb_rx, 6=err, 7=disconnected
 ```
 
+### ESP32 LED State Machine
+
+The ESP32 has a single user LED on GPIO2 (blue onboard LED). State visibility is
+more limited than STM32's 4-LED display:
+
+| State | GPIO2 (Blue) | Meaning |
+|-------|:------------:|---------|
+| Boot / Disconnected | off | Firmware running or USB disconnected |
+| MSG1 sent (handshake in progress) | on | MSG1 sent, waiting MSG2 |
+| Handshake OK (entering steady) | on | Handshake succeeded |
+| HB sent / HB received | unchanged | Counter-only update, LED stays on |
+
+States 4 (HB sent) and 5 (HB received) do not change the LED — only the atomic
+counters are updated. This is because ESP32's steady-state loop runs in a single
+`select()` branch (UART recv always wins over timer), and changing the LED in the
+recv hot path adds latency with no visual benefit (the LED is already on from state 3).
+
 ## Embassy Fork Status
 
 **CRITICAL FINDING (2026-03-28):** The `Amperstrand/embassy` fork commit `c0289d7a8` breaks USB
@@ -272,6 +361,8 @@ Unbinding a CDC ACM device from the `usb` driver corrupts the kernel TTY layer.
 
 ## Known Pins
 
+### STM32F469
+
 | Peripheral | Pins | Notes |
 |------------|------|-------|
 | USB OTG FS | PA11 (DM), PA12 (DP) | CDC ACM |
@@ -282,7 +373,18 @@ Unbinding a CDC ACM device from the `usb` driver corrupts the kernel TTY layer.
 | RNG | HASH_RNG interrupt | Hardware TRNG |
 | ST-Link | PA13 (SWDIO), PA14 (SWCLK) | Debug probe |
 
+### ESP32-D0WD
+
+| Peripheral | Pins | Notes |
+|------------|------|-------|
+| UART TX | GPIO1 | Connected to CP210x RX |
+| UART RX | GPIO3 | Connected to CP210x TX |
+| LED (blue) | GPIO2 | Active high, onboard |
+| Flash | GPIO6–GPIO11 | SPI flash (do not use) |
+
 ## Clock Config
+
+### STM32F469
 
 ```
 HSI (16 MHz) → PLL → 168 MHz sysclk
@@ -293,6 +395,11 @@ HSI (16 MHz) → PLL → 168 MHz sysclk
 
 HSE bypass hangs on this board. Do NOT use HSE.
 
+### ESP32-D0WD
+
+ESP32 uses internal PLL from 40 MHz crystal. Clock config is handled by esp-hal.
+No manual clock configuration needed — `esp_hal::init()` sets up 240 MHz CPU clock.
+
 ## USB Serial Port
 
 The MCU appears as a CDC ACM device with VID:PID `c0de:cafe`. The ttyACM number varies
@@ -302,6 +409,18 @@ The MCU appears as a CDC ACM device with VID:PID `c0de:cafe`. The ttyACM number 
 for p in /dev/ttyACM*; do
     prod=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2)
     [ "$prod" = "c0de/cafe/10" ] && echo "MCU on $p"
+done
+```
+
+## ESP32 Serial Port
+
+The ESP32 connects via CP210x USB-serial with VID:PID `10c4:ea60`. The ttyUSB number varies.
+Always detect by VID/PID:
+
+```bash
+for p in /dev/ttyUSB*; do
+    vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2)
+    [ "$vid" = "10c4/ea60/100" ] && echo "ESP32 on $p"
 done
 ```
 
@@ -354,6 +473,24 @@ byte to trigger handshake start.
 When the MCU resets (SWD or power), the USB device disappears. The proxy gets ENODEV on
 serial write and the serial reader thread dies. The proxy needs reconnection logic.
 
+### RESOLVED: Noise finalize bug on ESP32
+
+`noise_st.finalize()` was called on the pre-read_message2 state instead of the clone
+after `read_message2()`. The handshake appeared to succeed but transport keys were wrong.
+**Fix:** use `st.finalize()` (the state after `read_message2()`), not `noise_st.finalize()`.
+
+### RESOLVED: UART recv error handling on ESP32
+
+`transport.recv()` returning `Err` in the steady-state loop caused immediate session failure.
+Any transient UART glitch killed the entire session. **Fix:** `continue` with 100ms delay
+on recv errors instead of returning `Err`.
+
+### RESOLVED: Timer starvation on ESP32
+
+ESP32 UART delivers data continuously, causing `select()` to always pick the recv branch
+and starving the heartbeat timer. The heartbeat check inside the recv branch
+(`if Instant::now() >= next_hb`) handles this, matching the STM32's approach.
+
 ## CI Pipeline
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
@@ -361,7 +498,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 - **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
 - **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
 - **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
-- **build-firmware**: `cargo build -p microfips --release --target thumbv7em-none-eabi` using upstream crates.io embassy v0.6.0
+- **build-firmware**: STM32 `cargo build -p microfips --release --target thumbv7em-none-eabi` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` using upstream crates.io embassy v0.6.0
 - **fips-integration**: local keygen + Noise IK handshake test (must pass), public VPS handshake (continue-on-error)
 - **summary**: aggregate status table
 
