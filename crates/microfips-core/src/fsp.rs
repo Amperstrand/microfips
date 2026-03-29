@@ -30,6 +30,9 @@ pub const NODE_ADDR_SIZE: usize = 16;
 pub const SESSION_DATAGRAM_BODY_SIZE: usize = 35;
 pub const SESSION_DATAGRAM_HEADER_SIZE: usize = 36;
 
+pub const HTTP_RESPONSE: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspError {
     BufferTooSmall,
@@ -447,7 +450,7 @@ pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])
     Some((flags, counter, header, payload))
 }
 
-use crate::noise::{EPOCH_SIZE, NoiseError, NoiseXkResponder, PUBKEY_SIZE};
+use crate::noise::{NoiseError, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspSessionState {
@@ -603,6 +606,85 @@ impl FspSession {
 impl Default for FspSession {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FspHandlerResult {
+    None,
+    SendDatagram(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FspHandlerError {
+    Setup(FspSessionError),
+    Msg3(FspSessionError),
+    DecryptFailed,
+    InnerHeaderTooShort,
+    UnknownPhase,
+}
+
+pub fn handle_fsp_datagram(
+    session: &mut FspSession,
+    secret: &[u8; 32],
+    ephemeral: &[u8; 32],
+    epoch: &[u8; 8],
+    payload: &[u8],
+    resp: &mut [u8],
+) -> Result<FspHandlerResult, FspHandlerError> {
+    if payload.len() < SESSION_DATAGRAM_BODY_SIZE {
+        return Ok(FspHandlerResult::None);
+    }
+    let fsp_data = &payload[SESSION_DATAGRAM_BODY_SIZE..];
+    if fsp_data.is_empty() {
+        return Ok(FspHandlerResult::None);
+    }
+    let fsp_phase = fsp_data[0] & 0x0F;
+    match fsp_phase {
+        PHASE_SESSION_SETUP => {
+            let ack_len = session
+                .handle_setup(secret, ephemeral, epoch, fsp_data, resp)
+                .map_err(FspHandlerError::Setup)?;
+            Ok(FspHandlerResult::SendDatagram(ack_len))
+        }
+        PHASE_SESSION_MSG3 => {
+            session
+                .handle_msg3(fsp_data)
+                .map_err(FspHandlerError::Msg3)?;
+            Ok(FspHandlerResult::None)
+        }
+        PHASE_ESTABLISHED => {
+            if session.state() != FspSessionState::Established {
+                return Ok(FspHandlerResult::None);
+            }
+            let (k_recv, _) = session.session_keys().unwrap();
+            let Some((flags, counter, header, encrypted)) = parse_fsp_encrypted_header(fsp_data)
+            else {
+                return Ok(FspHandlerResult::None);
+            };
+            if flags & FLAG_UNENCRYPTED != 0 {
+                return Ok(FspHandlerResult::None);
+            }
+            let mut dec = [0u8; 512];
+            let dl = crate::noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec)
+                .map_err(|_| FspHandlerError::DecryptFailed)?;
+            let Some((_timestamp, inner_msg_type, _inner_flags, inner_payload)) =
+                fsp_strip_inner_header(&dec[..dl])
+            else {
+                return Err(FspHandlerError::InnerHeaderTooShort);
+            };
+            if inner_msg_type == FSP_MSG_DATA
+                && inner_payload.len() >= 3
+                && &inner_payload[..3] == b"GET"
+            {
+                let rlen = HTTP_RESPONSE.len().min(resp.len());
+                resp[..rlen].copy_from_slice(&HTTP_RESPONSE[..rlen]);
+                Ok(FspHandlerResult::SendDatagram(rlen))
+            } else {
+                Ok(FspHandlerResult::None)
+            }
+        }
+        _ => Err(FspHandlerError::UnknownPhase),
     }
 }
 
@@ -832,7 +914,7 @@ mod tests {
 
     #[test]
     fn fsp_session_full_flow() {
-        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
+        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
 
         let (responder_secret, responder_eph, initiator_secret) = test_keys();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
@@ -920,7 +1002,7 @@ mod tests {
 
     #[test]
     fn fsp_session_rejects_double_setup() {
-        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
+        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
 
         let responder_secret: [u8; 32] = [0x22; 32];
         let responder_eph: [u8; 32] = [0xAA; 32];

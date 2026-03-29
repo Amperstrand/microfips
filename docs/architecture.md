@@ -2,11 +2,15 @@
 
 ## Overview
 
-microfips is a minimal FIPS leaf node on STM32F469I-DISCO. It connects to a VPS
-running stock FIPS over USB CDC ACM serial with length-prefixed framing, bridged
-through an SSH tunnel to a Python bridge on the VPS that speaks UDP to FIPS.
+microfips is a minimal FIPS leaf node on STM32F469I-DISCO and ESP32-D0WD. Both connect
+to a VPS running stock FIPS over serial with length-prefixed framing, bridged through
+an SSH tunnel to a Python bridge on the VPS that speaks UDP to FIPS.
+- **STM32F469I-DISCO:** USB CDC ACM transport (embassy-usb, 64B packets)
+- **ESP32-D0WD:** UART transport (CP210x USB-serial, 115200 baud)
 
 ## Layer Stack
+
+### STM32F469 (USB CDC)
 
 ```
 +---------------------------+
@@ -22,12 +26,30 @@ through an SSH tunnel to a Python bridge on the VPS that speaks UDP to FIPS.
 +---------------------------+
 ```
 
+### ESP32-D0WD (UART)
+
+```
++---------------------------+
+|  FIPS session (FSP)       |  End-to-end encrypted sessions  [PLANNED]
++---------------------------+
+|  FIPS mesh (FMP)          |  Noise IK, single peer, no transit  [DONE]
++---------------------------+
+|  Length-prefixed framing  |  2-byte LE length + payload     [DONE]
++---------------------------+
+|  UART (115200 baud)       |  esp-hal, GPIO1/GPIO3           [DONE]
++---------------------------+
+|  ESP32-D0WD               |  esp-hal v1.0.0 + esp-rtos     [DONE]
++---------------------------+
+```
+
 The original plan used SLIP + IPv6 + smoltcp for IP tunneling. This was abandoned
 because the MCU is leaf-only (no routing, no transit, no discovery), and
 length-prefixed frames over CDC are simpler and sufficient for single-peer
 communication.
 
 ## Transport: MCU <-> Host <-> VPS
+
+### STM32F469 (USB CDC)
 
 ```
   STM32F469I-DISCO          Host (Linux)               VPS
@@ -48,13 +70,35 @@ communication.
                                                    +------------------+
 ```
 
+### ESP32-D0WD (UART)
+
+```
+  ESP32-D0WD              Host (Linux)               VPS
+  +----------------+    +-------------------+    +------------------+
+  | microfips-esp32|    | serial_tcp_proxy  |    | fips_bridge.py   |
+  |                |UART | (auto-detect by   |TCP | --tcp localhost  |
+  | FIPS protocol  |<-->|  CP210x VID/PID)  |<-->|  --local-port    |
+  | Noise_IK       |    |                   |SSH |   31338          |
+  | FMP framing    |    | serial <-> TCP    |-R  | UDP <-> TCP      |
+  | Heartbeats     |    +-------------------+    +--------+---------+
+  +----------------+                                     |
+         ^                                              | UDP :2121
+         | UART (GPIO1/3)                               v
+    /dev/ttyUSB0                                  +------------------+
+    (VID:PID = 10c4:ea60)                         | FIPS daemon     |
+                                                   | peer config:   |
+                                                   | 127.0.0.1:31338|
+                                                   +------------------+
+```
+
 ### Why the bridge runs on the VPS
 
 FIPS replies to the **source address** of incoming UDP packets, not the
 configured peer address. When the bridge runs on the host, FIPS replies to the
 host's public IP (unreachable from behind NAT). When the bridge runs on the VPS,
-it sends from `127.0.0.1:31337` — which matches the peer address in FIPS's
-config — so replies route correctly back through the SSH tunnel.
+it sends from `127.0.0.1:31337` (or `127.0.0.1:31338` for ESP32) — which matches
+the peer address in FIPS's config — so replies route correctly back through the
+SSH tunnel.
 
 ### Startup sequence
 
@@ -157,12 +201,23 @@ lookup using `receiver_idx`, so the heartbeat must include FIPS's index.
 
 ## MCU Identity
 
+### STM32F469
+
 ```
 Seed:    b'microfips-stm32fips-test-seed-001'
 Secret:  ac68af89462e7ed26ff670c186b4eeb53c4e82d72c8ef6cec4e676c7843f832e
 Pubkey:  02633860dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842
 npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
 ```
+
+### ESP32-D0WD
+
+```
+Secret:  123c2c301a7b37339c4232d8290ab47a0a304b522748ba83dbdde39fceda38d8
+npub:    npub1q2vqyxdzkerhtlnakrjxqkjun5juan73q933jt97uu24ftlgt9p8uqqqqqqqqqqq
+```
+
+VPS peer entry: alias "microfips-esp32", local port 31338.
 
 ## What's Proven
 
@@ -260,9 +315,11 @@ microfips/
   Cargo.toml                    # Workspace root
   AGENTS.md                     # Build/flash/test/debug reference
   crates/
-    microfips/                  # MCU firmware (package name: microfips)
+    microfips/                  # STM32 MCU firmware (package name: microfips)
       build.rs                  # Linker flags: --nmagic, -Tlink.x, -Tdefmt.x
       src/main.rs               # FIPS leaf node firmware
+    microfips-esp32/            # ESP32 MCU firmware (package name: microfips-esp32)
+      src/main.rs               # FIPS leaf node firmware (UART transport)
     microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, identity
     microfips-link/             # Host-side handshake test (UDP, proven against VPS)
     microfips-sim/              # Host-side full lifecycle simulator (stdio framing)
@@ -278,7 +335,17 @@ microfips/
 
 ## External Dependencies
 
+### STM32F469
+
 | Crate | Version | Notes |
 |-------|---------|-------|
 | `embassy-*` | fork | `Amperstrand/embassy` at `c0289d7a8` — 4 patches for STM32F4 USB OTG |
 | `stm32-metapac` | generated | Chip register definitions via `stm32-data-generated` |
+
+### ESP32-D0WD
+
+| Crate | Version | Notes |
+|-------|---------|-------|
+| `esp-hal` | v1.0.0 | Espressif HAL (NOT embassy-usb-synopsys) |
+| `esp-rtos` | v0.2.0 | RTOS support for async executor |
+| `embassy-*` | upstream | crates.io v0.6.0 (executor, time only — no USB) |

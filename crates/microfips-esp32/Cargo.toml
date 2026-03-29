@@ -1,0 +1,19 @@
+[package]
+name = "microfips-esp32"
+version = "0.1.0"
+edition = "2024"
+description = "Minimal FIPS leaf node on ESP32 via UART"
+
+[dependencies]
+microfips-core = { path = "../microfips-core" }
+rand_core = { version = "0.6", default-features = false }
+esp-hal = { version = "1.0.0", features = ["esp32", "unstable"] }
+esp-rtos = { version = "0.2.0", features = ["esp32", "embassy"] }
+esp-backtrace = { version = "0.15", features = ["esp32", "panic-handler", "println"] }
+esp-println = { version = "0.13", features = ["esp32"] }
+esp-bootloader-esp-idf = { version = "0.4", features = ["esp32"] }
+embassy-time = "0.5.1"
+embassy-futures = "0.1.2"
+embassy-executor = "0.9.1"
+embedded-io-async = "0.7"
+static_cell = "2"
