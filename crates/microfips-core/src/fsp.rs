@@ -27,6 +27,9 @@ pub const FIPS_IPV6_OVERHEAD: usize = 77;
 pub const FSP_DATAGRAM_HEADER_SIZE: usize = 4;
 pub const NODE_ADDR_SIZE: usize = 16;
 
+pub const SESSION_DATAGRAM_BODY_SIZE: usize = 35;
+pub const SESSION_DATAGRAM_HEADER_SIZE: usize = 36;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspError {
     BufferTooSmall,
@@ -351,6 +354,78 @@ impl<'a> Ipv6Shim<'a> {
             payload,
         })
     }
+}
+
+pub fn build_fsp_header(counter: u64, flags: u8, payload_len: u16) -> [u8; FSP_HEADER_SIZE] {
+    let mut header = [0u8; FSP_HEADER_SIZE];
+    header[0] = fsp_prefix_byte(PHASE_ESTABLISHED);
+    header[1] = flags;
+    header[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    header[4..12].copy_from_slice(&counter.to_le_bytes());
+    header
+}
+
+pub fn build_fsp_encrypted(
+    header: &[u8; FSP_HEADER_SIZE],
+    ciphertext: &[u8],
+    out: &mut [u8],
+) -> usize {
+    let total = FSP_HEADER_SIZE + ciphertext.len();
+    if out.len() < total {
+        return 0;
+    }
+    out[..FSP_HEADER_SIZE].copy_from_slice(header);
+    out[FSP_HEADER_SIZE..total].copy_from_slice(ciphertext);
+    total
+}
+
+pub fn fsp_prepend_inner_header(
+    timestamp_ms: u32,
+    msg_type: u8,
+    inner_flags: u8,
+    payload: &[u8],
+    out: &mut [u8],
+) -> usize {
+    let total = FSP_INNER_HEADER_SIZE + payload.len();
+    if out.len() < total {
+        return 0;
+    }
+    out[..4].copy_from_slice(&timestamp_ms.to_le_bytes());
+    out[4] = msg_type;
+    out[5] = inner_flags;
+    out[FSP_INNER_HEADER_SIZE..total].copy_from_slice(payload);
+    total
+}
+
+pub fn fsp_strip_inner_header(data: &[u8]) -> Option<(u32, u8, u8, &[u8])> {
+    if data.len() < FSP_INNER_HEADER_SIZE {
+        return None;
+    }
+    let timestamp = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let msg_type = data[4];
+    let inner_flags = data[5];
+    Some((
+        timestamp,
+        msg_type,
+        inner_flags,
+        &data[FSP_INNER_HEADER_SIZE..],
+    ))
+}
+
+pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])> {
+    if data.len() < FSP_ENCRYPTED_MIN_SIZE {
+        return None;
+    }
+    let ver = data[0] >> 4;
+    let phase = data[0] & 0x0F;
+    if ver != FSP_VERSION || phase != PHASE_ESTABLISHED {
+        return None;
+    }
+    let flags = data[1];
+    let counter = u64::from_le_bytes(data[4..12].try_into().ok()?);
+    let header = &data[..FSP_HEADER_SIZE];
+    let ciphertext = &data[FSP_HEADER_SIZE..];
+    Some((flags, counter, header, ciphertext))
 }
 
 use crate::noise::{NoiseError, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
@@ -867,5 +942,77 @@ mod tests {
             &mut ack,
         );
         assert_eq!(result, Err(FspSessionError::InvalidState));
+    }
+
+    #[test]
+    fn fsp_encrypted_header_roundtrip() {
+        use crate::noise::aead_encrypt;
+
+        let key = [0xAB; 32];
+        let counter = 42u64;
+        let flags = 0u8;
+        let timestamp_ms = 12345u32;
+        let msg_type = FSP_MSG_DATA;
+        let inner_flags = 0u8;
+        let app_payload = b"hello world";
+
+        let mut inner = [0u8; 64];
+        let inner_len =
+            fsp_prepend_inner_header(timestamp_ms, msg_type, inner_flags, app_payload, &mut inner);
+        assert_eq!(inner_len, FSP_INNER_HEADER_SIZE + app_payload.len());
+
+        let mut ct = [0u8; 128];
+        let header = build_fsp_header(counter, flags, inner_len as u16);
+        let ct_len = aead_encrypt(&key, counter, &header, &inner[..inner_len], &mut ct).unwrap();
+
+        let mut packet = [0u8; 256];
+        let pkt_len = build_fsp_encrypted(&header, &ct[..ct_len], &mut packet);
+        assert_eq!(pkt_len, FSP_HEADER_SIZE + ct_len);
+
+        let (parsed_flags, parsed_counter, parsed_header, parsed_ct) =
+            parse_fsp_encrypted_header(&packet[..pkt_len]).unwrap();
+        assert_eq!(parsed_flags, flags);
+        assert_eq!(parsed_counter, counter);
+        assert_eq!(parsed_header, &header[..]);
+        assert_eq!(parsed_ct.len(), ct_len);
+
+        let mut dec = [0u8; 64];
+        let dl =
+            crate::noise::aead_decrypt(&key, counter, parsed_header, parsed_ct, &mut dec).unwrap();
+        let (ts, mt, ifl, rest) = fsp_strip_inner_header(&dec[..dl]).unwrap();
+        assert_eq!(ts, timestamp_ms);
+        assert_eq!(mt, msg_type);
+        assert_eq!(ifl, inner_flags);
+        assert_eq!(rest, app_payload);
+    }
+
+    #[test]
+    fn fsp_encrypted_header_rejects_wrong_phase() {
+        let mut data = [0u8; FSP_ENCRYPTED_MIN_SIZE];
+        data[0] = 0x01;
+        assert!(parse_fsp_encrypted_header(&data).is_none());
+    }
+
+    #[test]
+    fn fsp_encrypted_header_rejects_too_short() {
+        assert!(parse_fsp_encrypted_header(&[0u8; FSP_ENCRYPTED_MIN_SIZE - 1]).is_none());
+    }
+
+    #[test]
+    fn fsp_strip_inner_header_too_short() {
+        assert!(fsp_strip_inner_header(&[0u8; 5]).is_none());
+        assert!(fsp_strip_inner_header(&[]).is_none());
+    }
+
+    #[test]
+    fn fsp_build_header_fields() {
+        let header = build_fsp_header(0xDEADBEEF, FLAG_COORDS_PRESENT | FLAG_KEY_EPOCH, 200);
+        assert_eq!(header[0], fsp_prefix_byte(PHASE_ESTABLISHED));
+        assert_eq!(header[1], FLAG_COORDS_PRESENT | FLAG_KEY_EPOCH);
+        assert_eq!(u16::from_le_bytes([header[2], header[3]]), 200);
+        assert_eq!(
+            u64::from_le_bytes(header[4..12].try_into().unwrap()),
+            0xDEADBEEF
+        );
     }
 }

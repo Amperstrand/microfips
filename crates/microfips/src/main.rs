@@ -19,7 +19,7 @@ use embassy_usb::driver::EndpointError;
 use static_cell::StaticCell;
 
 use microfips_core::fmp;
-use microfips_core::fsp::{FspSession, FspSessionState, PHASE_SESSION_SETUP, PHASE_SESSION_MSG3, PHASE_ESTABLISHED};
+use microfips_core::fsp::{FspSession, FspSessionState, PHASE_SESSION_SETUP, PHASE_SESSION_MSG3, PHASE_ESTABLISHED, SESSION_DATAGRAM_BODY_SIZE, FSP_MSG_DATA, parse_fsp_encrypted_header, fsp_strip_inner_header};
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::{CryptoRng, Transport};
 
@@ -272,17 +272,21 @@ impl NodeHandler for FipsHandler<'_> {
         match msg_type {
             fmp::MSG_SESSION_DATAGRAM => {
                 STAT_DATA_RX.fetch_add(1, Ordering::Relaxed);
-                if payload.is_empty() {
+                if payload.len() < SESSION_DATAGRAM_BODY_SIZE {
                     return HandleResult::None;
                 }
-                let fsp_phase = payload[0] & 0x0F;
+                let fsp_data = &payload[SESSION_DATAGRAM_BODY_SIZE..];
+                if fsp_data.is_empty() {
+                    return HandleResult::None;
+                }
+                let fsp_phase = fsp_data[0] & 0x0F;
                 match fsp_phase {
                     PHASE_SESSION_SETUP => {
                         match self.fsp_session.handle_setup(
                             &MCU_SECRET,
                             &self.fsp_ephemeral,
                             &self.fsp_epoch,
-                            payload,
+                            fsp_data,
                             resp,
                         ) {
                             Ok(ack_len) => HandleResult::SendDatagram(ack_len),
@@ -290,7 +294,7 @@ impl NodeHandler for FipsHandler<'_> {
                         }
                     }
                     PHASE_SESSION_MSG3 => {
-                        match self.fsp_session.handle_msg3(payload) {
+                        match self.fsp_session.handle_msg3(fsp_data) {
                             Ok(()) => {
                                 if let Some((_, _k_send)) = self.fsp_session.session_keys() {
                                     self.fsp_session_counter = self.fsp_session_counter.wrapping_add(1);
@@ -304,22 +308,24 @@ impl NodeHandler for FipsHandler<'_> {
                         if self.fsp_session.state() != FspSessionState::Established {
                             return HandleResult::None;
                         }
-                        let (k_recv, _) = self.fsp_session.session_keys().unwrap();
-                        let outer_header = &payload[..fmp::ESTABLISHED_HEADER_SIZE];
-                        let encrypted = &payload[fmp::ESTABLISHED_HEADER_SIZE..];
+                        let (k_recv, _k_send) = self.fsp_session.session_keys().unwrap();
+                        let Some((_flags, counter, header, encrypted)) =
+                            parse_fsp_encrypted_header(fsp_data)
+                        else {
+                            return HandleResult::None;
+                        };
                         let mut dec = [0u8; 512];
                         match microfips_core::noise::aead_decrypt(
-                            &k_recv, 0, outer_header, encrypted, &mut dec,
+                            &k_recv, counter, header, encrypted, &mut dec,
                         ) {
                             Ok(dl) => {
-                                if dl < 6 {
+                                let Some((_timestamp, inner_msg_type, _inner_flags, inner_payload)) =
+                                    fsp_strip_inner_header(&dec[..dl])
+                                else {
                                     return HandleResult::None;
-                                }
-                                let _timestamp = u32::from_le_bytes(dec[..4].try_into().unwrap());
-                                let inner_msg_type = dec[4];
-                                let inner_payload = &dec[6..dl];
+                                };
                                 match inner_msg_type {
-                                    fmp::MSG_SESSION_DATAGRAM => {
+                                    FSP_MSG_DATA => {
                                         if inner_payload.len() >= 3 && &inner_payload[..3] == b"GET" {
                                             STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
                                             let rlen = HTTP_RESPONSE.len().min(resp.len());
