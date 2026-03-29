@@ -1,14 +1,14 @@
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use microfips_core::fmp;
+use embassy_time::{Duration, Timer};
+
 use microfips_core::noise;
-use rand::RngCore;
-
-const HB_SECS: u64 = 10;
-const RECV_TIMEOUT_SECS: u64 = 30;
+use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
+use microfips_protocol::transport::Transport;
 
 const MCU_SECRET: [u8; 32] = [
     0xac, 0x68, 0xaf, 0x89, 0x46, 0x2e, 0x7e, 0xd2, 0x6f, 0xf6, 0x70, 0xc1, 0x86, 0xb4, 0xee, 0xb5,
@@ -21,263 +21,228 @@ const VPS_PUB: [u8; 33] = [
     0x21,
 ];
 
-static SEND_COUNTER: AtomicU64 = AtomicU64::new(0);
+// ---------------------------------------------------------------------------
+// SimTransport: wraps TCP or stdio for the protocol crate's Transport trait.
+//
+// A background reader thread pumps bytes from the underlying Read source into
+// a shared VecDeque. Transport::recv polls the buffer, yielding to the
+// embassy executor when no data is available. This lets Node's select-based
+// steady-state loop interleave recv with heartbeat timers.
+// ---------------------------------------------------------------------------
 
-fn next_ctr() -> u64 {
-    SEND_COUNTER.fetch_add(1, Ordering::Relaxed)
+#[derive(Debug)]
+#[allow(dead_code)]
+enum SimError {
+    Io(std::io::Error),
+    Eof,
 }
 
-struct Framed<R> {
-    reader: R,
-    rbuf: Vec<u8>,
-    rpos: usize,
+enum SimConnector {
+    Listen(TcpListener),
+    Connect(String),
+    Stdio,
 }
 
-impl<R: Read> Framed<R> {
-    fn new(reader: R) -> Self {
+struct SimTransport {
+    connector: SimConnector,
+    rx: Arc<Mutex<VecDeque<u8>>>,
+    writer: Option<Box<dyn Write + Send>>,
+    eof: Arc<AtomicBool>,
+    /// Kept to shut down old TCP connections before reconnecting, which
+    /// unblocks the reader thread so it can exit cleanly.
+    shutdown_handle: Option<TcpStream>,
+}
+
+impl SimTransport {
+    fn new(connector: SimConnector) -> Self {
         Self {
-            reader,
-            rbuf: Vec::with_capacity(4096),
-            rpos: 0,
+            connector,
+            rx: Arc::new(Mutex::new(VecDeque::new())),
+            writer: None,
+            eof: Arc::new(AtomicBool::new(false)),
+            shutdown_handle: None,
         }
     }
 
-    fn compact(&mut self) {
-        if self.rpos > 0 && self.rpos < self.rbuf.len() {
-            let remaining = self.rbuf.len() - self.rpos;
-            self.rbuf.copy_within(self.rpos.., 0);
-            self.rpos = 0;
-            self.rbuf.truncate(remaining);
-        }
-    }
-
-    fn recv_frame(&mut self, timeout: Duration) -> std::io::Result<Vec<u8>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if self.rpos < self.rbuf.len() {
-                if self.rbuf.len() - self.rpos < 2 {
-                    self.compact();
-                    continue;
-                }
-                let ml =
-                    u16::from_le_bytes([self.rbuf[self.rpos], self.rbuf[self.rpos + 1]]) as usize;
-                if ml == 0 || ml > 1500 || self.rbuf.len() - self.rpos - 2 < ml {
-                    self.rpos = self.rbuf.len();
-                    self.compact();
-                    continue;
-                }
-                let s = self.rpos + 2;
-                let e = s + ml;
-                let frame = self.rbuf[s..e].to_vec();
-                self.rpos = e;
-                if self.rpos >= self.rbuf.len() {
-                    self.rpos = 0;
-                    self.rbuf.clear();
-                }
-                return Ok(frame);
-            }
-            self.compact();
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "recv timeout",
-                ));
-            }
-            let mut chunk = [0u8; 2048];
-            match self.reader.read(&mut chunk) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "eof",
-                    ));
-                }
-                Ok(n) => {
-                    if self.rbuf.len() + n > self.rbuf.capacity() {
-                        eprintln!("WARN: rx buffer overflow, clearing");
-                        self.rbuf.clear();
-                        self.rpos = 0;
-                        continue;
+    fn spawn_reader(&self, mut reader: impl Read + Send + 'static) {
+        let rx = self.rx.clone();
+        let eof = self.eof.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 2048];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        eof.store(true, Ordering::Relaxed);
+                        break;
                     }
-                    self.rbuf.extend_from_slice(&chunk[..n]);
+                    Ok(n) => {
+                        rx.lock().unwrap().extend(&buf[..n]);
+                    }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                Err(e) => return Err(e),
             }
+        });
+    }
+
+    fn setup_tcp(&mut self, stream: TcpStream) -> Result<(), SimError> {
+        let reader = stream.try_clone().map_err(SimError::Io)?;
+        self.shutdown_handle = Some(stream.try_clone().map_err(SimError::Io)?);
+        self.spawn_reader(reader);
+        self.writer = Some(Box::new(stream));
+        Ok(())
+    }
+}
+
+impl Transport for SimTransport {
+    type Error = SimError;
+
+    async fn wait_ready(&mut self) -> Result<(), SimError> {
+        // Shut down previous TCP connection so the old reader thread exits.
+        if let Some(old) = self.shutdown_handle.take() {
+            let _ = old.shutdown(std::net::Shutdown::Both);
+        }
+
+        match &self.connector {
+            SimConnector::Listen(listener) => {
+                // Fresh buffers per session to avoid races with the old reader.
+                self.rx = Arc::new(Mutex::new(VecDeque::new()));
+                self.eof = Arc::new(AtomicBool::new(false));
+                let (stream, addr) = listener.accept().map_err(SimError::Io)?;
+                eprintln!("[SIM] connection from {}", addr);
+                self.setup_tcp(stream)
+            }
+            SimConnector::Connect(addr) => {
+                self.rx = Arc::new(Mutex::new(VecDeque::new()));
+                self.eof = Arc::new(AtomicBool::new(false));
+                eprintln!("[SIM] connecting to {}...", addr);
+                let stream = TcpStream::connect(addr.as_str()).map_err(SimError::Io)?;
+                eprintln!("[SIM] connected");
+                self.setup_tcp(stream)
+            }
+            SimConnector::Stdio => {
+                if self.writer.is_none() {
+                    self.spawn_reader(std::io::stdin());
+                    self.writer = Some(Box::new(std::io::stdout()));
+                } else {
+                    // Stdio can't truly reconnect; clear stale data and retry.
+                    self.rx.lock().unwrap().clear();
+                    self.eof.store(false, Ordering::Relaxed);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn send(&mut self, data: &[u8]) -> Result<(), SimError> {
+        let writer = self.writer.as_mut().ok_or(SimError::Eof)?;
+        writer.write_all(data).map_err(SimError::Io)?;
+        writer.flush().map_err(SimError::Io)?;
+        Ok(())
+    }
+
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, SimError> {
+        loop {
+            {
+                let mut rx = self.rx.lock().unwrap();
+                if !rx.is_empty() {
+                    let n = rx.len().min(buf.len());
+                    for (i, byte) in rx.drain(..n).enumerate() {
+                        buf[i] = byte;
+                    }
+                    return Ok(n);
+                }
+            }
+            if self.eof.load(Ordering::Relaxed) {
+                return Err(SimError::Eof);
+            }
+            Timer::after(Duration::from_millis(1)).await;
         }
     }
 }
 
-fn send_frame(w: &mut impl Write, payload: &[u8]) -> std::io::Result<()> {
-    let hdr = (payload.len() as u16).to_le_bytes();
-    w.write_all(&hdr)?;
-    w.write_all(payload)?;
-    w.flush()?;
-    Ok(())
-}
+// ---------------------------------------------------------------------------
+// SimHandler: bridges protocol events to stderr logging
+// ---------------------------------------------------------------------------
 
-fn sim_err(e: noise::NoiseError) -> Box<dyn std::error::Error> {
-    format!("{:?}", e).into()
-}
+struct SimHandler;
 
-#[allow(clippy::type_complexity)]
-fn handshake<R: Read, W: Write>(
-    framed: &mut Framed<R>,
-    out: &mut W,
-) -> Result<([u8; 32], [u8; 32], u32, u32), Box<dyn std::error::Error>> {
-    let my_pub = noise::ecdh_pubkey(&MCU_SECRET).map_err(sim_err)?;
-
-    let mut rng = rand::rng();
-    let mut eph = [0u8; 32];
-    rng.fill_bytes(&mut eph);
-
-    let (mut st, _ep) =
-        noise::NoiseIkInitiator::new(&eph, &MCU_SECRET, &VPS_PUB).map_err(sim_err)?;
-
-    let epoch: [u8; 8] = [0x01, 0, 0, 0, 0, 0, 0, 0];
-
-    let mut n1 = [0u8; 256];
-    let n1len = st
-        .write_message1(&my_pub, &epoch, &mut n1)
-        .map_err(sim_err)?;
-
-    let mut f1 = [0u8; 256];
-    let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1).unwrap();
-
-    eprintln!("[SIM] sending MSG1 ({}B)", f1len);
-    send_frame(out, &f1[..f1len])?;
-
-    eprintln!("[SIM] waiting for MSG2...");
-    let mb = framed.recv_frame(Duration::from_secs(RECV_TIMEOUT_SECS))?;
-    eprintln!("[SIM] received frame ({}B)", mb.len());
-
-    let m = fmp::parse_message(&mb).ok_or("failed to parse FMP message")?;
-    match m {
-        fmp::FmpMessage::Msg2 {
-            sender_idx,
-            receiver_idx,
-            noise_payload,
-        } => {
-            eprintln!(
-                "[SIM] MSG2: sender={}, receiver={}, noise={}B",
-                sender_idx,
-                receiver_idx,
-                noise_payload.len()
-            );
-            st.read_message2(noise_payload).map_err(sim_err)?;
-            let (ks, kr) = st.finalize();
-            eprintln!("[SIM] handshake complete! ks={:02x?}", &ks[..8]);
-            Ok((ks, kr, sender_idx, receiver_idx))
+impl NodeHandler for SimHandler {
+    async fn on_event(&mut self, event: NodeEvent) {
+        match event {
+            NodeEvent::Connected => eprintln!("[SIM] transport ready"),
+            NodeEvent::Msg1Sent => eprintln!("[SIM] MSG1 sent"),
+            NodeEvent::HandshakeOk => eprintln!("[SIM] handshake complete!"),
+            NodeEvent::HeartbeatSent => eprintln!("[SIM] sent heartbeat"),
+            NodeEvent::HeartbeatRecv => eprintln!("[SIM] received heartbeat"),
+            NodeEvent::Disconnected => eprintln!("[SIM] session ended"),
+            NodeEvent::Error => eprintln!("[SIM] handshake error"),
         }
-        other => Err(format!("expected MSG2, got {:?}", other).into()),
+    }
+
+    fn on_message(&mut self, msg_type: u8, payload: &[u8], _resp: &mut [u8]) -> HandleResult {
+        eprintln!(
+            "[SIM] received msg type 0x{:02x}, {}B payload",
+            msg_type,
+            payload.len()
+        );
+        HandleResult::None
     }
 }
 
-fn steady<R: Read, W: Write>(
-    framed: &mut Framed<R>,
-    out: &mut W,
-    ks: &[u8; 32],
-    kr: &[u8; 32],
-    them: u32,
-    _us: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut next_hb = Instant::now() + Duration::from_secs(HB_SECS);
-    let mut hb_count = 0u32;
+// ---------------------------------------------------------------------------
+// Embassy executor helper for std context
+// ---------------------------------------------------------------------------
 
-    loop {
-        let recv_result = framed.recv_frame(Duration::from_secs(HB_SECS));
+fn block_on<F: std::future::Future + Send + 'static>(f: F) -> F::Output
+where
+    F::Output: Send + 'static,
+{
+    use embassy_executor::Executor;
+    use std::pin::Pin;
 
-        match recv_result {
-            Ok(frame) => {
-                handle_frame(kr, &frame)?;
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                eprintln!("[SIM] connection closed by peer");
-                return Ok(());
-            }
-            Err(e) => {
-                eprintln!("[SIM] recv error: {}", e);
-                return Err(e.into());
-            }
-        }
+    let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
 
-        if Instant::now() >= next_hb {
-            next_hb = Instant::now() + Duration::from_secs(HB_SECS);
-            let c = next_ctr();
-            let ts = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u32;
-            let mut hb_out = [0u8; 256];
-            let fl = fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut hb_out);
-            send_frame(out, &hb_out[..fl])?;
-            hb_count += 1;
-            eprintln!("[SIM] sent heartbeat #{} ({}B)", hb_count, fl);
-        }
+    let result: Arc<Mutex<Option<F::Output>>> = Arc::new(Mutex::new(None));
+    let result_clone = result.clone();
+    let done = Arc::new(AtomicBool::new(false));
+    let done_clone = done.clone();
+
+    let boxed: Pin<Box<dyn std::future::Future<Output = ()> + Send>> = Box::pin(async move {
+        let output = f.await;
+        *result_clone.lock().unwrap() = Some(output);
+        done_clone.store(true, Ordering::Relaxed);
+    });
+
+    #[embassy_executor::task(pool_size = 1)]
+    async fn run_task(fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) {
+        fut.await
     }
+
+    let done_check = done.clone();
+    executor.run_until(
+        |spawner| {
+            spawner.spawn(run_task(boxed).unwrap());
+        },
+        move || done_check.load(Ordering::Relaxed),
+    );
+
+    result.lock().unwrap().take().unwrap()
 }
 
-fn handle_frame(kr: &[u8; 32], data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    let m = fmp::parse_message(data).ok_or("failed to parse FMP message")?;
-    match m {
-        fmp::FmpMessage::Established {
-            receiver_idx,
-            counter,
-            encrypted,
-        } => {
-            eprintln!(
-                "[SIM] ESTABLISHED: receiver={}, counter={}, enc_len={}",
-                receiver_idx,
-                counter,
-                encrypted.len(),
-            );
-            let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
-            let mut dec = [0u8; 2048];
-            let dl = noise::aead_decrypt(kr, counter, hdr, encrypted, &mut dec).map_err(sim_err)?;
-            if dl < fmp::INNER_HEADER_SIZE {
-                return Err("decrypted message too short".into());
-            }
-            match dec[4] {
-                fmp::MSG_HEARTBEAT => {
-                    eprintln!("[SIM] received heartbeat");
-                }
-                fmp::MSG_DISCONNECT => {
-                    eprintln!("[SIM] received disconnect");
-                    return Err("peer disconnected".into());
-                }
-                t => {
-                    eprintln!(
-                        "[SIM] received msg type 0x{:02x}, {}B payload",
-                        t,
-                        dl - fmp::INNER_HEADER_SIZE
-                    );
-                }
-            }
-            Ok(())
-        }
-        other => {
-            eprintln!(
-                "[SIM] ignoring non-ESTABLISHED in steady state: {:?}",
-                other
-            );
-            Ok(())
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut listen_port: Option<u16> = None;
-    let mut tcp_addr: Option<&str> = None;
+    let mut tcp_addr: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--listen" {
             i += 1;
             listen_port = args.get(i).and_then(|s| s.parse().ok());
         } else if args[i] != "--" {
-            tcp_addr = Some(&args[i]);
+            tcp_addr = Some(args[i].clone());
         }
         i += 1;
     }
@@ -286,127 +251,25 @@ fn main() {
     eprintln!("[SIM] microfips simulator starting");
     eprintln!("[SIM] local pubkey: {}", hex::encode(my_pub));
 
-    if let Some(port) = listen_port {
+    let transport = if let Some(port) = listen_port {
         eprintln!("[SIM] mode: listen, port: {}", port);
         let listener = TcpListener::bind(("0.0.0.0", port)).expect("failed to listen");
         eprintln!("[SIM] listening on 0.0.0.0:{}", port);
-        loop {
-            match listener.accept() {
-                Ok((stream, addr)) => {
-                    eprintln!("[SIM] connection from {}", addr);
-                    let mut reader = stream.try_clone().expect("clone tcp");
-                    reader
-                        .set_read_timeout(Some(Duration::from_secs(HB_SECS)))
-                        .expect("set read timeout");
-                    let mut writer = stream;
-                    let mut framed = Framed::new(&mut reader);
-
-                    loop {
-                        eprintln!("[SIM] --- starting handshake attempt ---");
-                        match handshake(&mut framed, &mut writer) {
-                            Ok((ks, kr, them, us)) => {
-                                eprintln!("[SIM] handshake success! us={}, them={}", us, them);
-                                match steady(&mut framed, &mut writer, &ks, &kr, them, us) {
-                                    Ok(()) => {
-                                        eprintln!("[SIM] steady state ended (peer closed)");
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[SIM] steady state error: {}", e);
-                                    }
-                                }
-                                break;
-                            }
-                            Err(e) => {
-                                eprintln!("[SIM] handshake failed: {}", e);
-                                eprintln!("[SIM] will retry after 3s...");
-                                std::thread::sleep(Duration::from_secs(3));
-                            }
-                        }
-                    }
-                    eprintln!("[SIM] session ended, waiting for new connection...");
-                }
-                Err(e) => {
-                    eprintln!("[SIM] accept error: {}", e);
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            }
-        }
+        SimTransport::new(SimConnector::Listen(listener))
     } else if let Some(addr) = tcp_addr {
         eprintln!("[SIM] mode: tcp, target: {}", addr);
-        loop {
-            eprintln!("[SIM] connecting to {}...", addr);
-            match TcpStream::connect(addr) {
-                Ok(stream) => {
-                    eprintln!("[SIM] connected");
-                    let mut reader = stream.try_clone().expect("clone tcp");
-                    reader
-                        .set_read_timeout(Some(Duration::from_secs(HB_SECS)))
-                        .expect("set read timeout");
-                    let mut writer = stream;
-                    let mut framed = Framed::new(&mut reader);
-
-                    loop {
-                        eprintln!("[SIM] --- starting handshake attempt ---");
-                        match handshake(&mut framed, &mut writer) {
-                            Ok((ks, kr, them, us)) => {
-                                eprintln!("[SIM] handshake success! us={}, them={}", us, them);
-                                match steady(&mut framed, &mut writer, &ks, &kr, them, us) {
-                                    Ok(()) => {
-                                        eprintln!("[SIM] steady state ended (peer closed)");
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[SIM] steady state error: {}", e);
-                                    }
-                                }
-                                break;
-                            }
-                            Err(e) => {
-                                eprintln!("[SIM] handshake failed: {}", e);
-                                eprintln!("[SIM] will retry after 3s...");
-                                std::thread::sleep(Duration::from_secs(3));
-                            }
-                        }
-                    }
-                    eprintln!("[SIM] session ended, reconnecting in 3s...");
-                    std::thread::sleep(Duration::from_secs(3));
-                }
-                Err(e) => {
-                    eprintln!("[SIM] connect failed: {}, retrying in 3s...", e);
-                    std::thread::sleep(Duration::from_secs(3));
-                }
-            }
-        }
+        SimTransport::new(SimConnector::Connect(addr))
     } else {
         eprintln!("[SIM] mode: stdio (reading from stdin, writing to stdout)");
         eprintln!("[SIM] usage: microfips-sim [--listen PORT | tcp_addr]");
-        let stdin = std::io::stdin();
-        let stdout = std::io::stdout();
-        let reader = stdin.lock();
-        let mut writer = stdout.lock();
-        let mut framed = Framed::new(reader);
+        SimTransport::new(SimConnector::Stdio)
+    };
 
-        loop {
-            eprintln!("[SIM] --- starting handshake attempt ---");
-            match handshake(&mut framed, &mut writer) {
-                Ok((ks, kr, them, us)) => {
-                    eprintln!("[SIM] handshake success! us={}, them={}", us, them);
-                    match steady(&mut framed, &mut writer, &ks, &kr, them, us) {
-                        Ok(()) => {
-                            eprintln!("[SIM] steady state ended (peer closed)");
-                        }
-                        Err(e) => {
-                            eprintln!("[SIM] steady state error: {}", e);
-                        }
-                    }
-                    eprintln!("[SIM] will retry after 3s...");
-                    std::thread::sleep(Duration::from_secs(3));
-                }
-                Err(e) => {
-                    eprintln!("[SIM] handshake failed: {}", e);
-                    eprintln!("[SIM] will retry after 3s...");
-                    std::thread::sleep(Duration::from_secs(3));
-                }
-            }
-        }
-    }
+    let rng = rand_core::OsRng;
+    let mut node = Node::new(transport, rng, MCU_SECRET, VPS_PUB);
+    let mut handler = SimHandler;
+
+    block_on(async move {
+        node.run(&mut handler).await;
+    });
 }
