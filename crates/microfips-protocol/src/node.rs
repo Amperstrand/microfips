@@ -144,7 +144,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
             .expect("write_message1");
 
         let mut f1 = [0u8; 256];
-        let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1);
+        let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1).unwrap();
 
         self.send_frame(&f1[..f1len]).await?;
         handler.on_event(NodeEvent::Msg1Sent).await;
@@ -410,46 +410,8 @@ enum FrameAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embassy_executor::Executor;
+    use crate::test_helpers::block_on;
     use std::sync::LazyLock;
-
-    fn block_on<F: std::future::Future + Send + 'static>(f: F) -> F::Output
-    where
-        F::Output: Send + 'static,
-    {
-        use embassy_executor::task;
-        use std::boxed::Box;
-        use std::sync::{Arc, Mutex};
-
-        let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
-
-        let result: Arc<Mutex<Option<F::Output>>> = Arc::new(Mutex::new(None));
-        let result_clone = result.clone();
-        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done_clone = done.clone();
-        let boxed: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
-            Box::pin(async move {
-                let output = f.await;
-                *result_clone.lock().unwrap() = Some(output);
-                done_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-            });
-
-        #[task(pool_size = 64)]
-        async fn run_boxed(fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) {
-            fut.await
-        }
-
-        let done_check = done.clone();
-
-        executor.run_until(
-            |spawner| {
-                spawner.spawn(run_boxed(boxed).unwrap());
-            },
-            move || done_check.load(std::sync::atomic::Ordering::Relaxed),
-        );
-
-        result.lock().unwrap().take().unwrap()
-    }
 
     struct TestRng {
         bytes: std::sync::Mutex<std::vec::Vec<u8>>,
@@ -692,7 +654,8 @@ mod tests {
                     .expect("write_message2 failed");
 
                 let mut msg2_buf = [0u8; 256];
-                let msg2_len = fmp::build_msg2(1, 0, &msg2_noise[..msg2_noise_len], &mut msg2_buf);
+                let msg2_len =
+                    fmp::build_msg2(1, 0, &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
 
                 let frame_hdr = (msg2_len as u16).to_le_bytes();
                 resp_transport.send(&frame_hdr).await.unwrap();

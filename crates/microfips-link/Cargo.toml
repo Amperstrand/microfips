@@ -11,6 +11,5 @@ path = "src/main.rs"
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["std"] }
 k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh", "std"] }
-sha2 = "0.10"
 hex = "0.4"
 rand = "0.9"

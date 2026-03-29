@@ -6,6 +6,5 @@ description = "Host-side FIPS lifecycle simulator — simulates MCU protocol wit
 
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["std"] }
-k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
 rand = "0.9"
 hex = "0.4"

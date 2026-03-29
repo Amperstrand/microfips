@@ -20,8 +20,8 @@ use static_cell::StaticCell;
 
 use microfips_core::fmp;
 use microfips_core::fsp::{
-    FSP_MSG_DATA, FspSession, FspSessionState, PHASE_ESTABLISHED, PHASE_SESSION_MSG3,
-    PHASE_SESSION_SETUP, SESSION_DATAGRAM_BODY_SIZE, fsp_strip_inner_header,
+    FLAG_UNENCRYPTED, FSP_MSG_DATA, FspSession, FspSessionState, PHASE_ESTABLISHED,
+    PHASE_SESSION_MSG3, PHASE_SESSION_SETUP, SESSION_DATAGRAM_BODY_SIZE, fsp_strip_inner_header,
     parse_fsp_encrypted_header,
 };
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
@@ -31,14 +31,23 @@ static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
 #[used]
 static _PANIC_LINE_KEEP: &AtomicU32 = &PANIC_LINE;
 
+#[used]
 static STAT_MSG1_TX: AtomicU32 = AtomicU32::new(0);
+#[used]
 static STAT_MSG2_RX: AtomicU32 = AtomicU32::new(0);
+#[used]
 static STAT_HB_TX: AtomicU32 = AtomicU32::new(0);
+#[used]
 static STAT_HB_RX: AtomicU32 = AtomicU32::new(0);
+#[used]
 static STAT_USB_ERR: AtomicU32 = AtomicU32::new(0);
+#[used]
 static STAT_STATE: AtomicU32 = AtomicU32::new(0);
+#[used]
 static STAT_RECV_PKT: AtomicU32 = AtomicU32::new(0);
+#[used]
 static STAT_DATA_RX: AtomicU32 = AtomicU32::new(0);
+#[used]
 static STAT_DATA_TX: AtomicU32 = AtomicU32::new(0);
 
 const HTTP_RESPONSE: &[u8] =
@@ -295,7 +304,10 @@ impl NodeHandler for FipsHandler<'_> {
                             resp,
                         ) {
                             Ok(ack_len) => HandleResult::SendDatagram(ack_len),
-                            Err(_) => HandleResult::None,
+                            Err(e) => {
+                                defmt::warn!("FSP setup err: {:?}", e);
+                                HandleResult::None
+                            }
                         }
                     }
                     PHASE_SESSION_MSG3 => match self.fsp_session.handle_msg3(fsp_data) {
@@ -305,18 +317,24 @@ impl NodeHandler for FipsHandler<'_> {
                             }
                             HandleResult::None
                         }
-                        Err(_) => HandleResult::None,
+                        Err(e) => {
+                            defmt::warn!("FSP msg3 err: {:?}", e);
+                            HandleResult::None
+                        }
                     },
                     PHASE_ESTABLISHED => {
                         if self.fsp_session.state() != FspSessionState::Established {
                             return HandleResult::None;
                         }
                         let (k_recv, _k_send) = self.fsp_session.session_keys().unwrap();
-                        let Some((_flags, counter, header, encrypted)) =
+                        let Some((flags, counter, header, encrypted)) =
                             parse_fsp_encrypted_header(fsp_data)
                         else {
                             return HandleResult::None;
                         };
+                        if flags & FLAG_UNENCRYPTED != 0 {
+                            return HandleResult::None;
+                        }
                         let mut dec = [0u8; 512];
                         match microfips_core::noise::aead_decrypt(
                             &k_recv, counter, header, encrypted, &mut dec,
@@ -325,6 +343,7 @@ impl NodeHandler for FipsHandler<'_> {
                                 let Some((_timestamp, inner_msg_type, _inner_flags, inner_payload)) =
                                     fsp_strip_inner_header(&dec[..dl])
                                 else {
+                                    defmt::warn!("FSP inner hdr too short");
                                     return HandleResult::None;
                                 };
                                 match inner_msg_type {
@@ -342,7 +361,10 @@ impl NodeHandler for FipsHandler<'_> {
                                     _ => HandleResult::None,
                                 }
                             }
-                            Err(_) => HandleResult::None,
+                            Err(_) => {
+                                defmt::warn!("FSP decrypt fail");
+                                HandleResult::None
+                            }
                         }
                     }
                     _ => HandleResult::None,
