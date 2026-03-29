@@ -93,6 +93,53 @@ jobs:
           timeout 5 ./bin/microfips-sim </dev/null 2>&1 | head -5
           echo "sim exited with code $?"
 
+  fips-integration:
+    name: FIPS Node Integration
+    runs-on: ubuntu-latest
+    needs: [build-host]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: fips-node
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: fips-handshake
+          path: ./bin
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: microfips-sim
+          path: ./bin
+
+      - run: chmod +x ./bin/fips-handshake ./bin/microfips-sim
+
+      - name: Build and start FIPS node
+        timeout-minutes: 15
+        run: bash scripts/ci-fips-node.sh start
+
+      - name: Run handshake test against local FIPS node
+        timeout-minutes: 1
+        continue-on-error: true
+        run: |
+          echo "=== Running fips-handshake against localhost:2121 ==="
+          ./bin/fips-handshake 127.0.0.1:2121 || echo "handshake exited $?"
+
+      - name: Show FIPS node status
+        if: always()
+        run: bash scripts/ci-fips-node.sh status
+
+      - name: Stop FIPS node
+        if: always()
+        run: bash scripts/ci-fips-node.sh stop
+
   build-firmware:
     name: Build Firmware
     runs-on: ubuntu-latest
@@ -137,7 +184,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, build-host, lint, sim-smoke, build-firmware]
+    needs: [test, build-host, lint, sim-smoke, build-firmware, fips-integration]
     if: always()
     steps:
       - run: |
@@ -150,5 +197,6 @@ jobs:
           echo "| Lint & Format | \`${{ needs.lint.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Simulator Smoke | \`${{ needs.sim-smoke.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build Firmware | \`${{ needs.build-firmware.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
