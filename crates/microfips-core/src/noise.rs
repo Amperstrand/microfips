@@ -80,6 +80,7 @@ pub const PROTOCOL_NAME_XK: &[u8] = b"Noise_XK_secp256k1_ChaChaPoly_SHA256";
 pub enum NoiseError {
     InvalidKey,
     InvalidMessage,
+    InvalidState,
     DecryptionFailed,
     EncryptionFailed,
     BufferTooSmall,
@@ -651,6 +652,163 @@ impl NoiseXkInitiator {
     }
 
     /// Derive transport keys via Split() (same as IK).
+    pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
+        let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
+        let mut okm = [0u8; 64];
+        hk.expand(&[], &mut okm)
+            .expect("hkdf expand 64 bytes should never fail");
+        let mut k1 = [0u8; 32];
+        let mut k2 = [0u8; 32];
+        k1.copy_from_slice(&okm[..32]);
+        k2.copy_from_slice(&okm[32..]);
+        (k1, k2)
+    }
+}
+
+/// Noise XK Responder for FSP session-layer handshakes.
+///
+/// Implements `Noise_XK_secp256k1_ChaChaPoly_SHA256` responder side:
+/// ```text
+///   <- s                    (pre-message: our static key)
+///   -> e, es                (msg1: 33 bytes — read by new())
+///   <- e, ee, epoch          (msg2: 57 bytes — write_message2())
+///   -> s, se, epoch          (msg3: 73 bytes — read_message3())
+/// ```
+pub struct NoiseXkResponder {
+    h: [u8; 32],
+    ck: [u8; 32],
+    ei_pub: [u8; PUBKEY_SIZE],
+    e_priv: Option<[u8; 32]>,
+    k: Option<[u8; 32]>,
+    n: u64,
+}
+
+impl NoiseXkResponder {
+    pub fn new(
+        responder_static_secret: &[u8; 32],
+        initiator_ephemeral_pub: &[u8; PUBKEY_SIZE],
+    ) -> Result<Self, NoiseError> {
+        let h = hash_one(PROTOCOL_NAME_XK);
+        let ck = h;
+
+        let normalized_s = parity_normalize(&ecdh_pubkey(responder_static_secret)?);
+        let h = mix_hash(&h, &normalized_s);
+
+        let h = mix_hash(&h, initiator_ephemeral_pub);
+
+        let es = x_only_ecdh(responder_static_secret, initiator_ephemeral_pub)?;
+        let (ck, k) = mix_key(&ck, &es);
+
+        Ok(Self {
+            h,
+            ck,
+            ei_pub: *initiator_ephemeral_pub,
+            e_priv: None,
+            k: Some(k),
+            n: 0,
+        })
+    }
+
+    /// Write Noise XK message 2: `<- e, ee, epoch`
+    ///
+    /// Wire format (57 bytes):
+    /// ```text
+    ///   [e_pub: 33 bytes] [encrypted_epoch: 24 bytes]
+    /// ```
+    pub fn write_message2(
+        &mut self,
+        responder_ephemeral_secret: &[u8; 32],
+        epoch: &[u8; EPOCH_SIZE],
+        out: &mut [u8],
+    ) -> Result<usize, NoiseError> {
+        let needed = PUBKEY_SIZE + EPOCH_SIZE + TAG_SIZE;
+        if out.len() < needed {
+            return Err(NoiseError::BufferTooSmall);
+        }
+        self.e_priv = Some(*responder_ephemeral_secret);
+        let e_pub = ecdh_pubkey(responder_ephemeral_secret)?;
+        let mut pos = 0;
+
+        out[pos..pos + PUBKEY_SIZE].copy_from_slice(&e_pub);
+        pos += PUBKEY_SIZE;
+        self.h = mix_hash(&self.h, &e_pub);
+
+        let ee = x_only_ecdh(responder_ephemeral_secret, &self.ei_pub)?;
+        let (new_ck, k) = mix_key(&self.ck, &ee);
+        self.ck = new_ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        let enc_len = aead_encrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[], // FIPS: no AAD during handshake
+            epoch,
+            &mut out[pos..],
+        )?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
+        pos += enc_len;
+
+        Ok(pos)
+    }
+
+    /// Read Noise XK message 3: `-> s, se, epoch`
+    ///
+    /// Wire format (73 bytes):
+    /// ```text
+    ///   [encrypted_static: 49 bytes] [encrypted_epoch: 24 bytes]
+    /// ```
+    ///
+    /// Returns (initiator_static_pub, initiator_epoch).
+    pub fn read_message3(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<([u8; PUBKEY_SIZE], [u8; EPOCH_SIZE]), NoiseError> {
+        let expected = (PUBKEY_SIZE + TAG_SIZE) + (EPOCH_SIZE + TAG_SIZE);
+        if payload.len() != expected {
+            return Err(NoiseError::InvalidMessage);
+        }
+
+        let enc_static = &payload[..PUBKEY_SIZE + TAG_SIZE];
+        let mut static_buf = [0u8; PUBKEY_SIZE];
+        aead_decrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[], // FIPS: no AAD during handshake
+            enc_static,
+            &mut static_buf,
+        )?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, enc_static);
+
+        let se = x_only_ecdh(
+            self.e_priv.as_ref().ok_or(NoiseError::InvalidState)?,
+            &static_buf,
+        )?;
+        let (new_ck, k) = mix_key(&self.ck, &se);
+        self.ck = new_ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        let enc_epoch = &payload[PUBKEY_SIZE + TAG_SIZE..];
+        let mut epoch_buf = [0u8; EPOCH_SIZE];
+        aead_decrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[], // FIPS: no AAD during handshake
+            enc_epoch,
+            &mut epoch_buf,
+        )?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, enc_epoch);
+
+        Ok((static_buf, epoch_buf))
+    }
+
+    /// Derive transport keys via Split().
+    /// Returns (k_recv, k_send) for responder.
+    /// k_recv = initiator→responder, k_send = responder→initiator.
     pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
         let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
         let mut okm = [0u8; 64];
@@ -1290,138 +1448,6 @@ mod responder_tests {
         let _pk = PublicKey::from_sec1_bytes(&vps_pub).unwrap();
     }
 
-    struct NoiseXkResponder {
-        h: [u8; 32],
-        ck: [u8; 32],
-        ei_pub: [u8; PUBKEY_SIZE],
-        e_priv: Option<[u8; 32]>,
-        k: Option<[u8; 32]>,
-        n: u64,
-    }
-
-    impl NoiseXkResponder {
-        fn new(
-            responder_static_secret: &[u8; 32],
-            initiator_ephemeral_pub: &[u8; PUBKEY_SIZE],
-        ) -> Self {
-            let h = hash_one(PROTOCOL_NAME_XK);
-            let ck = h;
-
-            let normalized_s = parity_normalize(&ecdh_pubkey(responder_static_secret).unwrap());
-            let h = mix_hash(&h, &normalized_s);
-
-            let h = mix_hash(&h, initiator_ephemeral_pub);
-
-            let es = x_only_ecdh(responder_static_secret, initiator_ephemeral_pub).unwrap();
-            let (ck, k) = mix_key(&ck, &es);
-
-            Self {
-                h,
-                ck,
-                ei_pub: *initiator_ephemeral_pub,
-                e_priv: None,
-                k: Some(k),
-                n: 0,
-            }
-        }
-
-        fn write_message2(
-            &mut self,
-            responder_ephemeral_secret: &[u8; 32],
-            epoch: &[u8; EPOCH_SIZE],
-            out: &mut [u8],
-        ) -> usize {
-            self.e_priv = Some(*responder_ephemeral_secret);
-            let e_pub = ecdh_pubkey(responder_ephemeral_secret).unwrap();
-            let mut pos = 0;
-
-            out[pos..pos + PUBKEY_SIZE].copy_from_slice(&e_pub);
-            pos += PUBKEY_SIZE;
-            self.h = mix_hash(&self.h, &e_pub);
-
-            let ee = x_only_ecdh(responder_ephemeral_secret, &self.ei_pub).unwrap();
-            let (new_ck, k) = mix_key(&self.ck, &ee);
-            self.ck = new_ck;
-            self.k = Some(k);
-            self.n = 0;
-
-            let enc_len = aead_encrypt(
-                self.k.as_ref().unwrap(),
-                self.n,
-                &[],
-                epoch,
-                &mut out[pos..],
-            )
-            .unwrap();
-            self.n += 1;
-            self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
-            pos += enc_len;
-
-            pos
-        }
-
-        fn read_message3(&mut self, payload: &[u8]) -> ([u8; PUBKEY_SIZE], [u8; EPOCH_SIZE]) {
-            let enc_static = &payload[..PUBKEY_SIZE + TAG_SIZE];
-            let mut static_buf = [0u8; PUBKEY_SIZE];
-            aead_decrypt(
-                self.k.as_ref().unwrap(),
-                self.n,
-                &[],
-                enc_static,
-                &mut static_buf,
-            )
-            .unwrap();
-            self.n += 1;
-            self.h = mix_hash(&self.h, enc_static);
-
-            let se = x_only_ecdh(self.e_priv.as_ref().unwrap(), &static_buf).unwrap();
-            let (new_ck, k) = mix_key(&self.ck, &se);
-            self.ck = new_ck;
-            self.k = Some(k);
-            self.n = 0;
-
-            let enc_epoch = &payload[PUBKEY_SIZE + TAG_SIZE..];
-            let mut epoch_buf = [0u8; EPOCH_SIZE];
-            aead_decrypt(
-                self.k.as_ref().unwrap(),
-                self.n,
-                &[],
-                enc_epoch,
-                &mut epoch_buf,
-            )
-            .unwrap();
-            self.n += 1;
-            self.h = mix_hash(&self.h, enc_epoch);
-
-            (static_buf, epoch_buf)
-        }
-
-        #[cfg_attr(feature = "responder", allow(dead_code))]
-        pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
-            let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
-            let mut okm = [0u8; 64];
-            hk.expand(&[], &mut okm)
-                .expect("hkdf expand 64 bytes should never fail");
-            let mut k1 = [0u8; 32];
-            let mut k2 = [0u8; 32];
-            k1.copy_from_slice(&okm[..32]);
-            k2.copy_from_slice(&okm[32..]);
-            (k1, k2)
-        }
-    }
-
-    #[test]
-    fn noise_xk_msg1_size() {
-        let (eph_secret, _) = test_keypair();
-        let (s_secret, _) = test_keypair();
-        let responder_pub = [0x02u8; 33];
-        let (mut state, _) = NoiseXkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
-
-        let mut out = [0u8; 64];
-        let msg_len = state.write_message1(&mut out).unwrap();
-        assert_eq!(msg_len, 33);
-    }
-
     #[test]
     fn noise_xk_msg2_size() {
         let initiator_eph_secret: [u8; 32] = [0x01; 32];
@@ -1438,10 +1464,13 @@ mod responder_tests {
         let _msg1_len = initiator.write_message1(&mut msg1_buf).unwrap();
 
         let mut responder =
-            NoiseXkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap());
+            NoiseXkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap())
+                .unwrap();
 
         let mut msg2_buf = [0u8; 128];
-        let msg2_len = responder.write_message2(&responder_eph_secret, &epoch, &mut msg2_buf);
+        let msg2_len = responder
+            .write_message2(&responder_eph_secret, &epoch, &mut msg2_buf)
+            .unwrap();
         // 33 (re_pub) + 24 (enc_epoch) = 57
         assert_eq!(msg2_len, 57);
     }
@@ -1468,10 +1497,13 @@ mod responder_tests {
         initiator.write_message1(&mut msg1_buf).unwrap();
 
         let mut responder =
-            NoiseXkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap());
+            NoiseXkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap())
+                .unwrap();
 
         let mut msg2_buf = [0u8; 128];
-        let msg2_len = responder.write_message2(&responder_eph_secret, &epoch_a, &mut msg2_buf);
+        let msg2_len = responder
+            .write_message2(&responder_eph_secret, &epoch_a, &mut msg2_buf)
+            .unwrap();
         initiator.read_message2(&msg2_buf[..msg2_len]).unwrap();
 
         let mut msg3_buf = [0u8; 128];
@@ -1513,10 +1545,13 @@ mod responder_tests {
         assert_eq!(msg1_len, 33);
 
         let mut responder =
-            NoiseXkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap());
+            NoiseXkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap())
+                .unwrap();
 
         let mut msg2_buf = [0u8; 128];
-        let msg2_len = responder.write_message2(&responder_eph_secret, &epoch_a, &mut msg2_buf);
+        let msg2_len = responder
+            .write_message2(&responder_eph_secret, &epoch_a, &mut msg2_buf)
+            .unwrap();
         assert_eq!(msg2_len, 57);
 
         let received_epoch_a = initiator.read_message2(&msg2_buf[..msg2_len]).unwrap();
@@ -1526,10 +1561,11 @@ mod responder_tests {
         let msg3_len = initiator
             .write_message3(&initiator_static_pub, &epoch_b, &mut msg3_buf)
             .unwrap();
+        // 49 (enc_static = 33 + 16) + 24 (enc_epoch = 8 + 16) = 73
         assert_eq!(msg3_len, 73);
 
         let (received_static_pub, received_epoch_b) =
-            responder.read_message3(&msg3_buf[..msg3_len]);
+            responder.read_message3(&msg3_buf[..msg3_len]).unwrap();
         assert_eq!(received_static_pub, initiator_static_pub);
         assert_eq!(received_epoch_b, epoch_b);
 
@@ -1561,9 +1597,12 @@ mod responder_tests {
         init1.write_message1(&mut msg1_buf).unwrap();
 
         let mut resp =
-            NoiseXkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap());
+            NoiseXkResponder::new(&responder_static_secret, msg1_buf[..33].try_into().unwrap())
+                .unwrap();
         let mut msg2_buf = [0u8; 128];
-        let msg2_len = resp.write_message2(&responder_eph_secret, &epoch_a, &mut msg2_buf);
+        let msg2_len = resp
+            .write_message2(&responder_eph_secret, &epoch_a, &mut msg2_buf)
+            .unwrap();
         init1.read_message2(&msg2_buf[..msg2_len]).unwrap();
         let mut msg3_buf = [0u8; 128];
         init1
@@ -1584,9 +1623,12 @@ mod responder_tests {
         let mut resp2 = NoiseXkResponder::new(
             &responder_static_secret,
             msg1_buf2[..33].try_into().unwrap(),
-        );
+        )
+        .unwrap();
         let mut msg2_buf2 = [0u8; 128];
-        let msg2_len2 = resp2.write_message2(&responder_eph_secret, &epoch_a, &mut msg2_buf2);
+        let msg2_len2 = resp2
+            .write_message2(&responder_eph_secret, &epoch_a, &mut msg2_buf2)
+            .unwrap();
         init2.read_message2(&msg2_buf2[..msg2_len2]).unwrap();
         let mut msg3_buf2 = [0u8; 128];
         init2
