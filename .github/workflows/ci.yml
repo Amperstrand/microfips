@@ -140,20 +140,29 @@ jobs:
           sleep 1
           echo "Responder running (pid $(cat /tmp/responder.pid))"
 
-      - name: Run leaf handshake against responder
+      - name: "Test 1: Leaf → local node handshake (fresh keys)"
         timeout-minutes: 1
         run: |
           echo "=== Leaf → Node handshake (fresh keys, localhost) ==="
           FIPS_SECRET="$LEAF_SECRET" FIPS_PEER_PUB="$NODE_PUB" \
             ./bin/fips-handshake 127.0.0.1:31338
-          echo "=== HANDSHAKE SUCCEEDED ==="
+          echo "=== LOCAL HANDSHAKE SUCCEEDED ==="
 
-      - name: Stop responder
+      - name: Stop local responder
         if: always()
         run: |
           if [ -f /tmp/responder.pid ]; then
             kill "$(cat /tmp/responder.pid)" 2>/dev/null || true
           fi
+
+      - name: "Test 2: Leaf → public FIPS node (default keys)"
+        timeout-minutes: 1
+        continue-on-error: true
+        run: |
+          echo "=== Leaf → public FIPS node (orangeclaw.dns4sats.xyz:2121) ==="
+          echo "Using default MCU identity and VPS peer pubkey"
+          ./bin/fips-handshake orangeclaw.dns4sats.xyz:2121 2>&1 || true
+          echo "=== (continue-on-error: VPS may be unreachable from CI) ==="
 
   build-firmware:
     name: Build Firmware

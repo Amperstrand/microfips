@@ -181,8 +181,9 @@ GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
 - **Build Host Tools** — `microfips-link` + `microfips-sim` + `microfips-http-test` release binaries
 - **Lint & Format** — clippy + rustfmt on all host crates
 - **Simulator Smoke** — verify sim starts and exits cleanly on EOF
-- **FIPS Handshake Integration** — generates fresh key pairs, starts http-test as FIPS
-  responder, runs fips-handshake as leaf initiator, verifies Noise IK handshake completes
+- **FIPS Handshake Integration** — two tests per run:
+  1. **Local**: generates fresh key pairs, starts http-test as responder, runs leaf handshake (must pass)
+  2. **Public**: attempts handshake with `orangeclaw.dns4sats.xyz:2121` using default MCU identity (best-effort, VPS may be unreachable)
 - **Build Firmware** — cross-builds for `thumbv7em-none-eabi`, validates .text size
 - **Summary** — aggregate status table
 
