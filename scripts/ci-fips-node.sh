@@ -4,6 +4,10 @@
 # Adapted from https://gist.github.com/Amperstrand/3905c17eacd9a0c2274c21de4793e6ed
 # Simplified for GitHub Actions: no systemd, no firewall, runs in foreground.
 #
+# TODO: Not yet used in CI. Requires key format conversion (raw secret → npub)
+# to inject matching identities into both the FIPS node config and leaf tools.
+# See the fips-integration CI job for the current approach using http-test.
+#
 # Usage:
 #   scripts/ci-fips-node.sh start   # clone, build, start FIPS in background
 #   scripts/ci-fips-node.sh stop    # kill background FIPS process
