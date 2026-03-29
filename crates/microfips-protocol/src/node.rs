@@ -98,7 +98,10 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
     }
 
     async fn session<H: NodeHandler>(&mut self, handler: &mut H) -> Result<(), ProtocolError> {
-        self.transport.wait_ready().await.map_err(|_| ProtocolError::Disconnected)?;
+        self.transport
+            .wait_ready()
+            .await
+            .map_err(|_| ProtocolError::Disconnected)?;
         Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
         handler.on_event(NodeEvent::Connected).await;
 
@@ -119,7 +122,10 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         }
     }
 
-    async fn handshake<H: NodeHandler>(&mut self, handler: &mut H) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
+    async fn handshake<H: NodeHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
         use microfips_core::fmp;
         use microfips_core::noise;
 
@@ -128,8 +134,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
         let mut eph = [0u8; 32];
         self.rng.fill_bytes(&mut eph);
         let (mut noise_st, _e_pub) =
-            noise::NoiseIkInitiator::new(&eph, &self.secret, &self.peer_pub)
-                .expect("noise init");
+            noise::NoiseIkInitiator::new(&eph, &self.secret, &self.peer_pub).expect("noise init");
 
         let epoch: [u8; noise::EPOCH_SIZE] = [0x01, 0, 0, 0, 0, 0, 0, 0];
 
@@ -194,10 +199,9 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                         if self.rlen - self.rpos < 2 {
                             break;
                         }
-                        let ml = u16::from_le_bytes([
-                            self.rbuf[self.rpos],
-                            self.rbuf[self.rpos + 1],
-                        ]) as usize;
+                        let ml =
+                            u16::from_le_bytes([self.rbuf[self.rpos], self.rbuf[self.rpos + 1]])
+                                as usize;
                         if ml == 0 || ml > framing::MAX_FRAME {
                             self.rpos = self.rlen;
                             break;
@@ -208,7 +212,8 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                         let s = self.rpos + 2;
                         let e = s + ml;
 
-                        let result = handle_frame_inner(kr, &self.rbuf[s..e], handler, &mut self.resp_buf);
+                        let result =
+                            handle_frame_inner(kr, &self.rbuf[s..e], handler, &mut self.resp_buf);
                         self.rpos = e;
 
                         match result {
@@ -224,8 +229,13 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                                 let ts = embassy_time::Instant::now().as_millis() as u32;
                                 let mut out = [0u8; 256];
                                 let fl = fmp::build_established(
-                                    them, c, fmp::MSG_SESSION_DATAGRAM, ts,
-                                    &self.resp_buf[..len], ks, &mut out,
+                                    them,
+                                    c,
+                                    fmp::MSG_SESSION_DATAGRAM,
+                                    ts,
+                                    &self.resp_buf[..len],
+                                    ks,
+                                    &mut out,
                                 );
                                 let _ = self.send_frame(&out[..fl]).await;
                             }
@@ -236,8 +246,7 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                         self.rlen = 0;
                     }
                     if embassy_time::Instant::now() >= next_hb {
-                        next_hb =
-                            self.send_heartbeat(ks, them, &mut send_ctr).await;
+                        next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
                         handler.on_event(NodeEvent::HeartbeatSent).await;
                     }
                 }
@@ -293,10 +302,8 @@ impl<T: Transport, R: CryptoRng> Node<T, R> {
                 if self.rlen - self.rpos < 2 {
                     true
                 } else {
-                    let ml = u16::from_le_bytes([
-                        self.rbuf[self.rpos],
-                        self.rbuf[self.rpos + 1],
-                    ]) as usize;
+                    let ml = u16::from_le_bytes([self.rbuf[self.rpos], self.rbuf[self.rpos + 1]])
+                        as usize;
                     if ml == 0 || ml > framing::MAX_FRAME {
                         self.rpos = self.rlen;
                         true
@@ -366,12 +373,11 @@ fn handle_frame_inner<H: NodeHandler>(
         } => {
             let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
             let mut dec = [0u8; 2048];
-            let dl = match microfips_core::noise::aead_decrypt(
-                kr, counter, hdr, encrypted, &mut dec,
-            ) {
-                Ok(l) => l,
-                Err(_) => return FrameAction::Continue,
-            };
+            let dl =
+                match microfips_core::noise::aead_decrypt(kr, counter, hdr, encrypted, &mut dec) {
+                    Ok(l) => l,
+                    Err(_) => return FrameAction::Continue,
+                };
             if dl < fmp::INNER_HEADER_SIZE {
                 return FrameAction::Continue;
             }
@@ -483,12 +489,7 @@ mod tests {
         let transport = crate::transport::mock::MockTransport::new(fresh_inner());
 
         block_on(async {
-            let mut node = Node::new(
-                transport,
-                TestRng::new(&[0u8; 32]),
-                [0u8; 32],
-                [0u8; 33],
-            );
+            let mut node = Node::new(transport, TestRng::new(&[0u8; 32]), [0u8; 32], [0u8; 33]);
             node.send_frame(b"hello").await.unwrap();
 
             let tx = inner().tx.lock().unwrap();
@@ -507,12 +508,7 @@ mod tests {
         let transport = crate::transport::mock::MockTransport::new(inner());
 
         block_on(async {
-            let mut node = Node::new(
-                transport,
-                TestRng::new(&[0u8; 32]),
-                [0u8; 32],
-                [0u8; 33],
-            );
+            let mut node = Node::new(transport, TestRng::new(&[0u8; 32]), [0u8; 32], [0u8; 33]);
 
             let frame: std::vec::Vec<u8> = {
                 let mut v = (3u16).to_le_bytes().to_vec();
@@ -596,9 +592,18 @@ mod tests {
     fn test_handle_frame_garbage_skipped() {
         let key: [u8; 32] = [0x42; 32];
         let mut resp = [0u8; 256];
-        assert_eq!(handle_frame_inner(&key, &[], &mut NoopTestHandler, &mut resp), FrameAction::Continue);
-        assert_eq!(handle_frame_inner(&key, &[0x00], &mut NoopTestHandler, &mut resp), FrameAction::Continue);
-        assert_eq!(handle_frame_inner(&key, &[0xFF; 4], &mut NoopTestHandler, &mut resp), FrameAction::Continue);
+        assert_eq!(
+            handle_frame_inner(&key, &[], &mut NoopTestHandler, &mut resp),
+            FrameAction::Continue
+        );
+        assert_eq!(
+            handle_frame_inner(&key, &[0x00], &mut NoopTestHandler, &mut resp),
+            FrameAction::Continue
+        );
+        assert_eq!(
+            handle_frame_inner(&key, &[0xFF; 4], &mut NoopTestHandler, &mut resp),
+            FrameAction::Continue
+        );
     }
 
     #[test]
@@ -608,7 +613,12 @@ mod tests {
         struct DatagramHandler;
         impl NodeHandler for DatagramHandler {
             async fn on_event(&mut self, _event: NodeEvent) {}
-            fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
+            fn on_message(
+                &mut self,
+                msg_type: u8,
+                payload: &[u8],
+                resp: &mut [u8],
+            ) -> HandleResult {
                 if msg_type == fmp::MSG_SESSION_DATAGRAM && payload == b"ping" {
                     let response = b"pong";
                     resp[..response.len()].copy_from_slice(response);
@@ -622,7 +632,8 @@ mod tests {
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 77777;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out);
+        let fl =
+            fmp::build_established(0, 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out);
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut DatagramHandler, &mut resp);
@@ -639,7 +650,7 @@ mod tests {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
         use microfips_core::fmp;
-        use microfips_core::noise::{NoiseIkResponder, ecdh_pubkey, PUBKEY_SIZE};
+        use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE, ecdh_pubkey};
 
         let initiator_secret: [u8; 32] = [0x11; 32];
         let responder_secret: [u8; 32] = [0x22; 32];
@@ -724,7 +735,11 @@ mod tests {
                     total += resp_transport.recv(&mut hdr[total..]).await.unwrap();
                 }
                 let msg1_len = u16::from_le_bytes(hdr) as usize;
-                assert_eq!(msg1_len, fmp::MSG1_WIRE_SIZE, "MSG1 should be 114 bytes on wire");
+                assert_eq!(
+                    msg1_len,
+                    fmp::MSG1_WIRE_SIZE,
+                    "MSG1 should be 114 bytes on wire"
+                );
                 let mut buf = [0u8; 256];
                 total = 0;
                 while total < msg1_len {
@@ -732,7 +747,11 @@ mod tests {
                 }
                 let msg = fmp::parse_message(&buf[..msg1_len]).unwrap();
                 match msg {
-                    fmp::FmpMessage::Msg1 { sender_idx, noise_payload, .. } => {
+                    fmp::FmpMessage::Msg1 {
+                        sender_idx,
+                        noise_payload,
+                        ..
+                    } => {
                         assert_eq!(sender_idx, 0, "initiator sender_idx should be 0");
                         assert_eq!(noise_payload.len(), 106);
                     }

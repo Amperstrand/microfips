@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn noise_ik_initiator_msg1_exact_size() {
         // Full Noise IK initiator produces exactly 106 bytes for write_message1
-        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE};
+        use crate::noise::{EPOCH_SIZE, NoiseIkInitiator, PUBKEY_SIZE};
         let eph_secret = [0x01u8; 32];
         let s_secret = [0x11u8; 32];
         let responder_pub = [0x02u8; PUBKEY_SIZE];
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn parse_msg1_noise_payload_sections() {
         // Build a real MSG1, parse it, verify noise_payload has correct structure
-        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE, TAG_SIZE};
+        use crate::noise::{EPOCH_SIZE, NoiseIkInitiator, PUBKEY_SIZE, TAG_SIZE};
         let eph_secret = [0x01u8; 32];
         let s_secret = [0x11u8; 32];
         let responder_pub = [0x02u8; PUBKEY_SIZE];

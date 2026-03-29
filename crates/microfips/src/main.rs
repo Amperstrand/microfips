@@ -19,7 +19,11 @@ use embassy_usb::driver::EndpointError;
 use static_cell::StaticCell;
 
 use microfips_core::fmp;
-use microfips_core::fsp::{FspSession, FspSessionState, PHASE_SESSION_SETUP, PHASE_SESSION_MSG3, PHASE_ESTABLISHED, SESSION_DATAGRAM_BODY_SIZE, FSP_MSG_DATA, parse_fsp_encrypted_header, fsp_strip_inner_header};
+use microfips_core::fsp::{
+    FSP_MSG_DATA, FspSession, FspSessionState, PHASE_ESTABLISHED, PHASE_SESSION_MSG3,
+    PHASE_SESSION_SETUP, SESSION_DATAGRAM_BODY_SIZE, fsp_strip_inner_header,
+    parse_fsp_encrypted_header,
+};
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::{CryptoRng, Transport};
 
@@ -37,7 +41,8 @@ static STAT_RECV_PKT: AtomicU32 = AtomicU32::new(0);
 static STAT_DATA_RX: AtomicU32 = AtomicU32::new(0);
 static STAT_DATA_TX: AtomicU32 = AtomicU32::new(0);
 
-const HTTP_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
+const HTTP_RESPONSE: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
 
 const S_BOOT: u32 = 0;
 const S_USB_READY: u32 = 1;
@@ -293,17 +298,15 @@ impl NodeHandler for FipsHandler<'_> {
                             Err(_) => HandleResult::None,
                         }
                     }
-                    PHASE_SESSION_MSG3 => {
-                        match self.fsp_session.handle_msg3(fsp_data) {
-                            Ok(()) => {
-                                if let Some((_, _k_send)) = self.fsp_session.session_keys() {
-                                    self.fsp_session_counter = self.fsp_session_counter.wrapping_add(1);
-                                }
-                                HandleResult::None
+                    PHASE_SESSION_MSG3 => match self.fsp_session.handle_msg3(fsp_data) {
+                        Ok(()) => {
+                            if let Some((_, _k_send)) = self.fsp_session.session_keys() {
+                                self.fsp_session_counter = self.fsp_session_counter.wrapping_add(1);
                             }
-                            Err(_) => HandleResult::None,
+                            HandleResult::None
                         }
-                    }
+                        Err(_) => HandleResult::None,
+                    },
                     PHASE_ESTABLISHED => {
                         if self.fsp_session.state() != FspSessionState::Established {
                             return HandleResult::None;
@@ -326,7 +329,8 @@ impl NodeHandler for FipsHandler<'_> {
                                 };
                                 match inner_msg_type {
                                     FSP_MSG_DATA => {
-                                        if inner_payload.len() >= 3 && &inner_payload[..3] == b"GET" {
+                                        if inner_payload.len() >= 3 && &inner_payload[..3] == b"GET"
+                                        {
                                             STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
                                             let rlen = HTTP_RESPONSE.len().min(resp.len());
                                             resp[..rlen].copy_from_slice(&HTTP_RESPONSE[..rlen]);

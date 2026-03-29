@@ -130,8 +130,8 @@ impl<T: Transport> FrameReader<T> {
 
 #[cfg(any(test, feature = "std"))]
 pub mod mock {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::vec::Vec;
 
     use embassy_time::{Duration, Timer};
@@ -366,10 +366,10 @@ pub mod channel {
 mod tests {
     use embassy_executor::Executor;
 
-    use super::{FrameReader, FrameWriter, ProtocolError};
     use super::Transport;
-    use crate::transport::mock::{MockTransport, MockTransportInner};
+    use super::{FrameReader, FrameWriter, ProtocolError};
     use crate::transport::channel::{ChannelTransport, pair as channel_pair};
+    use crate::transport::mock::{MockTransport, MockTransportInner};
     use std::sync::LazyLock;
 
     fn block_on<F: std::future::Future + Send + 'static>(f: F) -> F::Output
