@@ -10,16 +10,44 @@ use microfips_core::noise;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::Transport;
 
-const MCU_SECRET: [u8; 32] = [
+const DEFAULT_SECRET: [u8; 32] = [
     0xac, 0x68, 0xaf, 0x89, 0x46, 0x2e, 0x7e, 0xd2, 0x6f, 0xf6, 0x70, 0xc1, 0x86, 0xb4, 0xee, 0xb5,
     0x3c, 0x4e, 0x82, 0xd7, 0x2c, 0x8e, 0xf6, 0xce, 0xc4, 0xe6, 0x76, 0xc7, 0x84, 0x3f, 0x83, 0x2e,
 ];
 
-const VPS_PUB: [u8; 33] = [
+const DEFAULT_PEER_PUB: [u8; 33] = [
     0x02, 0x0e, 0x7a, 0x0d, 0xa0, 0x1a, 0x25, 0x5c, 0xde, 0x10, 0x6a, 0x20, 0x2e, 0xf4, 0xf5, 0x73,
     0x67, 0x6e, 0xf9, 0xe2, 0x4f, 0x1c, 0x81, 0x76, 0xd0, 0x3a, 0xe8, 0x3a, 0x2a, 0x3a, 0x03, 0x7d,
     0x21,
 ];
+
+fn load_secret() -> [u8; 32] {
+    match std::env::var("FIPS_SECRET") {
+        Ok(h) => {
+            let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
+            assert!(
+                b.len() == 32,
+                "FIPS_SECRET: must be 32 bytes (64 hex chars)"
+            );
+            b.try_into().unwrap()
+        }
+        Err(_) => DEFAULT_SECRET,
+    }
+}
+
+fn load_peer_pub() -> [u8; 33] {
+    match std::env::var("FIPS_PEER_PUB") {
+        Ok(h) => {
+            let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
+            assert!(
+                b.len() == 33,
+                "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
+            );
+            b.try_into().unwrap()
+        }
+        Err(_) => DEFAULT_PEER_PUB,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // SimTransport: wraps TCP or stdio for the protocol crate's Transport trait.
@@ -247,9 +275,12 @@ fn main() {
         i += 1;
     }
 
-    let my_pub = noise::ecdh_pubkey(&MCU_SECRET).unwrap();
+    let secret = load_secret();
+    let peer_pub = load_peer_pub();
+    let my_pub = noise::ecdh_pubkey(&secret).unwrap();
     eprintln!("[SIM] microfips simulator starting");
     eprintln!("[SIM] local pubkey: {}", hex::encode(my_pub));
+    eprintln!("[SIM] peer pubkey:  {}", hex::encode(peer_pub));
 
     let transport = if let Some(port) = listen_port {
         eprintln!("[SIM] mode: listen, port: {}", port);
@@ -266,7 +297,7 @@ fn main() {
     };
 
     let rng = rand_core::OsRng;
-    let mut node = Node::new(transport, rng, MCU_SECRET, VPS_PUB);
+    let mut node = Node::new(transport, rng, secret, peer_pub);
     let mut handler = SimHandler;
 
     block_on(async move {

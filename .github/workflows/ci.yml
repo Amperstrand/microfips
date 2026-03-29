@@ -54,6 +54,12 @@ jobs:
           path: target/release/microfips-sim
           retention-days: 7
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microfips-http-test
+          path: target/release/microfips-http-test
+          retention-days: 7
+
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
@@ -94,20 +100,11 @@ jobs:
           echo "sim exited with code $?"
 
   fips-integration:
-    name: FIPS Node Integration
+    name: FIPS Handshake Integration
     runs-on: ubuntu-latest
     needs: [build-host]
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: fips-node
 
       - uses: actions/download-artifact@v4
         with:
@@ -116,29 +113,47 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: microfips-sim
+          name: microfips-http-test
           path: ./bin
 
-      - run: chmod +x ./bin/fips-handshake ./bin/microfips-sim
+      - run: chmod +x ./bin/fips-handshake ./bin/microfips-http-test
 
-      - name: Build and start FIPS node
-        timeout-minutes: 15
-        run: bash scripts/ci-fips-node.sh start
-
-      - name: Run handshake test against local FIPS node
-        timeout-minutes: 1
-        continue-on-error: true
+      - name: Generate fresh key pairs
         run: |
-          echo "=== Running fips-handshake against localhost:2121 ==="
-          ./bin/fips-handshake 127.0.0.1:2121 || echo "handshake exited $?"
+          echo "--- Generating node (responder) key pair ---"
+          NODE_KEYS=$(./bin/fips-handshake --keygen)
+          echo "$NODE_KEYS"
+          echo "NODE_SECRET=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_SECRET=//p')" >> "$GITHUB_ENV"
+          echo "NODE_PUB=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_PUB=//p')" >> "$GITHUB_ENV"
 
-      - name: Show FIPS node status
-        if: always()
-        run: bash scripts/ci-fips-node.sh status
+          echo "--- Generating leaf (initiator) key pair ---"
+          LEAF_KEYS=$(./bin/fips-handshake --keygen)
+          echo "$LEAF_KEYS"
+          echo "LEAF_SECRET=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_SECRET=//p')" >> "$GITHUB_ENV"
+          echo "LEAF_PUB=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_PUB=//p')" >> "$GITHUB_ENV"
 
-      - name: Stop FIPS node
+      - name: Start FIPS responder
+        run: |
+          echo "Starting responder with node key..."
+          FIPS_SECRET="$NODE_SECRET" ./bin/microfips-http-test 127.0.0.1:31338 &
+          echo $! > /tmp/responder.pid
+          sleep 1
+          echo "Responder running (pid $(cat /tmp/responder.pid))"
+
+      - name: Run leaf handshake against responder
+        timeout-minutes: 1
+        run: |
+          echo "=== Leaf → Node handshake (fresh keys, localhost) ==="
+          FIPS_SECRET="$LEAF_SECRET" FIPS_PEER_PUB="$NODE_PUB" \
+            ./bin/fips-handshake 127.0.0.1:31338
+          echo "=== HANDSHAKE SUCCEEDED ==="
+
+      - name: Stop responder
         if: always()
-        run: bash scripts/ci-fips-node.sh stop
+        run: |
+          if [ -f /tmp/responder.pid ]; then
+            kill "$(cat /tmp/responder.pid)" 2>/dev/null || true
+          fi
 
   build-firmware:
     name: Build Firmware

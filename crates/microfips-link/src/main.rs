@@ -7,27 +7,71 @@ use microfips_core::fmp;
 use microfips_core::noise;
 use rand::RngCore;
 
+const DEFAULT_SECRET: [u8; 32] = [
+    0xac, 0x68, 0xaf, 0x89, 0x46, 0x2e, 0x7e, 0xd2, 0x6f, 0xf6, 0x70, 0xc1, 0x86, 0xb4, 0xee, 0xb5,
+    0x3c, 0x4e, 0x82, 0xd7, 0x2c, 0x8e, 0xf6, 0xce, 0xc4, 0xe6, 0x76, 0xc7, 0x84, 0x3f, 0x83, 0x2e,
+];
+
+const DEFAULT_PEER_PUB: [u8; 33] = [
+    0x02, 0x0e, 0x7a, 0x0d, 0xa0, 0x1a, 0x25, 0x5c, 0xde, 0x10, 0x6a, 0x20, 0x2e, 0xf4, 0xf5, 0x73,
+    0x67, 0x6e, 0xf9, 0xe2, 0x4f, 0x1c, 0x81, 0x76, 0xd0, 0x3a, 0xe8, 0x3a, 0x2a, 0x3a, 0x03, 0x7d,
+    0x21,
+];
+
+fn load_secret() -> [u8; 32] {
+    match std::env::var("FIPS_SECRET") {
+        Ok(h) => {
+            let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
+            assert!(
+                b.len() == 32,
+                "FIPS_SECRET: must be 32 bytes (64 hex chars)"
+            );
+            b.try_into().unwrap()
+        }
+        Err(_) => DEFAULT_SECRET,
+    }
+}
+
+fn load_peer_pub() -> [u8; 33] {
+    match std::env::var("FIPS_PEER_PUB") {
+        Ok(h) => {
+            let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
+            assert!(
+                b.len() == 33,
+                "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
+            );
+            b.try_into().unwrap()
+        }
+        Err(_) => DEFAULT_PEER_PUB,
+    }
+}
+
+fn keygen() -> ExitCode {
+    let mut rng = rand::rng();
+    let mut secret = [0u8; 32];
+    rng.fill_bytes(&mut secret);
+    // Validate it's a valid secp256k1 scalar
+    let _ =
+        SecretKey::from_slice(&secret).expect("generated invalid key (astronomically unlikely)");
+    let pubkey = noise::ecdh_pubkey(&secret).expect("pubkey derivation failed");
+    println!("FIPS_SECRET={}", hex::encode(secret));
+    println!("FIPS_PUB={}", hex::encode(pubkey));
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--keygen") {
+        return keygen();
+    }
+
     println!("=== microfips FIPS handshake test ===");
 
-    let local_secret: [u8; 32] = [
-        0xac, 0x68, 0xaf, 0x89, 0x46, 0x2e, 0x7e, 0xd2, 0x6f, 0xf6, 0x70, 0xc1, 0x86, 0xb4, 0xee,
-        0xb5, 0x3c, 0x4e, 0x82, 0xd7, 0x2c, 0x8e, 0xf6, 0xce, 0xc4, 0xe6, 0x76, 0xc7, 0x84, 0x3f,
-        0x83, 0x2e,
-    ];
+    let local_secret = load_secret();
+    let peer_pub = load_peer_pub();
 
-    let vps_pub_compressed: [u8; 33] = [
-        0x02, 0x0e, 0x7a, 0x0d, 0xa0, 0x1a, 0x25, 0x5c, 0xde, 0x10, 0x6a, 0x20, 0x2e, 0xf4, 0xf5,
-        0x73, 0x67, 0x6e, 0xf9, 0xe2, 0x4f, 0x1c, 0x81, 0x76, 0xd0, 0x3a, 0xe8, 0x3a, 0x2a, 0x3a,
-        0x03, 0x7d, 0x21,
-    ];
-
-    let args: Vec<String> = std::env::args().collect();
-    let target = if args.len() > 1 {
-        &args[1]
-    } else {
-        "127.0.0.1:2121"
-    };
+    let target = args.get(1).map(|s| s.as_str()).unwrap_or("127.0.0.1:2121");
 
     let local_pub = match noise::ecdh_pubkey(&local_secret) {
         Ok(pk) => pk,
@@ -37,6 +81,7 @@ fn main() -> ExitCode {
         }
     };
     println!("Local pubkey: {}", hex::encode(local_pub));
+    println!("Peer pubkey:  {}", hex::encode(peer_pub));
 
     let mut rng = rand::rng();
     let mut eph_bytes = [0u8; 32];
@@ -65,7 +110,7 @@ fn main() -> ExitCode {
     println!("Target: {}", target);
 
     let (mut noise_state, e_pub) =
-        match noise::NoiseIkInitiator::new(&eph_secret_bytes, &local_secret, &vps_pub_compressed) {
+        match noise::NoiseIkInitiator::new(&eph_secret_bytes, &local_secret, &peer_pub) {
             Ok(state) => state,
             Err(e) => {
                 eprintln!("ERROR: failed to create Noise state: {e:?}");
@@ -89,7 +134,6 @@ fn main() -> ExitCode {
     let mut fmp_msg1 = [0u8; 256];
     let fmp_len = fmp::build_msg1(0, &noise_msg1[..noise_len], &mut fmp_msg1).unwrap();
     println!("FMP msg1: {fmp_len} bytes");
-    println!("FMP msg1 hex: {}", hex::encode(&fmp_msg1[..fmp_len]));
 
     if let Err(e) = socket.send_to(&fmp_msg1[..fmp_len], target) {
         eprintln!("ERROR: failed to send msg1: {e:?}");
