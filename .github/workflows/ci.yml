@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -54,6 +57,12 @@ jobs:
           path: target/release/microfips-sim
           retention-days: 7
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microfips-http-test
+          path: target/release/microfips-http-test
+          retention-days: 7
+
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
@@ -92,6 +101,71 @@ jobs:
         run: |
           timeout 5 ./bin/microfips-sim </dev/null 2>&1 | head -5
           echo "sim exited with code $?"
+
+  fips-integration:
+    name: FIPS Handshake Integration
+    runs-on: ubuntu-latest
+    needs: [build-host]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: fips-handshake
+          path: ./bin
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: microfips-http-test
+          path: ./bin
+
+      - run: chmod +x ./bin/fips-handshake ./bin/microfips-http-test
+
+      - name: Generate fresh key pairs
+        run: |
+          echo "--- Generating node (responder) key pair ---"
+          NODE_KEYS=$(./bin/fips-handshake --keygen)
+          echo "$NODE_KEYS"
+          echo "NODE_SECRET=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_SECRET=//p')" >> "$GITHUB_ENV"
+          echo "NODE_PUB=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_PUB=//p')" >> "$GITHUB_ENV"
+
+          echo "--- Generating leaf (initiator) key pair ---"
+          LEAF_KEYS=$(./bin/fips-handshake --keygen)
+          echo "$LEAF_KEYS"
+          echo "LEAF_SECRET=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_SECRET=//p')" >> "$GITHUB_ENV"
+          echo "LEAF_PUB=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_PUB=//p')" >> "$GITHUB_ENV"
+
+      - name: Start FIPS responder
+        run: |
+          echo "Starting responder with node key..."
+          FIPS_SECRET="$NODE_SECRET" ./bin/microfips-http-test 127.0.0.1:31338 &
+          echo $! > /tmp/responder.pid
+          sleep 1
+          echo "Responder running (pid $(cat /tmp/responder.pid))"
+
+      - name: "Test 1: Leaf → local node handshake (fresh keys)"
+        timeout-minutes: 1
+        run: |
+          echo "=== Leaf → Node handshake (fresh keys, localhost) ==="
+          FIPS_SECRET="$LEAF_SECRET" FIPS_PEER_PUB="$NODE_PUB" \
+            ./bin/fips-handshake 127.0.0.1:31338
+          echo "=== LOCAL HANDSHAKE SUCCEEDED ==="
+
+      - name: Stop local responder
+        if: always()
+        run: |
+          if [ -f /tmp/responder.pid ]; then
+            kill "$(cat /tmp/responder.pid)" 2>/dev/null || true
+          fi
+
+      - name: "Test 2: Leaf → public FIPS node (default keys)"
+        timeout-minutes: 1
+        continue-on-error: true
+        run: |
+          echo "=== Leaf → public FIPS node (orangeclaw.dns4sats.xyz:2121) ==="
+          echo "Using default MCU identity and VPS peer pubkey"
+          ./bin/fips-handshake orangeclaw.dns4sats.xyz:2121 2>&1 || true
+          echo "=== (continue-on-error: VPS may be unreachable from CI) ==="
 
   build-firmware:
     name: Build Firmware
@@ -137,7 +211,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, build-host, lint, sim-smoke, build-firmware]
+    needs: [test, build-host, lint, sim-smoke, build-firmware, fips-integration]
     if: always()
     steps:
       - run: |
@@ -150,5 +224,6 @@ jobs:
           echo "| Lint & Format | \`${{ needs.lint.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Simulator Smoke | \`${{ needs.sim-smoke.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build Firmware | \`${{ needs.build-firmware.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"

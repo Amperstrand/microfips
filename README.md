@@ -14,10 +14,11 @@ The MCU completes an IK handshake with the live VPS and sustains heartbeat excha
 every ~10 seconds. Five bugs were found and fixed to get here (see below).
 
 **What works:**
-- 83 unit tests pass for protocol logic (Noise IK, Noise XK, FMP, FSP, identity)
+- 87 unit tests pass for protocol logic (Noise IK, Noise XK, FMP, FSP, identity)
 - 26 unit tests pass for protocol crate (framing, transport, node)
 - Host-side handshake test (`microfips-link`) proven against live VPS
-- Host-side simulator (`microfips-sim`) proven 45+ seconds sustained heartbeat against live VPS
+- Host-side simulator (`microfips-sim`) uses `Node` from `microfips-protocol` (no duplicated protocol logic)
+- **CI integration test** — fresh key pairs per run, local Noise IK handshake verified
 - USB CDC ACM enumeration with upstream embassy crates.io v0.6.0
 - Firmware builds for `thumbv7em-none-eabi` (110 KB, CI verified)
 - **MCU completes IK handshake with live VPS** — MSG1 sent, MSG2 received, keys derived
@@ -90,16 +91,48 @@ npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
 ### Unit tests (no hardware)
 
 ```sh
-cargo test -p microfips-core                    # 83 tests: Noise, FMP, FSP, identity
+cargo test -p microfips-core                    # 87 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture     # verbose output
 cargo test -p microfips-protocol --features std -- --test-threads=1  # 26 tests: framing, transport, node
+```
+
+### Key generation
+
+```sh
+cargo run -p microfips-link -- --keygen
+# Output:
+#   FIPS_SECRET=<64 hex chars>
+#   FIPS_PUB=<66 hex chars>
 ```
 
 ### Host-side VPS handshake (no hardware, raw UDP)
 
 ```sh
-cargo run -p microfips-link                     # sends MSG1 to VPS via UDP
+cargo run -p microfips-link                     # sends MSG1 to VPS via UDP (default keys)
+
+# With custom keys (override via environment):
+FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-link -- 127.0.0.1:2121
 # Exit 0 = success, 1 = timeout (expected from unconfigured IP), 2 = error
+```
+
+### Local handshake test (no hardware, no VPS)
+
+```sh
+# Generate fresh key pairs
+NODE_KEYS=$(cargo run -p microfips-link -- --keygen)
+NODE_SECRET=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_SECRET=//p')
+NODE_PUB=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_PUB=//p')
+
+LEAF_KEYS=$(cargo run -p microfips-link -- --keygen)
+LEAF_SECRET=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_SECRET=//p')
+
+# Start responder (background)
+FIPS_SECRET=$NODE_SECRET cargo run -p microfips-http-test -- 127.0.0.1:31338 &
+
+# Run initiator handshake
+FIPS_SECRET=$LEAF_SECRET FIPS_PEER_PUB=$NODE_PUB \
+  cargo run -p microfips-link -- 127.0.0.1:31338
+# Expect: "SUCCESS: FIPS handshake completed!"
 ```
 
 ### Host-side simulator (no hardware)
@@ -108,6 +141,9 @@ cargo run -p microfips-link                     # sends MSG1 to VPS via UDP
 cargo run -p microfips-sim -- --listen 45679    # TCP server mode
 cargo run -p microfips-sim 127.0.0.1:45679      # TCP client mode
 cargo run -p microfips-sim                      # stdio mode
+
+# With custom keys:
+FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-sim -- --listen 45679
 ```
 
 ### Hardware (STM32F469)
@@ -141,12 +177,26 @@ cargo build -p microfips --release --target thumbv7em-none-eabi
 ## CI
 
 GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
-- **Unit Tests** — 83 tests in `microfips-core`
-- **Build Host Tools** — `microfips-link` + `microfips-sim` release binaries + artifacts
-- **Lint & Format** — clippy + rustfmt on core, link, sim
+- **Unit Tests** — 87 tests in `microfips-core`, 26 tests in `microfips-protocol`
+- **Build Host Tools** — `microfips-link` + `microfips-sim` + `microfips-http-test` release binaries
+- **Lint & Format** — clippy + rustfmt on all host crates
 - **Simulator Smoke** — verify sim starts and exits cleanly on EOF
-- **Build Firmware** — clones embassy fork, cross-builds for `thumbv7em-none-eabi`, validates .text size
+- **FIPS Handshake Integration** — two tests per run:
+  1. **Local**: generates fresh key pairs, starts http-test as responder, runs leaf handshake (must pass)
+  2. **Public**: attempts handshake with `orangeclaw.dns4sats.xyz:2121` using default MCU identity (best-effort, VPS may be unreachable)
+- **Build Firmware** — cross-builds for `thumbv7em-none-eabi`, validates .text size
 - **Summary** — aggregate status table
+
+### Environment variables for key override
+
+All host tools accept key overrides via environment variables:
+
+| Variable | Format | Used by | Purpose |
+|----------|--------|---------|---------|
+| `FIPS_SECRET` | 64 hex chars (32B secret) | fips-handshake, microfips-sim, microfips-http-test | Override identity secret key |
+| `FIPS_PEER_PUB` | 66 hex chars (33B compressed pubkey) | fips-handshake, microfips-sim | Override peer's public key |
+
+When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubkey).
 
 ## Hardware
 
@@ -196,8 +246,9 @@ microfips/
       .cargo/config.toml        # probe-rs runner config (local debug only)
       src/main.rs               # FIPS leaf node firmware (4-LED state machine)
     microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, identity
-    microfips-link/             # Host-side handshake test (UDP, exit codes)
-    microfips-sim/              # Host-side full lifecycle simulator (framing over stdio/TCP)
+    microfips-link/             # Host-side handshake test (UDP, --keygen, env var keys)
+    microfips-sim/              # Host-side simulator using Node from microfips-protocol
+    microfips-http-test/        # FIPS responder for integration tests (UDP, env var keys)
     microfips-protocol/         # no_std FIPS protocol state machine: Transport trait, framing, Node
   tools/
     fips_bridge.py              # CDC/TCP <-> UDP bridge (runs on VPS)
@@ -205,6 +256,7 @@ microfips/
     test_sim_vps.sh             # VPS integration test for microfips-sim
   scripts/
     test_hw_handshake.sh        # Automated hardware test with cleanup + assertions
+    ci-fips-node.sh             # Build and run full FIPS node for CI (future use)
   docs/
     architecture.md             # Protocol and transport details
     milestones.md               # M0-M7 tracking
