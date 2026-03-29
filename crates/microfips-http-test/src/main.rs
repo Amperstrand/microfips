@@ -46,8 +46,11 @@ fn main() {
     };
 
     let e_init: [u8; 33] = msg1.1[..33].try_into().expect("ephemeral pubkey size");
-    let mut responder = noise::NoiseIkResponder::new(&VPS_STATIC_SECRET, &e_init);
-    let (initiator_static_pub, epoch) = responder.read_message1(&msg1.1[33..]);
+    let mut responder = noise::NoiseIkResponder::new(&VPS_STATIC_SECRET, &e_init)
+        .expect("IK responder init failed");
+    let (initiator_static_pub, epoch) = responder
+        .read_message1(&msg1.1[33..])
+        .expect("read_message1 failed");
     println!("  Initiator pubkey: {}", hex::encode(initiator_static_pub));
     println!("  Epoch: {}", hex::encode(epoch));
 
@@ -58,7 +61,9 @@ fn main() {
     let eph_secret_bytes: [u8; 32] = eph_secret.to_bytes().into();
 
     let mut noise_msg2 = [0u8; 256];
-    let noise_len = responder.write_message2(&eph_secret_bytes, &epoch, &mut noise_msg2);
+    let noise_len = responder
+        .write_message2(&eph_secret_bytes, &epoch, &mut noise_msg2)
+        .expect("write_message2 failed");
 
     let mut fmp_msg2 = [0u8; 256];
     let fmp_len = fmp::build_msg2(msg1.0, msg1.0, &noise_msg2[..noise_len], &mut fmp_msg2);

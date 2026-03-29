@@ -679,12 +679,17 @@ mod tests {
                 };
 
                 let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
-                let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub);
-                let (_init_pub, epoch) = resp.read_message1(&noise_payload[PUBKEY_SIZE..]);
+                let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub)
+                    .expect("IK responder init failed");
+                let (_init_pub, epoch) = resp
+                    .read_message1(&noise_payload[PUBKEY_SIZE..])
+                    .expect("read_message1 failed");
 
                 let resp_eph: [u8; 32] = [0x33; 32];
                 let mut msg2_noise = [0u8; 128];
-                let msg2_noise_len = resp.write_message2(&resp_eph, &epoch, &mut msg2_noise);
+                let msg2_noise_len = resp
+                    .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                    .expect("write_message2 failed");
 
                 let mut msg2_buf = [0u8; 256];
                 let msg2_len = fmp::build_msg2(1, 0, &msg2_noise[..msg2_noise_len], &mut msg2_buf);
