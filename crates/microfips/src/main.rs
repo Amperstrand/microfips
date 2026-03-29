@@ -25,7 +25,7 @@ use microfips_core::fsp::{
     parse_fsp_encrypted_header,
 };
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
-use microfips_protocol::transport::{CryptoRng, Transport};
+use microfips_protocol::transport::Transport;
 
 static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
 #[used]
@@ -147,16 +147,35 @@ impl Transport for CdcTransport<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// RNG adapter: wraps embassy hardware RNG for the protocol crate's CryptoRng trait
+// RNG adapter: wraps embassy hardware RNG for rand_core traits
 // ---------------------------------------------------------------------------
 
 struct HwRng(&'static mut Rng<'static, peripherals::RNG>);
 
-impl CryptoRng for HwRng {
-    fn fill_bytes(&mut self, buf: &mut [u8]) {
-        self.0.fill_bytes(buf);
+impl rand_core::RngCore for HwRng {
+    fn next_u32(&mut self) -> u32 {
+        let mut buf = [0u8; 4];
+        self.fill_bytes(&mut buf);
+        u32::from_le_bytes(buf)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut buf = [0u8; 8];
+        self.fill_bytes(&mut buf);
+        u64::from_le_bytes(buf)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.0.fill_bytes(dest);
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
     }
 }
+
+impl rand_core::CryptoRng for HwRng {}
 
 // ---------------------------------------------------------------------------
 // LED state machine (hardware-specific, kept in firmware)

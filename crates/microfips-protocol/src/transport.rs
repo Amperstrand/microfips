@@ -7,9 +7,7 @@ use embassy_time::{Duration, Timer};
 use crate::error::ProtocolError;
 use crate::framing;
 
-pub trait CryptoRng {
-    fn fill_bytes(&mut self, buf: &mut [u8]);
-}
+pub use rand_core::{CryptoRng, RngCore};
 
 pub trait Transport {
     type Error: Debug;
