@@ -14,8 +14,8 @@ The MCU completes an IK handshake with the live VPS and sustains heartbeat excha
 every ~10 seconds. Five bugs were found and fixed to get here (see below).
 
 **What works:**
-- 71 unit tests pass for protocol logic (Noise IK, Noise XK, FMP, FSP, identity)
-- 10 unit tests pass for protocol crate (framing, transport, node)
+- 83 unit tests pass for protocol logic (Noise IK, Noise XK, FMP, FSP, identity)
+- 26 unit tests pass for protocol crate (framing, transport, node)
 - Host-side handshake test (`microfips-link`) proven against live VPS
 - Host-side simulator (`microfips-sim`) proven 45+ seconds sustained heartbeat against live VPS
 - USB CDC ACM enumeration with upstream embassy crates.io v0.6.0
@@ -36,7 +36,7 @@ every ~10 seconds. Five bugs were found and fixed to get here (see below).
 | 4 | Bridge thread race | Old thread survived reconnect, two readers split TCP | Stop both before reconnect |
 | 5 | Bridge CPU spin | No sleep in idle loop, GIL starvation | `time.sleep(0.001)` |
 
-**Open issues:** #8 (proxy reconnection), #9 (CI firmware build)
+**Open issues:** #8 (proxy reconnection)
 
 **Fork issue resolved (2026-03-28):**
 The `Amperstrand/embassy` fork (commit `c0289d7a8`) breaks USB enumeration on STM32F469.
@@ -90,9 +90,9 @@ npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
 ### Unit tests (no hardware)
 
 ```sh
-cargo test -p microfips-core                    # 71 tests: Noise, FMP, FSP, identity
+cargo test -p microfips-core                    # 83 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture     # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # 10 tests: framing, transport, node
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 26 tests: framing, transport, node
 ```
 
 ### Host-side VPS handshake (no hardware, raw UDP)
@@ -141,7 +141,7 @@ cargo build -p microfips --release --target thumbv7em-none-eabi
 ## CI
 
 GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
-- **Unit Tests** — 71 tests in `microfips-core`
+- **Unit Tests** — 83 tests in `microfips-core`
 - **Build Host Tools** — `microfips-link` + `microfips-sim` release binaries + artifacts
 - **Lint & Format** — clippy + rustfmt on core, link, sim
 - **Simulator Smoke** — verify sim starts and exits cleanly on EOF
@@ -169,7 +169,7 @@ GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
 | M4 | MCU handshake with live VPS | Done |
 | M5 | Host-side full lifecycle simulator (`microfips-sim`) | Done |
 | M6 | MCU full lifecycle (handshake + heartbeat exchange) | **Done** — sustained 3+ min on hardware |
-| M7 | HTTP status page over FIPS session | Planned |
+| M7 | HTTP status page over FIPS session | In progress |
 
 ### M6 sub-milestones (all done)
 

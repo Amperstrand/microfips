@@ -40,6 +40,7 @@ jobs:
 
       - run: cargo build -p microfips-link --release
       - run: cargo build -p microfips-sim --release
+      - run: cargo build -p microfips-http-test --release
 
       - uses: actions/upload-artifact@v4
         with:
@@ -67,10 +68,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-link -p microfips-sim -- --check
+        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-link -p microfips-sim -p microfips-http-test -- --check
 
       - name: Run clippy
-        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-link -p microfips-sim -- -D warnings
+        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-link -p microfips-sim -p microfips-http-test -- -D warnings
 
   sim-smoke:
     name: Simulator Smoke Test

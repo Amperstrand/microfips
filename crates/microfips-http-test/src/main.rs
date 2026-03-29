@@ -66,7 +66,7 @@ fn main() {
         .expect("write_message2 failed");
 
     let mut fmp_msg2 = [0u8; 256];
-    let fmp_len = fmp::build_msg2(msg1.0, msg1.0, &noise_msg2[..noise_len], &mut fmp_msg2);
+    let fmp_len = fmp::build_msg2(msg1.0, msg1.0, &noise_msg2[..noise_len], &mut fmp_msg2).unwrap();
     println!("  Sending MSG2: {} bytes to {peer}", fmp_len);
     sock.send_to(&fmp_msg2[..fmp_len], peer).expect("send MSG2");
 
@@ -96,7 +96,7 @@ fn main() {
     sock.send_to(&out[..fl], peer).expect("send HTTP GET");
 
     println!("  Waiting for HTTP response...");
-    let mut recv_ctr: u64 = 0;
+    let mut _recv_ctr: u64 = 0;
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(30) {
@@ -132,7 +132,7 @@ fn main() {
                                 match msg_type {
                                     fmp::MSG_HEARTBEAT => {
                                         println!("  Heartbeat (ctr={rx_ctr}, ts={ts_val})");
-                                        recv_ctr = rx_ctr + 1;
+                                        _recv_ctr = rx_ctr + 1;
                                     }
                                     fmp::MSG_SESSION_DATAGRAM => {
                                         println!(

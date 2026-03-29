@@ -63,16 +63,18 @@ pub fn parse_prefix(data: &[u8]) -> Option<(u8, u8, u16)> {
     Some((phase, flags, payload_len))
 }
 
-pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> usize {
+pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> Option<usize> {
     let needed = COMMON_PREFIX_SIZE + IDX_SIZE + noise_payload.len();
-    assert!(out.len() >= needed);
+    if out.len() < needed {
+        return None;
+    }
     let payload_len = (IDX_SIZE + noise_payload.len()) as u16;
     let prefix = build_prefix(PHASE_MSG1, 0x00, payload_len);
     out[..COMMON_PREFIX_SIZE].copy_from_slice(&prefix);
     out[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
         .copy_from_slice(&sender_idx.to_le_bytes());
     out[COMMON_PREFIX_SIZE + IDX_SIZE..needed].copy_from_slice(noise_payload);
-    needed
+    Some(needed)
 }
 
 pub fn build_msg2(
@@ -80,9 +82,11 @@ pub fn build_msg2(
     receiver_idx: u32,
     noise_payload: &[u8],
     out: &mut [u8],
-) -> usize {
+) -> Option<usize> {
     let needed = COMMON_PREFIX_SIZE + IDX_SIZE * 2 + noise_payload.len();
-    assert!(out.len() >= needed);
+    if out.len() < needed {
+        return None;
+    }
     let payload_len = (IDX_SIZE * 2 + noise_payload.len()) as u16;
     let prefix = build_prefix(PHASE_MSG2, 0x00, payload_len);
     out[..COMMON_PREFIX_SIZE].copy_from_slice(&prefix);
@@ -91,7 +95,7 @@ pub fn build_msg2(
     out[COMMON_PREFIX_SIZE + IDX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE * 2]
         .copy_from_slice(&receiver_idx.to_le_bytes());
     out[COMMON_PREFIX_SIZE + IDX_SIZE * 2..needed].copy_from_slice(noise_payload);
-    needed
+    Some(needed)
 }
 
 pub fn build_established(
@@ -123,6 +127,15 @@ pub fn build_established(
     outer_header[..pos].copy_from_slice(&out[..pos]);
     let outer_header_ref = &outer_header[..pos];
 
+    // Build inner plaintext directly in the output buffer (after ciphertext area)
+    // to avoid a separate large stack allocation.
+    // Layout in out: [prefix:4][idx:4][ctr:8][ciphertext:enc_len]
+    // We need a temporary for the inner plaintext since aead_encrypt reads from
+    // one buffer and writes to another. Use a stack buffer sized to the actual need.
+    let max_inner = out.len().saturating_sub(pos + encrypted_len);
+    if max_inner < inner_len {
+        return 0;
+    }
     let mut inner = [0u8; 512];
     inner[..4].copy_from_slice(&timestamp.to_le_bytes());
     inner[4] = msg_type;
@@ -241,7 +254,7 @@ mod tests {
     fn build_msg1_size() {
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 256];
-        let len = build_msg1(42, &noise_payload, &mut out);
+        let len = build_msg1(42, &noise_payload, &mut out).unwrap();
         assert_eq!(len, MSG1_WIRE_SIZE);
     }
 
@@ -267,7 +280,7 @@ mod tests {
     fn build_msg2_size() {
         let noise_payload = [0u8; 57];
         let mut out = [0u8; 256];
-        let len = build_msg2(1, 0, &noise_payload, &mut out);
+        let len = build_msg2(1, 0, &noise_payload, &mut out).unwrap();
         assert_eq!(len, MSG2_WIRE_SIZE);
     }
 
@@ -286,7 +299,7 @@ mod tests {
     fn parse_msg1_roundtrip() {
         let noise_payload = [0xAA; 106];
         let mut out = [0u8; 256];
-        let len = build_msg1(42, &noise_payload, &mut out);
+        let len = build_msg1(42, &noise_payload, &mut out).unwrap();
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
             FmpMessage::Msg1 {
@@ -304,7 +317,7 @@ mod tests {
     fn parse_msg2_roundtrip() {
         let noise_payload = [0xBB; 57];
         let mut out = [0u8; 256];
-        let len = build_msg2(1, 0, &noise_payload, &mut out);
+        let len = build_msg2(1, 0, &noise_payload, &mut out).unwrap();
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
             FmpMessage::Msg2 {
@@ -433,7 +446,7 @@ mod tests {
         // Initiator sends sender_idx=0 (hasn't received an index from responder yet)
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 256];
-        let len = build_msg1(0, &noise_payload, &mut out);
+        let len = build_msg1(0, &noise_payload, &mut out).unwrap();
         let idx = u32::from_le_bytes(
             out[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
                 .try_into()
@@ -516,7 +529,7 @@ mod tests {
 
         // Wrap in FMP MSG1 frame
         let mut fmp_out = [0u8; 256];
-        let fmp_len = build_msg1(0, &noise_out[..noise_len], &mut fmp_out);
+        let fmp_len = build_msg1(0, &noise_out[..noise_len], &mut fmp_out).unwrap();
         assert_eq!(fmp_len, MSG1_WIRE_SIZE);
 
         // Parse and verify noise_payload section offsets

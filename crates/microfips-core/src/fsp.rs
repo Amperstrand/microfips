@@ -424,8 +424,27 @@ pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])
     let flags = data[1];
     let counter = u64::from_le_bytes(data[4..12].try_into().ok()?);
     let header = &data[..FSP_HEADER_SIZE];
-    let ciphertext = &data[FSP_HEADER_SIZE..];
-    Some((flags, counter, header, ciphertext))
+    let mut payload = &data[FSP_HEADER_SIZE..];
+
+    if flags & FLAG_COORDS_PRESENT != 0 {
+        let remaining = payload.len();
+        if remaining < 2 {
+            return None;
+        }
+        let src_count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
+        let after_src = 2 + src_count * NODE_ADDR_SIZE;
+        if remaining < after_src + 2 {
+            return None;
+        }
+        let dst_count = u16::from_le_bytes([payload[after_src], payload[after_src + 1]]) as usize;
+        let after_dst = after_src + 2 + dst_count * NODE_ADDR_SIZE;
+        if remaining < after_dst {
+            return None;
+        }
+        payload = &payload[after_dst..];
+    }
+
+    Some((flags, counter, header, payload))
 }
 
 use crate::noise::{EPOCH_SIZE, NoiseError, NoiseXkResponder, PUBKEY_SIZE};
@@ -1014,5 +1033,69 @@ mod tests {
             u64::from_le_bytes(header[4..12].try_into().unwrap()),
             0xDEADBEEF
         );
+    }
+
+    #[test]
+    fn fsp_cp_flag_skips_coordinates() {
+        use crate::noise::aead_encrypt;
+
+        let key = [0xAB; 32];
+        let counter = 7u64;
+        let flags = FLAG_COORDS_PRESENT;
+        let timestamp_ms = 100u32;
+        let msg_type = FSP_MSG_DATA;
+        let inner_flags = 0u8;
+        let app_payload = b"test";
+
+        let mut inner = [0u8; 64];
+        let inner_len =
+            fsp_prepend_inner_header(timestamp_ms, msg_type, inner_flags, app_payload, &mut inner);
+
+        let mut ct = [0u8; 128];
+        let header = build_fsp_header(counter, flags, inner_len as u16);
+        let ct_len = aead_encrypt(&key, counter, &header, &inner[..inner_len], &mut ct).unwrap();
+
+        let src_coord = [0xAA; NODE_ADDR_SIZE];
+        let dst_coord = [0xBB; NODE_ADDR_SIZE];
+        let coord_data_len = 2 + NODE_ADDR_SIZE + 2 + NODE_ADDR_SIZE;
+        let total = FSP_HEADER_SIZE + coord_data_len + ct_len;
+
+        let mut packet = [0u8; 256];
+        packet[..FSP_HEADER_SIZE].copy_from_slice(&header);
+        packet[FSP_HEADER_SIZE..FSP_HEADER_SIZE + 2].copy_from_slice(&1u16.to_le_bytes());
+        packet[FSP_HEADER_SIZE + 2..FSP_HEADER_SIZE + 2 + NODE_ADDR_SIZE]
+            .copy_from_slice(&src_coord);
+        let dst_off = FSP_HEADER_SIZE + 2 + NODE_ADDR_SIZE;
+        packet[dst_off..dst_off + 2].copy_from_slice(&1u16.to_le_bytes());
+        packet[dst_off + 2..dst_off + 2 + NODE_ADDR_SIZE].copy_from_slice(&dst_coord);
+        packet[dst_off + 2 + NODE_ADDR_SIZE..total].copy_from_slice(&ct[..ct_len]);
+
+        let (parsed_flags, parsed_counter, parsed_header, parsed_ct) =
+            parse_fsp_encrypted_header(&packet[..total]).unwrap();
+        assert_eq!(parsed_flags, flags);
+        assert_eq!(parsed_counter, counter);
+        assert_eq!(parsed_ct.len(), ct_len);
+        assert_eq!(parsed_ct, &ct[..ct_len]);
+
+        let mut dec = [0u8; 64];
+        let dl =
+            crate::noise::aead_decrypt(&key, counter, parsed_header, parsed_ct, &mut dec).unwrap();
+        let (ts, mt, _, rest) = fsp_strip_inner_header(&dec[..dl]).unwrap();
+        assert_eq!(ts, timestamp_ms);
+        assert_eq!(mt, msg_type);
+        assert_eq!(rest, app_payload);
+    }
+
+    #[test]
+    fn fsp_cp_flag_too_short_coords_rejected() {
+        let mut data = [0u8; FSP_HEADER_SIZE + 3];
+        data[0] = fsp_prefix_byte(PHASE_ESTABLISHED);
+        data[1] = FLAG_COORDS_PRESENT;
+        data[2] = 1;
+        data[3] = 0;
+        data[FSP_HEADER_SIZE] = 1;
+        data[FSP_HEADER_SIZE + 1] = 0;
+        data[FSP_HEADER_SIZE + 2] = 0xAA;
+        assert!(parse_fsp_encrypted_header(&data).is_none());
     }
 }

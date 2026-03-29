@@ -19,6 +19,10 @@ pub trait Transport {
     fn recv(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Self::Error>>;
 }
 
+/// Canonical frame writer: wraps a [`Transport`] with length-prefixed framing.
+///
+/// Wire format: `[2-byte LE length][payload]`. This is the standard framing
+/// used by both the USB CDC link (MCU↔host) and the TCP tunnel (host↔VPS).
 pub struct FrameWriter<T: Transport> {
     transport: T,
 }
@@ -45,6 +49,10 @@ impl<T: Transport> FrameWriter<T> {
     }
 }
 
+/// Canonical frame reader: reassembles length-prefixed frames from a [`Transport`].
+///
+/// Handles partial reads, multi-packet frames, and buffered data across calls.
+/// Wire format: `[2-byte LE length][payload]`.
 pub struct FrameReader<T: Transport> {
     transport: T,
     rbuf: [u8; 2048],
@@ -331,18 +339,18 @@ pub mod channel {
                 if my_closed.load(Ordering::Relaxed) {
                     return Err(ProtocolError::Disconnected);
                 }
-                let available = {
-                    let guard = rx_buf.lock().unwrap();
-                    if !guard.is_empty() {
+                let n = {
+                    let mut guard = rx_buf.lock().unwrap();
+                    if guard.is_empty() {
+                        0
+                    } else {
                         let n = guard.len().min(buf.len().min(self.max_chunk));
                         buf[..n].copy_from_slice(&guard[..n]);
-                        Some(n)
-                    } else {
-                        None
+                        guard.drain(..n);
+                        n
                     }
                 };
-                if let Some(n) = available {
-                    rx_buf.lock().unwrap().drain(..n);
+                if n > 0 {
                     return Ok(n);
                 }
                 if peer_closed.load(Ordering::Relaxed) {
@@ -364,51 +372,12 @@ pub mod channel {
 
 #[cfg(test)]
 mod tests {
-    use embassy_executor::Executor;
-
     use super::Transport;
     use super::{FrameReader, FrameWriter, ProtocolError};
+    use crate::test_helpers::block_on;
     use crate::transport::channel::{ChannelTransport, pair as channel_pair};
     use crate::transport::mock::{MockTransport, MockTransportInner};
     use std::sync::LazyLock;
-
-    fn block_on<F: std::future::Future + Send + 'static>(f: F) -> F::Output
-    where
-        F::Output: Send + 'static,
-    {
-        use embassy_executor::task;
-        use std::boxed::Box;
-        use std::sync::{Arc, Mutex};
-
-        let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
-
-        let result: Arc<Mutex<Option<F::Output>>> = Arc::new(Mutex::new(None));
-        let result_clone = result.clone();
-        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done_clone = done.clone();
-        let boxed: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
-            Box::pin(async move {
-                let output = f.await;
-                *result_clone.lock().unwrap() = Some(output);
-                done_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-            });
-
-        #[task(pool_size = 64)]
-        async fn run_boxed(fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) {
-            fut.await
-        }
-
-        let done_check = done.clone();
-
-        executor.run_until(
-            |spawner| {
-                spawner.spawn(run_boxed(boxed).unwrap());
-            },
-            move || done_check.load(std::sync::atomic::Ordering::Relaxed),
-        );
-
-        result.lock().unwrap().take().unwrap()
-    }
 
     fn inner() -> &'static MockTransportInner {
         static INNER: LazyLock<MockTransportInner> = LazyLock::new(MockTransportInner::new);

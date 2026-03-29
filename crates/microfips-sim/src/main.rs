@@ -143,7 +143,7 @@ fn handshake<R: Read, W: Write>(
         .map_err(sim_err)?;
 
     let mut f1 = [0u8; 256];
-    let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1);
+    let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1).unwrap();
 
     eprintln!("[SIM] sending MSG1 ({}B)", f1len);
     send_frame(out, &f1[..f1len])?;
