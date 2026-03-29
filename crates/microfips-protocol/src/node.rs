@@ -3,7 +3,7 @@ use embassy_time::{Duration, Timer};
 
 use crate::error::ProtocolError;
 use crate::framing;
-use crate::transport::{CryptoRng, Transport};
+use crate::transport::{CryptoRng, RngCore, Transport};
 
 pub const HB_SECS: u64 = 10;
 pub const RECV_TIMEOUT_MS: u64 = 30_000;
@@ -61,7 +61,7 @@ impl NodeHandler for NoopHandler {
     }
 }
 
-pub struct Node<T: Transport, R: CryptoRng> {
+pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     transport: T,
     rng: R,
     secret: [u8; 32],
@@ -72,7 +72,7 @@ pub struct Node<T: Transport, R: CryptoRng> {
     resp_buf: [u8; 256],
 }
 
-impl<T: Transport, R: CryptoRng> Node<T, R> {
+impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     pub fn new(transport: T, rng: R, secret: [u8; 32], peer_pub: [u8; 33]) -> Self {
         Self {
             transport,
@@ -425,14 +425,33 @@ mod tests {
         }
     }
 
-    impl CryptoRng for TestRng {
+    impl rand_core::RngCore for TestRng {
+        fn next_u32(&mut self) -> u32 {
+            let mut buf = [0u8; 4];
+            self.fill_bytes(&mut buf);
+            u32::from_le_bytes(buf)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut buf = [0u8; 8];
+            self.fill_bytes(&mut buf);
+            u64::from_le_bytes(buf)
+        }
+
         fn fill_bytes(&mut self, buf: &mut [u8]) {
             let mut bytes = self.bytes.lock().unwrap();
             let n = buf.len().min(bytes.len());
             buf[..n].copy_from_slice(&bytes[..n]);
             bytes.drain(..n);
         }
+
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
     }
+
+    impl rand_core::CryptoRng for TestRng {}
 
     fn inner() -> &'static crate::transport::mock::MockTransportInner {
         static INNER: LazyLock<crate::transport::mock::MockTransportInner> =

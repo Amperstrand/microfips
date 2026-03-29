@@ -8,6 +8,7 @@ description = "FIPS leaf node protocol: handshake, heartbeat, framing over any t
 microfips-core = { path = "../microfips-core" }
 embassy-time = "0.5.1"
 embassy-futures = "0.1.2"
+rand_core = { version = "0.6", default-features = false }
 
 [dev-dependencies]
 embassy-executor = { version = "0.10.0", features = ["platform-std", "executor-thread"] }
