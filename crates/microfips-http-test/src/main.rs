@@ -6,18 +6,36 @@ use microfips_core::fmp;
 use microfips_core::noise;
 use rand::RngCore;
 
-const VPS_STATIC_SECRET: [u8; 32] = [
+const DEFAULT_SECRET: [u8; 32] = [
     0xe1, 0x04, 0x80, 0x9e, 0x66, 0x0d, 0xfb, 0xec, 0xe4, 0x7c, 0x33, 0xf7, 0x42, 0x2a, 0xd0, 0x61,
     0x5f, 0x2e, 0x82, 0x61, 0xb9, 0xe9, 0x3a, 0x84, 0xd0, 0x02, 0x50, 0x73, 0xa0, 0xbe, 0xf7, 0xf3,
 ];
+
+fn load_secret() -> [u8; 32] {
+    match std::env::var("FIPS_SECRET") {
+        Ok(h) => {
+            let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
+            assert!(
+                b.len() == 32,
+                "FIPS_SECRET: must be 32 bytes (64 hex chars)"
+            );
+            b.try_into().unwrap()
+        }
+        Err(_) => DEFAULT_SECRET,
+    }
+}
 
 fn main() {
     let listen_addr = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "0.0.0.0:31338".to_string());
 
+    let static_secret = load_secret();
+    let static_pub = noise::ecdh_pubkey(&static_secret).expect("pubkey derivation failed");
+
     println!("=== microfips HTTP test (FIPS responder) ===");
     println!("Listening on UDP {listen_addr}");
+    println!("Responder pubkey: {}", hex::encode(static_pub));
     println!("Waiting for MCU handshake...");
 
     let sock = UdpSocket::bind(&listen_addr).expect("bind failed");
@@ -46,8 +64,8 @@ fn main() {
     };
 
     let e_init: [u8; 33] = msg1.1[..33].try_into().expect("ephemeral pubkey size");
-    let mut responder = noise::NoiseIkResponder::new(&VPS_STATIC_SECRET, &e_init)
-        .expect("IK responder init failed");
+    let mut responder =
+        noise::NoiseIkResponder::new(&static_secret, &e_init).expect("IK responder init failed");
     let (initiator_static_pub, epoch) = responder
         .read_message1(&msg1.1[33..])
         .expect("read_message1 failed");
