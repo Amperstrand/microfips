@@ -68,9 +68,9 @@ st-flash --connect-under-reset reset
 
 ### Unit tests (no hardware)
 ```bash
-cargo test -p microfips-core          # 71 tests: Noise, FMP, FSP, identity
+cargo test -p microfips-core          # 83 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture  # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # 10 tests: framing, transport, node
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 26 tests: framing, transport, node
 ```
 
 ### Host-side VPS handshake test (no MCU)
@@ -345,7 +345,7 @@ Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` wit
 
 `serial.Serial()` takes 5-10 seconds to open `/dev/ttyACM*`. The MCU sends MSG1 ~0.5s
 after enumeration. If the proxy isn't open yet, MSG1 is lost. The MCU's retry loop (500ms
-CONNECT_DELAY + 10s recv timeout + 3s RETRY_SECS = ~13.5s per cycle) handles this, but
+CONNECT_DELAY + 30s RECV_TIMEOUT + 3s RETRY_SECS = ~33.5s per cycle) handles this, but
 the first attempt always misses. Fix: add reconnection logic to proxy or use a control
 byte to trigger handshake start.
 
@@ -357,8 +357,26 @@ serial write and the serial reader thread dies. The proxy needs reconnection log
 ## CI Pipeline
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
-- **test**: `cargo test -p microfips-core` (71 tests)
-- **build-host**: `cargo build -p microfips-link --release` + upload artifact
-- **lint**: `cargo clippy` + `cargo fmt --check` on host crates
-- **build-firmware**: clones `Amperstrand/embassy` fork, builds for `thumbv7em-none-eabi` (BROKEN — fork breaks USB, needs update to use crates.io)
-- **fips-integration**: runs `fips-handshake` against VPS (continue-on-error)
+- **test**: `cargo test -p microfips-core` (83 tests) + `cargo test -p microfips-protocol --features std` (26 tests)
+- **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
+- **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
+- **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
+- **build-firmware**: `cargo build -p microfips --release --target thumbv7em-none-eabi` using upstream crates.io embassy v0.6.0
+- **fips-integration**: local keygen + Noise IK handshake test (must pass), public VPS handshake (continue-on-error)
+- **summary**: aggregate status table
+
+### Environment variables for CI key override
+
+All host tools accept `FIPS_SECRET` (64 hex chars) to override the identity secret key.
+`FIPS_PEER_PUB` (66 hex chars) overrides the peer's public key (used by `fips-handshake` and `microfips-sim`).
+When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubkey).
+
+## Open Issues
+
+| # | Title | Severity | Notes |
+|---|-------|----------|-------|
+| #8 | serial_tcp_proxy: slow open + no reconnection on USB reset | infrastructure | MCU retry loop compensates |
+| #12 | M7: HTTP status page over FIPS | feature | Firmware has HTTP handler; needs E2E test |
+| #13 | Noise crate audit: snow not viable | resolved | Hand-rolled Noise is working, tested (113 tests) |
+| #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
+| #15 | IK responder transport keys mismatch | low | MCU is always initiator; untested code path |
