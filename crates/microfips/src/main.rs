@@ -19,6 +19,7 @@ use embassy_usb::driver::EndpointError;
 use static_cell::StaticCell;
 
 use microfips_core::fmp;
+use microfips_core::fsp::{FspSession, FspSessionState, PHASE_SESSION_SETUP, PHASE_SESSION_MSG3, PHASE_ESTABLISHED};
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::{CryptoRng, Transport};
 
@@ -224,6 +225,10 @@ impl Leds {
 
 struct FipsHandler<'a> {
     leds: &'a mut Leds,
+    fsp_session: FspSession,
+    fsp_ephemeral: [u8; 32],
+    fsp_epoch: [u8; 8],
+    fsp_session_counter: u32,
 }
 
 impl NodeHandler for FipsHandler<'_> {
@@ -240,6 +245,9 @@ impl NodeHandler for FipsHandler<'_> {
             NodeEvent::HandshakeOk => {
                 STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
                 self.leds.set_state(S_HANDSHAKE_OK);
+                self.fsp_session.reset();
+                self.fsp_epoch = [0x01, 0, 0, 0, 0, 0, 0, 0];
+                self.fsp_session_counter = 0;
                 Timer::after(Duration::from_millis(500)).await;
             }
             NodeEvent::HeartbeatSent => {
@@ -264,13 +272,70 @@ impl NodeHandler for FipsHandler<'_> {
         match msg_type {
             fmp::MSG_SESSION_DATAGRAM => {
                 STAT_DATA_RX.fetch_add(1, Ordering::Relaxed);
-                if payload.len() >= 3 && &payload[..3] == b"GET" {
-                    STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
-                    let rlen = HTTP_RESPONSE.len().min(resp.len());
-                    resp[..rlen].copy_from_slice(&HTTP_RESPONSE[..rlen]);
-                    HandleResult::SendDatagram(rlen)
-                } else {
-                    HandleResult::None
+                if payload.is_empty() {
+                    return HandleResult::None;
+                }
+                let fsp_phase = payload[0] & 0x0F;
+                match fsp_phase {
+                    PHASE_SESSION_SETUP => {
+                        match self.fsp_session.handle_setup(
+                            &MCU_SECRET,
+                            &self.fsp_ephemeral,
+                            &self.fsp_epoch,
+                            payload,
+                            resp,
+                        ) {
+                            Ok(ack_len) => HandleResult::SendDatagram(ack_len),
+                            Err(_) => HandleResult::None,
+                        }
+                    }
+                    PHASE_SESSION_MSG3 => {
+                        match self.fsp_session.handle_msg3(payload) {
+                            Ok(()) => {
+                                if let Some((_, _k_send)) = self.fsp_session.session_keys() {
+                                    self.fsp_session_counter = self.fsp_session_counter.wrapping_add(1);
+                                }
+                                HandleResult::None
+                            }
+                            Err(_) => HandleResult::None,
+                        }
+                    }
+                    PHASE_ESTABLISHED => {
+                        if self.fsp_session.state() != FspSessionState::Established {
+                            return HandleResult::None;
+                        }
+                        let (k_recv, _) = self.fsp_session.session_keys().unwrap();
+                        let outer_header = &payload[..fmp::ESTABLISHED_HEADER_SIZE];
+                        let encrypted = &payload[fmp::ESTABLISHED_HEADER_SIZE..];
+                        let mut dec = [0u8; 512];
+                        match microfips_core::noise::aead_decrypt(
+                            &k_recv, 0, outer_header, encrypted, &mut dec,
+                        ) {
+                            Ok(dl) => {
+                                if dl < 6 {
+                                    return HandleResult::None;
+                                }
+                                let _timestamp = u32::from_le_bytes(dec[..4].try_into().unwrap());
+                                let inner_msg_type = dec[4];
+                                let inner_payload = &dec[6..dl];
+                                match inner_msg_type {
+                                    fmp::MSG_SESSION_DATAGRAM => {
+                                        if inner_payload.len() >= 3 && &inner_payload[..3] == b"GET" {
+                                            STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
+                                            let rlen = HTTP_RESPONSE.len().min(resp.len());
+                                            resp[..rlen].copy_from_slice(&HTTP_RESPONSE[..rlen]);
+                                            HandleResult::SendDatagram(rlen)
+                                        } else {
+                                            HandleResult::None
+                                        }
+                                    }
+                                    _ => HandleResult::None,
+                                }
+                            }
+                            Err(_) => HandleResult::None,
+                        }
+                    }
+                    _ => HandleResult::None,
                 }
             }
             _ => HandleResult::None,
@@ -315,6 +380,9 @@ async fn main(_spawner: Spawner) {
 
     let rng = GLOBAL_RNG.init(Rng::new(p.RNG, Irqs));
 
+    let mut fsp_ephemeral = [0u8; 32];
+    rng.fill_bytes(&mut fsp_ephemeral);
+
     leds.blink_green_once();
 
     let ep_out_buf = EP_OUT_BUF.init([0u8; 1024]);
@@ -350,7 +418,13 @@ async fn main(_spawner: Spawner) {
     let transport = CdcTransport { class: &mut class };
     let hw_rng = HwRng(rng);
     let mut node = Node::new(transport, hw_rng, MCU_SECRET, VPS_PUB);
-    let mut handler = FipsHandler { leds: &mut leds };
+    let mut handler = FipsHandler {
+        leds: &mut leds,
+        fsp_session: FspSession::new(),
+        fsp_ephemeral,
+        fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
+        fsp_session_counter: 0,
+    };
 
     let usb_fut = usb.run();
     let fips_fut = node.run(&mut handler);
