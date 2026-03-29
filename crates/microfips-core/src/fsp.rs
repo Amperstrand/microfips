@@ -353,6 +353,165 @@ impl<'a> Ipv6Shim<'a> {
     }
 }
 
+use crate::noise::{NoiseError, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FspSessionState {
+    Idle,
+    AwaitingMsg3,
+    Established,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FspSessionError {
+    InvalidState,
+    InvalidMessage,
+    CryptoError,
+    BufferTooSmall,
+}
+
+impl From<FspError> for FspSessionError {
+    fn from(e: FspError) -> Self {
+        match e {
+            FspError::BufferTooSmall => FspSessionError::BufferTooSmall,
+            FspError::InvalidFrame | FspError::InvalidCoords => FspSessionError::InvalidMessage,
+        }
+    }
+}
+
+impl From<NoiseError> for FspSessionError {
+    fn from(e: NoiseError) -> Self {
+        match e {
+            NoiseError::BufferTooSmall => FspSessionError::BufferTooSmall,
+            NoiseError::InvalidMessage | NoiseError::InvalidState => {
+                FspSessionError::InvalidMessage
+            }
+            _ => FspSessionError::CryptoError,
+        }
+    }
+}
+
+pub struct FspSession {
+    state: FspSessionState,
+    responder: Option<NoiseXkResponder>,
+    k_recv: Option<[u8; 32]>,
+    k_send: Option<[u8; 32]>,
+    initiator_pub: Option<[u8; PUBKEY_SIZE]>,
+}
+
+impl FspSession {
+    pub fn new() -> Self {
+        Self {
+            state: FspSessionState::Idle,
+            responder: None,
+            k_recv: None,
+            k_send: None,
+            initiator_pub: None,
+        }
+    }
+
+    pub fn state(&self) -> FspSessionState {
+        self.state
+    }
+
+    pub fn session_keys(&self) -> Option<([u8; 32], [u8; 32])> {
+        self.k_recv.zip(self.k_send)
+    }
+
+    pub fn initiator_pub(&self) -> Option<[u8; PUBKEY_SIZE]> {
+        self.initiator_pub
+    }
+
+    pub fn handle_setup(
+        &mut self,
+        my_secret: &[u8; 32],
+        my_ephemeral: &[u8; 32],
+        my_epoch: &[u8; EPOCH_SIZE],
+        setup_data: &[u8],
+        ack_out: &mut [u8],
+    ) -> Result<usize, FspSessionError> {
+        if self.state != FspSessionState::Idle {
+            return Err(FspSessionError::InvalidState);
+        }
+
+        let (_flags, handshake_payload) = parse_session_setup(setup_data)?;
+
+        if handshake_payload.len() != XK_HANDSHAKE_MSG1_SIZE {
+            return Err(FspSessionError::InvalidMessage);
+        }
+
+        let ei_pub: [u8; PUBKEY_SIZE] = handshake_payload[..PUBKEY_SIZE]
+            .try_into()
+            .map_err(|_| FspSessionError::InvalidMessage)?;
+
+        let mut responder = NoiseXkResponder::new(my_secret, &ei_pub)?;
+
+        let mut msg2_noise = [0u8; 128];
+        let msg2_len = responder.write_message2(my_ephemeral, my_epoch, &mut msg2_noise)?;
+
+        let my_pub = crate::noise::ecdh_pubkey(my_secret)?;
+        let normalized = crate::noise::parity_normalize(&my_pub);
+        let mut x_only = [0u8; 32];
+        x_only.copy_from_slice(&normalized[1..]);
+        let my_addr = crate::identity::NodeAddr::from_pubkey_x(&x_only);
+        let src = [my_addr.0];
+        let mut ei_x_only = [0u8; 32];
+        ei_x_only.copy_from_slice(&ei_pub[1..]);
+        let initiator_addr = crate::identity::NodeAddr::from_pubkey_x(&ei_x_only);
+        let dst = [initiator_addr.0];
+
+        let ack_len = build_session_ack(&src, &dst, &msg2_noise[..msg2_len], ack_out)?;
+
+        self.responder = Some(responder);
+        self.state = FspSessionState::AwaitingMsg3;
+
+        Ok(ack_len)
+    }
+
+    pub fn handle_msg3(&mut self, msg3_data: &[u8]) -> Result<(), FspSessionError> {
+        if self.state != FspSessionState::AwaitingMsg3 {
+            return Err(FspSessionError::InvalidState);
+        }
+
+        let handshake_payload = parse_session_msg3(msg3_data)?;
+
+        if handshake_payload.len() != XK_HANDSHAKE_MSG3_SIZE {
+            return Err(FspSessionError::InvalidMessage);
+        }
+
+        let responder = self
+            .responder
+            .as_mut()
+            .ok_or(FspSessionError::InvalidState)?;
+        let (initiator_static_pub, _initiator_epoch) =
+            responder.read_message3(handshake_payload)?;
+
+        let (k_recv, k_send) = responder.finalize();
+
+        self.k_recv = Some(k_recv);
+        self.k_send = Some(k_send);
+        self.initiator_pub = Some(initiator_static_pub);
+        self.responder = None;
+        self.state = FspSessionState::Established;
+
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        self.state = FspSessionState::Idle;
+        self.responder = None;
+        self.k_recv = None;
+        self.k_send = None;
+        self.initiator_pub = None;
+    }
+}
+
+impl Default for FspSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,5 +710,162 @@ mod tests {
         assert_eq!(fsp_prefix_byte(PHASE_SESSION_ACK), 0x02);
         assert_eq!(fsp_prefix_byte(PHASE_SESSION_MSG3), 0x03);
         assert_eq!(fsp_prefix_byte(PHASE_ESTABLISHED), 0x00);
+    }
+
+    use super::{FspSession, FspSessionError, FspSessionState};
+
+    fn test_keys() -> ([u8; 32], [u8; 32], [u8; 32]) {
+        let responder_secret: [u8; 32] = [0x22; 32];
+        let responder_eph: [u8; 32] = [0xAA; 32];
+        let initiator_secret: [u8; 32] = [0x11; 32];
+        (responder_secret, responder_eph, initiator_secret)
+    }
+
+    #[test]
+    fn fsp_session_starts_idle() {
+        let session = FspSession::new();
+        assert_eq!(session.state(), FspSessionState::Idle);
+        assert_eq!(session.session_keys(), None);
+    }
+
+    #[test]
+    fn fsp_session_rejects_msg3_when_idle() {
+        let mut session = FspSession::new();
+        let msg3_data = [0xDD; 80];
+        let result = session.handle_msg3(&msg3_data);
+        assert_eq!(result, Err(FspSessionError::InvalidState));
+    }
+
+    #[test]
+    fn fsp_session_full_flow() {
+        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
+
+        let (responder_secret, responder_eph, initiator_secret) = test_keys();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let initiator_pub = ecdh_pubkey(&initiator_secret).unwrap();
+        let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let epoch_i = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let initiator_eph: [u8; 32] = [0x01; 32];
+        let (mut initiator, _) =
+            NoiseXkInitiator::new(&initiator_eph, &initiator_secret, &responder_pub).unwrap();
+
+        let mut xk_msg1 = [0u8; 64];
+        let msg1_len = initiator.write_message1(&mut xk_msg1).unwrap();
+        assert_eq!(msg1_len, XK_HANDSHAKE_MSG1_SIZE);
+
+        let responder_addr = make_addr(0x01);
+        let initiator_addr = make_addr(0x02);
+        let mut setup_buf = [0u8; 512];
+        let setup_len = build_session_setup(
+            0x03,
+            &[responder_addr],
+            &[initiator_addr],
+            &xk_msg1[..msg1_len],
+            &mut setup_buf,
+        )
+        .unwrap();
+
+        let mut session = FspSession::new();
+        let mut ack_buf = [0u8; 512];
+        let ack_len = session
+            .handle_setup(
+                &responder_secret,
+                &responder_eph,
+                &epoch_r,
+                &setup_buf[..setup_len],
+                &mut ack_buf,
+            )
+            .unwrap();
+
+        assert_eq!(session.state(), FspSessionState::AwaitingMsg3);
+        assert_eq!(session.session_keys(), None);
+
+        let mut ack_stored = [0u8; 512];
+        ack_stored[..ack_len].copy_from_slice(&ack_buf[..ack_len]);
+        let xk_msg2_payload = parse_session_ack(&ack_stored[..ack_len]).unwrap();
+        assert_eq!(xk_msg2_payload.len(), XK_HANDSHAKE_MSG2_SIZE);
+
+        let received_epoch = initiator.read_message2(xk_msg2_payload).unwrap();
+        assert_eq!(received_epoch, epoch_r);
+
+        let mut msg3_noise = [0u8; 128];
+        let msg3_len = initiator
+            .write_message3(&initiator_pub, &epoch_i, &mut msg3_noise)
+            .unwrap();
+        assert_eq!(msg3_len, XK_HANDSHAKE_MSG3_SIZE);
+
+        let _responder_addr = make_addr(0x01);
+        let _initiator_addr = make_addr(0x02);
+        let mut msg3_buf = [0u8; 512];
+        let msg3_fsp_len = build_session_msg3(&msg3_noise[..msg3_len], &mut msg3_buf).unwrap();
+
+        session.handle_msg3(&msg3_buf[..msg3_fsp_len]).unwrap();
+
+        assert_eq!(session.state(), FspSessionState::Established);
+        let (k_recv, k_send) = session.session_keys().unwrap();
+        assert_ne!(k_recv, [0u8; 32]);
+        assert_ne!(k_send, [0u8; 32]);
+        assert_eq!(session.initiator_pub(), Some(initiator_pub));
+
+        let (k_send_i, k_recv_i) = initiator.finalize();
+        assert_eq!(k_recv, k_send_i, "session k_recv == initiator k_send");
+        assert_eq!(k_send, k_recv_i, "session k_send == initiator k_recv");
+    }
+
+    #[test]
+    fn fsp_session_reset() {
+        let mut session = FspSession::new();
+        session.state = FspSessionState::Established;
+        session.k_recv = Some([0x42; 32]);
+        session.k_send = Some([0x99; 32]);
+        session.reset();
+        assert_eq!(session.state(), FspSessionState::Idle);
+        assert_eq!(session.session_keys(), None);
+    }
+
+    #[test]
+    fn fsp_session_rejects_double_setup() {
+        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
+
+        let responder_secret: [u8; 32] = [0x22; 32];
+        let responder_eph: [u8; 32] = [0xAA; 32];
+        let initiator_secret: [u8; 32] = [0x11; 32];
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let initiator_eph: [u8; 32] = [0x01; 32];
+        let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let (mut initiator, _) =
+            NoiseXkInitiator::new(&initiator_eph, &initiator_secret, &responder_pub).unwrap();
+        let mut xk_msg1 = [0u8; 64];
+        let msg1_len = initiator.write_message1(&mut xk_msg1).unwrap();
+
+        let src = [make_addr(0x01)];
+        let dst = [make_addr(0x02)];
+        let mut setup_buf = [0u8; 512];
+        let setup_len =
+            build_session_setup(0x03, &src, &dst, &xk_msg1[..msg1_len], &mut setup_buf).unwrap();
+
+        let mut session = FspSession::new();
+        let mut ack = [0u8; 512];
+        session
+            .handle_setup(
+                &responder_secret,
+                &responder_eph,
+                &epoch_r,
+                &setup_buf[..setup_len],
+                &mut ack,
+            )
+            .unwrap();
+        assert_eq!(session.state(), FspSessionState::AwaitingMsg3);
+
+        let result = session.handle_setup(
+            &responder_secret,
+            &responder_eph,
+            &epoch_r,
+            &setup_buf[..setup_len],
+            &mut ack,
+        );
+        assert_eq!(result, Err(FspSessionError::InvalidState));
     }
 }
