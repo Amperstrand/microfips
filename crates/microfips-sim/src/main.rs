@@ -59,7 +59,7 @@ fn load_peer_pub() -> [u8; 33] {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Io variant's inner field is used via Debug trait (Transport::Error: Debug)
 enum SimError {
     Io(std::io::Error),
     Eof,
@@ -227,6 +227,8 @@ where
     use embassy_executor::Executor;
     use std::pin::Pin;
 
+    // Intentional leak: this is called exactly once from main() and the executor
+    // must live for the program's duration (Node::run never returns).
     let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
 
     let result: Arc<Mutex<Option<F::Output>>> = Arc::new(Mutex::new(None));
