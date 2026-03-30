@@ -138,11 +138,48 @@ mod tests {
         );
     }
 
+    // NOTE: The env var tests below require --test-threads=1 because they
+    // modify process-global state (environment variables). CI runs them with
+    // `cargo test -p microfips-core --features std -- --test-threads=1`.
+
+    /// RAII guard that restores (or removes) an env var when dropped,
+    /// ensuring cleanup even if the test panics.
+    #[cfg(feature = "std")]
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<std::string::String>,
+    }
+
+    #[cfg(feature = "std")]
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: env var tests run single-threaded (--test-threads=1)
+            unsafe { std::env::set_var(key, val) };
+            Self { key, prev }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, prev }
+        }
+    }
+
+    #[cfg(feature = "std")]
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
     #[test]
     #[cfg(feature = "std")]
     fn load_secret_returns_default_when_env_not_set() {
-        // SAFETY: test is single-threaded (--test-threads=1)
-        unsafe { std::env::remove_var("FIPS_SECRET") };
+        let _g = EnvGuard::remove("FIPS_SECRET");
         let secret = load_secret();
         assert_eq!(secret, DEFAULT_SECRET);
     }
@@ -150,7 +187,7 @@ mod tests {
     #[test]
     #[cfg(feature = "std")]
     fn load_peer_pub_returns_default_when_env_not_set() {
-        unsafe { std::env::remove_var("FIPS_PEER_PUB") };
+        let _g = EnvGuard::remove("FIPS_PEER_PUB");
         let peer = load_peer_pub();
         assert_eq!(peer, DEFAULT_PEER_PUB);
     }
@@ -159,28 +196,26 @@ mod tests {
     #[cfg(feature = "std")]
     fn load_secret_reads_from_env() {
         let hex_key = "0101010101010101010101010101010101010101010101010101010101010101";
-        unsafe { std::env::set_var("FIPS_SECRET", hex_key) };
+        let _g = EnvGuard::set("FIPS_SECRET", hex_key);
         let secret = load_secret();
         assert_eq!(secret, [0x01u8; 32]);
-        unsafe { std::env::remove_var("FIPS_SECRET") };
     }
 
     #[test]
     #[cfg(feature = "std")]
     fn load_peer_pub_reads_from_env() {
         let hex_pub = "020101010101010101010101010101010101010101010101010101010101010101";
-        unsafe { std::env::set_var("FIPS_PEER_PUB", hex_pub) };
+        let _g = EnvGuard::set("FIPS_PEER_PUB", hex_pub);
         let peer = load_peer_pub();
         assert_eq!(peer[0], 0x02);
         assert_eq!(&peer[1..], &[0x01u8; 32]);
-        unsafe { std::env::remove_var("FIPS_PEER_PUB") };
     }
 
     #[test]
     #[cfg(feature = "std")]
     #[should_panic(expected = "FIPS_SECRET: invalid hex")]
     fn load_secret_panics_on_invalid_hex() {
-        unsafe { std::env::set_var("FIPS_SECRET", "not_valid_hex!") };
+        let _g = EnvGuard::set("FIPS_SECRET", "not_valid_hex!");
         let _ = load_secret();
     }
 
@@ -188,7 +223,7 @@ mod tests {
     #[cfg(feature = "std")]
     #[should_panic(expected = "FIPS_SECRET: must be 32 bytes")]
     fn load_secret_panics_on_wrong_length() {
-        unsafe { std::env::set_var("FIPS_SECRET", "0102030405") };
+        let _g = EnvGuard::set("FIPS_SECRET", "0102030405");
         let _ = load_secret();
     }
 }
