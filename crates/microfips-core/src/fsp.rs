@@ -774,6 +774,7 @@ pub enum FspHandlerError {
     Msg3(FspSessionError),
     DecryptFailed,
     InnerHeaderTooShort,
+    BufferTooSmall,
     UnknownPhase,
 }
 
@@ -788,6 +789,14 @@ pub fn handle_fsp_datagram(
     if payload.len() < SESSION_DATAGRAM_BODY_SIZE {
         return Ok(FspHandlerResult::None);
     }
+    let src_addr: [u8; NODE_ADDR_SIZE] = payload[3..19]
+        .try_into()
+        .map_err(|_| FspHandlerError::UnknownPhase)?;
+    let dst_addr: [u8; NODE_ADDR_SIZE] = payload[19..35]
+        .try_into()
+        .map_err(|_| FspHandlerError::UnknownPhase)?;
+    let reply_body = build_session_datagram_body(&dst_addr, &src_addr);
+
     let fsp_data = &payload[SESSION_DATAGRAM_BODY_SIZE..];
     if fsp_data.is_empty() {
         return Ok(FspHandlerResult::None);
@@ -795,10 +804,17 @@ pub fn handle_fsp_datagram(
     let fsp_phase = fsp_data[0] & 0x0F;
     match fsp_phase {
         PHASE_SESSION_SETUP => {
+            let mut tmp = [0u8; 512];
             let ack_len = session
-                .handle_setup(secret, ephemeral, epoch, fsp_data, resp)
+                .handle_setup(secret, ephemeral, epoch, fsp_data, &mut tmp)
                 .map_err(FspHandlerError::Setup)?;
-            Ok(FspHandlerResult::SendDatagram(ack_len))
+            let total = SESSION_DATAGRAM_BODY_SIZE + ack_len;
+            if resp.len() < total {
+                return Err(FspHandlerError::BufferTooSmall);
+            }
+            resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&reply_body);
+            resp[SESSION_DATAGRAM_BODY_SIZE..total].copy_from_slice(&tmp[..ack_len]);
+            Ok(FspHandlerResult::SendDatagram(total))
         }
         PHASE_SESSION_MSG3 => {
             session
@@ -810,7 +826,7 @@ pub fn handle_fsp_datagram(
             if session.state() != FspSessionState::Established {
                 return Ok(FspHandlerResult::None);
             }
-            let (k_recv, _) = session.session_keys().unwrap();
+            let (k_recv, k_send) = session.session_keys().unwrap();
             let Some((flags, counter, header, encrypted)) = parse_fsp_encrypted_header(fsp_data)
             else {
                 return Ok(FspHandlerResult::None);
@@ -826,17 +842,36 @@ pub fn handle_fsp_datagram(
             else {
                 return Err(FspHandlerError::InnerHeaderTooShort);
             };
+            let mut reply_data: Option<&[u8]> = None;
             if inner_msg_type == FSP_MSG_DATA {
                 if inner_payload.len() >= 4 && &inner_payload[..4] == b"PING" {
-                    let rlen = PONG.len().min(resp.len());
-                    resp[..rlen].copy_from_slice(&PONG[..rlen]);
-                    return Ok(FspHandlerResult::SendDatagram(rlen));
+                    reply_data = Some(PONG);
+                } else if inner_payload.len() >= 3 && &inner_payload[..3] == b"GET" {
+                    reply_data = Some(HTTP_RESPONSE);
                 }
-                if inner_payload.len() >= 3 && &inner_payload[..3] == b"GET" {
-                    let rlen = HTTP_RESPONSE.len().min(resp.len());
-                    resp[..rlen].copy_from_slice(&HTTP_RESPONSE[..rlen]);
-                    return Ok(FspHandlerResult::SendDatagram(rlen));
+            }
+            if let Some(data) = reply_data {
+                let send_ctr: u64 = counter + 1;
+                let ts = 0u32;
+                let mut plaintext = [0u8; 512];
+                let il = fsp_prepend_inner_header(ts, FSP_MSG_DATA, 0x00, data, &mut plaintext);
+                let hdr = build_fsp_header(send_ctr, 0x00, (il + crate::noise::TAG_SIZE) as u16);
+                let mut ct = [0u8; 512];
+                let cl =
+                    crate::noise::aead_encrypt(&k_send, send_ctr, &hdr, &plaintext[..il], &mut ct)
+                        .map_err(|_| FspHandlerError::DecryptFailed)?;
+                let fsp_total = FSP_HEADER_SIZE + cl;
+                let total = SESSION_DATAGRAM_BODY_SIZE + fsp_total;
+                if resp.len() < total {
+                    return Err(FspHandlerError::BufferTooSmall);
                 }
+                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&reply_body);
+                resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE]
+                    .copy_from_slice(&hdr);
+                resp[SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE
+                    ..SESSION_DATAGRAM_BODY_SIZE + fsp_total]
+                    .copy_from_slice(&ct[..cl]);
+                return Ok(FspHandlerResult::SendDatagram(total));
             }
             Ok(FspHandlerResult::None)
         }
