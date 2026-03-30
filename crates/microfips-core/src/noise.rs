@@ -1037,7 +1037,6 @@ mod tests {
     }
 }
 
-#[cfg(feature = "responder")]
 mod responder_pub {
     use super::*;
 
@@ -1210,7 +1209,6 @@ mod responder_pub {
     }
 }
 
-#[cfg(feature = "responder")]
 pub use responder_pub::NoiseIkResponder;
 
 #[cfg(test)]
@@ -1218,7 +1216,6 @@ mod responder_tests {
     use super::*;
 
     #[test]
-    #[cfg(feature = "responder")]
     fn noise_ik_full_handshake_simulation() {
         let initiator_eph_secret: [u8; 32] = [
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -1278,7 +1275,6 @@ mod responder_tests {
     }
 
     #[test]
-    #[cfg(feature = "responder")]
     fn noise_ik_msg2_size() {
         let initiator_eph_secret: [u8; 32] = [0x01; 32];
         let initiator_static_secret: [u8; 32] = [0x11; 32];
@@ -1314,7 +1310,6 @@ mod responder_tests {
     }
 
     #[test]
-    #[cfg(feature = "responder")]
     fn noise_ik_transport_keys_are_deterministic() {
         let initiator_eph_secret: [u8; 32] = [0x01; 32];
         let initiator_static_secret: [u8; 32] = [0x11; 32];
@@ -1381,7 +1376,6 @@ mod responder_tests {
     }
 
     #[test]
-    #[cfg(feature = "responder")]
     fn ik_se_uses_es_dh_inputs_intentionally() {
         // The Noise spec IK pattern says:
         //   initiator se = DH(s_initiator, re_responder)
