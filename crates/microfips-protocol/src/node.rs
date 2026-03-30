@@ -70,6 +70,7 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     rpos: usize,
     rlen: usize,
     resp_buf: [u8; 256],
+    raw_framing: bool,
 }
 
 impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
@@ -83,7 +84,19 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             rpos: 0,
             rlen: 0,
             resp_buf: [0u8; 256],
+            raw_framing: false,
         }
+    }
+
+    /// Enable or disable raw FMP framing mode.
+    ///
+    /// When enabled, frames are sent and received without the 2-byte LE length
+    /// prefix. Frame boundaries are determined from the 4-byte FMP common
+    /// prefix instead, matching the wire format used by FIPS's TCP transport.
+    /// Use this when connecting directly to a FIPS node over TCP without a
+    /// bridge or proxy.
+    pub fn set_raw_framing(&mut self, raw: bool) {
+        self.raw_framing = raw;
     }
 
     pub fn transport_mut(&mut self) -> &mut T {
@@ -196,25 +209,24 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     self.rlen += n;
 
                     while self.rpos < self.rlen {
-                        if self.rlen - self.rpos < 2 {
-                            break;
+                        let extracted = if self.raw_framing {
+                            extract_raw_frame(&self.rbuf, self.rpos, self.rlen)
+                        } else {
+                            extract_length_prefixed_frame(&self.rbuf, self.rpos, self.rlen)
+                        };
+                        let (frame_data, new_pos) = match extracted {
+                            Some(v) => v,
+                            None => break,
+                        };
+
+                        if frame_data.is_empty() {
+                            self.rpos = new_pos;
+                            continue;
                         }
-                        let ml =
-                            u16::from_le_bytes([self.rbuf[self.rpos], self.rbuf[self.rpos + 1]])
-                                as usize;
-                        if ml == 0 || ml > framing::MAX_FRAME {
-                            self.rpos = self.rlen;
-                            break;
-                        }
-                        if self.rlen - self.rpos - 2 < ml {
-                            break;
-                        }
-                        let s = self.rpos + 2;
-                        let e = s + ml;
 
                         let result =
-                            handle_frame_inner(kr, &self.rbuf[s..e], handler, &mut self.resp_buf);
-                        self.rpos = e;
+                            handle_frame_inner(kr, frame_data, handler, &mut self.resp_buf);
+                        self.rpos = new_pos;
 
                         match result {
                             FrameAction::Continue => {}
@@ -281,11 +293,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     }
 
     async fn send_frame(&mut self, payload: &[u8]) -> Result<(), ProtocolError> {
-        let hdr = (payload.len() as u16).to_le_bytes();
-        self.transport
-            .send(&hdr)
-            .await
-            .map_err(|_| ProtocolError::Disconnected)?;
+        if !self.raw_framing {
+            let hdr = (payload.len() as u16).to_le_bytes();
+            self.transport
+                .send(&hdr)
+                .await
+                .map_err(|_| ProtocolError::Disconnected)?;
+        }
         self.transport
             .send(payload)
             .await
@@ -297,58 +311,99 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         out: &mut [u8],
         timeout_ms: u32,
     ) -> Result<usize, ProtocolError> {
-        loop {
-            let need_more = if self.rpos < self.rlen {
-                if self.rlen - self.rpos < 2 {
-                    true
-                } else {
-                    let ml = u16::from_le_bytes([self.rbuf[self.rpos], self.rbuf[self.rpos + 1]])
-                        as usize;
-                    if ml == 0 || ml > framing::MAX_FRAME {
-                        self.rpos = self.rlen;
-                        true
-                    } else if self.rlen - self.rpos - 2 < ml {
-                        true
-                    } else {
-                        let s = self.rpos + 2;
-                        let e = s + ml;
-                        let l = ml.min(out.len());
-                        out[..l].copy_from_slice(&self.rbuf[s..s + l]);
-                        self.rpos = e;
-                        if self.rpos >= self.rlen {
-                            self.rpos = 0;
-                            self.rlen = 0;
-                        }
-                        return Ok(l);
-                    }
-                }
-            } else {
-                true
-            };
+        if self.raw_framing {
+            self.recv_frame_raw(out, timeout_ms).await
+        } else {
+            self.recv_frame_length_prefixed(out, timeout_ms).await
+        }
+    }
 
-            if need_more {
-                framing::compact(&mut self.rbuf, &mut self.rpos, &mut self.rlen);
-                let mut rx = [0u8; 256];
-                match select(
-                    self.transport.recv(&mut rx),
-                    Timer::after(Duration::from_millis(timeout_ms as u64)),
-                )
-                .await
-                {
-                    Either::First(Ok(n)) => {
-                        if self.rlen + n > self.rbuf.len() {
-                            self.rlen = 0;
-                            self.rpos = 0;
-                            continue;
-                        }
-                        self.rbuf[self.rlen..self.rlen + n].copy_from_slice(&rx[..n]);
-                        self.rlen += n;
-                    }
-                    Either::First(Err(_)) => {
-                        return Err(ProtocolError::Disconnected);
-                    }
-                    Either::Second(()) => return Err(ProtocolError::Timeout),
+    async fn recv_frame_length_prefixed(
+        &mut self,
+        out: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<usize, ProtocolError> {
+        loop {
+            if let Some((frame, new_pos)) =
+                extract_length_prefixed_frame(&self.rbuf, self.rpos, self.rlen)
+            {
+                self.rpos = new_pos;
+                if self.rpos >= self.rlen {
+                    self.rpos = 0;
+                    self.rlen = 0;
                 }
+                if frame.is_empty() {
+                    // Invalid length — skip and keep reading
+                    continue;
+                }
+                let l = frame.len().min(out.len());
+                out[..l].copy_from_slice(&frame[..l]);
+                return Ok(l);
+            }
+
+            framing::compact(&mut self.rbuf, &mut self.rpos, &mut self.rlen);
+            let mut rx = [0u8; 256];
+            match select(
+                self.transport.recv(&mut rx),
+                Timer::after(Duration::from_millis(timeout_ms as u64)),
+            )
+            .await
+            {
+                Either::First(Ok(n)) => {
+                    if self.rlen + n > self.rbuf.len() {
+                        self.rlen = 0;
+                        self.rpos = 0;
+                        continue;
+                    }
+                    self.rbuf[self.rlen..self.rlen + n].copy_from_slice(&rx[..n]);
+                    self.rlen += n;
+                }
+                Either::First(Err(_)) => {
+                    return Err(ProtocolError::Disconnected);
+                }
+                Either::Second(()) => return Err(ProtocolError::Timeout),
+            }
+        }
+    }
+
+    async fn recv_frame_raw(
+        &mut self,
+        out: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<usize, ProtocolError> {
+        loop {
+            if let Some((frame, new_pos)) = extract_raw_frame(&self.rbuf, self.rpos, self.rlen) {
+                let l = frame.len().min(out.len());
+                out[..l].copy_from_slice(&frame[..l]);
+                self.rpos = new_pos;
+                if self.rpos >= self.rlen {
+                    self.rpos = 0;
+                    self.rlen = 0;
+                }
+                return Ok(l);
+            }
+
+            framing::compact(&mut self.rbuf, &mut self.rpos, &mut self.rlen);
+            let mut rx = [0u8; 256];
+            match select(
+                self.transport.recv(&mut rx),
+                Timer::after(Duration::from_millis(timeout_ms as u64)),
+            )
+            .await
+            {
+                Either::First(Ok(n)) => {
+                    if self.rlen + n > self.rbuf.len() {
+                        self.rlen = 0;
+                        self.rpos = 0;
+                        continue;
+                    }
+                    self.rbuf[self.rlen..self.rlen + n].copy_from_slice(&rx[..n]);
+                    self.rlen += n;
+                }
+                Either::First(Err(_)) => {
+                    return Err(ProtocolError::Disconnected);
+                }
+                Either::Second(()) => return Err(ProtocolError::Timeout),
             }
         }
     }
@@ -405,6 +460,72 @@ enum FrameAction {
     HeartbeatRecv,
     PeerDC,
     SendDatagram(usize),
+}
+
+/// Determine the total wire size of a raw FMP frame from its 4-byte common prefix.
+///
+/// Returns `None` if fewer than 4 bytes are available, the prefix is invalid,
+/// or the computed total exceeds [`framing::MAX_FRAME`].
+fn fmp_raw_frame_size(data: &[u8]) -> Option<usize> {
+    use microfips_core::fmp;
+
+    let (phase, _flags, payload_len) = fmp::parse_prefix(data)?;
+    let payload_len = payload_len as usize;
+
+    // A zero-length payload is only valid for established-phase keep-alives
+    if payload_len == 0 && phase != fmp::PHASE_ESTABLISHED {
+        return None;
+    }
+
+    let total = fmp::COMMON_PREFIX_SIZE + payload_len;
+    if total > framing::MAX_FRAME {
+        return None;
+    }
+    Some(total)
+}
+
+/// Extract one complete length-prefixed frame from `buf[pos..len]`.
+///
+/// Returns `(frame_slice, new_pos)` where `frame_slice` is the payload
+/// (without the 2-byte header) and `new_pos` is the buffer position after
+/// the frame. Returns `None` if a complete frame is not yet available.
+fn extract_length_prefixed_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize)> {
+    let avail = len - pos;
+    if avail < 2 {
+        return None;
+    }
+    let ml = u16::from_le_bytes([buf[pos], buf[pos + 1]]) as usize;
+    if ml == 0 || ml > framing::MAX_FRAME {
+        // Invalid length — skip the 2-byte header to avoid deadlock
+        let skip = core::cmp::min(2, avail);
+        return Some((&buf[pos..pos], pos + skip));
+    }
+    if avail - 2 < ml {
+        return None;
+    }
+    let s = pos + 2;
+    let e = s + ml;
+    Some((&buf[s..e], e))
+}
+
+/// Extract one complete raw FMP frame from `buf[pos..len]`.
+///
+/// Returns `(frame_slice, new_pos)` where `frame_slice` is the full FMP frame
+/// (including the 4-byte common prefix) and `new_pos` is the buffer position
+/// after the frame. Returns `None` if a complete frame is not yet available.
+fn extract_raw_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize)> {
+    use microfips_core::fmp;
+
+    let avail = len - pos;
+    if avail < fmp::COMMON_PREFIX_SIZE {
+        return None;
+    }
+    let total = fmp_raw_frame_size(&buf[pos..len])?;
+    if avail < total {
+        return None;
+    }
+    let e = pos + total;
+    Some((&buf[pos..e], e))
 }
 
 #[cfg(test)]
@@ -778,5 +899,178 @@ mod tests {
             let result = node.handshake(&mut handler).await;
             assert_eq!(result, Err(ProtocolError::Timeout));
         });
+    }
+
+    // --- Tests for fmp_raw_frame_size ---
+
+    #[test]
+    fn test_fmp_raw_frame_size_valid_msg1() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 110);
+        assert_eq!(
+            fmp_raw_frame_size(&prefix),
+            Some(fmp::COMMON_PREFIX_SIZE + 110)
+        );
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_valid_established() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 84);
+        assert_eq!(
+            fmp_raw_frame_size(&prefix),
+            Some(fmp::COMMON_PREFIX_SIZE + 84)
+        );
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_truncated_prefix() {
+        assert_eq!(fmp_raw_frame_size(&[0x01, 0x00, 0x6e]), None);
+        assert_eq!(fmp_raw_frame_size(&[]), None);
+        assert_eq!(fmp_raw_frame_size(&[0x00]), None);
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_zero_payload_non_established() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 0);
+        assert_eq!(fmp_raw_frame_size(&prefix), None);
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_zero_payload_established() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 0);
+        assert_eq!(fmp_raw_frame_size(&prefix), Some(fmp::COMMON_PREFIX_SIZE));
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_exceeds_max() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 2000);
+        assert_eq!(fmp_raw_frame_size(&prefix), None);
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_max_boundary() {
+        use microfips_core::fmp;
+        let payload = (framing::MAX_FRAME - fmp::COMMON_PREFIX_SIZE) as u16;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, payload);
+        assert_eq!(fmp_raw_frame_size(&prefix), Some(framing::MAX_FRAME));
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_bad_version() {
+        let data = [0x50, 0x00, 0x00, 0x00];
+        assert_eq!(fmp_raw_frame_size(&data), None);
+    }
+
+    // --- Tests for extract_length_prefixed_frame ---
+
+    #[test]
+    fn test_extract_length_prefixed_complete() {
+        let mut buf = [0u8; 16];
+        let payload = b"hello";
+        buf[..2].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+        buf[2..2 + payload.len()].copy_from_slice(payload);
+        let (frame, pos) = extract_length_prefixed_frame(&buf, 0, 7).unwrap();
+        assert_eq!(frame, payload);
+        assert_eq!(pos, 7);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_incomplete() {
+        let buf = [0x05, 0x00, 0x68, 0x65];
+        assert_eq!(extract_length_prefixed_frame(&buf, 0, 4), None);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_zero_length() {
+        let buf = [0x00, 0x00, 0xFF, 0xFF];
+        let (frame, pos) = extract_length_prefixed_frame(&buf, 0, 4).unwrap();
+        assert!(frame.is_empty());
+        assert_eq!(pos, 2);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_exceeds_max() {
+        let buf = [
+            (framing::MAX_FRAME as u16 + 1).to_le_bytes()[0],
+            (framing::MAX_FRAME as u16 + 1).to_le_bytes()[1],
+            0x00,
+        ];
+        let (frame, pos) = extract_length_prefixed_frame(&buf, 0, 3).unwrap();
+        assert!(frame.is_empty());
+        assert_eq!(pos, 2);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_empty_buffer() {
+        assert_eq!(extract_length_prefixed_frame(&[], 0, 0), None);
+        assert_eq!(extract_length_prefixed_frame(&[0x05], 0, 1), None);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_multiple_frames() {
+        let mut buf = [0u8; 20];
+        buf[0..2].copy_from_slice(&3u16.to_le_bytes());
+        buf[2..5].copy_from_slice(b"abc");
+        buf[5..7].copy_from_slice(&2u16.to_le_bytes());
+        buf[7..9].copy_from_slice(b"xy");
+        let (frame, pos) = extract_length_prefixed_frame(&buf, 0, 9).unwrap();
+        assert_eq!(frame, b"abc");
+        assert_eq!(pos, 5);
+        let (frame2, pos2) = extract_length_prefixed_frame(&buf, pos, 9).unwrap();
+        assert_eq!(frame2, b"xy");
+        assert_eq!(pos2, 9);
+    }
+
+    // --- Tests for extract_raw_frame ---
+
+    #[test]
+    fn test_extract_raw_frame_complete() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 10);
+        let mut buf = [0u8; 32];
+        buf[..4].copy_from_slice(&prefix);
+        buf[4..14].fill(0xAA);
+        let (frame, pos) = extract_raw_frame(&buf, 0, 14).unwrap();
+        assert_eq!(frame.len(), 14);
+        assert_eq!(frame[..4], prefix);
+        assert_eq!(pos, 14);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_truncated_prefix() {
+        let buf = [0x00, 0x00, 0x34];
+        assert_eq!(extract_raw_frame(&buf, 0, 3), None);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_partial_payload() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 100);
+        let mut buf = [0u8; 32];
+        buf[..4].copy_from_slice(&prefix);
+        buf[4..].fill(0xBB);
+        assert_eq!(extract_raw_frame(&buf, 0, 32), None);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_empty_buffer() {
+        assert_eq!(extract_raw_frame(&[], 0, 0), None);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_mid_buffer() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 65);
+        let mut buf = [0u8; 128];
+        buf[10..14].copy_from_slice(&prefix);
+        buf[14..14 + 65].fill(0xCC);
+        let (frame, pos) = extract_raw_frame(&buf, 10, 79).unwrap();
+        assert_eq!(frame.len(), 69);
+        assert_eq!(frame[..4], prefix);
+        assert_eq!(pos, 79);
     }
 }
