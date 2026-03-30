@@ -11,11 +11,10 @@ use rand::RngCore;
 fn make_session_datagram_body(src: &[u8; 16], dst: &[u8; 16]) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
     let mut body = [0u8; SESSION_DATAGRAM_BODY_SIZE];
     body[0] = 64;
-    body[1] = 0x00;
-    body[2] = 1400u16.to_le_bytes()[0];
-    body[3] = 1400u16.to_le_bytes()[1];
-    body[4..20].copy_from_slice(src);
-    body[20..36].copy_from_slice(dst);
+    body[1] = 1400u16.to_le_bytes()[0];
+    body[2] = 1400u16.to_le_bytes()[1];
+    body[3..19].copy_from_slice(src);
+    body[19..35].copy_from_slice(dst);
     body
 }
 

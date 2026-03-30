@@ -10,4 +10,7 @@ microfips-protocol = { path = "../microfips-protocol", features = ["std"] }
 embassy-executor = { version = "0.10.0", features = ["platform-std", "executor-thread"] }
 embassy-time = { version = "0.5.1", features = ["std"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+rand = "0.9"
 hex = "0.4"
+k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
+bech32 = "0.11"

@@ -56,6 +56,7 @@ const RECV_TIMEOUT_MS: u64 = 30_000;
 const RETRY_SECS: u64 = 3;
 const CONNECT_DELAY_MS: u64 = 500;
 const FSP_START_DELAY_SECS: u64 = 5;
+const FSP_RETRY_SECS: u64 = 8;
 const FSP_EPOCH: [u8; 8] = [0x02, 0, 0, 0, 0, 0, 0, 0];
 
 #[used]
@@ -227,15 +228,15 @@ async fn recv_frame(
 
 fn send_fsp_datagram_frame(
     sender_idx: u32,
-    fmp_ctr: &mut u64,
+    ctr: &mut u64,
     dg_body: &[u8; SESSION_DATAGRAM_BODY_SIZE],
     fsp_payload: &[u8],
     ik_k_send: &[u8; 32],
     out: &mut [u8],
 ) -> Option<usize> {
     let ts = embassy_time::Instant::now().as_millis() as u32;
-    let c = *fmp_ctr;
-    *fmp_ctr += 1;
+    let c = *ctr;
+    *ctr += 1;
 
     let mut dg = [0u8; 256];
     dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(dg_body);
@@ -313,8 +314,8 @@ async fn session(
 
     let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
     let mut fsp_start = embassy_time::Instant::now() + Duration::from_secs(FSP_START_DELAY_SECS);
+    let mut fsp_retry = embassy_time::Instant::now() + Duration::from_secs(FSP_START_DELAY_SECS + FSP_RETRY_SECS);
     let mut send_ctr: u64 = 0;
-    let mut fmp_ctr: u64 = 0;
     let mut fsp_ctr: u64 = 0;
     let mut rpos: usize = 0;
     let mut rlen: usize = 0;
@@ -326,7 +327,7 @@ async fn session(
     loop {
         let mut rx = [0u8; 256];
         let rx_fut = transport.recv(&mut rx);
-        let hb_fut = Timer::at(next_hb.min(fsp_start));
+        let hb_fut = Timer::at(next_hb.min(fsp_start).min(fsp_retry));
 
         match select(rx_fut, hb_fut).await {
             Either::First(Ok(n)) => {
@@ -395,7 +396,7 @@ async fn session(
                                             payload,
                                             &dg_body,
                                             sender_idx,
-                                            &mut fmp_ctr,
+                                            &mut send_ctr,
                                             &mut fsp_ctr,
                                             &ks,
                                             transport,
@@ -421,20 +422,29 @@ async fn session(
                         if fsp.state() == FspInitiatorState::Established {
                             do_send_ping(
                                 transport, fsp, &dg_body, sender_idx,
-                                &mut fmp_ctr, &mut fsp_ctr, &ks,
+                                &mut send_ctr, &mut fsp_ctr, &ks,
                             ).await;
+                        }
+                    }
+                }
+                if now >= fsp_retry {
+                    fsp_retry = embassy_time::Instant::now() + Duration::from_secs(FSP_RETRY_SECS);
+                    if let Some(ref mut fsp) = handler.fsp {
+                        if fsp.state() == FspInitiatorState::AwaitingAck {
+                            fsp.reset();
                         }
                     }
                 }
                 if now >= fsp_start {
                     fsp_start = embassy_time::Instant::now() + Duration::from_secs(3600);
+                    fsp_retry = embassy_time::Instant::now() + Duration::from_secs(FSP_RETRY_SECS);
                     if let Some(ref mut fsp) = handler.fsp {
                         if fsp.state() == FspInitiatorState::Idle {
                             do_fsp_setup(
                                 fsp,
                                 &dg_body,
                                 sender_idx,
-                                &mut fmp_ctr,
+                                &mut send_ctr,
                                 &ks,
                                 transport,
                             ).await;
@@ -455,20 +465,29 @@ async fn session(
                         if fsp.state() == FspInitiatorState::Established {
                             do_send_ping(
                                 transport, fsp, &dg_body, sender_idx,
-                                &mut fmp_ctr, &mut fsp_ctr, &ks,
+                                &mut send_ctr, &mut fsp_ctr, &ks,
                             ).await;
+                        }
+                    }
+                }
+                if now >= fsp_retry {
+                    fsp_retry = embassy_time::Instant::now() + Duration::from_secs(FSP_RETRY_SECS);
+                    if let Some(ref mut fsp) = handler.fsp {
+                        if fsp.state() == FspInitiatorState::AwaitingAck {
+                            fsp.reset();
                         }
                     }
                 }
                 if now >= fsp_start {
                     fsp_start = embassy_time::Instant::now() + Duration::from_secs(3600);
+                    fsp_retry = embassy_time::Instant::now() + Duration::from_secs(FSP_RETRY_SECS);
                     if let Some(ref mut fsp) = handler.fsp {
                         if fsp.state() == FspInitiatorState::Idle {
                             do_fsp_setup(
                                 fsp,
                                 &dg_body,
                                 sender_idx,
-                                &mut fmp_ctr,
+                                &mut send_ctr,
                                 &ks,
                                 transport,
                             ).await;
@@ -484,7 +503,7 @@ async fn do_fsp_setup(
     fsp: &mut FspInitiatorSession,
     dg_body: &[u8; SESSION_DATAGRAM_BODY_SIZE],
     sender_idx: u32,
-    fmp_ctr: &mut u64,
+    ctr: &mut u64,
     ik_k_send: &[u8; 32],
     transport: &mut UartTransport,
 ) {
@@ -504,14 +523,14 @@ async fn do_fsp_setup(
     let mut fmp_out = [0u8; 1024];
     if let Some(fmp_len) = fmp::build_established(
         sender_idx,
-        *fmp_ctr,
+        *ctr,
         fmp::MSG_SESSION_DATAGRAM,
         embassy_time::Instant::now().as_millis() as u32,
         &dg[..dg_len],
         ik_k_send,
         &mut fmp_out,
     ) {
-        *fmp_ctr += 1;
+        *ctr += 1;
         let _ = send_frame(transport, &fmp_out[..fmp_len]).await;
     }
 }
@@ -521,7 +540,7 @@ async fn handle_incoming_fsp(
     payload: &[u8],
     dg_body: &[u8; SESSION_DATAGRAM_BODY_SIZE],
     sender_idx: u32,
-    fmp_ctr: &mut u64,
+    ctr: &mut u64,
     _fsp_ctr: &mut u64,
     ik_k_send: &[u8; 32],
     transport: &mut UartTransport,
@@ -546,7 +565,7 @@ async fn handle_incoming_fsp(
                         let mut fmp_out = [0u8; 1024];
                         if let Some(fmp_len) = send_fsp_datagram_frame(
                             sender_idx,
-                            fmp_ctr,
+                            ctr,
                             dg_body,
                             &msg3_buf[..msg3_len],
                             ik_k_send,
@@ -612,7 +631,7 @@ async fn do_send_ping(
     fsp: &FspInitiatorSession,
     dg_body: &[u8; SESSION_DATAGRAM_BODY_SIZE],
     sender_idx: u32,
-    fmp_ctr: &mut u64,
+    ctr: &mut u64,
     fsp_ctr: &mut u64,
     ik_k_send: &[u8; 32],
 ) {
@@ -644,7 +663,7 @@ async fn do_send_ping(
     let mut fmp_out = [0u8; 1024];
     if let Some(fmp_len) = send_fsp_datagram_frame(
         sender_idx,
-        fmp_ctr,
+        ctr,
         dg_body,
         fsp_payload,
         ik_k_send,

@@ -52,10 +52,9 @@ fn resp_addr() -> NodeAddr {
 fn session_datagram_body(src: &NodeAddr, dst: &NodeAddr) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
     let mut body = [0u8; SESSION_DATAGRAM_BODY_SIZE];
     body[0] = 64;
-    body[1] = 0x00;
-    body[2..4].copy_from_slice(&1400u16.to_le_bytes());
-    body[4..20].copy_from_slice(src.as_bytes());
-    body[20..36].copy_from_slice(dst.as_bytes());
+    body[1..3].copy_from_slice(&1400u16.to_le_bytes());
+    body[3..19].copy_from_slice(src.as_bytes());
+    body[19..35].copy_from_slice(dst.as_bytes());
     body
 }
 
@@ -165,11 +164,10 @@ fn test_session_datagram_body_format() {
     let body = session_datagram_body(&src, &dst);
 
     assert_eq!(body[0], 64, "TTL should be 64");
-    assert_eq!(body[1], 0x00, "padding byte");
-    let mtu = u16::from_le_bytes([body[2], body[3]]);
+    let mtu = u16::from_le_bytes([body[1], body[2]]);
     assert_eq!(mtu, 1400, "MTU should be 1400");
-    assert_eq!(&body[4..20], src.as_bytes(), "src addr at bytes 4-19");
-    assert_eq!(&body[20..36], dst.as_bytes(), "dst addr at bytes 20-35");
+    assert_eq!(&body[3..19], src.as_bytes(), "src addr at bytes 3-18");
+    assert_eq!(&body[19..35], dst.as_bytes(), "dst addr at bytes 19-34");
     assert_eq!(body.len(), SESSION_DATAGRAM_BODY_SIZE);
 }
 
@@ -365,10 +363,10 @@ fn test_build_session_datagram_body_matches_manual() {
     assert_eq!(body, manual);
     assert_eq!(body.len(), SESSION_DATAGRAM_BODY_SIZE);
     assert_eq!(body[0], 64);
-    let mtu = u16::from_le_bytes([body[2], body[3]]);
+    let mtu = u16::from_le_bytes([body[1], body[2]]);
     assert_eq!(mtu, 1400);
-    assert_eq!(&body[4..20], src.as_bytes());
-    assert_eq!(&body[20..36], dst.as_bytes());
+    assert_eq!(&body[3..19], src.as_bytes());
+    assert_eq!(&body[19..35], dst.as_bytes());
 }
 
 #[test]

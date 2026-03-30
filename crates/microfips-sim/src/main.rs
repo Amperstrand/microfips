@@ -1,27 +1,76 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
+use k256::SecretKey;
+use rand::RngCore;
 
-use microfips_core::identity::{load_peer_pub, load_secret};
+use microfips_core::fmp;
+use microfips_core::fsp::{
+    self, FspInitiatorSession, FspInitiatorState, FspSession,
+    SESSION_DATAGRAM_BODY_SIZE,
+};
+use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::Transport;
 
 // ---------------------------------------------------------------------------
-// SimTransport: wraps TCP or stdio for the protocol crate's Transport trait.
-//
-// A background reader thread pumps bytes from the underlying Read source into
-// a shared VecDeque. Transport::recv polls the buffer, yielding to the
-// embassy executor when no data is available. This lets Node's select-based
-// steady-state loop interleave recv with heartbeat timers.
+// UdpTransport: raw FMP over UDP (no length-prefix framing)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-#[allow(dead_code)] // Io variant's inner field is used via Debug trait (Transport::Error: Debug)
+enum UdpError {
+    Io(std::io::Error),
+}
+
+struct UdpTransport {
+    socket: UdpSocket,
+    peer: std::net::SocketAddr,
+}
+
+impl UdpTransport {
+    fn new(peer: std::net::SocketAddr) -> Self {
+        let socket = UdpSocket::bind("0.0.0.0:0").expect("UDP bind failed");
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(120))).ok();
+        Self { socket, peer }
+    }
+}
+
+impl Transport for UdpTransport {
+    type Error = UdpError;
+
+    async fn wait_ready(&mut self) -> Result<(), UdpError> {
+        Ok(())
+    }
+
+    async fn send(&mut self, data: &[u8]) -> Result<(), UdpError> {
+        self.socket.send_to(data, self.peer).map_err(UdpError::Io)?;
+        Ok(())
+    }
+
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, UdpError> {
+        loop {
+            match self.socket.recv_from(buf) {
+                Ok((n, _addr)) => return Ok(n),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    Timer::after(Duration::from_millis(1)).await;
+                }
+                Err(e) => return Err(UdpError::Io(e)),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SimTransport: TCP/stdio for the protocol crate's Transport trait.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+#[allow(dead_code)]
 enum SimError {
     Io(std::io::Error),
     Eof,
@@ -38,8 +87,6 @@ struct SimTransport {
     rx: Arc<Mutex<VecDeque<u8>>>,
     writer: Option<Box<dyn Write + Send>>,
     eof: Arc<AtomicBool>,
-    /// Kept to shut down old TCP connections before reconnecting, which
-    /// unblocks the reader thread so it can exit cleanly.
     shutdown_handle: Option<TcpStream>,
 }
 
@@ -86,14 +133,11 @@ impl Transport for SimTransport {
     type Error = SimError;
 
     async fn wait_ready(&mut self) -> Result<(), SimError> {
-        // Shut down previous TCP connection so the old reader thread exits.
         if let Some(old) = self.shutdown_handle.take() {
             let _ = old.shutdown(std::net::Shutdown::Both);
         }
-
         match &self.connector {
             SimConnector::Listen(listener) => {
-                // Fresh buffers per session to avoid races with the old reader.
                 self.rx = Arc::new(Mutex::new(VecDeque::new()));
                 self.eof = Arc::new(AtomicBool::new(false));
                 let (stream, addr) = listener.accept().map_err(SimError::Io)?;
@@ -113,7 +157,6 @@ impl Transport for SimTransport {
                     self.spawn_reader(std::io::stdin());
                     self.writer = Some(Box::new(std::io::stdout()));
                 } else {
-                    // Stdio can't truly reconnect; clear stale data and retry.
                     self.rx.lock().unwrap().clear();
                     self.eof.store(false, Ordering::Relaxed);
                 }
@@ -150,31 +193,329 @@ impl Transport for SimTransport {
 }
 
 // ---------------------------------------------------------------------------
-// SimHandler: bridges protocol events to stderr logging
+// LeafHandler: FSP responder (same role as STM32 firmware)
 // ---------------------------------------------------------------------------
 
-struct SimHandler;
+struct LeafHandler {
+    fsp_session: FspSession,
+    fsp_ephemeral: [u8; 32],
+    fsp_epoch: [u8; 8],
+}
 
-impl NodeHandler for SimHandler {
+impl LeafHandler {
+    fn new() -> Self {
+        let mut eph = [0u8; 32];
+        rand::rng().fill_bytes(&mut eph);
+        Self {
+            fsp_session: FspSession::new(),
+            fsp_ephemeral: eph,
+            fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
+        }
+    }
+}
+
+impl NodeHandler for LeafHandler {
     async fn on_event(&mut self, event: NodeEvent) {
         match event {
-            NodeEvent::Connected => eprintln!("[SIM] transport ready"),
-            NodeEvent::Msg1Sent => eprintln!("[SIM] MSG1 sent"),
-            NodeEvent::HandshakeOk => eprintln!("[SIM] handshake complete!"),
-            NodeEvent::HeartbeatSent => eprintln!("[SIM] sent heartbeat"),
-            NodeEvent::HeartbeatRecv => eprintln!("[SIM] received heartbeat"),
-            NodeEvent::Disconnected => eprintln!("[SIM] session ended"),
-            NodeEvent::Error => eprintln!("[SIM] handshake error"),
+            NodeEvent::Connected => eprintln!("[LEAF] transport ready"),
+            NodeEvent::Msg1Sent => eprintln!("[LEAF] MSG1 sent"),
+            NodeEvent::HandshakeOk => {
+                self.fsp_session.reset();
+                self.fsp_epoch = [0x01, 0, 0, 0, 0, 0, 0, 0];
+                eprintln!("[LEAF] handshake complete (FSP responder ready)")
+            }
+            NodeEvent::HeartbeatSent => {}
+            NodeEvent::HeartbeatRecv => {}
+            NodeEvent::Disconnected => eprintln!("[LEAF] session ended, reconnecting"),
+            NodeEvent::Error => eprintln!("[LEAF] handshake error, retrying"),
         }
     }
 
-    fn on_message(&mut self, msg_type: u8, payload: &[u8], _resp: &mut [u8]) -> HandleResult {
-        eprintln!(
-            "[SIM] received msg type 0x{:02x}, {}B payload",
-            msg_type,
-            payload.len()
-        );
+    fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
+        if msg_type != fmp::MSG_SESSION_DATAGRAM {
+            return HandleResult::None;
+        }
+        match fsp::handle_fsp_datagram(
+            &mut self.fsp_session,
+            &std::env::var("FIPS_SECRET")
+                .ok()
+                .and_then(|s| hex::decode(&s).ok())
+                .and_then(|b| b.try_into().ok())
+                .unwrap_or_default(),
+            &self.fsp_ephemeral,
+            &self.fsp_epoch,
+            payload,
+            resp,
+        ) {
+            Ok(fsp::FspHandlerResult::None) => HandleResult::None,
+            Ok(fsp::FspHandlerResult::SendDatagram(len)) => {
+                eprintln!("[LEAF] sending {}B response", len);
+                HandleResult::SendDatagram(len)
+            }
+            Err(e) => {
+                eprintln!("[LEAF] FSP error: {:?}", e);
+                HandleResult::None
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FspInitiatorHandler: FSP initiator (same role as ESP32 firmware)
+// ---------------------------------------------------------------------------
+
+const FSP_START_DELAY_SECS: u64 = 5;
+const FSP_RETRY_SECS: u64 = 8;
+
+struct FspInitiatorHandler {
+    fsp: Option<FspInitiatorSession>,
+    fsp_timer: Option<Instant>,
+    target_addr: [u8; 16],
+    my_addr: [u8; 16],
+}
+
+impl FspInitiatorHandler {
+    fn new(target_addr: [u8; 16], my_addr: [u8; 16]) -> Self {
+        Self {
+            fsp: None,
+            fsp_timer: None,
+            target_addr,
+            my_addr,
+        }
+    }
+
+    fn ensure_fsp(&mut self, secret: &[u8; 32], peer_pub: &[u8; 33]) {
+        if self.fsp.is_none() {
+            let mut fsp_eph = [0u8; 32];
+            rand::rng().fill_bytes(&mut fsp_eph);
+            self.fsp = FspInitiatorSession::new(secret, &fsp_eph, peer_pub).ok();
+        }
+    }
+}
+
+impl NodeHandler for FspInitiatorHandler {
+    async fn on_event(&mut self, event: NodeEvent) {
+        match event {
+            NodeEvent::Connected => eprintln!("[INIT] transport ready"),
+            NodeEvent::Msg1Sent => eprintln!("[INIT] MSG1 sent"),
+            NodeEvent::HandshakeOk => {
+                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_START_DELAY_SECS));
+                eprintln!(
+                    "[INIT] handshake complete, FSP setup in {}s",
+                    FSP_START_DELAY_SECS
+                )
+            }
+            NodeEvent::HeartbeatSent => {}
+            NodeEvent::HeartbeatRecv => {}
+            NodeEvent::Disconnected => {
+                self.fsp = None;
+                self.fsp_timer = None;
+                eprintln!("[INIT] session ended, reconnecting")
+            }
+            NodeEvent::Error => {
+                self.fsp = None;
+                self.fsp_timer = None;
+                eprintln!("[INIT] handshake error, retrying")
+            }
+        }
+    }
+
+    fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
+        if msg_type != fmp::MSG_SESSION_DATAGRAM {
+            return HandleResult::None;
+        }
+        let fsp = match &mut self.fsp {
+            Some(f) => f,
+            None => return HandleResult::None,
+        };
+        if payload.len() < SESSION_DATAGRAM_BODY_SIZE {
+            return HandleResult::None;
+        }
+        let fsp_data = &payload[SESSION_DATAGRAM_BODY_SIZE..];
+        if fsp_data.is_empty() {
+            return HandleResult::None;
+        }
+        let fsp_phase = fsp_data[0] & 0x0F;
+
+        match fsp.state() {
+            FspInitiatorState::AwaitingAck => {
+                if fsp_phase == 0x02 {
+                    if fsp.handle_ack(fsp_data).is_ok() {
+                        eprintln!("[INIT] FSP ACK received");
+                        let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
+                        let mut msg3_buf = [0u8; 512];
+                        if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
+                            eprintln!("[INIT] FSP established! Sending MSG3");
+                            let dg_body = fsp::build_session_datagram_body(
+                                &self.my_addr,
+                                &self.target_addr,
+                            );
+                            let mut out = [0u8; 1024];
+                            let mut dg = [0u8; 1024];
+                            dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                            dg[SESSION_DATAGRAM_BODY_SIZE
+                                ..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+                                .copy_from_slice(&msg3_buf[..msg3_len]);
+                            let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
+                            let inner = fsp::fsp_prepend_inner_header(
+                                0,
+                                fsp::FSP_MSG_DATA,
+                                0x00,
+                                &dg[..dg_len],
+                                &mut out,
+                            );
+                            resp[..inner].copy_from_slice(&out[..inner]);
+                            return HandleResult::SendDatagram(inner);
+                        }
+                    }
+                }
+            }
+            FspInitiatorState::AwaitingEstablished => {
+                eprintln!("[INIT] FSP fully established!");
+                self.fsp_timer = Some(Instant::now() + Duration::from_secs(2));
+            }
+            FspInitiatorState::Established => {
+                if fsp_phase == 0x00 {
+                    let Some((flags, counter, header, encrypted)) =
+                        fsp::parse_fsp_encrypted_header(fsp_data)
+                    else {
+                        return HandleResult::None;
+                    };
+                    if flags & fsp::FLAG_UNENCRYPTED != 0 {
+                        return HandleResult::None;
+                    }
+                    let (_k_recv, k_send) = match fsp.session_keys() {
+                        Some(keys) => keys,
+                        None => return HandleResult::None,
+                    };
+                    let mut dec = [0u8; 512];
+                    if let Ok(dl) =
+                        noise::aead_decrypt(&k_send, counter, header, encrypted, &mut dec)
+                    {
+                        if let Some((_ts, _mt, _flags, inner_payload)) =
+                            fsp::fsp_strip_inner_header(&dec[..dl])
+                        {
+                            if inner_payload == b"PONG" {
+                                eprintln!("[INIT] *** PONG received from target! ***");
+                            } else {
+                                eprintln!(
+                                    "[INIT] FSP data: {}B: {:?}",
+                                    inner_payload.len(),
+                                    &inner_payload[..inner_payload.len().min(64)]
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
         HandleResult::None
+    }
+
+    fn poll_at(&self) -> Option<Instant> {
+        self.fsp_timer
+    }
+
+    fn on_tick(&mut self, resp: &mut [u8]) -> HandleResult {
+        let fsp = match &mut self.fsp {
+            Some(f) => f,
+            None => return HandleResult::None,
+        };
+
+        match fsp.state() {
+            FspInitiatorState::Idle => {
+                let dg_body = fsp::build_session_datagram_body(
+                    &self.my_addr,
+                    &self.target_addr,
+                );
+                let mut setup_buf = [0u8; 512];
+                let setup_len =
+                    match fsp.build_setup(&self.my_addr, &self.target_addr, &mut setup_buf)
+                    {
+                        Ok(l) => l,
+                        Err(_) => return HandleResult::None,
+                    };
+                eprintln!(
+                    "[INIT] Sending FSP SessionSetup ({}B) to {}",
+                    setup_len,
+                    hex::encode(&self.target_addr)
+                );
+                let mut out = [0u8; 1024];
+                let mut dg = [0u8; 1024];
+                dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                dg[SESSION_DATAGRAM_BODY_SIZE
+                    ..SESSION_DATAGRAM_BODY_SIZE + setup_len]
+                    .copy_from_slice(&setup_buf[..setup_len]);
+                let dg_len = SESSION_DATAGRAM_BODY_SIZE + setup_len;
+                let inner = fsp::fsp_prepend_inner_header(
+                    0,
+                    fsp::FSP_MSG_DATA,
+                    0x00,
+                    &dg[..dg_len],
+                    &mut out,
+                );
+                resp[..inner].copy_from_slice(&out[..inner]);
+                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                HandleResult::SendDatagram(inner)
+            }
+            FspInitiatorState::AwaitingAck => {
+                eprintln!("[INIT] FSP ACK timeout, resetting session");
+                fsp.reset();
+                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                HandleResult::None
+            }
+            FspInitiatorState::AwaitingEstablished => {
+                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                HandleResult::None
+            }
+            FspInitiatorState::Established => {
+                let dg_body = fsp::build_session_datagram_body(
+                    &self.my_addr,
+                    &self.target_addr,
+                );
+                let (_k_recv, k_send) = fsp.session_keys().unwrap();
+                let ping = b"PING";
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u32;
+                let mut plaintext = [0u8; 512];
+                let inner = fsp::fsp_prepend_inner_header(
+                    ts,
+                    fsp::FSP_MSG_DATA,
+                    0x00,
+                    ping,
+                    &mut plaintext,
+                );
+                let header = fsp::build_fsp_header(0, 0x00, (inner + noise::TAG_SIZE) as u16);
+                let mut ciphertext = [0u8; 512];
+                let cl = noise::aead_encrypt(
+                    &k_send, 0, &header, &plaintext[..inner], &mut ciphertext,
+                )
+                .unwrap();
+                let mut pkt = [0u8; 512];
+                fsp::build_fsp_encrypted(&header, &ciphertext[..cl], &mut pkt);
+                let fsp_payload = &pkt[..fsp::FSP_HEADER_SIZE + cl];
+                let mut dg = [0u8; 1024];
+                dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                dg[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp_payload.len()]
+                    .copy_from_slice(fsp_payload);
+                let dg_len = SESSION_DATAGRAM_BODY_SIZE + fsp_payload.len();
+                let mut out = [0u8; 1024];
+                let inner = fsp::fsp_prepend_inner_header(
+                    0,
+                    fsp::FSP_MSG_DATA,
+                    0x00,
+                    &dg[..dg_len],
+                    &mut out,
+                );
+                resp[..inner].copy_from_slice(&out[..inner]);
+                eprintln!("[INIT] Sent PING to target");
+                self.fsp_timer = Some(Instant::now() + Duration::from_secs(10));
+                HandleResult::SendDatagram(inner)
+            }
+        }
     }
 }
 
@@ -189,8 +530,6 @@ where
     use embassy_executor::Executor;
     use std::pin::Pin;
 
-    // Intentional leak: this is called exactly once from main() and the executor
-    // must live for the program's duration (Node::run never returns).
     let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
 
     let result: Arc<Mutex<Option<F::Output>>> = Arc::new(Mutex::new(None));
@@ -221,59 +560,149 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Hardcoded leaf node identities
 // ---------------------------------------------------------------------------
+
+const SIM_A_SECRET: [u8; 32] = [
+    0x52, 0xdc, 0xb8, 0xd0, 0xe3, 0xcc, 0xbe, 0x0d, 0x1b, 0x4f, 0x09, 0xb3, 0x3a, 0x5a, 0x0a, 0x9f,
+    0xae, 0x64, 0xd5, 0x92, 0x15, 0x9a, 0x89, 0xbb, 0xd7, 0x26, 0x4c, 0xe2, 0x08, 0x06, 0xd0, 0x63,
+];
+// SIM_A npub: npub1k486esk968zm20gut4mlzes4qemtz0va7hlaruw0wv3u22dquc5qdpvtje
+// SIM_A node_addr: b54facc2c5d1c5b53d1c5d77f1661506
+
+const SIM_B_SECRET: [u8; 32] = [
+    0xa9, 0x3b, 0x91, 0xb5, 0x3f, 0x16, 0x0c, 0x35, 0x05, 0xb0, 0xce, 0xbf, 0x28, 0xb7, 0x46, 0x6c,
+    0xf7, 0x19, 0xe4, 0x73, 0xac, 0x6e, 0xb6, 0x01, 0x00, 0xa3, 0xb7, 0x35, 0x25, 0x45, 0x54, 0x89,
+];
+// SIM_B npub: npub15nrjlckjekyv373tjuj93f4mhwsl42tgtwscukpv8z68t3knze8sgmqsph
+// SIM_B node_addr: a4c72fe2d2cd88c8fa2b972458a6bbbb
+
+const SIM_A_TARGET: [u8; 16] = [
+    0xb5, 0x4f, 0xac, 0xc2, 0xc5, 0xd1, 0xc5, 0xb5, 0x3d, 0x1c, 0x5d, 0x77, 0xf1, 0x66, 0x15, 0x06,
+];
+
+const SIM_B_TARGET: [u8; 16] = [
+    0xa4, 0xc7, 0x2f, 0xe2, 0xd2, 0xcd, 0x88, 0xc8, 0xfa, 0x2b, 0x97, 0x24, 0x58, 0xa6, 0xbb, 0xbb,
+];
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+fn keygen() {
+    let mut rng = rand::rng();
+    let mut secret = [0u8; 32];
+    rng.fill_bytes(&mut secret);
+    let _ = SecretKey::from_slice(&secret).expect("invalid key");
+    let pubkey = noise::ecdh_pubkey(&secret).expect("pubkey failed");
+    println!("FIPS_SECRET={}", hex::encode(secret));
+    println!("FIPS_PUB={}", hex::encode(pubkey));
+    let pub_normalized = noise::parity_normalize(&pubkey);
+    let x_only = &pub_normalized[1..];
+    let addr = NodeAddr::from_pubkey_x(x_only.try_into().unwrap());
+    println!("NODE_ADDR={}", hex::encode(addr.as_bytes()));
+}
+
+fn print_usage() {
+    eprintln!("Usage:");
+    eprintln!("  microfips-sim --keygen");
+    eprintln!("  microfips-sim --udp <fips_addr:port> [--initiator --target <node_addr_hex>]");
+    eprintln!("  microfips-sim --sim-a                  Use hardcoded SIM-A identity (responder)");
+    eprintln!("  microfips-sim --sim-b                  Use hardcoded SIM-B identity (initiator→SIM-A)");
+    eprintln!();
+    eprintln!("Environment variables:");
+    eprintln!("  FIPS_SECRET   64 hex chars (identity secret key, fallback)");
+    eprintln!("  FIPS_PEER_PUB  66 hex chars (peer's compressed pubkey, fallback)");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --udp <addr>    Connect directly to FIPS via UDP (no bridge needed)");
+    eprintln!("  --initiator    Act as FSP initiator (default: responder)");
+    eprintln!("  --target <hex> Target NodeAddr for FSP session (16 bytes hex)");
+    eprintln!("  --keygen       Generate a new keypair and print env vars");
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let mut listen_port: Option<u16> = None;
-    let mut tcp_addr: Option<String> = None;
-    let mut raw_framing = false;
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--listen" {
-            i += 1;
-            listen_port = args.get(i).and_then(|s| s.parse().ok());
-        } else if args[i] == "--raw" {
-            raw_framing = true;
-        } else if args[i] != "--" {
-            tcp_addr = Some(args[i].clone());
-        }
-        i += 1;
+
+    if args.iter().any(|a| a == "--keygen") {
+        keygen();
+        return;
     }
 
-    let secret = load_secret();
-    let peer_pub = load_peer_pub();
-    let my_pub = noise::ecdh_pubkey(&secret).unwrap();
-    eprintln!("[SIM] microfips simulator starting");
-    eprintln!("[SIM] local pubkey: {}", hex::encode(my_pub));
-    eprintln!("[SIM] peer pubkey:  {}", hex::encode(peer_pub));
-    if raw_framing {
-        eprintln!("[SIM] framing: raw FMP (direct FIPS TCP connection, no bridge needed)");
+    if args.len() < 3 || args.get(1).map(|a| a.as_str()) != Some("--udp") {
+        print_usage();
+        std::process::exit(1);
     }
 
-    let transport = if let Some(port) = listen_port {
-        eprintln!("[SIM] mode: listen, port: {}", port);
-        let listener = TcpListener::bind(("0.0.0.0", port)).expect("failed to listen");
-        eprintln!("[SIM] listening on 0.0.0.0:{}", port);
-        SimTransport::new(SimConnector::Listen(listener))
-    } else if let Some(addr) = tcp_addr {
-        eprintln!("[SIM] mode: tcp, target: {}", addr);
-        SimTransport::new(SimConnector::Connect(addr))
+    let fips_addr = args.get(2).expect("--udp requires an address");
+    let use_sim_a = args.iter().any(|a| a == "--sim-a");
+    let use_sim_b = args.iter().any(|a| a == "--sim-b");
+    let is_initiator = args.iter().any(|a| a == "--initiator") || use_sim_b;
+    let target_arg = args
+        .iter()
+        .position(|a| a == "--target")
+        .and_then(|i| args.get(i + 1));
+
+    let target_addr = if use_sim_b {
+        SIM_A_TARGET
     } else {
-        eprintln!("[SIM] mode: stdio (reading from stdin, writing to stdout)");
-        eprintln!("[SIM] usage: microfips-sim [--raw] [--listen PORT | tcp_addr]");
-        SimTransport::new(SimConnector::Stdio)
+        match target_arg {
+            Some(hex_str) => match hex::decode(hex_str) {
+                Ok(bytes) if bytes.len() == 16 => {
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    eprintln!("ERROR: --target must be 16 bytes (32 hex chars)");
+                    std::process::exit(1);
+                }
+            },
+            None if is_initiator => {
+                eprintln!("ERROR: --initiator requires --target <node_addr_hex>");
+                std::process::exit(1);
+            }
+            None => [0u8; 16],
+        }
     };
 
-    let rng = rand_core::OsRng;
-    let mut node = Node::new(transport, rng, secret, peer_pub);
-    if raw_framing {
-        node.set_raw_framing(true);
+    let secret = if use_sim_a {
+        SIM_A_SECRET
+    } else if use_sim_b {
+        SIM_B_SECRET
+    } else {
+        load_secret()
+    };
+    let peer_pub = load_peer_pub();
+    let my_pub = noise::ecdh_pubkey(&secret).unwrap();
+    let pub_normalized = noise::parity_normalize(&my_pub);
+    let x_only = &pub_normalized[1..];
+    let my_addr = NodeAddr::from_pubkey_x(x_only.try_into().unwrap());
+
+    eprintln!("[SIM] microfips leaf node starting");
+    let npub = bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("npub"), &x_only).expect("bech32 encode");
+    eprintln!("[SIM] npub: {}", npub);
+    eprintln!("[SIM] node_addr: {}", hex::encode(my_addr.as_bytes()));
+    eprintln!("[SIM] FIPS: {}", fips_addr);
+    eprintln!("[SIM] mode: {}", if is_initiator { "initiator" } else { "responder" });
+    if is_initiator {
+        eprintln!("[SIM] target: {}", hex::encode(&target_addr));
     }
-    let mut handler = SimHandler;
+
+    let peer: std::net::SocketAddr = fips_addr
+        .parse()
+        .expect("invalid address");
+    let transport = UdpTransport::new(peer);
+    let mut node = Node::new(transport, rand_core::OsRng, secret, peer_pub);
+    node.set_raw_framing(true);
 
     block_on(async move {
-        node.run(&mut handler).await;
+        if is_initiator {
+            let mut handler = FspInitiatorHandler::new(target_addr, *my_addr.as_bytes());
+            node.run(&mut handler).await;
+        } else {
+            let mut handler = LeafHandler::new();
+            node.run(&mut handler).await;
+        }
     });
 }

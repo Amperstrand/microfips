@@ -48,6 +48,17 @@ pub trait NodeHandler {
     /// `payload` is the decrypted payload after the 5-byte inner header.
     /// Write any response into `resp` and return `HandleResult::SendDatagram(len)`.
     fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult;
+
+    /// Return the earliest instant at which the handler needs to be woken.
+    /// Return `None` if no timed actions are pending.
+    fn poll_at(&self) -> Option<embassy_time::Instant> {
+        None
+    }
+
+    /// Called when the timer fires and `poll_at()` was the earliest deadline.
+    fn on_tick(&mut self, _resp: &mut [u8]) -> HandleResult {
+        HandleResult::None
+    }
 }
 
 /// No-op handler that ignores all events and messages.
@@ -55,8 +66,12 @@ pub struct NoopHandler;
 
 impl NodeHandler for NoopHandler {
     async fn on_event(&mut self, _event: NodeEvent) {}
-
-    fn on_message(&mut self, _msg_type: u8, _payload: &[u8], _resp: &mut [u8]) -> HandleResult {
+    fn on_message(
+        &mut self,
+        _msg_type: u8,
+        _payload: &[u8],
+        _resp: &mut [u8],
+    ) -> HandleResult {
         HandleResult::None
     }
 }
@@ -190,15 +205,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         handler: &mut H,
     ) -> Result<(), ProtocolError> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
-        // Counter for AEAD nonce uniqueness. At 1 msg/10s (heartbeat rate),
-        // u64 wraps after ~5.8 trillion years. At 1 msg/ms (max theoretical
-        // rate), wraps after ~584,000 years. Safe without wraparound protection.
         let mut send_ctr: u64 = 0;
 
         loop {
             let mut rx = [0u8; 256];
             let rx_fut = self.transport.recv(&mut rx);
-            let hb_fut = Timer::at(next_hb);
+            let tick = handler.poll_at();
+            let deadline = tick.unwrap_or(next_hb).min(next_hb);
+            let hb_fut = Timer::at(deadline);
 
             match select(rx_fut, hb_fut).await {
                 Either::First(Ok(n)) => {
@@ -237,23 +251,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             }
                             FrameAction::PeerDC => return Ok(()),
                             FrameAction::SendDatagram(len) => {
-                                use microfips_core::fmp;
-                                let c = send_ctr;
-                                send_ctr += 1;
-                                let ts = embassy_time::Instant::now().as_millis() as u32;
-                                let mut out = [0u8; 256];
-                                let fl = fmp::build_established(
-                                    them,
-                                    c,
-                                    fmp::MSG_SESSION_DATAGRAM,
-                                    ts,
-                                    &self.resp_buf[..len],
-                                    ks,
-                                    &mut out,
-                                );
-                                if let Some(fl) = fl {
-                                    let _ = self.send_frame(&out[..fl]).await;
-                                }
+                                self.send_datagram(them, &mut send_ctr, len, ks)
+                                    .await;
                             }
                         }
                     }
@@ -261,19 +260,71 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         self.rpos = 0;
                         self.rlen = 0;
                     }
-                    if embassy_time::Instant::now() >= next_hb {
+                    let now = embassy_time::Instant::now();
+                    if now >= next_hb {
                         next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
                         handler.on_event(NodeEvent::HeartbeatSent).await;
+                    }
+                    if let Some(t) = tick {
+                        if now >= t {
+                            match handler.on_tick(&mut self.resp_buf) {
+                                HandleResult::SendDatagram(len) => {
+                                    self.send_datagram(them, &mut send_ctr, len, ks)
+                                        .await;
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
                 Either::First(Err(_)) => {
                     return Err(ProtocolError::Disconnected);
                 }
                 Either::Second(()) => {
-                    next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
-                    handler.on_event(NodeEvent::HeartbeatSent).await;
+                    let now = embassy_time::Instant::now();
+                    if now >= next_hb {
+                        next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
+                        handler.on_event(NodeEvent::HeartbeatSent).await;
+                    }
+                    if let Some(t) = tick {
+                        if now >= t {
+                            match handler.on_tick(&mut self.resp_buf) {
+                                HandleResult::SendDatagram(len) => {
+                                    self.send_datagram(them, &mut send_ctr, len, ks)
+                                        .await;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    async fn send_datagram(
+        &mut self,
+        them: u32,
+        send_ctr: &mut u64,
+        len: usize,
+        ks: &[u8; 32],
+    ) {
+        use microfips_core::fmp;
+        let c = *send_ctr;
+        *send_ctr += 1;
+        let ts = embassy_time::Instant::now().as_millis() as u32;
+        let mut out = [0u8; 256];
+        let fl = fmp::build_established(
+            them,
+            c,
+            fmp::MSG_SESSION_DATAGRAM,
+            ts,
+            &self.resp_buf[..len],
+            ks,
+            &mut out,
+        );
+        if let Some(fl) = fl {
+            let _ = self.send_frame(&out[..fl]).await;
         }
     }
 
