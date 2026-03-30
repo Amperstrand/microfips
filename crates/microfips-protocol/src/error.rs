@@ -22,3 +22,12 @@ impl core::fmt::Display for ProtocolError {
 }
 
 impl core::error::Error for ProtocolError {}
+
+impl From<microfips_core::noise::NoiseError> for ProtocolError {
+    fn from(e: microfips_core::noise::NoiseError) -> Self {
+        match e {
+            microfips_core::noise::NoiseError::DecryptionFailed => Self::DecryptFailed,
+            _ => Self::InvalidMessage,
+        }
+    }
+}
