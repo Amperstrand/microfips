@@ -27,6 +27,10 @@ jobs:
 
       - run: cargo test -p microfips-core
 
+      # Run with --features std to include load_secret/load_peer_pub tests;
+      # --test-threads=1 because env var tests modify process-global state.
+      - run: cargo test -p microfips-core --features std -- --test-threads=1
+
       - run: cargo test -p microfips-protocol --features std -- --test-threads=1
 
   build-host:

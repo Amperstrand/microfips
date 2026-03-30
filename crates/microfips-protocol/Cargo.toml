@@ -12,7 +12,9 @@ rand_core = { version = "0.6", default-features = false }
 
 [dev-dependencies]
 embassy-executor = { version = "0.10.0", features = ["platform-std", "executor-thread"] }
-microfips-core = { path = "../microfips-core", features = ["std", "responder"] }
+microfips-core = { path = "../microfips-core", features = ["std"] }
+rand = "0.9"
+k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
 
 [features]
 default = []

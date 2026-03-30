@@ -173,8 +173,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     ..
                 } => {
                     let mut st = noise_st.clone();
-                    st.read_message2(noise_payload)
-                        .map_err(|_| ProtocolError::DecryptFailed)?;
+                    st.read_message2(noise_payload)?;
                     let (ks, kr) = st.finalize();
                     return Ok((ks, kr, sender_idx));
                 }
@@ -191,6 +190,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         handler: &mut H,
     ) -> Result<(), ProtocolError> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
+        // Counter for AEAD nonce uniqueness. At 1 msg/10s (heartbeat rate),
+        // u64 wraps after ~5.8 trillion years. At 1 msg/ms (max theoretical
+        // rate), wraps after ~584,000 years. Safe without wraparound protection.
         let mut send_ctr: u64 = 0;
 
         loop {
@@ -249,7 +251,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     ks,
                                     &mut out,
                                 );
-                                let _ = self.send_frame(&out[..fl]).await;
+                                if let Some(fl) = fl {
+                                    let _ = self.send_frame(&out[..fl]).await;
+                                }
                             }
                         }
                     }
@@ -287,7 +291,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut out = [0u8; 256];
         let fl = fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut out);
 
-        let _ = self.send_frame(&out[..fl]).await;
+        if let Some(fl) = fl {
+            let _ = self.send_frame(&out[..fl]).await;
+        }
 
         embassy_time::Instant::now() + Duration::from_secs(HB_SECS)
     }
@@ -544,6 +550,15 @@ mod tests {
                 bytes: std::sync::Mutex::new(data.to_vec()),
             }
         }
+
+        /// Create a TestRng seeded with OS-level randomness, so each test
+        /// run exercises the protocol with different ephemeral key material.
+        fn from_os_rng() -> Self {
+            use rand::RngCore;
+            let mut seed = [0u8; 64];
+            rand::rng().fill_bytes(&mut seed);
+            Self::new(&seed)
+        }
     }
 
     impl rand_core::RngCore for TestRng {
@@ -641,7 +656,7 @@ mod tests {
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 12345;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, ts, &[], &key, &mut out);
+        let fl = fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, ts, &[], &key, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -655,7 +670,8 @@ mod tests {
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 54321;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 1, fmp::MSG_DISCONNECT, ts, &[], &key, &mut out);
+        let fl =
+            fmp::build_established(0, 1, fmp::MSG_DISCONNECT, ts, &[], &key, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -669,7 +685,7 @@ mod tests {
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 99999;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 2, 0x05, ts, b"unknown", &key, &mut out);
+        let fl = fmp::build_established(0, 2, 0x05, ts, b"unknown", &key, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -683,7 +699,8 @@ mod tests {
         let key_a: [u8; 32] = [0x42; 32];
         let key_b: [u8; 32] = [0x99; 32];
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, 100, &[], &key_a, &mut out);
+        let fl =
+            fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, 100, &[], &key_a, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key_b, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -735,7 +752,8 @@ mod tests {
         let ts: u32 = 77777;
         let mut out = [0u8; 256];
         let fl =
-            fmp::build_established(0, 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out);
+            fmp::build_established(0, 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out)
+                .unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut DatagramHandler, &mut resp);
@@ -747,6 +765,19 @@ mod tests {
     // into separate build_msg1/process_msg2 methods, or a mock transport
     // that doesn't echo send->rx. Post-merge TODO.
 
+    /// Generate a fresh random secp256k1 secret key for testing.
+    fn random_secret() -> [u8; 32] {
+        use k256::SecretKey;
+        use rand::RngCore;
+        let mut key = [0u8; 32];
+        loop {
+            rand::rng().fill_bytes(&mut key);
+            if SecretKey::from_slice(&key).is_ok() {
+                return key;
+            }
+        }
+    }
+
     #[test]
     fn test_handshake_with_responder() {
         use crate::transport::channel::pair as channel_pair;
@@ -754,8 +785,9 @@ mod tests {
         use microfips_core::fmp;
         use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE, ecdh_pubkey};
 
-        let initiator_secret: [u8; 32] = [0x11; 32];
-        let responder_secret: [u8; 32] = [0x22; 32];
+        // Use fresh random keys to prove the handshake works with any valid keypair.
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, mut resp_transport) = channel_pair();
@@ -787,7 +819,7 @@ mod tests {
                     .read_message1(&noise_payload[PUBKEY_SIZE..])
                     .expect("read_message1 failed");
 
-                let resp_eph: [u8; 32] = [0x33; 32];
+                let resp_eph = random_secret();
                 let mut msg2_noise = [0u8; 128];
                 let msg2_noise_len = resp
                     .write_message2(&resp_eph, &epoch, &mut msg2_noise)
@@ -805,7 +837,7 @@ mod tests {
             let initiator = async move {
                 let mut node = Node::new(
                     init_transport,
-                    TestRng::new(&[0x01; 32]),
+                    TestRng::from_os_rng(),
                     initiator_secret,
                     responder_pub,
                 );
@@ -829,8 +861,8 @@ mod tests {
         use microfips_core::fmp;
         use microfips_core::noise::ecdh_pubkey;
 
-        let initiator_secret: [u8; 32] = [0x11; 32];
-        let responder_secret: [u8; 32] = [0x22; 32];
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, mut resp_transport) = channel_pair();
@@ -870,7 +902,7 @@ mod tests {
             let initiator = async move {
                 let mut node = Node::new(
                     init_transport,
-                    TestRng::new(&[0x01; 32]),
+                    TestRng::from_os_rng(),
                     initiator_secret,
                     responder_pub,
                 );
@@ -889,12 +921,8 @@ mod tests {
         let (init_transport, _resp_transport) = channel_pair();
 
         block_on(async move {
-            let mut node = Node::new(
-                init_transport,
-                TestRng::new(&[0x01; 32]),
-                [0x11; 32],
-                [0x02; 33],
-            );
+            let secret = random_secret();
+            let mut node = Node::new(init_transport, TestRng::from_os_rng(), secret, [0x02; 33]);
             let mut handler = NoopTestHandler;
             let result = node.handshake(&mut handler).await;
             assert_eq!(result, Err(ProtocolError::Timeout));

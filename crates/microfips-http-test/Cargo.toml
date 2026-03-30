@@ -5,7 +5,7 @@ edition = "2024"
 description = "FIPS responder that tests HTTP over FMP with the MCU"
 
 [dependencies]
-microfips-core = { path = "../microfips-core", features = ["std", "responder"] }
+microfips-core = { path = "../microfips-core", features = ["std"] }
 k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
 rand = "0.9"
 hex = "0.4"

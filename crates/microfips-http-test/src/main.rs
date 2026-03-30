@@ -4,42 +4,9 @@ use std::time::Duration;
 use k256::SecretKey;
 use microfips_core::fmp;
 use microfips_core::fsp::{self, SESSION_DATAGRAM_BODY_SIZE};
-use microfips_core::identity::{NodeAddr, DEFAULT_PEER_PUB};
+use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
 use rand::RngCore;
-
-const DEFAULT_SECRET: [u8; 32] = [
-    0xe1, 0x04, 0x80, 0x9e, 0x66, 0x0d, 0xfb, 0xec, 0xe4, 0x7c, 0x33, 0xf7, 0x42, 0x2a, 0xd0, 0x61,
-    0x5f, 0x2e, 0x82, 0x61, 0xb9, 0xe9, 0x3a, 0x84, 0xd0, 0x02, 0x50, 0x73, 0xa0, 0xbe, 0xf7, 0xf3,
-];
-
-fn load_secret() -> [u8; 32] {
-    match std::env::var("FIPS_SECRET") {
-        Ok(h) => {
-            let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
-            assert!(
-                b.len() == 32,
-                "FIPS_SECRET: must be 32 bytes (64 hex chars)"
-            );
-            b.try_into().unwrap()
-        }
-        Err(_) => DEFAULT_SECRET,
-    }
-}
-
-fn load_peer_pub() -> [u8; 33] {
-    match std::env::var("FIPS_PEER_PUB") {
-        Ok(h) => {
-            let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
-            assert!(
-                b.len() == 33,
-                "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
-            );
-            b.try_into().unwrap()
-        }
-        Err(_) => DEFAULT_PEER_PUB,
-    }
-}
 
 fn make_session_datagram_body(src: &[u8; 16], dst: &[u8; 16]) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
     let mut body = [0u8; SESSION_DATAGRAM_BODY_SIZE];
@@ -219,7 +186,8 @@ fn main() {
         &dg_payload,
         &ik_k_send,
         &mut fmp_out,
-    );
+    )
+    .expect("build_established failed for FSP setup");
     fmp_ctr += 1;
     println!(
         "  Sending FSP SessionSetup: {}B (FMP Established)",
@@ -281,7 +249,8 @@ fn main() {
         &dg3_payload,
         &ik_k_send,
         &mut fmp_out,
-    );
+    )
+    .expect("build_established failed for FSP msg3");
     fmp_ctr += 1;
     println!(
         "  Sending FSP Msg3: {}B (FMP Established)",
@@ -312,7 +281,8 @@ fn main() {
         &dg_http,
         &ik_k_send,
         &mut fmp_out,
-    );
+    )
+    .expect("build_established failed for HTTP GET");
     println!(
         "  Sending HTTP GET: {}B (FMP Established)",
         fsp_http_fmp_len

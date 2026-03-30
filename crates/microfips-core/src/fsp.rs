@@ -450,7 +450,7 @@ pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])
     Some((flags, counter, header, payload))
 }
 
-use crate::noise::{NoiseError, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
+use crate::noise::{EPOCH_SIZE, NoiseError, NoiseXkResponder, PUBKEY_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspSessionState {
@@ -891,9 +891,22 @@ mod tests {
     use super::{FspSession, FspSessionError, FspSessionState};
 
     fn test_keys() -> ([u8; 32], [u8; 32], [u8; 32]) {
-        let responder_secret: [u8; 32] = [0x22; 32];
-        let responder_eph: [u8; 32] = [0xAA; 32];
-        let initiator_secret: [u8; 32] = [0x11; 32];
+        use k256::SecretKey;
+        use rand::RngCore;
+
+        let mut rng = rand::rng();
+        let mut gen_key = || -> [u8; 32] {
+            let mut key = [0u8; 32];
+            loop {
+                rng.fill_bytes(&mut key);
+                if SecretKey::from_slice(&key).is_ok() {
+                    return key;
+                }
+            }
+        };
+        let responder_secret = gen_key();
+        let responder_eph = gen_key();
+        let initiator_secret = gen_key();
         (responder_secret, responder_eph, initiator_secret)
     }
 
@@ -914,7 +927,7 @@ mod tests {
 
     #[test]
     fn fsp_session_full_flow() {
-        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
+        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
 
         let (responder_secret, responder_eph, initiator_secret) = test_keys();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
@@ -1002,13 +1015,23 @@ mod tests {
 
     #[test]
     fn fsp_session_rejects_double_setup() {
-        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
+        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
 
-        let responder_secret: [u8; 32] = [0x22; 32];
-        let responder_eph: [u8; 32] = [0xAA; 32];
-        let initiator_secret: [u8; 32] = [0x11; 32];
+        let (responder_secret, responder_eph, initiator_secret) = test_keys();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
-        let initiator_eph: [u8; 32] = [0x01; 32];
+        let (initiator_eph, _) = {
+            use k256::SecretKey;
+            use rand::RngCore;
+            let mut key = [0u8; 32];
+            loop {
+                rand::rng().fill_bytes(&mut key);
+                if SecretKey::from_slice(&key).is_ok() {
+                    break;
+                }
+            }
+            let pub_key = ecdh_pubkey(&key).unwrap();
+            (key, pub_key)
+        };
         let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
         let (mut initiator, _) =
