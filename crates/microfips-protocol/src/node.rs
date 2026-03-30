@@ -662,7 +662,8 @@ mod tests {
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 54321;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 1, fmp::MSG_DISCONNECT, ts, &[], &key, &mut out).unwrap();
+        let fl =
+            fmp::build_established(0, 1, fmp::MSG_DISCONNECT, ts, &[], &key, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -690,7 +691,8 @@ mod tests {
         let key_a: [u8; 32] = [0x42; 32];
         let key_b: [u8; 32] = [0x99; 32];
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, 100, &[], &key_a, &mut out).unwrap();
+        let fl =
+            fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, 100, &[], &key_a, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key_b, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -742,7 +744,8 @@ mod tests {
         let ts: u32 = 77777;
         let mut out = [0u8; 256];
         let fl =
-            fmp::build_established(0, 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out).unwrap();
+            fmp::build_established(0, 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out)
+                .unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut DatagramHandler, &mut resp);

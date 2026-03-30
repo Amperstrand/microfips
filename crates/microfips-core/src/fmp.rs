@@ -370,7 +370,8 @@ mod tests {
         let key = [0x42u8; 32];
         let payload = b"test data";
         let mut out = [0u8; 1024];
-        let len = build_established(1, 42, MSG_SESSION_DATAGRAM, 99999, payload, &key, &mut out).unwrap();
+        let len =
+            build_established(1, 42, MSG_SESSION_DATAGRAM, 99999, payload, &key, &mut out).unwrap();
 
         let msg = parse_message(&out[..len]).unwrap();
         match msg {

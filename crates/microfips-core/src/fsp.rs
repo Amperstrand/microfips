@@ -450,7 +450,7 @@ pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])
     Some((flags, counter, header, payload))
 }
 
-use crate::noise::{NoiseError, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
+use crate::noise::{EPOCH_SIZE, NoiseError, NoiseXkResponder, PUBKEY_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspSessionState {
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn fsp_session_full_flow() {
-        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
+        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
 
         let (responder_secret, responder_eph, initiator_secret) = test_keys();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn fsp_session_rejects_double_setup() {
-        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
+        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
 
         let responder_secret: [u8; 32] = [0x22; 32];
         let responder_eph: [u8; 32] = [0xAA; 32];

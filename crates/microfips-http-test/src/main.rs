@@ -91,7 +91,8 @@ fn main() {
         http_request,
         &k_send,
         &mut out,
-    ).expect("build_established failed");
+    )
+    .expect("build_established failed");
     println!("  Sending HTTP GET: {} bytes (FMP)", fl);
     sock.send_to(&out[..fl], peer).expect("send HTTP GET");
 
