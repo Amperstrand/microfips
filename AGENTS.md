@@ -3,7 +3,7 @@
 ## Project
 
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
-Both MCUs use length-prefixed framing → Python bridge (serial↔UDP) → VPS running stock FIPS.
+Both MCUs use length-prefixed framing → serial_udp_bridge.py (host) → UDP → VPS running stock FIPS.
 - **STM32F469I-DISCO:** USB CDC ACM transport
 - **ESP32-D0WD:** UART transport (CP210x USB-serial)
 
@@ -80,10 +80,18 @@ st-flash --connect-under-reset reset
 ### ESP32 flash and monitor
 
 Do NOT use probe-rs with ESP32. Use `espflash` from the Espressif toolchain.
+If `espflash` fails to connect, kill stale processes holding the serial port first.
 
 ```bash
-# Flash
+# Kill stale processes (e.g., leftover serial_tcp_proxy)
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null
+sleep 1
+
+# Flash (primary)
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+
+# Flash (fallback if espflash fails — uses esptool v5.2.0, already installed)
+esptool --chip esp32 --port /dev/ttyUSB0 --before default-reset -b 460800 write-flash 0x0 target/xtensa-esp32-none-elf/release/microfips-esp32
 
 # Monitor (optional, after flash)
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash monitor -p /dev/ttyUSB0 --chip esp32
@@ -130,7 +138,30 @@ print('all pass')
 "
 ```
 
-### Bridge + MCU + VPS handshake test (hardware)
+### Bridge + MCU + VPS handshake test (hardware — simplified single-hop)
+
+The `serial_udp_bridge.py` tool replaces the old 3-hop pipeline. No SSH tunnel or
+VPS-side bridge needed — it sends UDP directly from the host to FIPS.
+
+```bash
+# STM32 (auto-detect by VID:PID, reset first)
+st-flash --connect-under-reset reset
+sleep 8  # wait for USB enumeration
+python3 tools/serial_udp_bridge.py --serial /dev/ttyACM<N> --udp-host orangeclaw.dns4sats.xyz
+
+# ESP32 (auto-detect by VID:PID)
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+python3 tools/serial_udp_bridge.py --serial /dev/ttyUSB0 --udp-host orangeclaw.dns4sats.xyz
+
+# Both MCUs simultaneously (use different bind ports)
+python3 tools/serial_udp_bridge.py --serial /dev/ttyACM<N> --bind-port 45679 &
+python3 tools/serial_udp_bridge.py --serial /dev/ttyUSB0 --bind-port 45680 &
+```
+
+**Expected:** `>> CDC->UDP: frame#1 114B` (MSG1), `<< UDP->CDC: frame#1 69B` (MSG2),
+then heartbeat frames every ~10s.
+
+### Bridge + MCU + VPS handshake test (hardware — legacy 3-hop)
 
 See `scripts/test_hw_handshake.sh` for the full automated procedure. The manual steps are:
 
