@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use k256::SecretKey;
 use microfips_core::fmp;
+use microfips_core::fsp::{self, SESSION_DATAGRAM_BODY_SIZE};
+use microfips_core::identity::{NodeAddr, DEFAULT_PEER_PUB};
 use microfips_core::noise;
 use rand::RngCore;
 
@@ -25,17 +27,89 @@ fn load_secret() -> [u8; 32] {
     }
 }
 
+fn load_peer_pub() -> [u8; 33] {
+    match std::env::var("FIPS_PEER_PUB") {
+        Ok(h) => {
+            let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
+            assert!(
+                b.len() == 33,
+                "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
+            );
+            b.try_into().unwrap()
+        }
+        Err(_) => DEFAULT_PEER_PUB,
+    }
+}
+
+fn make_session_datagram_body(src: &[u8; 16], dst: &[u8; 16]) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
+    let mut body = [0u8; SESSION_DATAGRAM_BODY_SIZE];
+    body[0] = 64;
+    body[1] = 0x00;
+    body[2] = 1400u16.to_le_bytes()[0];
+    body[3] = 1400u16.to_le_bytes()[1];
+    body[4..20].copy_from_slice(src);
+    body[20..36].copy_from_slice(dst);
+    body
+}
+
+fn build_fsp_established_msg(
+    fsp_counter: u64,
+    timestamp_ms: u32,
+    app_payload: &[u8],
+    fsp_k_send: &[u8; 32],
+) -> Vec<u8> {
+    let inner = fsp::fsp_prepend_inner_header(
+        timestamp_ms,
+        fsp::FSP_MSG_DATA,
+        0x00,
+        app_payload,
+        &mut [0u8; 512],
+    );
+    let header = fsp::build_fsp_header(fsp_counter, 0x00, (inner + noise::TAG_SIZE) as u16);
+    let mut plaintext = [0u8; 512];
+    plaintext[..inner].copy_from_slice(&[0u8; 512][..inner]);
+    let _ = fsp::fsp_prepend_inner_header(
+        timestamp_ms,
+        fsp::FSP_MSG_DATA,
+        0x00,
+        app_payload,
+        &mut plaintext,
+    );
+    let mut ciphertext = vec![0u8; inner + noise::TAG_SIZE];
+    noise::aead_encrypt(
+        fsp_k_send,
+        fsp_counter,
+        &header,
+        &plaintext[..inner],
+        &mut ciphertext,
+    )
+    .unwrap();
+    let mut out = vec![0u8; fsp::FSP_HEADER_SIZE + ciphertext.len()];
+    fsp::build_fsp_encrypted(&header, &ciphertext, &mut out);
+    out
+}
+
 fn main() {
     let listen_addr = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "0.0.0.0:31338".to_string());
 
-    let static_secret = load_secret();
-    let static_pub = noise::ecdh_pubkey(&static_secret).expect("pubkey derivation failed");
+    let ik_secret = load_secret();
+    let ik_pub = noise::ecdh_pubkey(&ik_secret).expect("pubkey derivation failed");
 
-    println!("=== microfips HTTP test (FIPS responder) ===");
+    let mcu_pub = load_peer_pub();
+
+    let mcu_x_only = &mcu_pub[1..];
+    let mcu_addr = NodeAddr::from_pubkey_x(mcu_x_only.try_into().unwrap());
+
+    let ik_pub_normalized = noise::parity_normalize(&ik_pub);
+    let ik_x_only = &ik_pub_normalized[1..];
+    let ik_addr = NodeAddr::from_pubkey_x(ik_x_only.try_into().unwrap());
+
+    println!("=== microfips HTTP test (FIPS responder + FSP initiator) ===");
     println!("Listening on UDP {listen_addr}");
-    println!("Responder pubkey: {}", hex::encode(static_pub));
+    println!("IK responder pubkey: {}", hex::encode(ik_pub));
+    println!("MCU pubkey (FSP target): {}", hex::encode(mcu_pub));
     println!("Waiting for MCU handshake...");
 
     let sock = UdpSocket::bind(&listen_addr).expect("bind failed");
@@ -64,8 +138,9 @@ fn main() {
     };
 
     let e_init: [u8; 33] = msg1.1[..33].try_into().expect("ephemeral pubkey size");
+    let sender_idx = msg1.0;
     let mut responder =
-        noise::NoiseIkResponder::new(&static_secret, &e_init).expect("IK responder init failed");
+        noise::NoiseIkResponder::new(&ik_secret, &e_init).expect("IK responder init failed");
     let (initiator_static_pub, epoch) = responder
         .read_message1(&msg1.1[33..])
         .expect("read_message1 failed");
@@ -84,119 +159,281 @@ fn main() {
         .expect("write_message2 failed");
 
     let mut fmp_msg2 = [0u8; 256];
-    let fmp_len = fmp::build_msg2(msg1.0, msg1.0, &noise_msg2[..noise_len], &mut fmp_msg2).unwrap();
+    let fmp_len = fmp::build_msg2(
+        sender_idx,
+        sender_idx,
+        &noise_msg2[..noise_len],
+        &mut fmp_msg2,
+    )
+    .unwrap();
     println!("  Sending MSG2: {} bytes to {peer}", fmp_len);
     sock.send_to(&fmp_msg2[..fmp_len], peer).expect("send MSG2");
 
     let (k1, k2) = responder.finalize();
-    let k_send = k2;
-    let k_recv = k1;
-    println!("  k_send: {}", hex::encode(k_send));
-    println!("  k_recv: {}", hex::encode(k_recv));
+    let ik_k_send = k2;
+    let ik_k_recv = k1;
+    println!("  IK k_send: {}", hex::encode(ik_k_send));
+    println!("  IK k_recv: {}", hex::encode(ik_k_recv));
 
-    let http_request = b"GET / HTTP/1.1\r\nHost: microfips-stm32\r\n\r\n";
+    let mut fmp_ctr: u64 = 0;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u32;
 
-    let mut out = [0u8; 512];
-    let fl = fmp::build_established(
-        msg1.0,
-        0,
+    let dg_body = make_session_datagram_body(ik_addr.as_bytes(), mcu_addr.as_bytes());
+
+    println!("\n--- FSP XK handshake ---");
+
+    let mut xk_eph = [0u8; 32];
+    rng.fill_bytes(&mut xk_eph);
+    let (mut xk_init, xk_e_pub) =
+        noise::NoiseXkInitiator::new(&xk_eph, &ik_secret, &mcu_pub).unwrap();
+    println!("  XK initiator ephemeral pub: {}", hex::encode(xk_e_pub));
+
+    let mut xk_msg1 = [0u8; 64];
+    let xk_msg1_len = xk_init.write_message1(&mut xk_msg1).unwrap();
+
+    let mut setup_out = [0u8; 512];
+    let src_coords = [*ik_addr.as_bytes()];
+    let dst_coords = [*mcu_addr.as_bytes()];
+    let setup_len = fsp::build_session_setup(
+        0x03,
+        &src_coords,
+        &dst_coords,
+        &xk_msg1[..xk_msg1_len],
+        &mut setup_out,
+    )
+    .unwrap();
+
+    let mut dg_payload = vec![0u8; SESSION_DATAGRAM_BODY_SIZE + setup_len];
+    dg_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+    dg_payload[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&setup_out[..setup_len]);
+
+    let mut fmp_out = [0u8; 1024];
+    let fsp_setup_fmp_len = fmp::build_established(
+        sender_idx,
+        fmp_ctr,
         fmp::MSG_SESSION_DATAGRAM,
         ts,
-        http_request,
-        &k_send,
-        &mut out,
+        &dg_payload,
+        &ik_k_send,
+        &mut fmp_out,
     );
-    println!("  Sending HTTP GET: {} bytes (FMP)", fl);
-    sock.send_to(&out[..fl], peer).expect("send HTTP GET");
+    fmp_ctr += 1;
+    println!(
+        "  Sending FSP SessionSetup: {}B (FMP Established)",
+        fsp_setup_fmp_len
+    );
+    sock.send_to(&fmp_out[..fsp_setup_fmp_len], peer)
+        .expect("send FSP setup");
+
+    println!("  Waiting for FSP SessionAck...");
+    let ack_fsp = loop {
+        match recv_established_datagram(&sock, &mut buf, &ik_k_recv) {
+            RecvResult::Datagram(payload) => break payload,
+            RecvResult::Heartbeat(ctr) => {
+                println!("  Heartbeat (ctr={ctr})");
+            }
+            RecvResult::Other => continue,
+            RecvResult::Timeout => {
+                eprintln!("TIMEOUT: no SessionAck in 15s");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    if ack_fsp.len() < SESSION_DATAGRAM_BODY_SIZE {
+        eprintln!("ERROR: SessionAck too short: {}B", ack_fsp.len());
+        std::process::exit(1);
+    }
+    let ack_fsp_data = &ack_fsp[SESSION_DATAGRAM_BODY_SIZE..];
+    let xk_msg2_payload = fsp::parse_session_ack(ack_fsp_data).unwrap();
+    println!(
+        "  Received FSP SessionAck: XK msg2 = {}B",
+        xk_msg2_payload.len()
+    );
+
+    let received_epoch = xk_init.read_message2(xk_msg2_payload).unwrap();
+    println!("  XK responder epoch: {}", hex::encode(received_epoch));
+
+    let initiator_pub = noise::ecdh_pubkey(&ik_secret).unwrap();
+    let epoch_i = [0x02, 0, 0, 0, 0, 0, 0, 0];
+
+    let mut xk_msg3_noise = [0u8; 128];
+    let xk_msg3_len = xk_init
+        .write_message3(&initiator_pub, &epoch_i, &mut xk_msg3_noise)
+        .unwrap();
+
+    let mut msg3_fsp = [0u8; 512];
+    let msg3_fsp_len =
+        fsp::build_session_msg3(&xk_msg3_noise[..xk_msg3_len], &mut msg3_fsp).unwrap();
+
+    let mut dg3_payload = vec![0u8; SESSION_DATAGRAM_BODY_SIZE + msg3_fsp_len];
+    dg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+    dg3_payload[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&msg3_fsp[..msg3_fsp_len]);
+
+    let fsp_msg3_fmp_len = fmp::build_established(
+        sender_idx,
+        fmp_ctr,
+        fmp::MSG_SESSION_DATAGRAM,
+        ts,
+        &dg3_payload,
+        &ik_k_send,
+        &mut fmp_out,
+    );
+    fmp_ctr += 1;
+    println!(
+        "  Sending FSP Msg3: {}B (FMP Established)",
+        fsp_msg3_fmp_len
+    );
+    sock.send_to(&fmp_out[..fsp_msg3_fmp_len], peer)
+        .expect("send FSP msg3");
+
+    let (fsp_k_send, fsp_k_recv) = xk_init.finalize();
+    println!("  FSP session established!");
+    println!("  FSP k_send: {}", hex::encode(fsp_k_send));
+    println!("  FSP k_recv: {}", hex::encode(fsp_k_recv));
+
+    println!("\n--- Sending HTTP GET via FSP ---");
+
+    let http_request = b"GET / HTTP/1.1\r\nHost: microfips-stm32\r\n\r\n";
+    let fsp_encrypted = build_fsp_established_msg(0, ts, http_request, &fsp_k_send);
+
+    let mut dg_http = vec![0u8; SESSION_DATAGRAM_BODY_SIZE + fsp_encrypted.len()];
+    dg_http[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+    dg_http[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&fsp_encrypted);
+
+    let fsp_http_fmp_len = fmp::build_established(
+        sender_idx,
+        fmp_ctr,
+        fmp::MSG_SESSION_DATAGRAM,
+        ts,
+        &dg_http,
+        &ik_k_send,
+        &mut fmp_out,
+    );
+    println!(
+        "  Sending HTTP GET: {}B (FMP Established)",
+        fsp_http_fmp_len
+    );
+    sock.send_to(&fmp_out[..fsp_http_fmp_len], peer)
+        .expect("send HTTP GET");
 
     println!("  Waiting for HTTP response...");
-    let mut _recv_ctr: u64 = 0;
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(30) {
             eprintln!("TIMEOUT: no HTTP response in 30s");
             std::process::exit(1);
         }
-        match sock.recv_from(&mut buf) {
-            Ok((len, addr)) => {
-                let resp_msg = match fmp::parse_message(&buf[..len]) {
-                    Some(m) => m,
-                    None => {
-                        println!("  Non-FMP: {}B from {addr}", len);
-                        continue;
+        match recv_established_datagram(&sock, &mut buf, &ik_k_recv) {
+            RecvResult::Datagram(payload) => {
+                println!("  Received MSG_SESSION_DATAGRAM: {}B", payload.len());
+                if payload.len() < SESSION_DATAGRAM_BODY_SIZE {
+                    println!("  Too short for session datagram body, skipping");
+                    continue;
+                }
+                let fsp_data = &payload[SESSION_DATAGRAM_BODY_SIZE..];
+                let Some((flags, counter, header, encrypted)) =
+                    fsp::parse_fsp_encrypted_header(fsp_data)
+                else {
+                    println!("  Cannot parse FSP encrypted header");
+                    match std::str::from_utf8(fsp_data) {
+                        Ok(s) => println!("  text: {}", s),
+                        Err(_) => println!("  hex: {}", hex::encode(fsp_data)),
                     }
+                    continue;
                 };
-                match resp_msg {
-                    fmp::FmpMessage::Established {
-                        counter: rx_ctr,
-                        encrypted,
-                        ..
-                    } => {
-                        let hdr = &buf[..fmp::ESTABLISHED_HEADER_SIZE];
-                        let mut dec = [0u8; 2048];
-                        match noise::aead_decrypt(&k_recv, rx_ctr, hdr, encrypted, &mut dec) {
-                            Ok(dl) => {
-                                if dl < fmp::INNER_HEADER_SIZE {
-                                    println!("  Decrypted too short: {}B", dl);
-                                    continue;
+                if flags & fsp::FLAG_UNENCRYPTED != 0 {
+                    println!("  Unencrypted FSP signal, skipping");
+                    continue;
+                }
+                let mut dec = [0u8; 512];
+                match noise::aead_decrypt(&fsp_k_recv, counter, header, encrypted, &mut dec) {
+                    Ok(dl) => {
+                        if let Some((_timestamp, inner_msg_type, _inner_flags, inner_payload)) =
+                            fsp::fsp_strip_inner_header(&dec[..dl])
+                        {
+                            println!(
+                                "  FSP msg_type=0x{:02x}, payload={}B",
+                                inner_msg_type,
+                                inner_payload.len()
+                            );
+                            if inner_msg_type == fsp::FSP_MSG_DATA {
+                                match std::str::from_utf8(inner_payload) {
+                                    Ok(s) => println!("{}", s),
+                                    Err(_) => println!("  hex: {}", hex::encode(inner_payload)),
                                 }
-                                let msg_type = dec[4];
-                                let ts_val = u32::from_le_bytes([dec[0], dec[1], dec[2], dec[3]]);
-                                let payload = &dec[fmp::INNER_HEADER_SIZE..dl];
-                                match msg_type {
-                                    fmp::MSG_HEARTBEAT => {
-                                        println!("  Heartbeat (ctr={rx_ctr}, ts={ts_val})");
-                                        _recv_ctr = rx_ctr + 1;
-                                    }
-                                    fmp::MSG_SESSION_DATAGRAM => {
-                                        println!(
-                                            "  DATA (ctr={rx_ctr}, ts={ts_val}, {}B):",
-                                            payload.len()
-                                        );
-                                        match std::str::from_utf8(payload) {
-                                            Ok(s) => println!("{}", s),
-                                            Err(_) => println!("  hex: {}", hex::encode(payload)),
-                                        }
-                                        println!("\nSUCCESS: MCU responded with HTTP data!");
-                                        return;
-                                    }
-                                    fmp::MSG_DISCONNECT => {
-                                        println!("  Peer disconnected");
-                                        break;
-                                    }
-                                    other => {
-                                        println!(
-                                            "  Unknown msg type 0x{:02x} ({}B payload)",
-                                            other,
-                                            payload.len()
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                println!("  Decrypt failed (ctr={rx_ctr}): {:?}", e);
+                                println!("\nSUCCESS: MCU responded with HTTP data via FSP!");
+                                return;
                             }
                         }
                     }
-                    fmp::FmpMessage::Msg1 { .. } => {
-                        println!("  Received MSG1 (MCU retrying handshake)");
-                    }
-                    other => {
-                        println!("  Received: {:?}", other);
+                    Err(e) => {
+                        println!("  FSP decrypt failed (ctr={counter}): {:?}", e);
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("  Recv error: {e}");
-                break;
+            RecvResult::Heartbeat(ctr) => {
+                println!("  Heartbeat (ctr={ctr})");
+            }
+            RecvResult::Other => continue,
+            RecvResult::Timeout => {
+                eprintln!("TIMEOUT: no HTTP response in 30s");
+                std::process::exit(1);
             }
         }
     }
+}
 
-    println!("\nFAIL: no HTTP response received");
-    std::process::exit(1);
+enum RecvResult {
+    Datagram(Vec<u8>),
+    Heartbeat(u64),
+    Other,
+    Timeout,
+}
+
+fn recv_established_datagram(
+    sock: &UdpSocket,
+    buf: &mut [u8; 4096],
+    k_recv: &[u8; 32],
+) -> RecvResult {
+    match sock.recv_from(buf) {
+        Ok((len, _addr)) => {
+            let msg = match fmp::parse_message(&buf[..len]) {
+                Some(m) => m,
+                None => return RecvResult::Other,
+            };
+            match msg {
+                fmp::FmpMessage::Established {
+                    counter: rx_ctr,
+                    encrypted,
+                    ..
+                } => {
+                    let hdr = &buf[..fmp::ESTABLISHED_HEADER_SIZE];
+                    let mut dec = [0u8; 2048];
+                    match noise::aead_decrypt(k_recv, rx_ctr, hdr, encrypted, &mut dec) {
+                        Ok(dl) => {
+                            if dl < fmp::INNER_HEADER_SIZE {
+                                return RecvResult::Other;
+                            }
+                            let msg_type = dec[4];
+                            match msg_type {
+                                fmp::MSG_HEARTBEAT => RecvResult::Heartbeat(rx_ctr),
+                                fmp::MSG_SESSION_DATAGRAM => {
+                                    RecvResult::Datagram(dec[fmp::INNER_HEADER_SIZE..dl].to_vec())
+                                }
+                                _ => RecvResult::Other,
+                            }
+                        }
+                        Err(_) => RecvResult::Other,
+                    }
+                }
+                fmp::FmpMessage::Msg1 { .. } => RecvResult::Other,
+                _ => RecvResult::Other,
+            }
+        }
+        Err(_) => RecvResult::Timeout,
+    }
 }
