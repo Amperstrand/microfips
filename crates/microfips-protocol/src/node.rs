@@ -173,8 +173,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     ..
                 } => {
                     let mut st = noise_st.clone();
-                    st.read_message2(noise_payload)
-                        .map_err(|_| ProtocolError::DecryptFailed)?;
+                    st.read_message2(noise_payload)?;
                     let (ks, kr) = st.finalize();
                     return Ok((ks, kr, sender_idx));
                 }
