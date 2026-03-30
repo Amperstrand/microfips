@@ -48,6 +48,44 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
     result
 }
 
+/// Load the FIPS secret key from the `FIPS_SECRET` env var (64 hex chars),
+/// falling back to `DEFAULT_SECRET` if not set.
+///
+/// Panics on invalid hex or wrong length — acceptable for host-side tools.
+#[cfg(feature = "std")]
+pub fn load_secret() -> [u8; 32] {
+    match std::env::var("FIPS_SECRET") {
+        Ok(h) => {
+            let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
+            assert!(
+                b.len() == 32,
+                "FIPS_SECRET: must be 32 bytes (64 hex chars)"
+            );
+            b.try_into().unwrap()
+        }
+        Err(_) => DEFAULT_SECRET,
+    }
+}
+
+/// Load the FIPS peer public key from the `FIPS_PEER_PUB` env var (66 hex chars),
+/// falling back to `DEFAULT_PEER_PUB` if not set.
+///
+/// Panics on invalid hex or wrong length — acceptable for host-side tools.
+#[cfg(feature = "std")]
+pub fn load_peer_pub() -> [u8; 33] {
+    match std::env::var("FIPS_PEER_PUB") {
+        Ok(h) => {
+            let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
+            assert!(
+                b.len() == 33,
+                "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
+            );
+            b.try_into().unwrap()
+        }
+        Err(_) => DEFAULT_PEER_PUB,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

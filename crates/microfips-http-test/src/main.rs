@@ -3,27 +3,9 @@ use std::time::Duration;
 
 use k256::SecretKey;
 use microfips_core::fmp;
+use microfips_core::identity::load_secret;
 use microfips_core::noise;
 use rand::RngCore;
-
-const DEFAULT_SECRET: [u8; 32] = [
-    0xe1, 0x04, 0x80, 0x9e, 0x66, 0x0d, 0xfb, 0xec, 0xe4, 0x7c, 0x33, 0xf7, 0x42, 0x2a, 0xd0, 0x61,
-    0x5f, 0x2e, 0x82, 0x61, 0xb9, 0xe9, 0x3a, 0x84, 0xd0, 0x02, 0x50, 0x73, 0xa0, 0xbe, 0xf7, 0xf3,
-];
-
-fn load_secret() -> [u8; 32] {
-    match std::env::var("FIPS_SECRET") {
-        Ok(h) => {
-            let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
-            assert!(
-                b.len() == 32,
-                "FIPS_SECRET: must be 32 bytes (64 hex chars)"
-            );
-            b.try_into().unwrap()
-        }
-        Err(_) => DEFAULT_SECRET,
-    }
-}
 
 fn main() {
     let listen_addr = std::env::args()
