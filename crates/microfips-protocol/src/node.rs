@@ -191,6 +191,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         handler: &mut H,
     ) -> Result<(), ProtocolError> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
+        // Counter for AEAD nonce uniqueness. At 1 msg/10s (heartbeat rate),
+        // u64 wraps after ~5.8×10^18 seconds (~184 billion years). At 1 msg/ms
+        // (max theoretical rate), wraps after ~584 million years. Safe to leave
+        // as-is without wraparound protection.
         let mut send_ctr: u64 = 0;
 
         loop {
