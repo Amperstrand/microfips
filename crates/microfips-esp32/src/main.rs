@@ -15,7 +15,11 @@ use esp_hal::{Async, interrupt::software::SoftwareInterruptControl, timer::timg:
 use esp_println as _;
 
 use microfips_core::fmp;
-use microfips_core::fsp::{FspSession, handle_fsp_datagram};
+use microfips_core::fsp::{
+    FspInitiatorSession, FspInitiatorState, SESSION_DATAGRAM_BODY_SIZE,
+    build_fsp_encrypted, build_fsp_header, build_session_datagram_body,
+    fsp_prepend_inner_header, parse_fsp_encrypted_header, FSP_HEADER_SIZE, FSP_MSG_DATA,
+};
 use microfips_core::identity::DEFAULT_PEER_PUB;
 use microfips_core::noise;
 
@@ -26,10 +30,33 @@ const ESP32_SECRET: &[u8; 32] = &[
     0xdb, 0xdd, 0xe3, 0x9f, 0xce, 0xda, 0x38, 0xd8,
 ];
 
+const STM32_PEER_PUB: &[u8; 33] = &[
+    0x02, 0x63, 0x56, 0x96, 0xdc, 0x5f, 0x7c, 0xcb,
+    0x68, 0xdf, 0x79, 0x36, 0x2c, 0x9e, 0xdf, 0x35,
+    0xe3, 0x5e, 0x61, 0x6d, 0x7a, 0xe8, 0x6f, 0xce,
+    0xe2, 0x68, 0xa2, 0xf7, 0x49, 0x45, 0x2b, 0x68,
+    0x42,
+];
+
+const IK_EPHEMERAL: [u8; 32] = [0xAA; 32];
+const FSP_EPHEMERAL: [u8; 32] = [0xBB; 32];
+
+const ESP32_NODE_ADDR: [u8; 16] = [
+    0x14, 0x01, 0x81, 0xa5, 0x85, 0x59, 0x4a, 0xaa,
+    0xac, 0x84, 0x1f, 0xb5, 0x43, 0x05, 0x76, 0x75,
+];
+
+const STM32_NODE_ADDR: [u8; 16] = [
+    0x24, 0x49, 0x21, 0xe6, 0x60, 0x6a, 0xc5, 0x8f,
+    0x4b, 0x14, 0x53, 0x13, 0x36, 0x3f, 0xbb, 0x1c,
+];
+
 const HB_SECS: u64 = 10;
 const RECV_TIMEOUT_MS: u64 = 30_000;
 const RETRY_SECS: u64 = 3;
 const CONNECT_DELAY_MS: u64 = 500;
+const FSP_START_DELAY_SECS: u64 = 5;
+const FSP_EPOCH: [u8; 8] = [0x02, 0, 0, 0, 0, 0, 0, 0];
 
 #[used]
 static STAT_MSG1_TX: AtomicU32 = AtomicU32::new(0);
@@ -39,6 +66,18 @@ static STAT_MSG2_RX: AtomicU32 = AtomicU32::new(0);
 static STAT_HB_TX: AtomicU32 = AtomicU32::new(0);
 #[used]
 static STAT_HB_RX: AtomicU32 = AtomicU32::new(0);
+#[used]
+static STAT_FSP_SETUP_TX: AtomicU32 = AtomicU32::new(0);
+#[used]
+static STAT_FSP_ACK_RX: AtomicU32 = AtomicU32::new(0);
+#[used]
+static STAT_FSP_MSG3_TX: AtomicU32 = AtomicU32::new(0);
+#[used]
+static STAT_FSP_ESTABLISHED: AtomicU32 = AtomicU32::new(0);
+#[used]
+static STAT_PING_TX: AtomicU32 = AtomicU32::new(0);
+#[used]
+static STAT_PONG_RX: AtomicU32 = AtomicU32::new(0);
 
 struct Led(Output<'static>);
 
@@ -75,9 +114,7 @@ impl UartTransport {
 
 struct EspHandler<'a> {
     led: &'a mut Led,
-    fsp_session: FspSession,
-    fsp_ephemeral: [u8; 32],
-    fsp_epoch: [u8; 8],
+    fsp: Option<FspInitiatorSession>,
 }
 
 impl EspHandler<'_> {
@@ -90,8 +127,6 @@ impl EspHandler<'_> {
             3 => {
                 STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
                 self.led.set_state(3);
-                self.fsp_session.reset();
-                self.fsp_epoch = [0x01, 0, 0, 0, 0, 0, 0, 0];
             }
             4 => {
                 STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
@@ -103,21 +138,12 @@ impl EspHandler<'_> {
         }
     }
 
-    fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> usize {
-        if msg_type != fmp::MSG_SESSION_DATAGRAM {
-            return 0;
-        }
-        match handle_fsp_datagram(
-            &mut self.fsp_session,
-            &ESP32_SECRET,
-            &self.fsp_ephemeral,
-            &self.fsp_epoch,
-            payload,
-            resp,
-        ) {
-            Ok(microfips_core::fsp::FspHandlerResult::SendDatagram(len)) => len,
-            _ => 0,
-        }
+    fn init_fsp(&mut self) {
+        self.fsp = FspInitiatorSession::new(
+            ESP32_SECRET,
+            &FSP_EPHEMERAL,
+            STM32_PEER_PUB,
+        ).ok();
     }
 }
 
@@ -199,30 +225,56 @@ async fn recv_frame(
     }
 }
 
+fn send_fsp_datagram_frame(
+    sender_idx: u32,
+    fmp_ctr: &mut u64,
+    dg_body: &[u8; SESSION_DATAGRAM_BODY_SIZE],
+    fsp_payload: &[u8],
+    ik_k_send: &[u8; 32],
+    out: &mut [u8],
+) -> Option<usize> {
+    let ts = embassy_time::Instant::now().as_millis() as u32;
+    let c = *fmp_ctr;
+    *fmp_ctr += 1;
+
+    let mut dg = [0u8; 256];
+    dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(dg_body);
+    let pl = fsp_payload.len().min(dg.len() - SESSION_DATAGRAM_BODY_SIZE);
+    dg[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + pl].copy_from_slice(&fsp_payload[..pl]);
+    let dg_len = SESSION_DATAGRAM_BODY_SIZE + pl;
+
+    fmp::build_established(
+        sender_idx,
+        c,
+        fmp::MSG_SESSION_DATAGRAM,
+        ts,
+        &dg[..dg_len],
+        ik_k_send,
+        out,
+    )
+}
+
 async fn run_fips(
     transport: &mut UartTransport,
-    rng: &mut Trng,
+    _rng: &mut Trng,
     handler: &mut EspHandler<'_>,
 ) -> ! {
     loop {
-        let _ = session(transport, rng, handler).await;
+        let _ = session(transport, handler).await;
         Timer::after(Duration::from_secs(RETRY_SECS)).await;
     }
 }
 
 async fn session(
     transport: &mut UartTransport,
-    rng: &mut Trng,
     handler: &mut EspHandler<'_>,
 ) -> Result<(), ()> {
     Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
 
-    let my_pub = noise::ecdh_pubkey(&ESP32_SECRET).unwrap();
+    let my_pub = noise::ecdh_pubkey(ESP32_SECRET).unwrap();
 
-    let mut eph = [0u8; 32];
-    rand_core::RngCore::fill_bytes(rng, &mut eph);
     let (mut noise_st, _e_pub) =
-        noise::NoiseIkInitiator::new(&eph, &ESP32_SECRET, &DEFAULT_PEER_PUB).unwrap();
+        noise::NoiseIkInitiator::new(&IK_EPHEMERAL, ESP32_SECRET, &DEFAULT_PEER_PUB).unwrap();
 
     let epoch: [u8; noise::EPOCH_SIZE] = [0x01, 0, 0, 0, 0, 0, 0, 0];
 
@@ -257,19 +309,24 @@ async fn session(
     let (ks, kr) = st.finalize();
     handler.on_event(3);
 
+    let dg_body = build_session_datagram_body(&ESP32_NODE_ADDR, &STM32_NODE_ADDR);
+
     let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
+    let mut fsp_start = embassy_time::Instant::now() + Duration::from_secs(FSP_START_DELAY_SECS);
     let mut send_ctr: u64 = 0;
-    let mut resp_buf = [0u8; 256];
+    let mut fmp_ctr: u64 = 0;
+    let mut fsp_ctr: u64 = 0;
     let mut rpos: usize = 0;
     let mut rlen: usize = 0;
 
+    handler.init_fsp();
     send_heartbeat(transport, &ks, sender_idx, &mut send_ctr).await;
     handler.on_event(4);
 
     loop {
         let mut rx = [0u8; 256];
         let rx_fut = transport.recv(&mut rx);
-        let hb_fut = Timer::at(next_hb);
+        let hb_fut = Timer::at(next_hb.min(fsp_start));
 
         match select(rx_fut, hb_fut).await {
             Either::First(Ok(n)) => {
@@ -330,29 +387,22 @@ async fn session(
                                     handler.on_event(5);
                                 }
                                 fmp::MSG_DISCONNECT => return Ok(()),
-                                _ => {
+                                fmp::MSG_SESSION_DATAGRAM => {
                                     let payload = &dec[fmp::INNER_HEADER_SIZE..dl];
-                                    let resp_len =
-                                        handler.on_message(msg_type, payload, &mut resp_buf);
-                                    if resp_len > 0 {
-                                        let c = send_ctr;
-                                        send_ctr += 1;
-                                        let ts = embassy_time::Instant::now().as_millis() as u32;
-                                        let mut out = [0u8; 256];
-                                        let fl = fmp::build_established(
+                                    if let Some(ref mut fsp) = handler.fsp {
+                                        handle_incoming_fsp(
+                                            fsp,
+                                            payload,
+                                            &dg_body,
                                             sender_idx,
-                                            c,
-                                            fmp::MSG_SESSION_DATAGRAM,
-                                            ts,
-                                            &resp_buf[..resp_len],
+                                            &mut fmp_ctr,
+                                            &mut fsp_ctr,
                                             &ks,
-                                            &mut out,
-                                        );
-                                        if let Some(fl) = fl {
-                                            let _ = send_frame(transport, &out[..fl]).await;
-                                        }
+                                            transport,
+                                        ).await;
                                     }
                                 }
+                                _ => {}
                             }
                         }
                         _ => {}
@@ -363,9 +413,33 @@ async fn session(
                     rpos = 0;
                     rlen = 0;
                 }
-                if embassy_time::Instant::now() >= next_hb {
+                let now = embassy_time::Instant::now();
+                if now >= next_hb {
                     next_hb = send_heartbeat(transport, &ks, sender_idx, &mut send_ctr).await;
                     handler.on_event(4);
+                    if let Some(ref fsp) = handler.fsp {
+                        if fsp.state() == FspInitiatorState::Established {
+                            do_send_ping(
+                                transport, fsp, &dg_body, sender_idx,
+                                &mut fmp_ctr, &mut fsp_ctr, &ks,
+                            ).await;
+                        }
+                    }
+                }
+                if now >= fsp_start {
+                    fsp_start = embassy_time::Instant::now() + Duration::from_secs(3600);
+                    if let Some(ref mut fsp) = handler.fsp {
+                        if fsp.state() == FspInitiatorState::Idle {
+                            do_fsp_setup(
+                                fsp,
+                                &dg_body,
+                                sender_idx,
+                                &mut fmp_ctr,
+                                &ks,
+                                transport,
+                            ).await;
+                        }
+                    }
                 }
             }
             Either::First(Err(_)) => {
@@ -373,11 +447,147 @@ async fn session(
                 continue;
             }
             Either::Second(()) => {
-                next_hb = send_heartbeat(transport, &ks, sender_idx, &mut send_ctr).await;
-                handler.on_event(4);
+                let now = embassy_time::Instant::now();
+                if now >= next_hb {
+                    next_hb = send_heartbeat(transport, &ks, sender_idx, &mut send_ctr).await;
+                    handler.on_event(4);
+                    if let Some(ref fsp) = handler.fsp {
+                        if fsp.state() == FspInitiatorState::Established {
+                            do_send_ping(
+                                transport, fsp, &dg_body, sender_idx,
+                                &mut fmp_ctr, &mut fsp_ctr, &ks,
+                            ).await;
+                        }
+                    }
+                }
+                if now >= fsp_start {
+                    fsp_start = embassy_time::Instant::now() + Duration::from_secs(3600);
+                    if let Some(ref mut fsp) = handler.fsp {
+                        if fsp.state() == FspInitiatorState::Idle {
+                            do_fsp_setup(
+                                fsp,
+                                &dg_body,
+                                sender_idx,
+                                &mut fmp_ctr,
+                                &ks,
+                                transport,
+                            ).await;
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+async fn do_fsp_setup(
+    fsp: &mut FspInitiatorSession,
+    dg_body: &[u8; SESSION_DATAGRAM_BODY_SIZE],
+    sender_idx: u32,
+    fmp_ctr: &mut u64,
+    ik_k_send: &[u8; 32],
+    transport: &mut UartTransport,
+) {
+    let mut setup_buf = [0u8; 512];
+    let setup_len = match fsp.build_setup(&ESP32_NODE_ADDR, &STM32_NODE_ADDR, &mut setup_buf) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    STAT_FSP_SETUP_TX.fetch_add(1, Ordering::Relaxed);
+
+    let mut dg = [0u8; 1024];
+    dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(dg_body);
+    let pl = setup_len.min(dg.len() - SESSION_DATAGRAM_BODY_SIZE);
+    dg[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + pl].copy_from_slice(&setup_buf[..pl]);
+    let dg_len = SESSION_DATAGRAM_BODY_SIZE + pl;
+
+    let mut fmp_out = [0u8; 1024];
+    if let Some(fmp_len) = fmp::build_established(
+        sender_idx,
+        *fmp_ctr,
+        fmp::MSG_SESSION_DATAGRAM,
+        embassy_time::Instant::now().as_millis() as u32,
+        &dg[..dg_len],
+        ik_k_send,
+        &mut fmp_out,
+    ) {
+        *fmp_ctr += 1;
+        let _ = send_frame(transport, &fmp_out[..fmp_len]).await;
+    }
+}
+
+async fn handle_incoming_fsp(
+    fsp: &mut FspInitiatorSession,
+    payload: &[u8],
+    dg_body: &[u8; SESSION_DATAGRAM_BODY_SIZE],
+    sender_idx: u32,
+    fmp_ctr: &mut u64,
+    _fsp_ctr: &mut u64,
+    ik_k_send: &[u8; 32],
+    transport: &mut UartTransport,
+) {
+    if payload.len() < SESSION_DATAGRAM_BODY_SIZE {
+        return;
+    }
+    let fsp_data = &payload[SESSION_DATAGRAM_BODY_SIZE..];
+    if fsp_data.is_empty() {
+        return;
+    }
+    let fsp_phase = fsp_data[0] & 0x0F;
+
+    match fsp.state() {
+        FspInitiatorState::AwaitingAck => {
+            if fsp_phase == 0x02 {
+                if fsp.handle_ack(fsp_data).is_ok() {
+                    STAT_FSP_ACK_RX.fetch_add(1, Ordering::Relaxed);
+                    let mut msg3_buf = [0u8; 512];
+                    if let Ok(msg3_len) = fsp.build_msg3(&FSP_EPOCH, &mut msg3_buf) {
+                        STAT_FSP_MSG3_TX.fetch_add(1, Ordering::Relaxed);
+                        let mut fmp_out = [0u8; 1024];
+                        if let Some(fmp_len) = send_fsp_datagram_frame(
+                            sender_idx,
+                            fmp_ctr,
+                            dg_body,
+                            &msg3_buf[..msg3_len],
+                            ik_k_send,
+                            &mut fmp_out,
+                        ) {
+                            let _ = send_frame(transport, &fmp_out[..fmp_len]).await;
+                        }
+                        STAT_FSP_ESTABLISHED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        FspInitiatorState::Established => {
+            if fsp_phase == 0x00 {
+                let Some((flags, counter, header, encrypted)) =
+                    parse_fsp_encrypted_header(fsp_data)
+                else {
+                    return;
+                };
+                if flags & 0x04 != 0 {
+                    return;
+                }
+                let (_k_recv, _k_send) = fsp.session_keys().unwrap();
+                let mut dec = [0u8; 512];
+                if let Ok(dl) = noise::aead_decrypt(&_k_send, counter, header, encrypted, &mut dec) {
+                    if let Some((_ts2, _msg_type2, _flags2, payload2)) =
+                        fsp_strip_inner_header(&dec[..dl])
+                    {
+                        if payload2 == b"PONG" {
+                            STAT_PONG_RX.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fsp_strip_inner_header(data: &[u8]) -> Option<(u32, u8, u8, &[u8])> {
+    microfips_core::fsp::fsp_strip_inner_header(data)
 }
 
 async fn send_heartbeat(
@@ -397,6 +607,53 @@ async fn send_heartbeat(
     embassy_time::Instant::now() + Duration::from_secs(HB_SECS)
 }
 
+async fn do_send_ping(
+    transport: &mut UartTransport,
+    fsp: &FspInitiatorSession,
+    dg_body: &[u8; SESSION_DATAGRAM_BODY_SIZE],
+    sender_idx: u32,
+    fmp_ctr: &mut u64,
+    fsp_ctr: &mut u64,
+    ik_k_send: &[u8; 32],
+) {
+    let (_k_recv, k_send) = match fsp.session_keys() {
+        Some(keys) => keys,
+        None => return,
+    };
+    STAT_PING_TX.fetch_add(1, Ordering::Relaxed);
+
+    let ping = b"PING";
+    let ts = embassy_time::Instant::now().as_millis() as u32;
+    let mut plaintext = [0u8; 512];
+    let inner = fsp_prepend_inner_header(ts, FSP_MSG_DATA, 0x00, ping, &mut plaintext);
+    let header = build_fsp_header(*fsp_ctr, 0x00, (inner + noise::TAG_SIZE) as u16);
+    let mut ciphertext = [0u8; 512];
+    let cl = noise::aead_encrypt(
+        &k_send,
+        *fsp_ctr,
+        &header,
+        &plaintext[..inner],
+        &mut ciphertext,
+    )
+    .unwrap();
+    *fsp_ctr += 1;
+    let mut pkt = [0u8; 512];
+    build_fsp_encrypted(&header, &ciphertext[..cl], &mut pkt);
+    let fsp_payload = &pkt[..FSP_HEADER_SIZE + cl];
+
+    let mut fmp_out = [0u8; 1024];
+    if let Some(fmp_len) = send_fsp_datagram_frame(
+        sender_idx,
+        fmp_ctr,
+        dg_body,
+        fsp_payload,
+        ik_k_send,
+        &mut fmp_out,
+    ) {
+        let _ = send_frame(transport, &fmp_out[..fmp_len]).await;
+    }
+}
+
 #[esp_rtos::main]
 async fn main(_spawner: embassy_executor::Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
@@ -408,11 +665,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut led = Led(Output::new(peripherals.GPIO2, Level::Low, esp_hal::gpio::OutputConfig::default()));
 
     let _trng_source = esp_hal::rng::TrngSource::new(peripherals.RNG, peripherals.ADC1);
-    let trng = Trng::try_new().unwrap();
-
-    let mut fsp_ephemeral = [0u8; 32];
-    trng.read(&mut fsp_ephemeral);
-    let mut rng = trng;
+    let _trng = Trng::try_new().unwrap();
 
     let uart_config = Config::default()
         .with_rx(RxConfig::default().with_fifo_full_threshold(64))
@@ -427,10 +680,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     let mut handler = EspHandler {
         led: &mut led,
-        fsp_session: FspSession::new(),
-        fsp_ephemeral,
-        fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
+        fsp: None,
     };
 
-    run_fips(&mut transport, &mut rng, &mut handler).await;
+    run_fips(&mut transport, &mut Trng::try_new().unwrap(), &mut handler).await;
 }
