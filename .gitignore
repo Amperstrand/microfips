@@ -7,3 +7,5 @@ probe-rs/
 .env
 __pycache__/
 *.pyc
+# ESP32 device credentials — gitignored, copy from secrets.rs.example
+crates/microfips-esp32/src/secrets.rs

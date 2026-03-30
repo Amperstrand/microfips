@@ -53,38 +53,69 @@ Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
 ## Architecture
 
 ```
-  STM32F469I-DISCO          Host (Linux)               VPS
-  +----------------+    +-------------------+    +------------------+
-  | microfips fw   |    | serial_tcp_proxy  |    | fips_bridge.py   |
-  |                |CDC | (auto-detect MCU) |TCP | --tcp localhost  |
-  | FIPS protocol  |<-->|                   |<-->|                  |
-  | Noise_IK       |    | serial <-> TCP    |SSH | UDP <-> TCP      |
-  | FMP framing    |    |                   |-R  |                  |
-  | Heartbeats     |    +-------------------+    +--------+---------+
-  +----------------+                                     |
-         ^                                              | UDP
-         | USB OTG FS                                   v
-    /dev/ttyACM*                                  +------------------+
-                                                   | FIPS daemon     |
-                                                   | port 2121       |
-                                                   +------------------+
+  [ESP32 WiFi mode]                                         VPS
+  ESP32 --WiFi--------------------------------------------------> FIPS daemon
+            UDP port 2121 (raw FMP frames, no bridge)              port 2121
+
+  [Serial mode -- STM32 or ESP32]
+  MCU                    Host (Linux)               VPS
+  +----------------+  +--------------------+  +------------------+
+  | microfips fw   |  | serial_udp_bridge  |  |                  |
+  |                |<>| (auto-detect MCU)  |<>| FIPS daemon      |
+  | FIPS protocol  |  | serial <-> UDP     |  | port 2121        |
+  | Noise_IK       |  +--------------------+  +------------------+
+  | FMP framing    |
+  +----------------+
 ```
 
-The bridge **must** run on the VPS because FIPS replies to the UDP packet's source
-address. A local bridge would cause FIPS to reply to our public IP (unreachable).
-When the bridge runs on the VPS, FIPS sees the source as `127.0.0.1:31337`,
-which matches the configured peer address, so replies route correctly through
-the SSH tunnel.
+**ESP32 (WiFi mode):** Connects directly to the FIPS VPS via UDP over WiFi -- no bridge
+or host PC needed. Each UDP datagram = one raw FMP frame.
 
-All data over CDC ACM uses **length-prefixed frames**: `[2-byte LE length][payload]`.
+**ESP32/STM32 (serial mode):** Length-prefixed CDC/UART frames forwarded by
+`serial_udp_bridge.py` on the host. Required when WiFi is unavailable or not configured.
 
-## MCU Identity
+### ESP32 credential setup (`secrets.rs`)
 
+All device-specific credentials live in a gitignored file:
+`crates/microfips-esp32/src/secrets.rs`
+
+```sh
+cp crates/microfips-esp32/src/secrets.rs.example \
+   crates/microfips-esp32/src/secrets.rs
+# then edit the file with your values:
+$EDITOR crates/microfips-esp32/src/secrets.rs
 ```
-Secret:  ac68af89462e7ed26ff670c186b4eeb53c4e82d72c8ef6cec4e676c7843f832e
-Pubkey:  02633860dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842
-npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
-```
+
+| Constant | Description | Example |
+|----------|-------------|---------|
+| `WIFI_SSID` | WiFi network name. **Leave empty `""` to skip WiFi and use serial UART.** | `"MyNetwork"` |
+| `WIFI_PASS` | WPA2 password | `"hunter2"` |
+| `FIPS_HOST` | FIPS VPS IP address (dotted-quad -- DNS not yet implemented) | `"165.22.195.26"` |
+| `FIPS_PORT` | FIPS VPS UDP port | `2121` |
+| `DEVICE_SECRET` | 32-byte identity secret key (generate with `--keygen`, see below) | `[0x00, ..., 0x02]` |
+| `MY_NODE_ADDR` | 16-byte node address derived from `DEVICE_SECRET` | `[0x01, 0x35, ...]` |
+| `PEER_PUB` | 33-byte compressed pubkey of the peer (STM32) | `[0x02, 0x79, ...]` |
+| `PEER_NODE_ADDR` | 16-byte node address of the peer (STM32) | `[0x13, 0x2f, ...]` |
+| `DEVICE_ALIAS` | Friendly name printed at boot | `"esp32-leaf"` |
+
+**Boot sequence:**
+1. If `WIFI_SSID` is non-empty -- attempt WiFi (15s association timeout + 20s DHCP timeout)
+2. If WiFi succeeds -- run FIPS over UDP directly to VPS (no bridge/host needed)
+3. If WiFi fails or `WIFI_SSID` is empty -- fall back to serial UART + `serial_udp_bridge.py`
+
+## MCU Identities (deterministic pattern keys)
+
+| MCU | Secret (last byte) | npub | node_addr |
+|-----|-------------------|------|-----------|
+| STM32 (`DEFAULT_SECRET`) | `...0x01` | `npub10xlxvlhemwtlxywh66s5xdtsgnfzqsvqkxnkjrfp2q5tml4dhmaqpj9tnz` | `132f39a98c31baaddba6525f5d43f295` |
+| ESP32 (`DEVICE_SECRET` in `secrets.rs`) | `...0x02` | `npub1ccz8l9zpa47k6vz9gphftsrumpw80rjt3nhnefat4symjhrsnmjs38mnyd` | `0135da2f8acf7b9e3090939432e47684` |
+| SIM-A | `...0x03` | `npub1lycg5qvsknxwrrrhlmdyxz0lwnge7w36lj7hm5n56grnz4p6fdsswcekyz` | `7c79f3071e28344e8153bf6c73c294eb` |
+| SIM-B | `...0x04` | `npub1ujfahuwpn0fpf5j0jzm33fzs78g5jxdxelp5vms4qkd0w4uq3j6s7dtujw` | `36be1ea4d814af2888b895065a0b2538` |
+| VPS | (DEFAULT_PEER_PUB) | `npub1wwsqf76nzh9jfm96jhxw3rge7yvwdj3vgzxcwt2lrn5wre52w80qhf8xt0` | `73a004fb58cb41616c2b5ef4bd801a9b` |
+
+All keys use the secp256k1 generator point multiplied by N (1..5). Verified by
+`audit_all_hardcoded_keys` test in `microfips-core`. To use custom keys see
+`Key generation` below and set `DEVICE_SECRET` in `secrets.rs`.
 
 ## Testing
 
@@ -241,10 +272,14 @@ microfips/
   AGENTS.md                     # Build/flash/test/debug reference
   rust-toolchain.toml           # Nightly Rust (no pinned date)
   crates/
-    microfips/                  # MCU firmware (package name: microfips)
+    microfips/                  # STM32F469 firmware (USB CDC ACM transport)
       build.rs                  # Linker flags: --nmagic, -Tlink.x
       .cargo/config.toml        # probe-rs runner config (local debug only)
       src/main.rs               # FIPS leaf node firmware (4-LED state machine)
+    microfips-esp32/            # ESP32 firmware (WiFi UDP or UART serial transport)
+      src/main.rs               # FIPS leaf node firmware (WiFi-first, UART fallback)
+      src/secrets.rs.example    # Credential template -- copy to secrets.rs (gitignored)
+      src/secrets.rs            # [gitignored] WIFI_SSID, WIFI_PASS, FIPS_HOST, keys
     microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, identity
     microfips-link/             # Host-side handshake test (UDP, --keygen, env var keys)
     microfips-sim/              # Host-side simulator using Node from microfips-protocol
