@@ -216,7 +216,7 @@ cp crates/microfips-esp32/src/secrets.rs.example \
    crates/microfips-esp32/src/secrets.rs
 ```
 
-Set these values in `secrets.rs`:
+Set these values in `secrets.rs` (**never commit this file** — it is gitignored):
 
 ```rust
 pub const WIFI_SSID: &str = "YourWiFiNetwork";   // your WiFi SSID
