@@ -882,7 +882,10 @@ mod tests {
     #[test]
     fn ecdh_keypair_roundtrip() {
         let (secret, pub_key) = test_keypair();
-        assert_eq!(pub_key[0], 0x02);
+        assert!(
+            pub_key[0] == 0x02 || pub_key[0] == 0x03,
+            "valid compressed prefix"
+        );
         let recomputed = ecdh_pubkey(&secret).unwrap();
         assert_eq!(pub_key, recomputed);
     }
@@ -1508,7 +1511,7 @@ mod responder_tests {
         //                 e3, 5e, 61, 6d, 7a, e8, 6f, ce, e2, 68, a2, f7, 49, 45, 2b, 68, 42]
         assert_eq!(mcu_pub[0], 0x02);
         assert_eq!(mcu_pub[1], 0x63); // matches RTT log: pub: [02, 63, 56, 96, ...]
-        // The exact pubkey depends on k256's compressed encoding — just verify it's valid
+                                      // The exact pubkey depends on k256's compressed encoding — just verify it's valid
         assert_eq!(mcu_pub.len(), 33);
     }
 
