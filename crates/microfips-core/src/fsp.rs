@@ -1,35 +1,73 @@
+//! FIPS Session Protocol (FSP) — session-layer protocol over FMP in FIPS.
+//!
+//! Reference commit: `bd085050022ef298b9fd918824e7d983c079ae3c`
+//!
+//! Key FIPS source files:
+//! - `session_wire.rs` — wire format definitions, header parsing/serialization
+//! - `session.rs` — SessionSetup/SessionAck/SessionMsg3 encode/decode, session state
+//! - `link.rs` — SessionDatagram framing, forwarding logic
+//! - `forwarding.rs` — session datagram routing between peers
+//! - `handlers/session.rs` — responder/initiator state machines, handshake orchestration
+//!
+//! This module implements a minimal subset of FSP: XK handshake (3-way), session
+//! datagram framing, and encrypted data exchange with inner headers.
+
+/// FIPS: session_wire.rs:43
 pub const FSP_VERSION: u8 = 0;
+/// FIPS: session_wire.rs:58
 pub const FSP_COMMON_PREFIX_SIZE: usize = 4;
+/// FIPS: session_wire.rs:61
 pub const FSP_HEADER_SIZE: usize = 12;
+/// FIPS: session_wire.rs:64
 pub const FSP_INNER_HEADER_SIZE: usize = 6;
+/// FIPS: session_wire.rs:70
 pub const FSP_ENCRYPTED_MIN_SIZE: usize = 28;
 
+/// FIPS: session_wire.rs:78
 pub const FSP_PORT_IPV6_SHIM: u16 = 256;
 
+/// FIPS: mod.rs:83
 pub const XK_HANDSHAKE_MSG1_SIZE: usize = 33;
+/// FIPS: mod.rs:86
 pub const XK_HANDSHAKE_MSG2_SIZE: usize = 57;
+/// FIPS: mod.rs:89
 pub const XK_HANDSHAKE_MSG3_SIZE: usize = 73;
 
+/// FIPS: session_wire.rs:46
 pub const PHASE_ESTABLISHED: u8 = 0x00;
+/// FIPS: session_wire.rs:49
 pub const PHASE_SESSION_SETUP: u8 = 0x01;
+/// FIPS: session_wire.rs:52
 pub const PHASE_SESSION_ACK: u8 = 0x02;
+/// FIPS: session_wire.rs:55
 pub const PHASE_SESSION_MSG3: u8 = 0x03;
 
+/// FIPS: session.rs:24
 pub const FSP_MSG_DATA: u8 = 0x10;
 
+/// FIPS: session_wire.rs:83
 pub const FLAG_COORDS_PRESENT: u8 = 0x01;
+/// FIPS: session_wire.rs:87
 pub const FLAG_KEY_EPOCH: u8 = 0x02;
+/// FIPS: session_wire.rs:90
 pub const FLAG_UNENCRYPTED: u8 = 0x04;
 
+/// Configuration constant (not in wire format)
 pub const FIPS_UDP_PORT: u16 = 2121;
+/// Configuration constant
 pub const FIPS_IPV6_OVERHEAD: usize = 77;
 
+/// FIPS: session_wire.rs:75
 pub const FSP_DATAGRAM_HEADER_SIZE: usize = 4;
+/// 16 bytes, standard NodeAddr size
 pub const NODE_ADDR_SIZE: usize = 16;
 
+/// FIPS: link.rs:355-378 (35 bytes: ttl+mtu+src+dst)
 pub const SESSION_DATAGRAM_BODY_SIZE: usize = 35;
+/// FIPS: link.rs:301 (36 bytes: msg_type+body)
 pub const SESSION_DATAGRAM_HEADER_SIZE: usize = 36;
 
+/// FIPS: link.rs:343-352 SessionDatagram::encode()
 pub fn build_session_datagram_body(
     src: &[u8; NODE_ADDR_SIZE],
     dst: &[u8; NODE_ADDR_SIZE],
@@ -68,6 +106,7 @@ fn fsp_prefix(phase: u8, flags: u8, payload_len: u16) -> [u8; FSP_COMMON_PREFIX_
     ]
 }
 
+/// FIPS: session.rs:384-402 SessionSetup::encode()
 pub fn build_session_setup(
     session_flags: u8,
     src_coords: &[[u8; NODE_ADDR_SIZE]],
@@ -119,6 +158,7 @@ pub fn build_session_setup(
     Ok(pos)
 }
 
+/// FIPS: session.rs:405-444 SessionSetup::decode()
 pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -163,6 +203,7 @@ pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
     Ok((session_flags, &body[pos..pos + hs_len]))
 }
 
+/// FIPS: session.rs:504-522 SessionAck::encode()
 pub fn build_session_ack(
     src_coords: &[[u8; NODE_ADDR_SIZE]],
     dest_coords: &[[u8; NODE_ADDR_SIZE]],
@@ -213,6 +254,7 @@ pub fn build_session_ack(
     Ok(pos)
 }
 
+/// FIPS: session.rs:525-564 SessionAck::decode()
 pub fn parse_session_ack(data: &[u8]) -> Result<&[u8], FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -257,6 +299,7 @@ pub fn parse_session_ack(data: &[u8]) -> Result<&[u8], FspError> {
     Ok(&body[pos..pos + hs_len])
 }
 
+/// FIPS: session.rs:605-621 SessionMsg3::encode()
 pub fn build_session_msg3(handshake: &[u8], out: &mut [u8]) -> Result<usize, FspError> {
     let body_len = 1 + 2 + handshake.len();
     let total = FSP_COMMON_PREFIX_SIZE + body_len;
@@ -278,6 +321,7 @@ pub fn build_session_msg3(handshake: &[u8], out: &mut [u8]) -> Result<usize, Fsp
     Ok(pos)
 }
 
+/// FIPS: session.rs:624-655 SessionMsg3::decode()
 pub fn parse_session_msg3(data: &[u8]) -> Result<&[u8], FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -304,6 +348,7 @@ pub fn parse_session_msg3(data: &[u8]) -> Result<&[u8], FspError> {
     Ok(&body[3..3 + hs_len])
 }
 
+/// FIPS: session_wire.rs:75 (port header)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FspDatagram<'a> {
     pub src_port: u16,
@@ -336,6 +381,7 @@ impl<'a> FspDatagram<'a> {
     }
 }
 
+/// FIPS: session.rs:276-279 (IPv6 shim decompression)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv6Shim<'a> {
     pub next_header: u8,
@@ -374,6 +420,7 @@ impl<'a> Ipv6Shim<'a> {
     }
 }
 
+/// FIPS: session_wire.rs:245-256
 pub fn build_fsp_header(counter: u64, flags: u8, payload_len: u16) -> [u8; FSP_HEADER_SIZE] {
     let mut header = [0u8; FSP_HEADER_SIZE];
     header[0] = fsp_prefix_byte(PHASE_ESTABLISHED);
@@ -383,6 +430,7 @@ pub fn build_fsp_header(counter: u64, flags: u8, payload_len: u16) -> [u8; FSP_H
     header
 }
 
+/// FIPS: session_wire.rs:262-267
 pub fn build_fsp_encrypted(
     header: &[u8; FSP_HEADER_SIZE],
     ciphertext: &[u8],
@@ -397,6 +445,7 @@ pub fn build_fsp_encrypted(
     total
 }
 
+/// FIPS: session_wire.rs:305-317
 pub fn fsp_prepend_inner_header(
     timestamp_ms: u32,
     msg_type: u8,
@@ -415,6 +464,7 @@ pub fn fsp_prepend_inner_header(
     total
 }
 
+/// FIPS: session_wire.rs:322-332
 pub fn fsp_strip_inner_header(data: &[u8]) -> Option<(u32, u8, u8, &[u8])> {
     if data.len() < FSP_INNER_HEADER_SIZE {
         return None;
@@ -430,6 +480,7 @@ pub fn fsp_strip_inner_header(data: &[u8]) -> Option<(u32, u8, u8, &[u8])> {
     ))
 }
 
+/// FIPS: session_wire.rs:190-224 FspEncryptedHeader::parse()
 pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])> {
     if data.len() < FSP_ENCRYPTED_MIN_SIZE {
         return None;
@@ -503,6 +554,7 @@ impl From<NoiseError> for FspSessionError {
     }
 }
 
+/// FIPS: handlers/session.rs:361-823 (full responder flow)
 pub struct FspSession {
     state: FspSessionState,
     responder: Option<NoiseXkResponder>,
@@ -534,6 +586,7 @@ impl FspSession {
         self.initiator_pub
     }
 
+    /// FIPS: handlers/session.rs:361-541
     pub fn handle_setup(
         &mut self,
         my_secret: &[u8; 32],
@@ -577,9 +630,13 @@ impl FspSession {
         self.responder = Some(responder);
         self.state = FspSessionState::AwaitingMsg3;
 
+        #[cfg(feature = "std")]
+        log::debug!("FSP session: setup processed, SessionAck sent, awaiting msg3");
+
         Ok(ack_len)
     }
 
+    /// FIPS: handlers/session.rs:706-823
     pub fn handle_msg3(&mut self, msg3_data: &[u8]) -> Result<(), FspSessionError> {
         if self.state != FspSessionState::AwaitingMsg3 {
             return Err(FspSessionError::InvalidState);
@@ -605,6 +662,9 @@ impl FspSession {
         self.initiator_pub = Some(initiator_static_pub);
         self.responder = None;
         self.state = FspSessionState::Established;
+
+        #[cfg(feature = "std")]
+        log::info!("FSP session: established (responder, XK)");
 
         Ok(())
     }
@@ -656,6 +716,7 @@ impl From<FspError> for FspInitiatorError {
     }
 }
 
+/// FIPS: handlers/session.rs:546-698 (initiator flow)
 pub struct FspInitiatorSession {
     state: FspInitiatorState,
     initiator: Option<NoiseXkInitiator>,
@@ -693,6 +754,7 @@ impl FspInitiatorSession {
         self.k_recv.zip(self.k_send)
     }
 
+    /// FIPS: handlers/session.rs:1126-1174 initiate_session()
     pub fn build_setup(
         &mut self,
         src_addr: &[u8; NODE_ADDR_SIZE],
@@ -714,9 +776,14 @@ impl FspInitiatorSession {
         let setup_len =
             build_session_setup(0x03, &src_coords, &dst_coords, &xk_msg1[..xk_msg1_len], out)?;
         self.state = FspInitiatorState::AwaitingAck;
+
+        #[cfg(feature = "std")]
+        log::debug!("FSP initiator: setup sent ({}B), awaiting ack", setup_len);
+
         Ok(setup_len)
     }
 
+    /// FIPS: handlers/session.rs:546-699 handle_session_ack()
     pub fn handle_ack(&mut self, ack_data: &[u8]) -> Result<(), FspInitiatorError> {
         if self.state != FspInitiatorState::AwaitingAck {
             return Err(FspInitiatorError::InvalidState);
@@ -729,9 +796,14 @@ impl FspInitiatorSession {
             .ok_or(FspInitiatorError::InvalidState)?;
         let _responder_epoch = initiator.read_message2(xk_msg2_payload)?;
         self.state = FspInitiatorState::AwaitingEstablished;
+
+        #[cfg(feature = "std")]
+        log::debug!("FSP initiator: ack received, sending msg3");
+
         Ok(())
     }
 
+    /// FIPS: handlers/session.rs:656-674
     pub fn build_msg3(
         &mut self,
         epoch: &[u8; EPOCH_SIZE],
@@ -748,6 +820,10 @@ impl FspInitiatorSession {
         let msg3_len = initiator.write_message3(&self.my_pub, epoch, &mut msg3_noise)?;
         let msg3_fsp_len = build_session_msg3(&msg3_noise[..msg3_len], out)?;
         self.state = FspInitiatorState::Established;
+
+        #[cfg(feature = "std")]
+        log::info!("FSP initiator: established (XK)");
+
         let (k_send, k_recv) = initiator.finalize();
         self.k_send = Some(k_send);
         self.k_recv = Some(k_recv);
@@ -778,6 +854,7 @@ pub enum FspHandlerError {
     UnknownPhase,
 }
 
+/// FIPS: handlers/session.rs:41-98 handle_session_payload() + forwarding.rs:25-123 handle_session_datagram()
 pub fn handle_fsp_datagram(
     session: &mut FspSession,
     secret: &[u8; 32],
@@ -802,6 +879,14 @@ pub fn handle_fsp_datagram(
         return Ok(FspHandlerResult::None);
     }
     let fsp_phase = fsp_data[0] & 0x0F;
+    #[cfg(feature = "std")]
+    log::debug!(
+        "FSP datagram: src={:02x?} dst={:02x?} phase=0x{:02x} session_state={:?}",
+        &src_addr[..4],
+        &dst_addr[..4],
+        fsp_phase,
+        session.state()
+    );
     match fsp_phase {
         PHASE_SESSION_SETUP => {
             let mut tmp = [0u8; 512];

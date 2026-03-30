@@ -11,11 +11,13 @@ chacha20poly1305 = { version = "0.10", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 hmac = { version = "0.12", default-features = false }
 hex = { version = "0.4", optional = true }
+log = { version = "0.4", optional = true }
 
 [dev-dependencies]
 hex = "0.4"
 rand = "0.9"
+log = "0.4"
 
 [features]
 default = []
-std = ["sha2/std", "k256/std", "chacha20poly1305/std", "hkdf/std", "hmac/std", "hex"]
+std = ["sha2/std", "k256/std", "chacha20poly1305/std", "hkdf/std", "hmac/std", "hex", "log"]

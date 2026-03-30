@@ -1,31 +1,67 @@
+//! FMP (FIPS Messaging Protocol) — link-layer framing for FIPS.
+//!
+//! Reference implementation: FIPS commit [`bd085050`](https://github.com/nickeltech/fips/commit/bd085050022ef298b9fd918824e7d983c079ae3c),
+//! source path `/root/src/fips/src/node/wire.rs` (and `noise/mod.rs` / `link.rs` where noted).
+//!
+//! # Deviations from FIPS
+//!
+//! | ID | Field | microfips | FIPS | Impact |
+//! |----|-------|-----------|------|--------|
+//! | N1 | `payload_len` in established phase | `4+8+inner_len+16` (total post-prefix wire size) | `inner_len` (plaintext size before encryption) | Field is `#[allow(dead_code)]` in FIPS and never validated. No functional impact. |
+//! | N2 | `path_mtu` default | hardcoded 1400 | `u16::MAX` | FIPS caps during forwarding. No functional impact. |
+//! | N3 | `session_flags` | initiator sends 0x03 | defaults to 0x00 | FIPS doesn't validate flags. No functional impact. |
+
+/// FIPS: wire.rs:28
 pub const FMP_VERSION: u8 = 0;
+/// FIPS: wire.rs:40
 pub const COMMON_PREFIX_SIZE: usize = 4;
+/// FIPS: inline in wire.rs (4 bytes for u32 peer index)
 pub const IDX_SIZE: usize = 4;
+/// FIPS: wire.rs:43
 pub const ESTABLISHED_HEADER_SIZE: usize = 16;
+/// FIPS: wire.rs:55
 pub const INNER_HEADER_SIZE: usize = 5; // 4-byte timestamp + at least 1 byte msg_type
+/// FIPS: wire.rs:52
 pub const ENCRYPTED_MIN_SIZE: usize = 32;
 
+/// FIPS: noise/mod.rs:77
 pub const HANDSHAKE_MSG1_SIZE: usize = 106;
+/// FIPS: noise/mod.rs:80
 pub const HANDSHAKE_MSG2_SIZE: usize = 57;
+/// FIPS: noise/mod.rs:74
 pub const EPOCH_ENCRYPTED_SIZE: usize = 24;
 
+/// FIPS: wire.rs:46
 pub const MSG1_WIRE_SIZE: usize = 114;
+/// FIPS: wire.rs:49
 pub const MSG2_WIRE_SIZE: usize = 69;
 
+/// FIPS: wire.rs:31
 pub const PHASE_ESTABLISHED: u8 = 0x00;
+/// FIPS: wire.rs:34
 pub const PHASE_MSG1: u8 = 0x01;
+/// FIPS: wire.rs:37
 pub const PHASE_MSG2: u8 = 0x02;
 
+/// FIPS: link.rs:101
 pub const MSG_HEARTBEAT: u8 = 0x51;
+/// FIPS: link.rs:74
 pub const MSG_SESSION_DATAGRAM: u8 = 0x00;
+/// FIPS: link.rs:78
 pub const MSG_SENDER_REPORT: u8 = 0x01;
+/// FIPS: link.rs:80
 pub const MSG_RECEIVER_REPORT: u8 = 0x02;
+/// FIPS: link.rs:98
 pub const MSG_DISCONNECT: u8 = 0x50;
 
+/// FIPS: wire.rs:61
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
+/// FIPS: wire.rs:64
 pub const FLAG_CONGESTION: u8 = 0x02;
+/// FIPS: wire.rs:67
 pub const FLAG_SPIN: u8 = 0x04;
 
+/// FIPS: wire.rs:73-193 (EncryptedHeader, Msg1Header, Msg2Header)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FmpMessage<'a> {
     Msg1 {
@@ -44,11 +80,13 @@ pub enum FmpMessage<'a> {
     },
 }
 
+/// FIPS: wire.rs:114-116 ver_phase_byte()
 pub fn build_prefix(phase: u8, flags: u8, payload_len: u16) -> [u8; COMMON_PREFIX_SIZE] {
     let byte0 = (FMP_VERSION << 4) | (phase & 0x0F);
     [byte0, flags, payload_len as u8, (payload_len >> 8) as u8]
 }
 
+/// FIPS: wire.rs:95-117 CommonPrefix::parse()
 pub fn parse_prefix(data: &[u8]) -> Option<(u8, u8, u16)> {
     if data.len() < COMMON_PREFIX_SIZE {
         return None;
@@ -63,6 +101,7 @@ pub fn parse_prefix(data: &[u8]) -> Option<(u8, u8, u16)> {
     Some((phase, flags, payload_len))
 }
 
+/// FIPS: wire.rs:314-326 build_msg1()
 pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> Option<usize> {
     let needed = COMMON_PREFIX_SIZE + IDX_SIZE + noise_payload.len();
     if out.len() < needed {
@@ -77,6 +116,7 @@ pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> Opti
     Some(needed)
 }
 
+/// FIPS: wire.rs:331-344 build_msg2()
 pub fn build_msg2(
     sender_idx: u32,
     receiver_idx: u32,
@@ -98,6 +138,7 @@ pub fn build_msg2(
     Some(needed)
 }
 
+/// FIPS: wire.rs:349-362 build_established_header() + noise/mod.rs:1578-1663 send_encrypted_link_message_with_ce()
 pub fn build_established(
     receiver_idx: u32,
     counter: u64,
@@ -111,6 +152,15 @@ pub fn build_established(
     let encrypted_len = inner_len + crate::noise::TAG_SIZE;
     let payload_len = IDX_SIZE + 8 + encrypted_len;
     let total = COMMON_PREFIX_SIZE + payload_len;
+
+    #[cfg(feature = "std")]
+    log::debug!(
+        "FMP build_established: msg_type=0x{:02x} counter={} inner_len={} total={}",
+        msg_type,
+        counter,
+        inner_len,
+        total
+    );
 
     if out.len() < total {
         return None;
@@ -129,15 +179,6 @@ pub fn build_established(
     outer_header[..pos].copy_from_slice(&out[..pos]);
     let outer_header_ref = &outer_header[..pos];
 
-    // Build inner plaintext directly in the output buffer (after ciphertext area)
-    // to avoid a separate large stack allocation.
-    // Layout in out: [prefix:4][idx:4][ctr:8][ciphertext:enc_len]
-    // We need a temporary for the inner plaintext since aead_encrypt reads from
-    // one buffer and writes to another. Use a stack buffer sized to the actual need.
-    let max_inner = out.len().saturating_sub(pos + encrypted_len);
-    if max_inner < inner_len {
-        return None;
-    }
     let mut inner = [0u8; 512];
     inner[..4].copy_from_slice(&timestamp.to_le_bytes());
     inner[4] = msg_type;
@@ -158,9 +199,17 @@ pub fn build_established(
     Some(total)
 }
 
+/// FIPS: wire.rs:151-305 (EncryptedHeader::parse, Msg1Header::parse, Msg2Header::parse)
 pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
     let (phase, _flags, _payload_len) = parse_prefix(data)?;
     let payload = &data[COMMON_PREFIX_SIZE..];
+
+    #[cfg(feature = "std")]
+    log::debug!(
+        "FMP parse_message: phase=0x{:02x} data_len={}",
+        phase,
+        data.len()
+    );
 
     match phase {
         PHASE_MSG1 => {
@@ -497,7 +546,7 @@ mod tests {
     #[test]
     fn noise_ik_initiator_msg1_exact_size() {
         // Full Noise IK initiator produces exactly 106 bytes for write_message1
-        use crate::noise::{EPOCH_SIZE, NoiseIkInitiator, PUBKEY_SIZE};
+        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE};
         let eph_secret = [0x01u8; 32];
         let s_secret = [0x11u8; 32];
         let responder_pub = [0x02u8; PUBKEY_SIZE];
@@ -516,7 +565,7 @@ mod tests {
     #[test]
     fn parse_msg1_noise_payload_sections() {
         // Build a real MSG1, parse it, verify noise_payload has correct structure
-        use crate::noise::{EPOCH_SIZE, NoiseIkInitiator, PUBKEY_SIZE, TAG_SIZE};
+        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE, TAG_SIZE};
         let eph_secret = [0x01u8; 32];
         let s_secret = [0x11u8; 32];
         let responder_pub = [0x02u8; PUBKEY_SIZE];

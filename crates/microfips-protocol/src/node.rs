@@ -302,6 +302,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
     }
 
+    /// Encrypt and send a session datagram via FMP established frame.
+    /// FIPS: mod.rs:1578-1663 send_encrypted_link_message_with_ce() —
+    /// prepend_inner_header(timestamp, plaintext) → build_established_header →
+    /// encrypt_with_aad(header as AAD) → transport.send().
     async fn send_datagram(
         &mut self,
         them: u32,
@@ -328,6 +332,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
     }
 
+    /// Send a heartbeat via FMP established frame.
+    /// FIPS: Same send path as send_datagram, with MSG_HEARTBEAT (0x51) and empty payload.
+    /// FIPS: dispatch.rs:54 traces "Received heartbeat" on rx.
     async fn send_heartbeat(
         &mut self,
         ks: &[u8; 32],
@@ -466,6 +473,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     }
 }
 
+/// Decrypt and dispatch a single FMP established frame.
+/// FIPS: handlers/encrypted.rs:23-171 handle_encrypted_frame() → AEAD decrypt with
+/// 16-byte header as AAD → strip_inner_header → dispatch_link_message.
+/// Our implementation combines the decrypt + dispatch into one function.
 fn handle_frame_inner<H: NodeHandler>(
     kr: &[u8; 32],
     data: &[u8],
@@ -494,6 +505,8 @@ fn handle_frame_inner<H: NodeHandler>(
                 return FrameAction::Continue;
             }
             let msg_type = dec[4];
+            #[cfg(feature = "std")]
+            log::debug!("FMP frame: msg_type=0x{:02x} payload_len={}", msg_type, dl - 5);
             match msg_type {
                 fmp::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
                 fmp::MSG_DISCONNECT => FrameAction::PeerDC,
