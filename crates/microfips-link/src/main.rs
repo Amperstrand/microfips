@@ -4,37 +4,9 @@ use std::time::Duration;
 
 use k256::SecretKey;
 use microfips_core::fmp;
-use microfips_core::identity::{DEFAULT_PEER_PUB, DEFAULT_SECRET};
+use microfips_core::identity::{load_peer_pub, load_secret};
 use microfips_core::noise;
 use rand::RngCore;
-
-fn load_secret() -> [u8; 32] {
-    match std::env::var("FIPS_SECRET") {
-        Ok(h) => {
-            let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
-            assert!(
-                b.len() == 32,
-                "FIPS_SECRET: must be 32 bytes (64 hex chars)"
-            );
-            b.try_into().unwrap()
-        }
-        Err(_) => DEFAULT_SECRET,
-    }
-}
-
-fn load_peer_pub() -> [u8; 33] {
-    match std::env::var("FIPS_PEER_PUB") {
-        Ok(h) => {
-            let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
-            assert!(
-                b.len() == 33,
-                "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
-            );
-            b.try_into().unwrap()
-        }
-        Err(_) => DEFAULT_PEER_PUB,
-    }
-}
 
 fn keygen() -> ExitCode {
     let mut rng = rand::rng();

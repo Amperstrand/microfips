@@ -106,13 +106,15 @@ pub fn build_established(
     inner_payload: &[u8],
     key: &[u8; 32],
     out: &mut [u8],
-) -> usize {
+) -> Option<usize> {
     let inner_len = INNER_HEADER_SIZE + inner_payload.len();
     let encrypted_len = inner_len + crate::noise::TAG_SIZE;
     let payload_len = IDX_SIZE + 8 + encrypted_len;
     let total = COMMON_PREFIX_SIZE + payload_len;
 
-    assert!(out.len() >= total);
+    if out.len() < total {
+        return None;
+    }
 
     let prefix = build_prefix(PHASE_ESTABLISHED, 0x00, payload_len as u16);
     out[..COMMON_PREFIX_SIZE].copy_from_slice(&prefix);
@@ -134,7 +136,7 @@ pub fn build_established(
     // one buffer and writes to another. Use a stack buffer sized to the actual need.
     let max_inner = out.len().saturating_sub(pos + encrypted_len);
     if max_inner < inner_len {
-        return 0;
+        return None;
     }
     let mut inner = [0u8; 512];
     inner[..4].copy_from_slice(&timestamp.to_le_bytes());
@@ -151,9 +153,9 @@ pub fn build_established(
         &inner[..inner_len],
         &mut out[pos..],
     )
-    .unwrap();
+    .ok()?;
 
-    total
+    Some(total)
 }
 
 pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
@@ -337,7 +339,7 @@ mod tests {
     fn build_established_size() {
         let key = [0x42u8; 32];
         let mut out = [0u8; 1024];
-        let len = build_established(0, 1, MSG_HEARTBEAT, 12345, &[], &key, &mut out);
+        let len = build_established(0, 1, MSG_HEARTBEAT, 12345, &[], &key, &mut out).unwrap();
         let header_size = COMMON_PREFIX_SIZE + IDX_SIZE + 8;
         let encrypted_size = INNER_HEADER_SIZE + crate::noise::TAG_SIZE;
         assert_eq!(len, header_size + encrypted_size);
@@ -347,7 +349,7 @@ mod tests {
     fn parse_established_roundtrip() {
         let key = [0x42u8; 32];
         let mut out = [0u8; 1024];
-        let len = build_established(1, 42, MSG_HEARTBEAT, 12345, &[], &key, &mut out);
+        let len = build_established(1, 42, MSG_HEARTBEAT, 12345, &[], &key, &mut out).unwrap();
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
             FmpMessage::Established {
@@ -368,7 +370,8 @@ mod tests {
         let key = [0x42u8; 32];
         let payload = b"test data";
         let mut out = [0u8; 1024];
-        let len = build_established(1, 42, MSG_SESSION_DATAGRAM, 99999, payload, &key, &mut out);
+        let len =
+            build_established(1, 42, MSG_SESSION_DATAGRAM, 99999, payload, &key, &mut out).unwrap();
 
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
@@ -424,7 +427,7 @@ mod tests {
         //            37 (encrypted = 5 inner + 16 tag) = 53 bytes
         let key = [0x42u8; 32];
         let mut out = [0u8; 256];
-        let len = build_established(1, 0, MSG_HEARTBEAT, 0, &[], &key, &mut out);
+        let len = build_established(1, 0, MSG_HEARTBEAT, 0, &[], &key, &mut out).unwrap();
         assert_eq!(
             len,
             COMMON_PREFIX_SIZE + IDX_SIZE + 8 + INNER_HEADER_SIZE + crate::noise::TAG_SIZE
@@ -555,5 +558,20 @@ mod tests {
             }
             _ => panic!("expected Msg1"),
         }
+    }
+
+    #[test]
+    fn build_established_returns_none_on_small_buffer() {
+        let key = [0x42u8; 32];
+        // A heartbeat needs at least 37 bytes (4+4+8+5+16). A 10-byte buffer is too small.
+        let mut out = [0u8; 10];
+        assert!(build_established(0, 0, MSG_HEARTBEAT, 0, &[], &key, &mut out).is_none());
+    }
+
+    #[test]
+    fn build_msg1_returns_none_on_small_buffer() {
+        let noise_payload = [0u8; 106];
+        let mut out = [0u8; 10];
+        assert!(build_msg1(0, &noise_payload, &mut out).is_none());
     }
 }

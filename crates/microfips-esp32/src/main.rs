@@ -348,7 +348,9 @@ async fn session(
                                             &ks,
                                             &mut out,
                                         );
-                                        let _ = send_frame(transport, &out[..fl]).await;
+                                        if let Some(fl) = fl {
+                                            let _ = send_frame(transport, &out[..fl]).await;
+                                        }
                                     }
                                 }
                             }
@@ -389,7 +391,9 @@ async fn send_heartbeat(
     let ts = embassy_time::Instant::now().as_millis() as u32;
     let mut out = [0u8; 256];
     let fl = fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut out);
-    let _ = send_frame(transport, &out[..fl]).await;
+    if let Some(fl) = fl {
+        let _ = send_frame(transport, &out[..fl]).await;
+    }
     embassy_time::Instant::now() + Duration::from_secs(HB_SECS)
 }
 

@@ -137,6 +137,10 @@ pub fn ecdh_pubkey(secret: &[u8; 32]) -> Result<[u8; PUBKEY_SIZE], NoiseError> {
     Ok(out)
 }
 
+/// SHA-256 of the concatenation of two byte slices: SHA256(a || b).
+///
+/// Named to match the Noise spec's `HASH(data)` primitive (§4.1).
+/// Used by `mix_hash()` to implement MixHash(data) = h = HASH(h || data).
 fn hash_concat(a: &[u8], b: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(a);
@@ -147,6 +151,10 @@ fn hash_concat(a: &[u8], b: &[u8]) -> [u8; 32] {
     out
 }
 
+/// SHA-256 of a single byte slice: SHA256(data).
+///
+/// Named to match the Noise spec's `HASH(data)` primitive (§4.1).
+/// Used for protocol name hashing during handshake initialization.
 fn hash_one(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -826,13 +834,23 @@ impl NoiseXkResponder {
     }
 }
 
+/// Generate a fresh random secp256k1 keypair for testing.
+///
+/// Uses OS-level randomness so each test invocation exercises the protocol
+/// with different keys, proving correctness is not tied to one specific keypair.
 #[cfg(test)]
 fn test_keypair() -> ([u8; 32], [u8; PUBKEY_SIZE]) {
-    let secret = [
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
-        0x1f, 0x20,
-    ];
+    use k256::SecretKey;
+    use rand::RngCore;
+
+    let mut rng = rand::rng();
+    let mut secret = [0u8; 32];
+    loop {
+        rng.fill_bytes(&mut secret);
+        if SecretKey::from_slice(&secret).is_ok() {
+            break;
+        }
+    }
     let pub_key = ecdh_pubkey(&secret).unwrap();
     (secret, pub_key)
 }
@@ -1037,7 +1055,6 @@ mod tests {
     }
 }
 
-#[cfg(feature = "responder")]
 mod responder_pub {
     use super::*;
 
@@ -1210,7 +1227,6 @@ mod responder_pub {
     }
 }
 
-#[cfg(feature = "responder")]
 pub use responder_pub::NoiseIkResponder;
 
 #[cfg(test)]
@@ -1218,20 +1234,12 @@ mod responder_tests {
     use super::*;
 
     #[test]
-    #[cfg(feature = "responder")]
     fn noise_ik_full_handshake_simulation() {
-        let initiator_eph_secret: [u8; 32] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-            0x1d, 0x1e, 0x1f, 0x20,
-        ];
-        let initiator_static_secret: [u8; 32] = [0x11; 32];
-        let responder_static_secret: [u8; 32] = [0x22; 32];
-        let responder_eph_secret: [u8; 32] = [
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-            0x88, 0x99, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB,
-            0xCC, 0xDD, 0xEE, 0xFF,
-        ];
+        // Use fresh random keys to prove correctness with any valid keypair.
+        let (initiator_eph_secret, _) = test_keypair();
+        let (initiator_static_secret, _) = test_keypair();
+        let (responder_static_secret, _) = test_keypair();
+        let (responder_eph_secret, _) = test_keypair();
         let responder_static_pub = ecdh_pubkey(&responder_static_secret).unwrap();
         let initiator_static_pub = ecdh_pubkey(&initiator_static_secret).unwrap();
         let epoch_a = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -1278,12 +1286,12 @@ mod responder_tests {
     }
 
     #[test]
-    #[cfg(feature = "responder")]
     fn noise_ik_msg2_size() {
-        let initiator_eph_secret: [u8; 32] = [0x01; 32];
-        let initiator_static_secret: [u8; 32] = [0x11; 32];
-        let responder_static_secret: [u8; 32] = [0x22; 32];
-        let responder_eph_secret: [u8; 32] = [0xAA; 32];
+        // Use fresh random keys to prove message size is correct regardless of key material.
+        let (initiator_eph_secret, _) = test_keypair();
+        let (initiator_static_secret, _) = test_keypair();
+        let (responder_static_secret, _) = test_keypair();
+        let (responder_eph_secret, _) = test_keypair();
         let responder_static_pub = ecdh_pubkey(&responder_static_secret).unwrap();
         let initiator_static_pub = ecdh_pubkey(&initiator_static_secret).unwrap();
         let epoch_a = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -1314,8 +1322,10 @@ mod responder_tests {
     }
 
     #[test]
-    #[cfg(feature = "responder")]
     fn noise_ik_transport_keys_are_deterministic() {
+        // KNOWN-ANSWER-VECTOR TEST: Uses fixed keys intentionally to verify
+        // that the same inputs always produce the same transport keys. This
+        // is the one test that must NOT use random keys — it tests determinism.
         let initiator_eph_secret: [u8; 32] = [0x01; 32];
         let initiator_static_secret: [u8; 32] = [0x11; 32];
         let responder_static_secret: [u8; 32] = [0x22; 32];
@@ -1381,7 +1391,6 @@ mod responder_tests {
     }
 
     #[test]
-    #[cfg(feature = "responder")]
     fn ik_se_uses_es_dh_inputs_intentionally() {
         // The Noise spec IK pattern says:
         //   initiator se = DH(s_initiator, re_responder)
@@ -1425,11 +1434,11 @@ mod responder_tests {
         //
         // HOWEVER, FIPS code does the same thing on both sides, so it
         // interoperates. Let's prove our test responder (which mirrors FIPS)
-        // produces the same keys as the initiator:
-        let i_eph: [u8; 32] = [0x01; 32];
-        let i_stat: [u8; 32] = [0x11; 32];
-        let r_stat: [u8; 32] = [0x22; 32];
-        let r_eph: [u8; 32] = [0xAA; 32];
+        // produces the same keys as the initiator, with fresh random keys:
+        let (i_eph, _) = test_keypair();
+        let (i_stat, _) = test_keypair();
+        let (r_stat, _) = test_keypair();
+        let (r_eph, _) = test_keypair();
         let r_pub = ecdh_pubkey(&r_stat).unwrap();
         let i_pub = ecdh_pubkey(&i_stat).unwrap();
         let epoch_i = [0x01, 0, 0, 0, 0, 0, 0, 0];
@@ -1471,8 +1480,8 @@ mod responder_tests {
         //
         // This IS a deviation from the spec, but both sides do it,
         // so keys still match. Our test responder mirrors FIPS exactly.
-        let i_eph: [u8; 32] = [0x01; 32];
-        let r_stat: [u8; 32] = [0x22; 32];
+        let (i_eph, _) = test_keypair();
+        let (r_stat, _) = test_keypair();
         let r_pub = ecdh_pubkey(&r_stat).unwrap();
 
         let es_dh = x_only_ecdh(&i_eph, &r_pub).unwrap();
@@ -1515,9 +1524,9 @@ mod responder_tests {
 
     #[test]
     fn noise_xk_msg2_size() {
-        let initiator_eph_secret: [u8; 32] = [0x01; 32];
-        let responder_static_secret: [u8; 32] = [0x22; 32];
-        let responder_eph_secret: [u8; 32] = [0xAA; 32];
+        let (initiator_eph_secret, _) = test_keypair();
+        let (responder_static_secret, _) = test_keypair();
+        let (responder_eph_secret, _) = test_keypair();
         let responder_static_pub = ecdh_pubkey(&responder_static_secret).unwrap();
         let epoch = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
@@ -1542,10 +1551,10 @@ mod responder_tests {
 
     #[test]
     fn noise_xk_msg3_size() {
-        let initiator_eph_secret: [u8; 32] = [0x01; 32];
-        let initiator_static_secret: [u8; 32] = [0x11; 32];
-        let responder_static_secret: [u8; 32] = [0x22; 32];
-        let responder_eph_secret: [u8; 32] = [0xAA; 32];
+        let (initiator_eph_secret, _) = test_keypair();
+        let (initiator_static_secret, _) = test_keypair();
+        let (responder_static_secret, _) = test_keypair();
+        let (responder_eph_secret, _) = test_keypair();
         let responder_static_pub = ecdh_pubkey(&responder_static_secret).unwrap();
         let initiator_static_pub = ecdh_pubkey(&initiator_static_secret).unwrap();
         let epoch_a = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -1581,18 +1590,11 @@ mod responder_tests {
 
     #[test]
     fn noise_xk_full_handshake_simulation() {
-        let initiator_eph_secret: [u8; 32] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-            0x1d, 0x1e, 0x1f, 0x20,
-        ];
-        let initiator_static_secret: [u8; 32] = [0x11; 32];
-        let responder_static_secret: [u8; 32] = [0x22; 32];
-        let responder_eph_secret: [u8; 32] = [
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-            0x88, 0x99, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB,
-            0xCC, 0xDD, 0xEE, 0xFF,
-        ];
+        // Use fresh random keys to prove XK works with any valid keypair.
+        let (initiator_eph_secret, _) = test_keypair();
+        let (initiator_static_secret, _) = test_keypair();
+        let (responder_static_secret, _) = test_keypair();
+        let (responder_eph_secret, _) = test_keypair();
         let responder_static_pub = ecdh_pubkey(&responder_static_secret).unwrap();
         let initiator_static_pub = ecdh_pubkey(&initiator_static_secret).unwrap();
         let epoch_a = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -1643,6 +1645,8 @@ mod responder_tests {
 
     #[test]
     fn noise_xk_transport_keys_are_deterministic() {
+        // KNOWN-ANSWER-VECTOR TEST: Uses fixed keys intentionally to verify
+        // that the same inputs always produce the same transport keys.
         let initiator_eph_secret: [u8; 32] = [0x01; 32];
         let initiator_static_secret: [u8; 32] = [0x11; 32];
         let responder_static_secret: [u8; 32] = [0x22; 32];
@@ -1708,10 +1712,11 @@ mod responder_tests {
 
     #[test]
     fn noise_xk_ck_matches_step_by_step() {
-        let initiator_eph_secret: [u8; 32] = [0x01; 32];
-        let initiator_static_secret: [u8; 32] = [0x11; 32];
-        let responder_static_secret: [u8; 32] = [0x22; 32];
-        let responder_eph_secret: [u8; 32] = [0xAA; 32];
+        // Use fresh random keys to verify step-by-step DH agreement.
+        let (initiator_eph_secret, _) = test_keypair();
+        let (initiator_static_secret, _) = test_keypair();
+        let (responder_static_secret, _) = test_keypair();
+        let (responder_eph_secret, _) = test_keypair();
         let responder_static_pub = ecdh_pubkey(&responder_static_secret).unwrap();
         let initiator_static_pub = ecdh_pubkey(&initiator_static_secret).unwrap();
         let initiator_eph_pub = ecdh_pubkey(&initiator_eph_secret).unwrap();
