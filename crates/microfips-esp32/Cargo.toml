@@ -2,16 +2,19 @@
 name = "microfips-esp32"
 version = "0.1.0"
 edition = "2024"
-description = "Minimal FIPS leaf node on ESP32 via UART"
+description = "Minimal FIPS leaf node on ESP32 via WiFi (UDP) or UART (serial fallback)"
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
 rand_core = { version = "0.6", default-features = false }
 esp-hal = { version = "1.0.0", features = ["esp32", "unstable"] }
-esp-rtos = { version = "0.2.0", features = ["esp32", "embassy"] }
+esp-rtos = { version = "0.2.0", features = ["esp32", "embassy", "esp-radio"] }
 esp-backtrace = { version = "0.15", features = ["esp32", "panic-handler", "println"] }
 esp-println = { version = "0.13", features = ["esp32"] }
 esp-bootloader-esp-idf = { version = "0.4", features = ["esp32"] }
+esp-radio = { version = "0.16.0", features = ["esp32", "wifi"] }
+esp-alloc = { version = "0.7.0" }
+embassy-net = { version = "0.8.0", features = ["udp", "dhcpv4", "medium-ethernet", "dns"] }
 embassy-time = "0.5.1"
 embassy-futures = "0.1.2"
 embassy-executor = "0.9.1"
