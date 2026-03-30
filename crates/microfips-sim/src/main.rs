@@ -561,46 +561,62 @@ where
 
 // ---------------------------------------------------------------------------
 // Hardcoded leaf node identities
+//
+// All secrets are deterministic: 31 zero bytes + last byte N.
+// These are valid secp256k1 private keys (generator * N).
 // ---------------------------------------------------------------------------
 
+/// SIM-A identity secret key: 31 zero bytes + 0x03 (secp256k1 generator * 3).
+/// npub:    npub1lycg5qvjtrp3qjf5f7zl382j9x6nrjz9sdhenvyxq8c3808qxmus6gq266
+/// pubkey:  02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9
+/// addr:    7c79f3071e28344e8153bf6c73c294eb
 const SIM_A_SECRET: [u8; 32] = [
-    0x52, 0xdc, 0xb8, 0xd0, 0xe3, 0xcc, 0xbe, 0x0d, 0x1b, 0x4f, 0x09, 0xb3, 0x3a, 0x5a, 0x0a, 0x9f,
-    0xae, 0x64, 0xd5, 0x92, 0x15, 0x9a, 0x89, 0xbb, 0xd7, 0x26, 0x4c, 0xe2, 0x08, 0x06, 0xd0, 0x63,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
 ];
-// SIM_A npub: npub1k486esk968zm20gut4mlzes4qemtz0va7hlaruw0wv3u22dquc5qdpvtje
-// SIM_A node_addr: b54facc2c5d1c5b53d1c5d77f1661506
 
+/// SIM-B identity secret key: 31 zero bytes + 0x04 (secp256k1 generator * 4).
+/// npub:    npub1ujfahuwppkq0xkq7fyzfxzc5qnxxcyuspms8tpr5l222h6xye5fsccv64k
+/// pubkey:  02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13
+/// addr:    36be1ea4d814af2888b895065a0b2538
 const SIM_B_SECRET: [u8; 32] = [
-    0xa9, 0x3b, 0x91, 0xb5, 0x3f, 0x16, 0x0c, 0x35, 0x05, 0xb0, 0xce, 0xbf, 0x28, 0xb7, 0x46, 0x6c,
-    0xf7, 0x19, 0xe4, 0x73, 0xac, 0x6e, 0xb6, 0x01, 0x00, 0xa3, 0xb7, 0x35, 0x25, 0x45, 0x54, 0x89,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
 ];
-// SIM_B npub: npub15nrjlckjekyv373tjuj93f4mhwsl42tgtwscukpv8z68t3knze8sgmqsph
-// SIM_B node_addr: a4c72fe2d2cd88c8fa2b972458a6bbbb
 
+/// SIM-A node_addr (target for SIM-B initiator).
 const SIM_A_TARGET: [u8; 16] = [
-    0xb5, 0x4f, 0xac, 0xc2, 0xc5, 0xd1, 0xc5, 0xb5, 0x3d, 0x1c, 0x5d, 0x77, 0xf1, 0x66, 0x15, 0x06,
+    0x7c, 0x79, 0xf3, 0x07, 0x1e, 0x28, 0x34, 0x4e, 0x81, 0x53, 0xbf, 0x6c, 0x73, 0xc2, 0x94, 0xeb,
 ];
 
+/// SIM-B node_addr (unused currently — no initiator targets SIM-B).
+#[allow(dead_code)]
 const SIM_B_TARGET: [u8; 16] = [
-    0xa4, 0xc7, 0x2f, 0xe2, 0xd2, 0xcd, 0x88, 0xc8, 0xfa, 0x2b, 0x97, 0x24, 0x58, 0xa6, 0xbb, 0xbb,
+    0x36, 0xbe, 0x1e, 0xa4, 0xd8, 0x14, 0xaf, 0x28, 0x88, 0xb8, 0x95, 0x06, 0x5a, 0x0b, 0x25, 0x38,
 ];
 
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
-fn keygen() {
-    let mut rng = rand::rng();
-    let mut secret = [0u8; 32];
-    rng.fill_bytes(&mut secret);
-    let _ = SecretKey::from_slice(&secret).expect("invalid key");
-    let pubkey = noise::ecdh_pubkey(&secret).expect("pubkey failed");
+fn keygen_from(secret: &[u8; 32]) {
+    let _ = SecretKey::from_slice(secret).expect("invalid key");
+    let pubkey = noise::ecdh_pubkey(secret).expect("pubkey failed");
     println!("FIPS_SECRET={}", hex::encode(secret));
     println!("FIPS_PUB={}", hex::encode(pubkey));
     let pub_normalized = noise::parity_normalize(&pubkey);
     let x_only = &pub_normalized[1..];
     let addr = NodeAddr::from_pubkey_x(x_only.try_into().unwrap());
+    let npub = bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("npub"), x_only).expect("bech32");
+    println!("NPUB={}", npub);
     println!("NODE_ADDR={}", hex::encode(addr.as_bytes()));
+}
+
+fn keygen() {
+    let mut rng = rand::rng();
+    let mut secret = [0u8; 32];
+    rng.fill_bytes(&mut secret);
+    keygen_from(&secret);
 }
 
 fn print_usage() {
@@ -626,6 +642,14 @@ fn main() {
 
     if args.iter().any(|a| a == "--keygen") {
         keygen();
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|a| a == "--derive") {
+        let hex_str = args.get(pos + 1).expect("--derive requires a hex secret");
+        let bytes = hex::decode(hex_str).expect("invalid hex");
+        let secret: [u8; 32] = bytes.try_into().expect("secret must be 32 bytes");
+        keygen_from(&secret);
         return;
     }
 
