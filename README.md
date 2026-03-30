@@ -92,6 +92,7 @@ $EDITOR crates/microfips-esp32/src/secrets.rs
 | `WIFI_PASS` | WPA2 password | `"hunter2"` |
 | `FIPS_HOST` | FIPS VPS IP address (dotted-quad -- DNS not yet implemented) | `"165.22.195.26"` |
 | `FIPS_PORT` | FIPS VPS UDP port | `2121` |
+| `FIPS_PUB` | 33-byte compressed pubkey of the FIPS node (IK peer). Default: VPS pubkey. For local testing: set to the sim/test node's pubkey. | `[0x02, 0x0e, ...]` |
 | `DEVICE_SECRET` | 32-byte identity secret key (generate with `--keygen`, see below) | `[0x00, ..., 0x02]` |
 | `MY_NODE_ADDR` | 16-byte node address derived from `DEVICE_SECRET` | `[0x01, 0x35, ...]` |
 | `PEER_PUB` | 33-byte compressed pubkey of the peer (STM32) | `[0x02, 0x79, ...]` |
@@ -194,6 +195,177 @@ st-flash --connect-under-reset write microfips.bin 0x08000000
 export VPS_HOST=orangeclaw.dns4sats.xyz VPS_USER=routstr VPS_PASS=<password>
 bash scripts/test_hw_handshake.sh
 ```
+
+### Testing ESP32 over WiFi with a local simulator (no VPS needed)
+
+This test verifies the full WiFi→UDP→Noise IK→heartbeat path using a laptop as
+the FIPS node. No VPS or serial bridge required — the ESP32 talks directly to
+`microfips-http-test` over your local WiFi network.
+
+**1. Choose keys.** Use the deterministic pattern keys for simplicity:
+
+| Role | Secret (last byte) | Pubkey (hex) |
+|------|-------------------|--------------|
+| Laptop (FIPS node) | `...0x03` (SIM-A) | `02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9` |
+| ESP32 | `...0x02` (default) | `02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5` |
+
+**2. Configure ESP32 `secrets.rs`.** Copy the template and edit:
+
+```sh
+cp crates/microfips-esp32/src/secrets.rs.example \
+   crates/microfips-esp32/src/secrets.rs
+```
+
+Set these values in `secrets.rs`:
+
+```rust
+pub const WIFI_SSID: &str = "YourWiFiNetwork";   // your WiFi SSID
+pub const WIFI_PASS: &str = "YourWiFiPassword";  // your WiFi password
+pub const FIPS_HOST: &str = "192.168.1.100";      // your laptop's LAN IP
+pub const FIPS_PORT: u16 = 2121;
+
+// SIM-A pubkey (the laptop's identity):
+pub const FIPS_PUB: [u8; 33] = [
+    0x02, 0xf9, 0x30, 0x8a, 0x01, 0x92, 0x58, 0xc3,
+    0x10, 0x49, 0x34, 0x4f, 0x85, 0xf8, 0x9d, 0x52,
+    0x29, 0xb5, 0x31, 0xc8, 0x45, 0x83, 0x6f, 0x99,
+    0xb0, 0x86, 0x01, 0xf1, 0x13, 0xbc, 0xe0, 0x36,
+    0xf9,
+];
+```
+
+Leave `DEVICE_SECRET` as the default (`...0x02`).
+
+**3. Build and flash the ESP32:**
+
+```sh
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
+espflash flash -p /dev/ttyUSB0 --chip esp32 \
+  target/xtensa-esp32-none-elf/release/microfips-esp32
+```
+
+**4. Start the FIPS responder on your laptop:**
+
+```sh
+# SIM-A secret (0x03), ESP32 pubkey as peer:
+FIPS_SECRET=0000000000000000000000000000000000000000000000000000000000000003 \
+FIPS_PEER_PUB=02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5 \
+  cargo run -p microfips-http-test -- 0.0.0.0:2121
+```
+
+**5. Expected output:**
+
+On the laptop (microfips-http-test):
+```
+Received 114 bytes from 192.168.1.42:xxxxx
+  MSG1: sender_idx=0, noise_payload=110B
+  Sending MSG2: 69 bytes
+  Heartbeat (ctr=0)
+  Heartbeat (ctr=1)
+  ...
+```
+
+On the ESP32 serial monitor:
+```
+microfips-esp32 (esp32-leaf) booting
+WiFi: connecting to "YourWiFiNetwork"...
+WiFi: link up
+WiFi: IP 192.168.1.42
+TRANSPORT: WiFi UDP -> 192.168.1.100:2121
+```
+
+The ESP32 LED turns on when MSG1 is sent and stays on after handshake completes.
+Heartbeats continue every 10 seconds.
+
+**Troubleshooting:**
+- Verify laptop IP: `ip addr show` or `ifconfig` (use the WiFi interface address)
+- Firewall: ensure UDP port 2121 is open (`sudo ufw allow 2121/udp`)
+- If ESP32 falls back to serial: check WIFI_SSID spelling and WPA password
+- DNS not supported: `FIPS_HOST` must be a dotted-quad IP, not a hostname
+
+## BLE Gateway (research)
+
+**Goal:** Add BLE (Bluetooth Low Energy) as a third transport option, parallel to
+WiFi (direct UDP) and serial UART (via `serial_udp_bridge.py`). A host-side BLE
+gateway would bridge BLE↔UDP, analogous to how `serial_udp_bridge.py` bridges
+serial↔UDP today.
+
+### Architecture
+
+```
+  [BLE mode]
+  ESP32                    Host (Linux/macOS)              VPS
+  +----------------+  +------------------------+  +------------------+
+  | microfips fw   |  | ble_udp_bridge.py      |  |                  |
+  |                |~~| BLE GATT <-> UDP       |~~| FIPS daemon      |
+  | FIPS protocol  |  | (length-prefixed FMP)  |  | port 2121        |
+  | Noise_IK       |  +------------------------+  +------------------+
+  | BLE GATT server|
+  +----------------+
+```
+
+### Transport design
+
+| Aspect | Serial bridge (`serial_udp_bridge.py`) | BLE bridge (`ble_udp_bridge.py`) |
+|--------|---------------------------------------|----------------------------------|
+| MCU side | UART TX/RX (115200 baud) | BLE GATT server: one NOTIFY characteristic (MCU→host) + one WRITE characteristic (host→MCU) |
+| Host side | `/dev/ttyUSB0` via pyserial | `bleak` Python library (cross-platform BLE) |
+| Framing | 2-byte LE length prefix | 2-byte LE length prefix (same as serial) |
+| MTU | 256 bytes per UART read | 20–512 bytes per BLE write (negotiate via MTU exchange) |
+| Fragmentation | Handled by reassembly buffer | Needed: BLE ATT MTU < FMP frame size. Fragment with sequence numbers or rely on L2CAP segmentation |
+| Throughput | ~11.5 KB/s at 115200 baud | ~2–10 KB/s typical (BLE 4.2 with DLE) |
+| Range | USB cable | ~10–30m indoor |
+| Power | USB-powered | Battery-friendly (BLE sleep between intervals) |
+
+### ESP32 firmware changes
+
+1. **BLE peripheral initialization** — use `esp-radio` or `esp-idf-svc` BLE APIs
+   to create a GATT server with a custom service:
+   - Service UUID: `c0de0001-...` (custom)
+   - TX characteristic (NOTIFY): MCU writes FMP frames here → host receives
+   - RX characteristic (WRITE): host writes FMP frames here → MCU receives
+2. **BleTransport struct** — implements the same send/recv interface as UartTransport
+3. **Boot sequence** — try WiFi → try BLE → fall back to UART serial
+4. **Framing** — same 2-byte LE length prefix as UART (the bridge strips it and
+   sends raw FMP over UDP, exactly like `serial_udp_bridge.py`)
+
+### Host-side BLE gateway (`ble_udp_bridge.py`)
+
+```python
+# Conceptual structure (uses `bleak` for cross-platform BLE):
+import asyncio, struct
+from bleak import BleakClient, BleakScanner
+import socket
+
+FIPS_SERVICE = "c0de0001-..."
+TX_CHAR = "c0de0002-..."  # NOTIFY: MCU -> host
+RX_CHAR = "c0de0003-..."  # WRITE:  host -> MCU
+
+async def main():
+    device = await BleakScanner.find_device_by_name("microfips-esp32")
+    async with BleakClient(device) as client:
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # BLE NOTIFY → strip length prefix → UDP to FIPS
+        # UDP recv → add length prefix → BLE WRITE to MCU
+```
+
+### Key considerations
+
+- **MTU negotiation:** BLE default ATT MTU is 23 bytes (20 usable). FMP MSG1 is
+  114 bytes. Must negotiate higher MTU (≥256) or implement fragmentation.
+  ESP32 BLE supports MTU up to 517. `bleak` handles MTU negotiation automatically.
+- **Fragmentation:** If MTU < frame size, fragment FMP frames at the bridge level.
+  Each fragment gets a 1-byte header: `[seq_num | LAST_FLAG]`. Reassemble on both sides.
+- **Connection interval:** Default 30ms. For heartbeat-only traffic (~10s interval),
+  a longer connection interval (100–500ms) saves power.
+- **Security:** BLE link-layer encryption (LE Secure Connections / LESC) is optional.
+  The FIPS Noise IK handshake already provides end-to-end encryption, so BLE-level
+  encryption is defense-in-depth, not required.
+- **`bleak` library:** Pure-Python, works on Linux (BlueZ), macOS (CoreBluetooth),
+  and Windows (WinRT). No C extensions needed. Well-maintained.
+- **esp-radio BLE:** The `esp-radio` crate (already a dependency) supports BLE on ESP32.
+  Check `esp-radio = { features = ["esp32", "wifi", "ble"] }` for BLE support.
 
 ## Build
 

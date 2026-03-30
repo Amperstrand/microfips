@@ -22,7 +22,7 @@ use microfips_core::fsp::{
     build_fsp_encrypted, build_fsp_header, build_session_datagram_body,
     fsp_prepend_inner_header, parse_fsp_encrypted_header, FSP_HEADER_SIZE, FSP_MSG_DATA,
 };
-use microfips_core::identity::DEFAULT_PEER_PUB;
+// FIPS_PUB (IK peer key) is loaded from secrets.rs, not hardcoded here.
 use microfips_core::noise;
 
 /// Device credentials — defined in secrets.rs (gitignored).
@@ -298,7 +298,7 @@ async fn session(
     let my_pub = noise::ecdh_pubkey(&DEVICE_SECRET).unwrap();
 
     let (mut noise_st, _e_pub) =
-        noise::NoiseIkInitiator::new(&IK_EPHEMERAL, &DEVICE_SECRET, &DEFAULT_PEER_PUB).unwrap();
+        noise::NoiseIkInitiator::new(&IK_EPHEMERAL, &DEVICE_SECRET, &FIPS_PUB).unwrap();
 
     let epoch: [u8; noise::EPOCH_SIZE] = [0x01, 0, 0, 0, 0, 0, 0, 0];
 
@@ -865,7 +865,7 @@ async fn wifi_session(
     let my_pub = noise::ecdh_pubkey(&DEVICE_SECRET).unwrap();
 
     let (mut noise_st, _e_pub) =
-        noise::NoiseIkInitiator::new(&IK_EPHEMERAL, &DEVICE_SECRET, &DEFAULT_PEER_PUB).unwrap();
+        noise::NoiseIkInitiator::new(&IK_EPHEMERAL, &DEVICE_SECRET, &FIPS_PUB).unwrap();
     let epoch: [u8; noise::EPOCH_SIZE] = [0x01, 0, 0, 0, 0, 0, 0, 0];
 
     let mut n1 = [0u8; 256];
@@ -1178,7 +1178,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let mut led = Led(Output::new(peripherals.GPIO2, Level::Low, esp_hal::gpio::OutputConfig::default()));
 
     let _trng_source = esp_hal::rng::TrngSource::new(peripherals.RNG, peripherals.ADC1);
-    let _trng = Trng::try_new().unwrap();
+    let mut trng = Trng::try_new().unwrap();
 
     println!("microfips-esp32 ({}) booting", DEVICE_ALIAS);
 
@@ -1205,5 +1205,5 @@ async fn main(spawner: embassy_executor::Spawner) {
     let (rx, tx) = uart.split();
     let mut transport = UartTransport { tx, rx };
 
-    run_fips(&mut transport, &mut Trng::try_new().unwrap(), &mut handler).await;
+    run_fips(&mut transport, &mut trng, &mut handler).await;
 }
