@@ -219,6 +219,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             None => break,
                         };
 
+                        if frame_data.is_empty() {
+                            self.rpos = new_pos;
+                            continue;
+                        }
+
                         let result =
                             handle_frame_inner(kr, frame_data, handler, &mut self.resp_buf);
                         self.rpos = new_pos;
@@ -367,9 +372,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         timeout_ms: u32,
     ) -> Result<usize, ProtocolError> {
         loop {
-            if let Some((frame, new_pos)) =
-                extract_raw_frame(&self.rbuf, self.rpos, self.rlen)
-            {
+            if let Some((frame, new_pos)) = extract_raw_frame(&self.rbuf, self.rpos, self.rlen) {
                 let l = frame.len().min(out.len());
                 out[..l].copy_from_slice(&frame[..l]);
                 self.rpos = new_pos;
@@ -896,5 +899,178 @@ mod tests {
             let result = node.handshake(&mut handler).await;
             assert_eq!(result, Err(ProtocolError::Timeout));
         });
+    }
+
+    // --- Tests for fmp_raw_frame_size ---
+
+    #[test]
+    fn test_fmp_raw_frame_size_valid_msg1() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 110);
+        assert_eq!(
+            fmp_raw_frame_size(&prefix),
+            Some(fmp::COMMON_PREFIX_SIZE + 110)
+        );
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_valid_established() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 84);
+        assert_eq!(
+            fmp_raw_frame_size(&prefix),
+            Some(fmp::COMMON_PREFIX_SIZE + 84)
+        );
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_truncated_prefix() {
+        assert_eq!(fmp_raw_frame_size(&[0x01, 0x00, 0x6e]), None);
+        assert_eq!(fmp_raw_frame_size(&[]), None);
+        assert_eq!(fmp_raw_frame_size(&[0x00]), None);
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_zero_payload_non_established() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 0);
+        assert_eq!(fmp_raw_frame_size(&prefix), None);
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_zero_payload_established() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 0);
+        assert_eq!(fmp_raw_frame_size(&prefix), Some(fmp::COMMON_PREFIX_SIZE));
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_exceeds_max() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 2000);
+        assert_eq!(fmp_raw_frame_size(&prefix), None);
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_max_boundary() {
+        use microfips_core::fmp;
+        let payload = (framing::MAX_FRAME - fmp::COMMON_PREFIX_SIZE) as u16;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, payload);
+        assert_eq!(fmp_raw_frame_size(&prefix), Some(framing::MAX_FRAME));
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_bad_version() {
+        let data = [0x50, 0x00, 0x00, 0x00];
+        assert_eq!(fmp_raw_frame_size(&data), None);
+    }
+
+    // --- Tests for extract_length_prefixed_frame ---
+
+    #[test]
+    fn test_extract_length_prefixed_complete() {
+        let mut buf = [0u8; 16];
+        let payload = b"hello";
+        buf[..2].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+        buf[2..2 + payload.len()].copy_from_slice(payload);
+        let (frame, pos) = extract_length_prefixed_frame(&buf, 0, 7).unwrap();
+        assert_eq!(frame, payload);
+        assert_eq!(pos, 7);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_incomplete() {
+        let buf = [0x05, 0x00, 0x68, 0x65];
+        assert_eq!(extract_length_prefixed_frame(&buf, 0, 4), None);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_zero_length() {
+        let buf = [0x00, 0x00, 0xFF, 0xFF];
+        let (frame, pos) = extract_length_prefixed_frame(&buf, 0, 4).unwrap();
+        assert!(frame.is_empty());
+        assert_eq!(pos, 2);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_exceeds_max() {
+        let buf = [
+            (framing::MAX_FRAME as u16 + 1).to_le_bytes()[0],
+            (framing::MAX_FRAME as u16 + 1).to_le_bytes()[1],
+            0x00,
+        ];
+        let (frame, pos) = extract_length_prefixed_frame(&buf, 0, 3).unwrap();
+        assert!(frame.is_empty());
+        assert_eq!(pos, 2);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_empty_buffer() {
+        assert_eq!(extract_length_prefixed_frame(&[], 0, 0), None);
+        assert_eq!(extract_length_prefixed_frame(&[0x05], 0, 1), None);
+    }
+
+    #[test]
+    fn test_extract_length_prefixed_multiple_frames() {
+        let mut buf = [0u8; 20];
+        buf[0..2].copy_from_slice(&3u16.to_le_bytes());
+        buf[2..5].copy_from_slice(b"abc");
+        buf[5..7].copy_from_slice(&2u16.to_le_bytes());
+        buf[7..9].copy_from_slice(b"xy");
+        let (frame, pos) = extract_length_prefixed_frame(&buf, 0, 9).unwrap();
+        assert_eq!(frame, b"abc");
+        assert_eq!(pos, 5);
+        let (frame2, pos2) = extract_length_prefixed_frame(&buf, pos, 9).unwrap();
+        assert_eq!(frame2, b"xy");
+        assert_eq!(pos2, 9);
+    }
+
+    // --- Tests for extract_raw_frame ---
+
+    #[test]
+    fn test_extract_raw_frame_complete() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 10);
+        let mut buf = [0u8; 32];
+        buf[..4].copy_from_slice(&prefix);
+        buf[4..14].fill(0xAA);
+        let (frame, pos) = extract_raw_frame(&buf, 0, 14).unwrap();
+        assert_eq!(frame.len(), 14);
+        assert_eq!(frame[..4], prefix);
+        assert_eq!(pos, 14);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_truncated_prefix() {
+        let buf = [0x00, 0x00, 0x34];
+        assert_eq!(extract_raw_frame(&buf, 0, 3), None);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_partial_payload() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 100);
+        let mut buf = [0u8; 32];
+        buf[..4].copy_from_slice(&prefix);
+        buf[4..].fill(0xBB);
+        assert_eq!(extract_raw_frame(&buf, 0, 32), None);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_empty_buffer() {
+        assert_eq!(extract_raw_frame(&[], 0, 0), None);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_mid_buffer() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 65);
+        let mut buf = [0u8; 128];
+        buf[10..14].copy_from_slice(&prefix);
+        buf[14..14 + 65].fill(0xCC);
+        let (frame, pos) = extract_raw_frame(&buf, 10, 79).unwrap();
+        assert_eq!(frame.len(), 69);
+        assert_eq!(frame[..4], prefix);
+        assert_eq!(pos, 79);
     }
 }
