@@ -1,8 +1,9 @@
 use microfips_core::fmp;
 use microfips_core::fsp::{
-    self, build_fsp_encrypted, build_fsp_header, build_session_msg3, build_session_setup,
-    fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack, FspSession, FSP_HEADER_SIZE,
-    FSP_MSG_DATA, HTTP_RESPONSE, SESSION_DATAGRAM_BODY_SIZE,
+    self, build_fsp_encrypted, build_fsp_header, build_session_datagram_body, build_session_msg3,
+    build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack,
+    FspInitiatorSession, FspSession, FSP_HEADER_SIZE, FSP_MSG_DATA, HTTP_RESPONSE,
+    SESSION_DATAGRAM_BODY_SIZE,
 };
 use microfips_core::identity::{NodeAddr, DEFAULT_SECRET};
 use microfips_core::noise::{
@@ -353,4 +354,197 @@ fn test_fsp_setup_over_fmp_roundtrip() {
         }
         other => panic!("Expected SendDatagram, got {:?}", other),
     }
+}
+
+#[test]
+fn test_build_session_datagram_body_matches_manual() {
+    let src = resp_addr();
+    let dst = init_addr();
+    let body = build_session_datagram_body(src.as_bytes(), dst.as_bytes());
+    let manual = session_datagram_body(&src, &dst);
+    assert_eq!(body, manual);
+    assert_eq!(body.len(), SESSION_DATAGRAM_BODY_SIZE);
+    assert_eq!(body[0], 64);
+    let mtu = u16::from_le_bytes([body[2], body[3]]);
+    assert_eq!(mtu, 1400);
+    assert_eq!(&body[4..20], src.as_bytes());
+    assert_eq!(&body[20..36], dst.as_bytes());
+}
+
+#[test]
+fn test_fsp_initiator_session_flow() {
+    let fsp_init_secret = gen_key();
+    let fsp_init_eph: [u8; 32] = [0xBB; 32];
+    let fsp_resp_secret = gen_key();
+    let fsp_resp_pub = ecdh_pubkey(&fsp_resp_secret).unwrap();
+
+    let initiator_addr = {
+        let pub_key = ecdh_pubkey(&fsp_init_secret).unwrap();
+        let normalized = parity_normalize(&pub_key);
+        let x_only: [u8; 32] = normalized[1..].try_into().unwrap();
+        NodeAddr::from_pubkey_x(&x_only)
+    };
+    let responder_addr = {
+        let normalized = parity_normalize(&fsp_resp_pub);
+        let x_only: [u8; 32] = normalized[1..].try_into().unwrap();
+        NodeAddr::from_pubkey_x(&x_only)
+    };
+
+    let mut init_session =
+        FspInitiatorSession::new(&fsp_init_secret, &fsp_init_eph, &fsp_resp_pub).unwrap();
+    assert_eq!(init_session.state(), fsp::FspInitiatorState::Idle);
+    assert_eq!(init_session.session_keys(), None);
+
+    let mut setup_buf = [0u8; 512];
+    let setup_len = init_session
+        .build_setup(
+            initiator_addr.as_bytes(),
+            responder_addr.as_bytes(),
+            &mut setup_buf,
+        )
+        .unwrap();
+    assert!(setup_len > 0);
+    assert_eq!(init_session.state(), fsp::FspInitiatorState::AwaitingAck);
+
+    let fsp_resp_eph = gen_key();
+    let fsp_resp_epoch: [u8; 8] = [0x01, 0, 0, 0, 0, 0, 0, 0];
+    let mut fsp_session = FspSession::new();
+    let mut ack_buf = [0u8; 512];
+    let ack_len = fsp_session
+        .handle_setup(
+            &fsp_resp_secret,
+            &fsp_resp_eph,
+            &fsp_resp_epoch,
+            &setup_buf[..setup_len],
+            &mut ack_buf,
+        )
+        .unwrap();
+
+    let mut ack_stored = [0u8; 512];
+    ack_stored[..ack_len].copy_from_slice(&ack_buf[..ack_len]);
+
+    init_session.handle_ack(&ack_stored[..ack_len]).unwrap();
+    assert_eq!(
+        init_session.state(),
+        fsp::FspInitiatorState::AwaitingEstablished
+    );
+
+    let fsp_init_epoch: [u8; 8] = [0x02, 0, 0, 0, 0, 0, 0, 0];
+    let mut msg3_buf = [0u8; 512];
+    let msg3_len = init_session
+        .build_msg3(&fsp_init_epoch, &mut msg3_buf)
+        .unwrap();
+    assert!(msg3_len > 0);
+    assert_eq!(init_session.state(), fsp::FspInitiatorState::Established);
+
+    fsp_session.handle_msg3(&msg3_buf[..msg3_len]).unwrap();
+    assert_eq!(fsp_session.state(), fsp::FspSessionState::Established);
+
+    let (init_k_recv, init_k_send) = init_session.session_keys().unwrap();
+    let (resp_k_recv, resp_k_send) = fsp_session.session_keys().unwrap();
+    assert_eq!(
+        init_k_send, resp_k_recv,
+        "initiator k_send == responder k_recv"
+    );
+    assert_eq!(
+        init_k_recv, resp_k_send,
+        "initiator k_recv == responder k_send"
+    );
+}
+
+#[test]
+fn test_ping_pong_roundtrip() {
+    let fsp_init_secret = gen_key();
+    let fsp_init_eph: [u8; 32] = [0xBB; 32];
+    let fsp_resp_secret = gen_key();
+    let fsp_resp_eph = gen_key();
+    let fsp_resp_pub = ecdh_pubkey(&fsp_resp_secret).unwrap();
+    let fsp_resp_epoch: [u8; 8] = [0x01, 0, 0, 0, 0, 0, 0, 0];
+    let fsp_init_epoch: [u8; 8] = [0x02, 0, 0, 0, 0, 0, 0, 0];
+
+    let initiator_addr = {
+        let pub_key = ecdh_pubkey(&fsp_init_secret).unwrap();
+        let normalized = parity_normalize(&pub_key);
+        let x_only: [u8; 32] = normalized[1..].try_into().unwrap();
+        NodeAddr::from_pubkey_x(&x_only)
+    };
+    let responder_addr = {
+        let normalized = parity_normalize(&fsp_resp_pub);
+        let x_only: [u8; 32] = normalized[1..].try_into().unwrap();
+        NodeAddr::from_pubkey_x(&x_only)
+    };
+
+    let dg_body = build_session_datagram_body(initiator_addr.as_bytes(), responder_addr.as_bytes());
+
+    let mut init_session =
+        FspInitiatorSession::new(&fsp_init_secret, &fsp_init_eph, &fsp_resp_pub).unwrap();
+
+    let mut setup_buf = [0u8; 512];
+    let setup_len = init_session
+        .build_setup(
+            initiator_addr.as_bytes(),
+            responder_addr.as_bytes(),
+            &mut setup_buf,
+        )
+        .unwrap();
+
+    let mut fsp_session = FspSession::new();
+    let mut ack_buf = [0u8; 512];
+    let ack_len = fsp_session
+        .handle_setup(
+            &fsp_resp_secret,
+            &fsp_resp_eph,
+            &fsp_resp_epoch,
+            &setup_buf[..setup_len],
+            &mut ack_buf,
+        )
+        .unwrap();
+
+    let mut ack_stored = [0u8; 512];
+    ack_stored[..ack_len].copy_from_slice(&ack_buf[..ack_len]);
+    init_session.handle_ack(&ack_stored[..ack_len]).unwrap();
+
+    let mut msg3_buf = [0u8; 512];
+    let msg3_len = init_session
+        .build_msg3(&fsp_init_epoch, &mut msg3_buf)
+        .unwrap();
+    fsp_session.handle_msg3(&msg3_buf[..msg3_len]).unwrap();
+
+    let (_init_k_recv, init_k_send) = init_session.session_keys().unwrap();
+
+    let ping_payload = b"PING";
+    let mut plaintext = [0u8; 512];
+    let inner = fsp_prepend_inner_header(3000, FSP_MSG_DATA, 0x00, ping_payload, &mut plaintext);
+    let header = build_fsp_header(0, 0x00, (inner + TAG_SIZE) as u16);
+    let mut ciphertext = vec![0u8; inner + TAG_SIZE];
+    aead_encrypt(
+        &init_k_send,
+        0,
+        &header,
+        &plaintext[..inner],
+        &mut ciphertext,
+    )
+    .unwrap();
+    let mut fsp_enc_packet = vec![0u8; FSP_HEADER_SIZE + ciphertext.len()];
+    build_fsp_encrypted(&header, &ciphertext, &mut fsp_enc_packet);
+
+    let mut ping_dg = vec![0u8; SESSION_DATAGRAM_BODY_SIZE + fsp_enc_packet.len()];
+    ping_dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+    ping_dg[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&fsp_enc_packet);
+
+    let mut pong_buf = [0u8; 512];
+    let pong_len = match handle_fsp_datagram(
+        &mut fsp_session,
+        &fsp_resp_secret,
+        &fsp_resp_eph,
+        &fsp_resp_epoch,
+        &ping_dg,
+        &mut pong_buf,
+    )
+    .unwrap()
+    {
+        fsp::FspHandlerResult::SendDatagram(len) => len,
+        other => panic!("Expected SendDatagram(PONG), got {:?}", other),
+    };
+    assert_eq!(&pong_buf[..pong_len], b"PONG");
 }

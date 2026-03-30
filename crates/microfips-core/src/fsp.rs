@@ -30,8 +30,23 @@ pub const NODE_ADDR_SIZE: usize = 16;
 pub const SESSION_DATAGRAM_BODY_SIZE: usize = 36;
 pub const SESSION_DATAGRAM_HEADER_SIZE: usize = 36;
 
+pub fn build_session_datagram_body(
+    src: &[u8; NODE_ADDR_SIZE],
+    dst: &[u8; NODE_ADDR_SIZE],
+) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
+    let mut body = [0u8; SESSION_DATAGRAM_BODY_SIZE];
+    body[0] = 64;
+    body[2] = 1400u16.to_le_bytes()[0];
+    body[3] = 1400u16.to_le_bytes()[1];
+    body[4..20].copy_from_slice(src);
+    body[20..36].copy_from_slice(dst);
+    body
+}
+
 pub const HTTP_RESPONSE: &[u8] =
     b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
+
+pub const PONG: &[u8] = b"PONG";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspError {
@@ -450,7 +465,7 @@ pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])
     Some((flags, counter, header, payload))
 }
 
-use crate::noise::{NoiseError, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
+use crate::noise::{NoiseError, NoiseXkInitiator, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspSessionState {
@@ -610,6 +625,144 @@ impl Default for FspSession {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FspInitiatorState {
+    Idle,
+    AwaitingAck,
+    AwaitingEstablished,
+    Established,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FspInitiatorError {
+    InvalidState,
+    InvalidMessage,
+    DecryptFailed,
+    BufferTooSmall,
+    Noise(NoiseError),
+}
+
+impl From<NoiseError> for FspInitiatorError {
+    fn from(e: NoiseError) -> Self {
+        FspInitiatorError::Noise(e)
+    }
+}
+
+impl From<FspError> for FspInitiatorError {
+    fn from(e: FspError) -> Self {
+        match e {
+            FspError::BufferTooSmall => FspInitiatorError::BufferTooSmall,
+            FspError::InvalidFrame | FspError::InvalidCoords => FspInitiatorError::InvalidMessage,
+        }
+    }
+}
+
+pub struct FspInitiatorSession {
+    state: FspInitiatorState,
+    initiator: Option<NoiseXkInitiator>,
+    k_recv: Option<[u8; 32]>,
+    k_send: Option<[u8; 32]>,
+    #[allow(dead_code)]
+    responder_pub: [u8; PUBKEY_SIZE],
+    my_pub: [u8; PUBKEY_SIZE],
+}
+
+impl FspInitiatorSession {
+    pub fn new(
+        my_static_secret: &[u8; 32],
+        my_ephemeral_secret: &[u8; 32],
+        responder_static_pub: &[u8; PUBKEY_SIZE],
+    ) -> Result<Self, FspInitiatorError> {
+        let (initiator, _e_pub) =
+            NoiseXkInitiator::new(my_ephemeral_secret, my_static_secret, responder_static_pub)?;
+        let my_pub = crate::noise::ecdh_pubkey(my_static_secret)?;
+        Ok(Self {
+            state: FspInitiatorState::Idle,
+            initiator: Some(initiator),
+            k_recv: None,
+            k_send: None,
+            responder_pub: *responder_static_pub,
+            my_pub,
+        })
+    }
+
+    pub fn state(&self) -> FspInitiatorState {
+        self.state
+    }
+
+    pub fn session_keys(&self) -> Option<([u8; 32], [u8; 32])> {
+        self.k_recv.zip(self.k_send)
+    }
+
+    pub fn build_setup(
+        &mut self,
+        src_addr: &[u8; NODE_ADDR_SIZE],
+        dst_addr: &[u8; NODE_ADDR_SIZE],
+        out: &mut [u8],
+    ) -> Result<usize, FspInitiatorError> {
+        if self.state != FspInitiatorState::Idle {
+            return Err(FspInitiatorError::InvalidState);
+        }
+        let initiator = self
+            .initiator
+            .as_mut()
+            .ok_or(FspInitiatorError::InvalidState)?;
+        let mut xk_msg1 = [0u8; 64];
+        let xk_msg1_len = initiator.write_message1(&mut xk_msg1)?;
+
+        let src_coords = [*src_addr];
+        let dst_coords = [*dst_addr];
+        let setup_len =
+            build_session_setup(0x03, &src_coords, &dst_coords, &xk_msg1[..xk_msg1_len], out)?;
+        self.state = FspInitiatorState::AwaitingAck;
+        Ok(setup_len)
+    }
+
+    pub fn handle_ack(&mut self, ack_data: &[u8]) -> Result<(), FspInitiatorError> {
+        if self.state != FspInitiatorState::AwaitingAck {
+            return Err(FspInitiatorError::InvalidState);
+        }
+        let xk_msg2_payload =
+            parse_session_ack(ack_data).map_err(|_| FspInitiatorError::InvalidMessage)?;
+        let initiator = self
+            .initiator
+            .as_mut()
+            .ok_or(FspInitiatorError::InvalidState)?;
+        let _responder_epoch = initiator.read_message2(xk_msg2_payload)?;
+        self.state = FspInitiatorState::AwaitingEstablished;
+        Ok(())
+    }
+
+    pub fn build_msg3(
+        &mut self,
+        epoch: &[u8; EPOCH_SIZE],
+        out: &mut [u8],
+    ) -> Result<usize, FspInitiatorError> {
+        if self.state != FspInitiatorState::AwaitingEstablished {
+            return Err(FspInitiatorError::InvalidState);
+        }
+        let initiator = self
+            .initiator
+            .as_mut()
+            .ok_or(FspInitiatorError::InvalidState)?;
+        let mut msg3_noise = [0u8; 128];
+        let msg3_len = initiator.write_message3(&self.my_pub, epoch, &mut msg3_noise)?;
+        let msg3_fsp_len = build_session_msg3(&msg3_noise[..msg3_len], out)?;
+        self.state = FspInitiatorState::Established;
+        let (k_send, k_recv) = initiator.finalize();
+        self.k_send = Some(k_send);
+        self.k_recv = Some(k_recv);
+        Ok(msg3_fsp_len)
+    }
+
+    pub fn reset(&mut self) {
+        self.state = FspInitiatorState::Idle;
+        self.initiator = None;
+        self.k_recv = None;
+        self.k_send = None;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspHandlerResult {
     None,
     SendDatagram(usize),
@@ -673,16 +826,19 @@ pub fn handle_fsp_datagram(
             else {
                 return Err(FspHandlerError::InnerHeaderTooShort);
             };
-            if inner_msg_type == FSP_MSG_DATA
-                && inner_payload.len() >= 3
-                && &inner_payload[..3] == b"GET"
-            {
-                let rlen = HTTP_RESPONSE.len().min(resp.len());
-                resp[..rlen].copy_from_slice(&HTTP_RESPONSE[..rlen]);
-                Ok(FspHandlerResult::SendDatagram(rlen))
-            } else {
-                Ok(FspHandlerResult::None)
+            if inner_msg_type == FSP_MSG_DATA {
+                if inner_payload.len() >= 4 && &inner_payload[..4] == b"PING" {
+                    let rlen = PONG.len().min(resp.len());
+                    resp[..rlen].copy_from_slice(&PONG[..rlen]);
+                    return Ok(FspHandlerResult::SendDatagram(rlen));
+                }
+                if inner_payload.len() >= 3 && &inner_payload[..3] == b"GET" {
+                    let rlen = HTTP_RESPONSE.len().min(resp.len());
+                    resp[..rlen].copy_from_slice(&HTTP_RESPONSE[..rlen]);
+                    return Ok(FspHandlerResult::SendDatagram(rlen));
+                }
             }
+            Ok(FspHandlerResult::None)
         }
         _ => Err(FspHandlerError::UnknownPhase),
     }
