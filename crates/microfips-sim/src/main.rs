@@ -200,16 +200,18 @@ struct LeafHandler {
     fsp_session: FspSession,
     fsp_ephemeral: [u8; 32],
     fsp_epoch: [u8; 8],
+    secret: [u8; 32],
 }
 
 impl LeafHandler {
-    fn new() -> Self {
+    fn new(secret: [u8; 32]) -> Self {
         let mut eph = [0u8; 32];
         rand::rng().fill_bytes(&mut eph);
         Self {
             fsp_session: FspSession::new(),
             fsp_ephemeral: eph,
             fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
+            secret,
         }
     }
 }
@@ -237,11 +239,7 @@ impl NodeHandler for LeafHandler {
         }
         match fsp::handle_fsp_datagram(
             &mut self.fsp_session,
-            &std::env::var("FIPS_SECRET")
-                .ok()
-                .and_then(|s| hex::decode(&s).ok())
-                .and_then(|b| b.try_into().ok())
-                .unwrap_or_default(),
+            &self.secret,
             &self.fsp_ephemeral,
             &self.fsp_epoch,
             payload,
@@ -272,23 +270,33 @@ struct FspInitiatorHandler {
     fsp_timer: Option<Instant>,
     target_addr: [u8; 16],
     my_addr: [u8; 16],
+    secret: [u8; 32],
+    target_pub: [u8; 33],
 }
 
 impl FspInitiatorHandler {
-    fn new(target_addr: [u8; 16], my_addr: [u8; 16]) -> Self {
+    fn new(
+        secret: [u8; 32],
+        target_pub: [u8; 33],
+        target_addr: [u8; 16],
+        my_addr: [u8; 16],
+    ) -> Self {
         Self {
             fsp: None,
             fsp_timer: None,
             target_addr,
             my_addr,
+            secret,
+            target_pub,
         }
     }
 
-    fn ensure_fsp(&mut self, secret: &[u8; 32], peer_pub: &[u8; 33]) {
+    fn ensure_fsp(&mut self) {
         if self.fsp.is_none() {
             let mut fsp_eph = [0u8; 32];
             rand::rng().fill_bytes(&mut fsp_eph);
-            self.fsp = FspInitiatorSession::new(secret, &fsp_eph, peer_pub).ok();
+            self.fsp =
+                FspInitiatorSession::new(&self.secret, &fsp_eph, &self.target_pub).ok();
         }
     }
 }
@@ -299,6 +307,7 @@ impl NodeHandler for FspInitiatorHandler {
             NodeEvent::Connected => eprintln!("[INIT] transport ready"),
             NodeEvent::Msg1Sent => eprintln!("[INIT] MSG1 sent"),
             NodeEvent::HandshakeOk => {
+                self.ensure_fsp();
                 self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_START_DELAY_SECS));
                 eprintln!(
                     "[INIT] handshake complete, FSP setup in {}s",
@@ -350,22 +359,12 @@ impl NodeHandler for FspInitiatorHandler {
                                 &self.my_addr,
                                 &self.target_addr,
                             );
-                            let mut out = [0u8; 1024];
-                            let mut dg = [0u8; 1024];
-                            dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                            dg[SESSION_DATAGRAM_BODY_SIZE
+                            let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
+                            resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                            resp[SESSION_DATAGRAM_BODY_SIZE
                                 ..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
                                 .copy_from_slice(&msg3_buf[..msg3_len]);
-                            let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
-                            let inner = fsp::fsp_prepend_inner_header(
-                                0,
-                                fsp::FSP_MSG_DATA,
-                                0x00,
-                                &dg[..dg_len],
-                                &mut out,
-                            );
-                            resp[..inner].copy_from_slice(&out[..inner]);
-                            return HandleResult::SendDatagram(inner);
+                            return HandleResult::SendDatagram(dg_len);
                         }
                     }
                 }
@@ -414,10 +413,12 @@ impl NodeHandler for FspInitiatorHandler {
     }
 
     fn poll_at(&self) -> Option<Instant> {
+        eprintln!("[INIT] poll_at called, fsp_timer={:?}", self.fsp_timer.map(|t| t.as_millis()));
         self.fsp_timer
     }
 
     fn on_tick(&mut self, resp: &mut [u8]) -> HandleResult {
+        eprintln!("[INIT] on_tick called, fsp={}", self.fsp.is_some());
         let fsp = match &mut self.fsp {
             Some(f) => f,
             None => return HandleResult::None,
@@ -441,23 +442,13 @@ impl NodeHandler for FspInitiatorHandler {
                     setup_len,
                     hex::encode(&self.target_addr)
                 );
-                let mut out = [0u8; 1024];
-                let mut dg = [0u8; 1024];
-                dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                dg[SESSION_DATAGRAM_BODY_SIZE
+                let dg_len = SESSION_DATAGRAM_BODY_SIZE + setup_len;
+                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                resp[SESSION_DATAGRAM_BODY_SIZE
                     ..SESSION_DATAGRAM_BODY_SIZE + setup_len]
                     .copy_from_slice(&setup_buf[..setup_len]);
-                let dg_len = SESSION_DATAGRAM_BODY_SIZE + setup_len;
-                let inner = fsp::fsp_prepend_inner_header(
-                    0,
-                    fsp::FSP_MSG_DATA,
-                    0x00,
-                    &dg[..dg_len],
-                    &mut out,
-                );
-                resp[..inner].copy_from_slice(&out[..inner]);
                 self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
-                HandleResult::SendDatagram(inner)
+                HandleResult::SendDatagram(dg_len)
             }
             FspInitiatorState::AwaitingAck => {
                 eprintln!("[INIT] FSP ACK timeout, resetting session");
@@ -481,39 +472,30 @@ impl NodeHandler for FspInitiatorHandler {
                     .unwrap()
                     .as_millis() as u32;
                 let mut plaintext = [0u8; 512];
-                let inner = fsp::fsp_prepend_inner_header(
+                let il = fsp::fsp_prepend_inner_header(
                     ts,
                     fsp::FSP_MSG_DATA,
                     0x00,
                     ping,
                     &mut plaintext,
                 );
-                let header = fsp::build_fsp_header(0, 0x00, (inner + noise::TAG_SIZE) as u16);
+                let header = fsp::build_fsp_header(0, 0x00, (il + noise::TAG_SIZE) as u16);
                 let mut ciphertext = [0u8; 512];
                 let cl = noise::aead_encrypt(
-                    &k_send, 0, &header, &plaintext[..inner], &mut ciphertext,
+                    &k_send, 0, &header, &plaintext[..il], &mut ciphertext,
                 )
                 .unwrap();
-                let mut pkt = [0u8; 512];
-                fsp::build_fsp_encrypted(&header, &ciphertext[..cl], &mut pkt);
-                let fsp_payload = &pkt[..fsp::FSP_HEADER_SIZE + cl];
-                let mut dg = [0u8; 1024];
-                dg[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                dg[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp_payload.len()]
-                    .copy_from_slice(fsp_payload);
-                let dg_len = SESSION_DATAGRAM_BODY_SIZE + fsp_payload.len();
-                let mut out = [0u8; 1024];
-                let inner = fsp::fsp_prepend_inner_header(
-                    0,
-                    fsp::FSP_MSG_DATA,
-                    0x00,
-                    &dg[..dg_len],
-                    &mut out,
-                );
-                resp[..inner].copy_from_slice(&out[..inner]);
-                eprintln!("[INIT] Sent PING to target");
+                let fsp_total = fsp::FSP_HEADER_SIZE + cl;
+                let dg_len = SESSION_DATAGRAM_BODY_SIZE + fsp_total;
+                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp::FSP_HEADER_SIZE]
+                    .copy_from_slice(&header);
+                resp[SESSION_DATAGRAM_BODY_SIZE + fsp::FSP_HEADER_SIZE
+                    ..SESSION_DATAGRAM_BODY_SIZE + fsp_total]
+                    .copy_from_slice(&ciphertext[..cl]);
+                eprintln!("[INIT] Sent PING to target ({}B datagram)", dg_len);
                 self.fsp_timer = Some(Instant::now() + Duration::from_secs(10));
-                HandleResult::SendDatagram(inner)
+                HandleResult::SendDatagram(dg_len)
             }
         }
     }
@@ -582,6 +564,13 @@ const SIM_A_SECRET: [u8; 32] = [
 const SIM_B_SECRET: [u8; 32] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
+];
+
+/// SIM-A compressed pubkey (for FSP initiator targeting SIM-A).
+const SIM_A_PUBKEY: [u8; 33] = [
+    0x02, 0xf9, 0x30, 0x8a, 0x01, 0x92, 0x58, 0xc3, 0x10, 0x49, 0x34, 0x4f, 0x85, 0xf8,
+    0x9d, 0x52, 0x29, 0xb5, 0x31, 0xc8, 0x45, 0x83, 0x6f, 0x99, 0xb0, 0x86, 0x01, 0xf1,
+    0x13, 0xbc, 0xe0, 0x36, 0xf9,
 ];
 
 /// SIM-A node_addr (target for SIM-B initiator).
@@ -713,19 +702,27 @@ fn main() {
         eprintln!("[SIM] target: {}", hex::encode(&target_addr));
     }
 
+    use std::net::ToSocketAddrs;
     let peer: std::net::SocketAddr = fips_addr
-        .parse()
-        .expect("invalid address");
+        .to_socket_addrs()
+        .expect("DNS resolution failed")
+        .next()
+        .expect("no addresses resolved");
     let transport = UdpTransport::new(peer);
     let mut node = Node::new(transport, rand_core::OsRng, secret, peer_pub);
     node.set_raw_framing(true);
 
     block_on(async move {
         if is_initiator {
-            let mut handler = FspInitiatorHandler::new(target_addr, *my_addr.as_bytes());
+            let mut handler = FspInitiatorHandler::new(
+                secret,
+                SIM_A_PUBKEY,
+                target_addr,
+                *my_addr.as_bytes(),
+            );
             node.run(&mut handler).await;
         } else {
-            let mut handler = LeafHandler::new();
+            let mut handler = LeafHandler::new(secret);
             node.run(&mut handler).await;
         }
     });

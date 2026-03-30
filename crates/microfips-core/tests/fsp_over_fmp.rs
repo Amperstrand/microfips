@@ -285,8 +285,34 @@ fn test_fsp_full_handshake_over_fmp() {
             other
         ),
     };
-    assert_eq!(http_response_len, HTTP_RESPONSE.len());
-    assert_eq!(&http_buf[..http_response_len], HTTP_RESPONSE);
+    assert!(
+        http_response_len > SESSION_DATAGRAM_BODY_SIZE,
+        "response must include SessionDatagram body"
+    );
+    let reply_dg = &http_buf[..http_response_len];
+    assert_eq!(
+        &reply_dg[3..19],
+        responder_addr.as_bytes(),
+        "reply src should be original dst"
+    );
+    assert_eq!(
+        &reply_dg[19..35],
+        initiator_addr.as_bytes(),
+        "reply dst should be original src"
+    );
+    let fsp_reply = &reply_dg[SESSION_DATAGRAM_BODY_SIZE..];
+    assert_eq!(
+        fsp_reply[0] & 0x0F,
+        0x00,
+        "reply should be phase ESTABLISHED (encrypted)"
+    );
+    let reply_hdr: [u8; FSP_HEADER_SIZE] = fsp_reply[..FSP_HEADER_SIZE].try_into().unwrap();
+    let ct = &fsp_reply[FSP_HEADER_SIZE..];
+    let mut dec = [0u8; 512];
+    let dl = aead_decrypt(&k_recv_i, 1, &reply_hdr, ct, &mut dec).unwrap();
+    let (ts, mt, ifl, inner) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();
+    assert_eq!(mt, FSP_MSG_DATA);
+    assert_eq!(inner, HTTP_RESPONSE);
 }
 
 #[test]
@@ -508,7 +534,7 @@ fn test_ping_pong_roundtrip() {
         .unwrap();
     fsp_session.handle_msg3(&msg3_buf[..msg3_len]).unwrap();
 
-    let (_init_k_recv, init_k_send) = init_session.session_keys().unwrap();
+    let (init_k_recv, init_k_send) = init_session.session_keys().unwrap();
 
     let ping_payload = b"PING";
     let mut plaintext = [0u8; 512];
@@ -544,5 +570,28 @@ fn test_ping_pong_roundtrip() {
         fsp::FspHandlerResult::SendDatagram(len) => len,
         other => panic!("Expected SendDatagram(PONG), got {:?}", other),
     };
-    assert_eq!(&pong_buf[..pong_len], b"PONG");
+    assert!(
+        pong_len > SESSION_DATAGRAM_BODY_SIZE,
+        "PONG must include SessionDatagram body"
+    );
+    let reply_dg = &pong_buf[..pong_len];
+    assert_eq!(
+        &reply_dg[3..19],
+        responder_addr.as_bytes(),
+        "reply src should be original dst"
+    );
+    assert_eq!(
+        &reply_dg[19..35],
+        initiator_addr.as_bytes(),
+        "reply dst should be original src"
+    );
+    let fsp_reply = &reply_dg[SESSION_DATAGRAM_BODY_SIZE..];
+    assert_eq!(fsp_reply[0] & 0x0F, 0x00, "PONG reply should be encrypted");
+    let reply_hdr: [u8; FSP_HEADER_SIZE] = fsp_reply[..FSP_HEADER_SIZE].try_into().unwrap();
+    let ct = &fsp_reply[FSP_HEADER_SIZE..];
+    let mut dec = [0u8; 512];
+    let dl = aead_decrypt(&init_k_recv, 1, &reply_hdr, ct, &mut dec).unwrap();
+    let (_ts, mt, _ifl, inner) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();
+    assert_eq!(mt, FSP_MSG_DATA);
+    assert_eq!(inner, b"PONG");
 }
