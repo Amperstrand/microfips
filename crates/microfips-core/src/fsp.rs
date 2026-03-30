@@ -27,7 +27,7 @@ pub const FIPS_IPV6_OVERHEAD: usize = 77;
 pub const FSP_DATAGRAM_HEADER_SIZE: usize = 4;
 pub const NODE_ADDR_SIZE: usize = 16;
 
-pub const SESSION_DATAGRAM_BODY_SIZE: usize = 35;
+pub const SESSION_DATAGRAM_BODY_SIZE: usize = 36;
 pub const SESSION_DATAGRAM_HEADER_SIZE: usize = 36;
 
 pub const HTTP_RESPONSE: &[u8] =
@@ -450,7 +450,7 @@ pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])
     Some((flags, counter, header, payload))
 }
 
-use crate::noise::{EPOCH_SIZE, NoiseError, NoiseXkResponder, PUBKEY_SIZE};
+use crate::noise::{NoiseError, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspSessionState {
@@ -927,7 +927,7 @@ mod tests {
 
     #[test]
     fn fsp_session_full_flow() {
-        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
+        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
 
         let (responder_secret, responder_eph, initiator_secret) = test_keys();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn fsp_session_rejects_double_setup() {
-        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
+        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
 
         let (responder_secret, responder_eph, initiator_secret) = test_keys();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
