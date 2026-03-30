@@ -137,4 +137,59 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn load_secret_returns_default_when_env_not_set() {
+        // SAFETY: test is single-threaded (--test-threads=1)
+        unsafe { std::env::remove_var("FIPS_SECRET") };
+        let secret = load_secret();
+        assert_eq!(secret, DEFAULT_SECRET);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn load_peer_pub_returns_default_when_env_not_set() {
+        unsafe { std::env::remove_var("FIPS_PEER_PUB") };
+        let peer = load_peer_pub();
+        assert_eq!(peer, DEFAULT_PEER_PUB);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn load_secret_reads_from_env() {
+        let hex_key = "0101010101010101010101010101010101010101010101010101010101010101";
+        unsafe { std::env::set_var("FIPS_SECRET", hex_key) };
+        let secret = load_secret();
+        assert_eq!(secret, [0x01u8; 32]);
+        unsafe { std::env::remove_var("FIPS_SECRET") };
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn load_peer_pub_reads_from_env() {
+        let hex_pub =
+            "020101010101010101010101010101010101010101010101010101010101010101";
+        unsafe { std::env::set_var("FIPS_PEER_PUB", hex_pub) };
+        let peer = load_peer_pub();
+        assert_eq!(peer[0], 0x02);
+        assert_eq!(&peer[1..], &[0x01u8; 32]);
+        unsafe { std::env::remove_var("FIPS_PEER_PUB") };
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[should_panic(expected = "FIPS_SECRET: invalid hex")]
+    fn load_secret_panics_on_invalid_hex() {
+        unsafe { std::env::set_var("FIPS_SECRET", "not_valid_hex!") };
+        let _ = load_secret();
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[should_panic(expected = "FIPS_SECRET: must be 32 bytes")]
+    fn load_secret_panics_on_wrong_length() {
+        unsafe { std::env::set_var("FIPS_SECRET", "0102030405") };
+        let _ = load_secret();
+    }
 }
