@@ -589,9 +589,9 @@ async fn handle_incoming_fsp(
                 if flags & 0x04 != 0 {
                     return;
                 }
-                let (_k_recv, _k_send) = fsp.session_keys().unwrap();
+                let (k_recv, _k_send) = fsp.session_keys().unwrap();
                 let mut dec = [0u8; 512];
-                if let Ok(dl) = noise::aead_decrypt(&_k_send, counter, header, encrypted, &mut dec) {
+                if let Ok(dl) = noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec) {
                     if let Some((_ts2, _msg_type2, _flags2, payload2)) =
                         fsp_strip_inner_header(&dec[..dl])
                     {

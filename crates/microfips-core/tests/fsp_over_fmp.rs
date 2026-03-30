@@ -1,14 +1,14 @@
 use microfips_core::fmp;
 use microfips_core::fsp::{
-    self, build_fsp_encrypted, build_fsp_header, build_session_datagram_body, build_session_msg3,
-    build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack,
-    FspInitiatorSession, FspSession, FSP_HEADER_SIZE, FSP_MSG_DATA, HTTP_RESPONSE,
-    SESSION_DATAGRAM_BODY_SIZE,
+    self, FSP_HEADER_SIZE, FSP_MSG_DATA, FspInitiatorSession, FspSession, HTTP_RESPONSE,
+    SESSION_DATAGRAM_BODY_SIZE, build_fsp_encrypted, build_fsp_header, build_session_datagram_body,
+    build_session_msg3, build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram,
+    parse_session_ack,
 };
-use microfips_core::identity::{NodeAddr, DEFAULT_SECRET};
+use microfips_core::identity::{DEFAULT_SECRET, NodeAddr};
 use microfips_core::noise::{
-    aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseIkInitiator, NoiseIkResponder,
-    NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE,
+    NoiseIkInitiator, NoiseIkResponder, NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE, aead_decrypt,
+    aead_encrypt, ecdh_pubkey, parity_normalize,
 };
 use rand::RngCore;
 

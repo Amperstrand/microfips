@@ -66,12 +66,7 @@ pub struct NoopHandler;
 
 impl NodeHandler for NoopHandler {
     async fn on_event(&mut self, _event: NodeEvent) {}
-    fn on_message(
-        &mut self,
-        _msg_type: u8,
-        _payload: &[u8],
-        _resp: &mut [u8],
-    ) -> HandleResult {
+    fn on_message(&mut self, _msg_type: u8, _payload: &[u8], _resp: &mut [u8]) -> HandleResult {
         HandleResult::None
     }
 }
@@ -251,8 +246,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             }
                             FrameAction::PeerDC => return Ok(()),
                             FrameAction::SendDatagram(len) => {
-                                self.send_datagram(them, &mut send_ctr, len, ks)
-                                    .await;
+                                self.send_datagram(them, &mut send_ctr, len, ks).await;
                             }
                         }
                     }
@@ -266,13 +260,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         handler.on_event(NodeEvent::HeartbeatSent).await;
                     }
                     if let Some(t) = tick {
+                        #[allow(clippy::collapsible_if)]
                         if now >= t {
-                            match handler.on_tick(&mut self.resp_buf) {
-                                HandleResult::SendDatagram(len) => {
-                                    self.send_datagram(them, &mut send_ctr, len, ks)
-                                        .await;
-                                }
-                                _ => {}
+                            if let HandleResult::SendDatagram(len) = handler.on_tick(&mut self.resp_buf) {
+                                self.send_datagram(them, &mut send_ctr, len, ks).await;
                             }
                         }
                     }
@@ -287,13 +278,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         handler.on_event(NodeEvent::HeartbeatSent).await;
                     }
                     if let Some(t) = tick {
+                        #[allow(clippy::collapsible_if)]
                         if now >= t {
-                            match handler.on_tick(&mut self.resp_buf) {
-                                HandleResult::SendDatagram(len) => {
-                                    self.send_datagram(them, &mut send_ctr, len, ks)
-                                        .await;
-                                }
-                                _ => {}
+                            if let HandleResult::SendDatagram(len) = handler.on_tick(&mut self.resp_buf) {
+                                self.send_datagram(them, &mut send_ctr, len, ks).await;
                             }
                         }
                     }
@@ -306,13 +294,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     /// FIPS: mod.rs:1578-1663 send_encrypted_link_message_with_ce() —
     /// prepend_inner_header(timestamp, plaintext) → build_established_header →
     /// encrypt_with_aad(header as AAD) → transport.send().
-    async fn send_datagram(
-        &mut self,
-        them: u32,
-        send_ctr: &mut u64,
-        len: usize,
-        ks: &[u8; 32],
-    ) {
+    async fn send_datagram(&mut self, them: u32, send_ctr: &mut u64, len: usize, ks: &[u8; 32]) {
         use microfips_core::fmp;
         let c = *send_ctr;
         *send_ctr += 1;
@@ -495,7 +477,11 @@ fn handle_frame_inner<H: NodeHandler>(
             counter, encrypted, ..
         } => {
             #[cfg(feature = "std")]
-            log::debug!("FMP established: counter={} enc_len={}", counter, encrypted.len());
+            log::debug!(
+                "FMP established: counter={} enc_len={}",
+                counter,
+                encrypted.len()
+            );
             let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
             let mut dec = [0u8; 2048];
             let dl =
@@ -503,7 +489,12 @@ fn handle_frame_inner<H: NodeHandler>(
                     Ok(l) => l,
                     Err(e) => {
                         #[cfg(feature = "std")]
-                        log::debug!("FMP decrypt failed: counter={} hdr={:02x?} err={:?}", counter, &hdr[..16.min(hdr.len())], e);
+                        log::debug!(
+                            "FMP decrypt failed: counter={} hdr={:02x?} err={:?}",
+                            counter,
+                            &hdr[..16.min(hdr.len())],
+                            e
+                        );
                         return FrameAction::Continue;
                     }
                 };
@@ -512,7 +503,11 @@ fn handle_frame_inner<H: NodeHandler>(
             }
             let msg_type = dec[4];
             #[cfg(feature = "std")]
-            log::debug!("FMP frame: msg_type=0x{:02x} payload_len={}", msg_type, dl - 5);
+            log::debug!(
+                "FMP frame: msg_type=0x{:02x} payload_len={}",
+                msg_type,
+                dl - 5
+            );
             match msg_type {
                 fmp::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
                 fmp::MSG_DISCONNECT => FrameAction::PeerDC,
@@ -560,11 +555,19 @@ fn fmp_raw_frame_size(data: &[u8]) -> Option<usize> {
     match phase {
         fmp::PHASE_MSG1 => {
             let total = fmp::MSG1_WIRE_SIZE;
-            if data.len() < total { None } else { Some(total) }
+            if data.len() < total {
+                None
+            } else {
+                Some(total)
+            }
         }
         fmp::PHASE_MSG2 => {
             let total = fmp::MSG2_WIRE_SIZE;
-            if data.len() < total { None } else { Some(total) }
+            if data.len() < total {
+                None
+            } else {
+                Some(total)
+            }
         }
         _ => None,
     }

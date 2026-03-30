@@ -373,7 +373,7 @@ fn test_noise_ik_transport_key_direction_matches_fips() {
     //
     // This test verifies our IK initiator produces non-zero, distinct k1 and k2
     // from finalize(), and that a matching responder produces swapped keys.
-    use noise::{ecdh_pubkey, NoiseIkInitiator, NoiseIkResponder};
+    use noise::{NoiseIkInitiator, NoiseIkResponder, ecdh_pubkey};
 
     let init_secret = gen_key();
     let resp_secret = gen_key();
@@ -425,7 +425,7 @@ fn test_noise_xk_transport_key_symmetry() {
     // XK: Initiator send=k1, recv=k2. Responder send=k2, recv=k1.
     // Our XK implementation MUST produce matching keys (unlike IK where D2 breaks symmetry).
     use fsp::FspSession;
-    use noise::{ecdh_pubkey, NoiseXkInitiator};
+    use noise::{NoiseXkInitiator, ecdh_pubkey};
 
     let init_secret = gen_key();
     let resp_secret = gen_key();
