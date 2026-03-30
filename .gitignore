@@ -7,3 +7,5 @@ probe-rs/
 .env
 __pycache__/
 *.pyc
+# ESP32 device credentials (WiFi, keys, etc.) — use secrets.rs.example as template
+crates/microfips-esp32/src/secrets.rs
