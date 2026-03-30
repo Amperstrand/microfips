@@ -137,6 +137,10 @@ pub fn ecdh_pubkey(secret: &[u8; 32]) -> Result<[u8; PUBKEY_SIZE], NoiseError> {
     Ok(out)
 }
 
+/// SHA-256 of the concatenation of two byte slices: SHA256(a || b).
+///
+/// Named to match the Noise spec's `HASH(data)` primitive (§4.1).
+/// Used by `mix_hash()` to implement MixHash(data) = h = HASH(h || data).
 fn hash_concat(a: &[u8], b: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(a);
@@ -147,6 +151,10 @@ fn hash_concat(a: &[u8], b: &[u8]) -> [u8; 32] {
     out
 }
 
+/// SHA-256 of a single byte slice: SHA256(data).
+///
+/// Named to match the Noise spec's `HASH(data)` primitive (§4.1).
+/// Used for protocol name hashing during handshake initialization.
 fn hash_one(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
