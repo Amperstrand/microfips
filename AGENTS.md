@@ -359,6 +359,19 @@ Unbinding a CDC ACM device from the `usb` driver corrupts the kernel TTY layer.
 
 **Safe USB reset:** `st-flash --connect-under-reset reset` (goes through SWD, not USB bus).
 
+### USB recovery via uhubctl (IMPORTANT)
+
+When ST-Link USB gets stuck (LIBUSB_ERROR_PIPE after repeated SWD operations):
+
+```bash
+sudo uhubctl -l 1 -a cycle -f -d 5 -r 2
+```
+
+- `-r 2` (repeat=2) is the key — some devices need two off cycles to actually power down
+- After cycle, wait 8-10s for full re-enumeration
+- Check with `lsusb | grep "0483"` AND the VID:PID detection loop — sometimes `lsusb` shows device but sysfs is broken from earlier `usb1 remove`
+- **Do NOT use `echo 1 > /sys/bus/usb/devices/usb1/remove`** — corrupts USB device tree, `lsusb` stops working even though devices are present
+
 ## Known Pins
 
 ### STM32F469
