@@ -181,6 +181,8 @@ jobs:
     name: FIPS Handshake Integration
     runs-on: ubuntu-latest
     needs: [build-host]
+    env:
+      FIPS_ADDR: orangeclaw.dns4sats.xyz:2121
     steps:
       - uses: actions/checkout@v4
 
@@ -237,9 +239,9 @@ jobs:
         timeout-minutes: 1
         continue-on-error: true
         run: |
-          echo "=== Leaf → public FIPS node (orangeclaw.dns4sats.xyz:2121) ==="
+          echo "=== Leaf → public FIPS node ==="
           echo "Using default MCU identity and VPS peer pubkey"
-          ./bin/fips-handshake orangeclaw.dns4sats.xyz:2121 2>&1 || true
+          ./bin/fips-handshake "$FIPS_ADDR" 2>&1 || true
           echo "=== (continue-on-error: VPS may be unreachable from CI) ==="
 
   build-firmware:
@@ -283,10 +285,69 @@ jobs:
           path: target/thumbv7em-none-eabi/release/microfips
           retention-days: 7
 
+  sim-ping:
+    name: Sim-to-Sim Ping via FIPS
+    runs-on: ubuntu-latest
+    needs: [build-host]
+    continue-on-error: true
+    timeout-minutes: 4
+    env:
+      FIPS_ADDR: orangeclaw.dns4sats.xyz:2121
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: microfips-sim
+          path: ./bin
+
+      - run: chmod +x ./bin/microfips-sim
+
+      - name: Run sim-to-sim ping test against live FIPS
+        run: |
+          set -e
+
+          ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
+          SIMA_PID=$!
+          sleep 8
+
+          if ! kill -0 $SIMA_PID 2>/dev/null; then
+            echo "::error::SIM-A crashed before SIM-B started"
+            grep -E "(error|FAIL|ERR)" /tmp/sim-a.log || true
+            exit 1
+          fi
+          echo "SIM-A connected"
+
+          timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
+          SIMB_PID=$!
+
+          wait $SIMB_PID 2>/dev/null
+          EXIT=$?
+
+          echo "=== SIM-B trace ==="
+          grep -E "(MSG1|MSG2|handshake|ACK|PONG|PING|FAIL|error)" /tmp/sim-b.log || true
+
+          echo "=== SIM-A trace ==="
+          grep -E "(LEAF|sending|ACK|PONG|PING|FAIL|error)" /tmp/sim-a.log || true
+
+          kill $SIMA_PID 2>/dev/null || true
+
+          if [ "$EXIT" -eq 0 ]; then
+            echo "=== PASS: PING/PONG round-trip confirmed via FIPS ==="
+          else
+            echo "::error::FAIL: SIM-B did not receive PONG (exit=$EXIT)"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kill $(pgrep -f microfips-sim) 2>/dev/null || true
+
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, build-host, lint, sim-smoke, build-firmware, fips-integration]
+    needs: [test, build-host, lint, sim-smoke, sim-ping, build-firmware, fips-integration]
     if: always()
     steps:
       - run: |
@@ -298,6 +359,7 @@ jobs:
           echo "| Build Host Tools | \`${{ needs.build-host.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Lint & Format | \`${{ needs.lint.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Simulator Smoke | \`${{ needs.sim-smoke.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Sim-to-Sim Ping | \`${{ needs.sim-ping.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build Firmware | \`${{ needs.build-firmware.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
