@@ -256,11 +256,14 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut listen_port: Option<u16> = None;
     let mut tcp_addr: Option<String> = None;
+    let mut raw_framing = false;
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--listen" {
             i += 1;
             listen_port = args.get(i).and_then(|s| s.parse().ok());
+        } else if args[i] == "--raw" {
+            raw_framing = true;
         } else if args[i] != "--" {
             tcp_addr = Some(args[i].clone());
         }
@@ -273,6 +276,9 @@ fn main() {
     eprintln!("[SIM] microfips simulator starting");
     eprintln!("[SIM] local pubkey: {}", hex::encode(my_pub));
     eprintln!("[SIM] peer pubkey:  {}", hex::encode(peer_pub));
+    if raw_framing {
+        eprintln!("[SIM] framing: raw FMP (direct FIPS TCP connection, no bridge needed)");
+    }
 
     let transport = if let Some(port) = listen_port {
         eprintln!("[SIM] mode: listen, port: {}", port);
@@ -284,12 +290,15 @@ fn main() {
         SimTransport::new(SimConnector::Connect(addr))
     } else {
         eprintln!("[SIM] mode: stdio (reading from stdin, writing to stdout)");
-        eprintln!("[SIM] usage: microfips-sim [--listen PORT | tcp_addr]");
+        eprintln!("[SIM] usage: microfips-sim [--raw] [--listen PORT | tcp_addr]");
         SimTransport::new(SimConnector::Stdio)
     };
 
     let rng = rand_core::OsRng;
     let mut node = Node::new(transport, rng, secret, peer_pub);
+    if raw_framing {
+        node.set_raw_framing(true);
+    }
     let mut handler = SimHandler;
 
     block_on(async move {
