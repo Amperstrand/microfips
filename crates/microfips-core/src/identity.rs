@@ -168,8 +168,7 @@ mod tests {
     #[test]
     #[cfg(feature = "std")]
     fn load_peer_pub_reads_from_env() {
-        let hex_pub =
-            "020101010101010101010101010101010101010101010101010101010101010101";
+        let hex_pub = "020101010101010101010101010101010101010101010101010101010101010101";
         unsafe { std::env::set_var("FIPS_PEER_PUB", hex_pub) };
         let peer = load_peer_pub();
         assert_eq!(peer[0], 0x02);
