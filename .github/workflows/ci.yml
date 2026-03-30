@@ -33,6 +33,77 @@ jobs:
 
       - run: cargo test -p microfips-protocol --features std -- --test-threads=1
 
+  noise-compliance:
+    name: Noise Spec Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Count tests
+        run: |
+          CORE_COUNT=$(cargo test -p microfips-core --features std -- --list 2>&1 | grep -c "test$" || true)
+          PROTO_COUNT=$(cargo test -p microfips-protocol --features std -- --list 2>&1 | grep -c "test$" || true)
+          FSP_COUNT=$(cargo test -p microfips-core --features std --test fsp_over_fmp -- --list 2>&1 | grep -c "test$" || true)
+          TOTAL=$((CORE_COUNT + FSP_COUNT))
+          echo "Core tests: $CORE_COUNT (expect >= 95)"
+          echo "Protocol tests: $PROTO_COUNT (expect >= 26)"
+          echo "FSP integration tests: $FSP_COUNT (expect >= 3)"
+          echo "Total core: $TOTAL (expect >= 98)"
+          if [ "$CORE_COUNT" -lt 95 ]; then
+            echo "::error::Core test count dropped below 95 (got $CORE_COUNT)"
+            exit 1
+          fi
+          if [ "$PROTO_COUNT" -lt 26 ]; then
+            echo "::error::Protocol test count dropped below 26 (got $PROTO_COUNT)"
+            exit 1
+          fi
+          if [ "$FSP_COUNT" -lt 3 ]; then
+            echo "::error::FSP integration test count dropped below 3 (got $FSP_COUNT)"
+            exit 1
+          fi
+
+      - name: Verify FIPS-bug-compatible deviations are documented
+        run: |
+          NOISE_RS="crates/microfips-core/src/noise.rs"
+          echo "Checking that Noise deviations are documented..."
+          grep -q "FIPS: no AAD during handshake" "$NOISE_RS" || { echo "::error::Missing D1 documentation (empty AAD)"; exit 1; }
+          grep -q "se_and_es_produce_different_keys" "$NOISE_RS" || { echo "::error::Missing D2 documentation (se DH swap)"; exit 1; }
+          echo "D1 (empty AAD) and D2 (se DH swap) deviations are documented."
+
+      - name: Run deviation-specific tests
+        run: |
+          cargo test -p microfips-core --features std -- se_and_es_produce_different_keys
+          cargo test -p microfips-core --features std -- ik_se_uses_es_dh_inputs_intentionally
+          cargo test -p microfips-core --features std -- fsp_session_full_flow
+          cargo test -p microfips-core --features std --test fsp_over_fmp -- test_fsp_full_handshake_over_fmp
+
+      - name: Run Noise IK transport key consistency (10 rounds)
+        run: |
+          for i in $(seq 1 10); do
+            cargo test -p microfips-core --features std -- noise_ik_transport_keys_are_deterministic --quiet || { echo "::error::IK transport key test failed on round $i"; exit 1; }
+          done
+          echo "IK transport keys consistent across 10 rounds"
+
+      - name: Run Noise XK transport key consistency (10 rounds)
+        run: |
+          for i in $(seq 1 10); do
+            cargo test -p microfips-core --features std -- noise_xk_transport_keys_are_deterministic --quiet || { echo "::error::XK transport key test failed on round $i"; exit 1; }
+          done
+          echo "XK transport keys consistent across 10 rounds"
+
+      - name: Check FSP handshake stability (10 rounds)
+        run: |
+          for i in $(seq 1 10); do
+            cargo test -p microfips-core --features std --test fsp_over_fmp -- test_fsp_full_handshake_over_fmp --quiet || { echo "::error::FSP handshake test failed on round $i"; exit 1; }
+          done
+          echo "FSP full handshake stable across 10 rounds"
+
   build-host:
     name: Build Host Tools
     runs-on: ubuntu-latest
