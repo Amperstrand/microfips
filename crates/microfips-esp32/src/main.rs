@@ -602,7 +602,7 @@ async fn run_wifi(
 
     // Resolve FIPS_HOST to IP. For now, support dotted-quad IP addresses.
     // DNS resolution via embassy-net is possible but adds complexity.
-    let fips_ip = parse_ipv4(FIPS_HOST).expect("FIPS_HOST must be a dotted-quad IP address for now");
+    let fips_ip = parse_ipv4(FIPS_HOST).expect("FIPS_HOST must be a dotted-quad IP (DNS resolution not yet implemented)");
     let fips_endpoint = embassy_net::IpEndpoint::new(
         embassy_net::IpAddress::Ipv4(fips_ip),
         FIPS_PORT,
@@ -615,10 +615,12 @@ async fn run_wifi(
 }
 
 fn parse_ipv4(s: &str) -> Option<embassy_net::Ipv4Address> {
+    if s.is_empty() { return None; }
     let mut octets = [0u8; 4];
     let mut parts = s.split('.');
     for octet in &mut octets {
         let part = parts.next()?;
+        if part.is_empty() { return None; }
         *octet = part.parse::<u8>().ok()?;
     }
     if parts.next().is_some() { return None; }
@@ -831,6 +833,7 @@ async fn try_wifi(
 
     println!("WiFi: connecting to \"{}\"...", WIFI_SSID);
 
+    // WiFi stack needs ~72 KB heap (esp-radio internal buffers + embassy-net stack)
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let station_config = WifiConfig::Station(
@@ -846,8 +849,11 @@ async fn try_wifi(
 
     let wifi_interface = interfaces.station;
     let net_config = embassy_net::Config::dhcpv4(Default::default());
+    // Seed from hardware RNG; two independent 32-bit reads combined into 64-bit
     let rng = Rng::new();
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let hi = rng.random() as u64;
+    let lo = rng.random() as u64;
+    let seed = hi << 32 | lo;
 
     let (stack, runner) = embassy_net::new(
         wifi_interface,
@@ -857,8 +863,14 @@ async fn try_wifi(
     );
 
     // Spawn background tasks
-    spawner.spawn(wifi_connection_task(controller)).ok()?;
-    spawner.spawn(net_task(runner)).ok()?;
+    if spawner.spawn(wifi_connection_task(controller)).is_err() {
+        println!("WiFi: failed to spawn connection task");
+        return None;
+    }
+    if spawner.spawn(net_task(runner)).is_err() {
+        println!("WiFi: failed to spawn net task");
+        return None;
+    }
 
     // Wait for WiFi association
     println!("WiFi: waiting for association...");
