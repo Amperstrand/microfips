@@ -9,6 +9,7 @@ microfips-core = { path = "../microfips-core" }
 embassy-time = "0.5.1"
 embassy-futures = "0.1.2"
 rand_core = { version = "0.6", default-features = false }
+log = { version = "0.4", optional = true }
 
 [dev-dependencies]
 embassy-executor = { version = "0.10.0", features = ["platform-std", "executor-thread"] }
@@ -18,4 +19,4 @@ k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
 
 [features]
 default = []
-std = ["microfips-core/std", "embassy-time/std"]
+std = ["microfips-core/std", "embassy-time/std", "dep:log"]

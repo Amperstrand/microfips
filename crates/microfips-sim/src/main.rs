@@ -48,6 +48,11 @@ impl Transport for UdpTransport {
     }
 
     async fn send(&mut self, data: &[u8]) -> Result<(), UdpError> {
+        if data.len() >= 4 {
+            let phase = data[0] & 0x0F;
+            let extra = if phase == 0x00 && data.len() >= 9 { format!(" msg=0x{:02x}", data[8]) } else { String::new() };
+            eprintln!("[UDP] TX {}B phase=0x{:01x}{} first4={:02x?}", data.len(), phase, extra, &data[..data.len().min(16)]);
+        }
         self.socket.send_to(data, self.peer).map_err(UdpError::Io)?;
         Ok(())
     }
@@ -55,7 +60,13 @@ impl Transport for UdpTransport {
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, UdpError> {
         loop {
             match self.socket.recv_from(buf) {
-                Ok((n, _addr)) => return Ok(n),
+                Ok((n, _addr)) => {
+                    if n >= 4 {
+                        let phase = buf[0] & 0x0F;
+                        eprintln!("[UDP] RX {}B phase=0x{:01x} first4={:02x?}", n, phase, &buf[..n.min(16)]);
+                    }
+                    return Ok(n);
+                }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     Timer::after(Duration::from_millis(1)).await;
                 }

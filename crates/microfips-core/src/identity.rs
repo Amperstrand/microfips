@@ -19,6 +19,10 @@ pub const DEFAULT_PEER_PUB: [u8; 33] = [
 pub struct NodeAddr(pub [u8; 16]);
 
 impl NodeAddr {
+    /// Derive a 16-byte NodeAddr from a 32-byte x-only public key.
+    /// Computes SHA256(x_only) and takes the first 16 bytes.
+    /// FIPS: `NodeAddr` is derived from the x-coordinate of the compressed public key.
+    /// The FIPS reference uses the same SHA256 truncation.
     pub fn from_pubkey_x(x_only: &[u8; 32]) -> Self {
         let hash = Sha256::digest(x_only);
         let mut addr = [0u8; 16];
@@ -34,6 +38,9 @@ impl NodeAddr {
 pub struct FipsAddress(pub [u8; 16]);
 
 impl FipsAddress {
+    /// Construct a FIPS network address from a NodeAddr.
+    /// Prepends 0xFD (Tor-style onion address prefix) and truncates to 15 bytes.
+    /// FIPS: `.fips` addresses use 0xFD prefix, matching Tor's delegated zone.
     pub fn from_node_addr(node_addr: &NodeAddr) -> Self {
         let mut bytes = [0u8; 16];
         bytes[0] = 0xfd;
