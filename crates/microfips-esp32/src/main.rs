@@ -1178,7 +1178,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let mut led = Led(Output::new(peripherals.GPIO2, Level::Low, esp_hal::gpio::OutputConfig::default()));
 
     let _trng_source = esp_hal::rng::TrngSource::new(peripherals.RNG, peripherals.ADC1);
-    let mut trng = Trng::try_new().unwrap();
+    let mut trng = Trng::try_new().expect("TRNG init failed");
 
     println!("microfips-esp32 ({}) booting", DEVICE_ALIAS);
 
