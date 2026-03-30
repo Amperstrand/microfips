@@ -7,38 +7,61 @@
 //! ## Reference Sources
 //!
 //! - **Noise Protocol Framework** (rev 34): <https://noiseprotocol.org/noise.html>
-//!   - §5.1 CipherState: ENCRYPT/DECRYPT with AEAD
-//!   - §5.2 SymmetricState: EncryptAndHash/DecryptAndHash use h as AAD
-//!   - §5.3 HandshakeState: WriteMessage/ReadMessage processing rules
+//!   - §4: Crypto functions — AEAD (§4.2), HASH/HKDF (§4.3)
+//!   - §5: Protocol processing — CipherState (§5.1), SymmetricState (§5.2),
+//!     HandshakeState (§5.3)
 //!   - §7.5 IK pattern: `<- s / -> e, es, s, ss / <- e, ee, se`
-//!
+//!   - §7.9 XK pattern: `<- s / -> e, es / <- e, ee, se / -> s, se`
+//!   - §13: DH functions — allows custom DH definitions
+//!   - §14: Security considerations — nonce reuse, key reuse, replay
+//! - **RFC 5869**: HMAC-based Extract-and-Expand Key Derivation Function (HKDF)
+//!   — underlying construction for `mix_key` and `Split`
+//! - **RFC 8439** (obsoletes 7539): ChaCha20 and Poly1305 for IETF Protocols
+//!   — AEAD construction. §2.8 defines the AEAD interface, §2.3 defines nonce.
+//! - **RFC 5116**: An Interface and Algorithms for Authenticated Encryption
+//! - **RFC 7748**: Elliptic Curves for Security — ECDH function
 //! - **FIPS source**: `/root/src/fips/src/noise/` on VPS (orangeclaw)
 //!   - `handshake.rs`: HandshakeState with IK/XK patterns
 //!   - `mod.rs`: CipherState with encrypt/decrypt (no AAD during handshake)
 //!
-//! ## FIPS Deviations from Noise Spec
+//! ## Noise Spec Compliance — Deviation Table
 //!
-//! FIPS deviates from the standard Noise spec in one way:
+//! | # | Spec Section | Deviation | Severity | Impact |
+//! |---|-------------|-----------|----------|--------|
+//! | D1 | §5.2 EncryptAndHash | Empty AAD during handshake instead of `h` | HIGH | Weakens handshake binding; not interoperable with spec-compliant Noise implementations |
+//! | D2 | §7.5 IK `se` token | Initiator computes `DH(e,rs)` not `DH(s,re)` | MEDIUM | Different transcript hash; interops only with FIPS, not generic Noise IK |
+//! | D3 | §13 DH function | Custom `SHA256(x_coordinate)` instead of raw ECDH output | LOW | Non-standard but valid per §13; required for FIPS interop |
+//! | D4 | §5.1 CipherState nonce | Nonce format `[0x00;4] \|\| LE64(n)` | OK | Matches Noise spec §5.1 and RFC 8439 §2.3 |
 //!
-//! 1. **No AAD during handshake** (Bug-compatible deviation):
-//!    - Spec §5.2: `EncryptAndHash(pt)` calls `EncryptWithAd(h, pt)` — h is AAD
-//!    - FIPS `SymmetricState::encrypt_and_hash()` calls `cipher.encrypt(pt)`
-//!      which uses empty AAD (`&[]`)
-//!    - We match FIPS behavior (empty AAD) for interoperability
+//! Deviation D1 and D2 are FIPS-bug-compatible: we match FIPS behavior for interoperability.
+//! See `ik_se_uses_es_dh_inputs_intentionally` and `se_and_es_produce_different_keys` tests.
 //!
-//! ## Regarding the `se` token (IK — intentional FIPS deviation)
+//! ## FIPS 140-3 Compliance Gap Table
 //!
-//! The Noise spec defines IK `se` as:
-//!   initiator se = DH(s_initiator, re_responder)
-//!   responder se = DH(e_responder, rs_initiator)
+//! | # | FIPS 140-3 Section | Gap | Recommendation |
+//! |---|-------------------|-----|----------------|
+//! | F1 | §9.9 Conditional self-tests | No KAT for ChaCha20-Poly1305 | Add RFC 8439 §2.8.2 test vectors as power-on self-test |
+//! | F2 | §9.9 Conditional self-tests | No KAT for SHA-256 | Add FIPS 180-4 Appendix B test vectors |
+//! | F3 | §9.9 Conditional self-tests | No KAT for HKDF-SHA256 | Add RFC 5869 Appendix A Test Case 1 vectors |
+//! | F4 | §9.9 Conditional self-tests | No KAT for secp256k1 ECDH | Add known base-point multiplication vectors |
+//! | F5 | SP 800-56A §5.6.2.1 | No pair-wise consistency test after keygen | Verify `DH(sk, G) == pk` after key generation |
+//! | F6 | SP 800-90B §4.1.1 | No continuous RNG test (stuck-at) | Check RNG output blocks for all-zeros |
+//! | F7 | §9.10 Power-on self-tests | No firmware integrity test | Hash code section at boot |
+//! | F8 | §8.3.2 Key zeroization | Ephemeral/session keys not zeroized on drop | Use `zeroize` crate or volatile writes |
+//! | F9 | §9.9 Error state | Self-test failure returns `Err` but no SSP halt | Implement critical error state per ISO 19790 §9.9 |
+//! | F10 | SP 800-56A Rev 3 | secp256k1 not FIPS-approved curve | Migrate to P-256 or P-384 for FIPS validation |
+//! | F11 | SP 800-38D | ChaCha20-Poly1305 not FIPS-approved AEAD | Migrate to AES-256-GCM for FIPS validation |
+//! | F12 | SP 800-56C Rev 2 | HKDF-SHA256 not FIPS-approved KDF | Use SP 800-108 or SP 800-56C compliant KDF |
 //!
-//! FIPS uses DH(e_initiator, s_responder) for `se` instead — the same inputs
-//! as `es`. This means `se` produces the same shared secret as `es`, providing
-//! no additional entropy. Both sides agree on this computation, so it
-//! interoperates, but it is a deviation from the Noise spec.
+//! ## Approved Algorithm Audit
 //!
-//! Our implementation matches FIPS exactly. See `ik_se_uses_es_dh_inputs_intentionally`
-//! test and `se_and_es_produce_different_keys` test for details.
+//! | Component | Currently Used | FIPS-Approved Alternative | Spec Reference |
+//! |-----------|---------------|--------------------------|----------------|
+//! | DH | secp256k1 ECDH (custom x-only+SHA256) | ECDH P-256/P-384 (SP 800-56A Rev 3) | SP 800-56A §5.7 |
+//! | KDF | HKDF-SHA256 (RFC 5869) | SP 800-56C Rev 2 / SP 800-108 | SP 800-56C §4 |
+//! | AEAD | ChaCha20-Poly1305 (RFC 8439) | AES-256-GCM (SP 800-38D) | SP 800-38D |
+//! | Hash | SHA-256 | SHA-256 (already approved) | FIPS 180-4 |
+//! | DRBG | Hardware RNG | SP 800-90A CTR/HMAC DRBG | SP 800-90A |
 //!
 //! ## IK Handshake Pattern (Link Layer, FMP)
 //!

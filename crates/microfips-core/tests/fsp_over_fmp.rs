@@ -1,18 +1,30 @@
 use microfips_core::fmp;
 use microfips_core::fsp::{
     self, build_fsp_encrypted, build_fsp_header, build_session_msg3, build_session_setup,
-    fsp_prepend_inner_header, fsp_strip_inner_header, handle_fsp_datagram,
-    parse_fsp_encrypted_header, parse_session_ack, FspSession, FSP_HEADER_SIZE, FSP_MSG_DATA,
-    HTTP_RESPONSE, SESSION_DATAGRAM_BODY_SIZE,
+    fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack, FspSession, FSP_HEADER_SIZE,
+    FSP_MSG_DATA, HTTP_RESPONSE, SESSION_DATAGRAM_BODY_SIZE,
 };
 use microfips_core::identity::{NodeAddr, DEFAULT_SECRET};
 use microfips_core::noise::{
     aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseIkInitiator, NoiseIkResponder,
     NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE,
 };
+use rand::RngCore;
 
 const INIT_SECRET: [u8; 32] = DEFAULT_SECRET;
 const RESP_SECRET: [u8; 32] = [0x22; 32];
+
+fn gen_key() -> [u8; 32] {
+    use k256::SecretKey;
+    let mut rng = rand::rng();
+    let mut key = [0u8; 32];
+    loop {
+        rng.fill_bytes(&mut key);
+        if SecretKey::from_slice(&key).is_ok() {
+            return key;
+        }
+    }
+}
 
 fn init_pub() -> [u8; PUBKEY_SIZE] {
     ecdh_pubkey(&INIT_SECRET).unwrap()
@@ -161,8 +173,121 @@ fn test_session_datagram_body_format() {
 }
 
 #[test]
-fn test_ik_handshake_key_agreement() {
-    do_ik_handshake();
+fn test_fsp_full_handshake_over_fmp() {
+    let fsp_resp_secret = gen_key();
+    let fsp_resp_eph = gen_key();
+    let fsp_init_secret = gen_key();
+    let fsp_init_eph: [u8; 32] = [0x01; 32];
+    let fsp_resp_pub = ecdh_pubkey(&fsp_resp_secret).unwrap();
+    let fsp_init_pub = ecdh_pubkey(&fsp_init_secret).unwrap();
+
+    let fsp_resp_epoch: [u8; 8] = [0x01, 0, 0, 0, 0, 0, 0, 0];
+    let fsp_init_epoch: [u8; 8] = [0x02, 0, 0, 0, 0, 0, 0, 0];
+
+    let (mut xk_init, xk_init_pub_check) =
+        NoiseXkInitiator::new(&fsp_init_eph, &fsp_init_secret, &fsp_resp_pub).unwrap();
+    assert_eq!(xk_init_pub_check, ecdh_pubkey(&fsp_init_eph).unwrap());
+
+    let mut xk_msg1 = [0u8; 64];
+    let msg1_len = xk_init.write_message1(&mut xk_msg1).unwrap();
+
+    let responder_addr = {
+        let normalized = parity_normalize(&fsp_resp_pub);
+        let x_only: [u8; 32] = normalized[1..].try_into().unwrap();
+        NodeAddr::from_pubkey_x(&x_only)
+    };
+    let initiator_addr = {
+        let normalized = parity_normalize(&fsp_init_pub);
+        let x_only: [u8; 32] = normalized[1..].try_into().unwrap();
+        NodeAddr::from_pubkey_x(&x_only)
+    };
+
+    let mut setup_buf = [0u8; 512];
+    let setup_len = build_session_setup(
+        0x03,
+        &[responder_addr.0],
+        &[initiator_addr.0],
+        &xk_msg1[..msg1_len],
+        &mut setup_buf,
+    )
+    .unwrap();
+
+    let mut fsp_session = FspSession::new();
+    let mut ack_buf = [0u8; 512];
+    let ack_len = fsp_session
+        .handle_setup(
+            &fsp_resp_secret,
+            &fsp_resp_eph,
+            &fsp_resp_epoch,
+            &setup_buf[..setup_len],
+            &mut ack_buf,
+        )
+        .unwrap();
+    assert!(ack_len > 0);
+    assert_eq!(fsp_session.state(), fsp::FspSessionState::AwaitingMsg3);
+    assert_eq!(fsp_session.session_keys(), None);
+
+    let mut ack_stored = [0u8; 512];
+    ack_stored[..ack_len].copy_from_slice(&ack_buf[..ack_len]);
+    let xk_msg2_payload = parse_session_ack(&ack_stored[..ack_len]).unwrap();
+    assert_eq!(xk_msg2_payload.len(), fsp::XK_HANDSHAKE_MSG2_SIZE);
+
+    let received_epoch = xk_init.read_message2(xk_msg2_payload).unwrap();
+    assert_eq!(received_epoch, fsp_resp_epoch);
+
+    let mut xk_msg3_noise = [0u8; 128];
+    let xk_msg3_len = xk_init
+        .write_message3(&fsp_init_pub, &fsp_init_epoch, &mut xk_msg3_noise)
+        .unwrap();
+    assert_eq!(xk_msg3_len, fsp::XK_HANDSHAKE_MSG3_SIZE);
+
+    let mut msg3_buf = [0u8; 512];
+    let msg3_fsp_len = build_session_msg3(&xk_msg3_noise[..xk_msg3_len], &mut msg3_buf).unwrap();
+
+    fsp_session.handle_msg3(&msg3_buf[..msg3_fsp_len]).unwrap();
+    assert_eq!(fsp_session.state(), fsp::FspSessionState::Established);
+    let (k_recv, k_send) = fsp_session.session_keys().unwrap();
+    assert_ne!(k_recv, [0u8; 32]);
+    assert_ne!(k_send, [0u8; 32]);
+    assert_eq!(fsp_session.initiator_pub(), Some(fsp_init_pub));
+
+    let (k_send_i, k_recv_i) = xk_init.finalize();
+    assert_eq!(k_recv, k_send_i, "session k_recv == initiator k_send");
+    assert_eq!(k_send, k_recv_i, "session k_send == initiator k_recv");
+
+    let http_request = b"GET / HTTP/1.1\r\nHost: microfips-stm32\r\n\r\n";
+    let mut plaintext = [0u8; 512];
+    let inner = fsp_prepend_inner_header(2000, FSP_MSG_DATA, 0x00, http_request, &mut plaintext);
+    let header = build_fsp_header(0, 0x00, (inner + TAG_SIZE) as u16);
+    let mut ciphertext = vec![0u8; inner + TAG_SIZE];
+    aead_encrypt(&k_send_i, 0, &header, &plaintext[..inner], &mut ciphertext).unwrap();
+    let mut fsp_enc_packet = vec![0u8; FSP_HEADER_SIZE + ciphertext.len()];
+    build_fsp_encrypted(&header, &ciphertext, &mut fsp_enc_packet);
+
+    let body = session_datagram_body(&initiator_addr, &responder_addr);
+    let mut http_payload = vec![0u8; SESSION_DATAGRAM_BODY_SIZE + fsp_enc_packet.len()];
+    http_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&body);
+    http_payload[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&fsp_enc_packet);
+
+    let mut http_buf = [0u8; 512];
+    let http_response_len = match handle_fsp_datagram(
+        &mut fsp_session,
+        &fsp_resp_secret,
+        &fsp_resp_eph,
+        &fsp_resp_epoch,
+        &http_payload,
+        &mut http_buf,
+    )
+    .unwrap()
+    {
+        fsp::FspHandlerResult::SendDatagram(len) => len,
+        other => panic!(
+            "Step 3 (HTTP GET): Expected SendDatagram with HTTP response, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(http_response_len, HTTP_RESPONSE.len());
+    assert_eq!(&http_buf[..http_response_len], HTTP_RESPONSE);
 }
 
 #[test]
