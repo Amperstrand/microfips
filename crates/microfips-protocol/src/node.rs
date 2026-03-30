@@ -494,12 +494,18 @@ fn handle_frame_inner<H: NodeHandler>(
         fmp::FmpMessage::Established {
             counter, encrypted, ..
         } => {
+            #[cfg(feature = "std")]
+            log::debug!("FMP established: counter={} enc_len={}", counter, encrypted.len());
             let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
             let mut dec = [0u8; 2048];
             let dl =
                 match microfips_core::noise::aead_decrypt(kr, counter, hdr, encrypted, &mut dec) {
                     Ok(l) => l,
-                    Err(_) => return FrameAction::Continue,
+                    Err(e) => {
+                        #[cfg(feature = "std")]
+                        log::debug!("FMP decrypt failed: counter={} hdr={:02x?} err={:?}", counter, &hdr[..16.min(hdr.len())], e);
+                        return FrameAction::Continue;
+                    }
                 };
             if dl < fmp::INNER_HEADER_SIZE {
                 return FrameAction::Continue;
@@ -534,24 +540,34 @@ enum FrameAction {
 
 /// Determine the total wire size of a raw FMP frame from its 4-byte common prefix.
 ///
+/// For MSG1/MSG2, uses the fixed wire sizes (114/69 bytes).
+/// For established frames, returns `None` — the caller must use the full
+/// available buffer as one frame (UDP datagram boundary).
+///
 /// Returns `None` if fewer than 4 bytes are available, the prefix is invalid,
 /// or the computed total exceeds [`framing::MAX_FRAME`].
+///
+/// **Why not use `payload_len` for established frames?** FIPS writes the inner
+/// plaintext length in `payload_len` (N1 deviation), not the post-prefix wire
+/// size. Since we also write a different value (post-prefix wire size including
+/// AEAD tag), the field is unreliable for determining frame boundaries across
+/// implementations. Raw UDP framing relies on datagram boundaries instead.
 fn fmp_raw_frame_size(data: &[u8]) -> Option<usize> {
     use microfips_core::fmp;
 
-    let (phase, _flags, payload_len) = fmp::parse_prefix(data)?;
-    let payload_len = payload_len as usize;
+    let (phase, _flags, _payload_len) = fmp::parse_prefix(data)?;
 
-    // A zero-length payload is only valid for established-phase keep-alives
-    if payload_len == 0 && phase != fmp::PHASE_ESTABLISHED {
-        return None;
+    match phase {
+        fmp::PHASE_MSG1 => {
+            let total = fmp::MSG1_WIRE_SIZE;
+            if data.len() < total { None } else { Some(total) }
+        }
+        fmp::PHASE_MSG2 => {
+            let total = fmp::MSG2_WIRE_SIZE;
+            if data.len() < total { None } else { Some(total) }
+        }
+        _ => None,
     }
-
-    let total = fmp::COMMON_PREFIX_SIZE + payload_len;
-    if total > framing::MAX_FRAME {
-        return None;
-    }
-    Some(total)
 }
 
 /// Extract one complete length-prefixed frame from `buf[pos..len]`.
@@ -583,6 +599,11 @@ fn extract_length_prefixed_frame(buf: &[u8], pos: usize, len: usize) -> Option<(
 /// Returns `(frame_slice, new_pos)` where `frame_slice` is the full FMP frame
 /// (including the 4-byte common prefix) and `new_pos` is the buffer position
 /// after the frame. Returns `None` if a complete frame is not yet available.
+///
+/// For MSG1/MSG2, uses exact wire sizes. For established frames (where
+/// `payload_len` is unreliable across implementations), treats the entire
+/// available buffer as one frame — this is correct for raw UDP transport
+/// where each datagram is exactly one FMP frame.
 fn extract_raw_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize)> {
     use microfips_core::fmp;
 
@@ -590,12 +611,28 @@ fn extract_raw_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize
     if avail < fmp::COMMON_PREFIX_SIZE {
         return None;
     }
-    let total = fmp_raw_frame_size(&buf[pos..len])?;
-    if avail < total {
-        return None;
+    match fmp_raw_frame_size(&buf[pos..len]) {
+        Some(total) => {
+            if avail < total {
+                return None;
+            }
+            let e = pos + total;
+            Some((&buf[pos..e], e))
+        }
+        None => {
+            let (phase, _flags, _pl) = fmp::parse_prefix(&buf[pos..len])?;
+            match phase {
+                fmp::PHASE_ESTABLISHED => {
+                    if avail < fmp::ESTABLISHED_HEADER_SIZE + microfips_core::noise::TAG_SIZE {
+                        return None;
+                    }
+                    let e = pos + avail;
+                    Some((&buf[pos..e], e))
+                }
+                _ => None,
+            }
+        }
     }
-    let e = pos + total;
-    Some((&buf[pos..e], e))
 }
 
 #[cfg(test)]
@@ -998,21 +1035,24 @@ mod tests {
     #[test]
     fn test_fmp_raw_frame_size_valid_msg1() {
         use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 110);
-        assert_eq!(
-            fmp_raw_frame_size(&prefix),
-            Some(fmp::COMMON_PREFIX_SIZE + 110)
-        );
+        let mut data = [0u8; fmp::MSG1_WIRE_SIZE];
+        data[..4].copy_from_slice(&fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 110));
+        assert_eq!(fmp_raw_frame_size(&data), Some(fmp::MSG1_WIRE_SIZE));
     }
 
     #[test]
-    fn test_fmp_raw_frame_size_valid_established() {
+    fn test_fmp_raw_frame_size_valid_msg2() {
+        use microfips_core::fmp;
+        let mut data = [0u8; fmp::MSG2_WIRE_SIZE];
+        data[..4].copy_from_slice(&fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 65));
+        assert_eq!(fmp_raw_frame_size(&data), Some(fmp::MSG2_WIRE_SIZE));
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_established_returns_none() {
         use microfips_core::fmp;
         let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 84);
-        assert_eq!(
-            fmp_raw_frame_size(&prefix),
-            Some(fmp::COMMON_PREFIX_SIZE + 84)
-        );
+        assert_eq!(fmp_raw_frame_size(&prefix), None);
     }
 
     #[test]
@@ -1033,28 +1073,20 @@ mod tests {
     fn test_fmp_raw_frame_size_zero_payload_established() {
         use microfips_core::fmp;
         let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 0);
-        assert_eq!(fmp_raw_frame_size(&prefix), Some(fmp::COMMON_PREFIX_SIZE));
-    }
-
-    #[test]
-    fn test_fmp_raw_frame_size_exceeds_max() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 2000);
         assert_eq!(fmp_raw_frame_size(&prefix), None);
-    }
-
-    #[test]
-    fn test_fmp_raw_frame_size_max_boundary() {
-        use microfips_core::fmp;
-        let payload = (framing::MAX_FRAME - fmp::COMMON_PREFIX_SIZE) as u16;
-        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, payload);
-        assert_eq!(fmp_raw_frame_size(&prefix), Some(framing::MAX_FRAME));
     }
 
     #[test]
     fn test_fmp_raw_frame_size_bad_version() {
         let data = [0x50, 0x00, 0x00, 0x00];
         assert_eq!(fmp_raw_frame_size(&data), None);
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_msg1_needs_full_data() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 110);
+        assert_eq!(fmp_raw_frame_size(&prefix), None);
     }
 
     // --- Tests for extract_length_prefixed_frame ---
@@ -1120,16 +1152,26 @@ mod tests {
     // --- Tests for extract_raw_frame ---
 
     #[test]
-    fn test_extract_raw_frame_complete() {
+    fn test_extract_raw_frame_established_uses_full_buffer() {
         use microfips_core::fmp;
         let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 10);
-        let mut buf = [0u8; 32];
+        let mut buf = [0u8; 64];
         buf[..4].copy_from_slice(&prefix);
-        buf[4..14].fill(0xAA);
-        let (frame, pos) = extract_raw_frame(&buf, 0, 14).unwrap();
-        assert_eq!(frame.len(), 14);
+        buf[4..].fill(0xAA);
+        let (frame, pos) = extract_raw_frame(&buf, 0, 64).unwrap();
+        assert_eq!(frame.len(), 64);
         assert_eq!(frame[..4], prefix);
-        assert_eq!(pos, 14);
+        assert_eq!(pos, 64);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_established_too_short() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 10);
+        let mut buf = [0u8; 20];
+        buf[..4].copy_from_slice(&prefix);
+        buf[4..].fill(0xAA);
+        assert_eq!(extract_raw_frame(&buf, 0, 20), None);
     }
 
     #[test]
@@ -1139,22 +1181,12 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_raw_frame_partial_payload() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 100);
-        let mut buf = [0u8; 32];
-        buf[..4].copy_from_slice(&prefix);
-        buf[4..].fill(0xBB);
-        assert_eq!(extract_raw_frame(&buf, 0, 32), None);
-    }
-
-    #[test]
     fn test_extract_raw_frame_empty_buffer() {
         assert_eq!(extract_raw_frame(&[], 0, 0), None);
     }
 
     #[test]
-    fn test_extract_raw_frame_mid_buffer() {
+    fn test_extract_raw_frame_msg2_mid_buffer() {
         use microfips_core::fmp;
         let prefix = fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 65);
         let mut buf = [0u8; 128];
@@ -1164,5 +1196,15 @@ mod tests {
         assert_eq!(frame.len(), 69);
         assert_eq!(frame[..4], prefix);
         assert_eq!(pos, 79);
+    }
+
+    #[test]
+    fn test_extract_raw_frame_msg2_needs_full_data() {
+        use microfips_core::fmp;
+        let prefix = fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 65);
+        let mut buf = [0u8; 32];
+        buf[..4].copy_from_slice(&prefix);
+        buf[4..].fill(0xCC);
+        assert_eq!(extract_raw_frame(&buf, 0, 32), None);
     }
 }

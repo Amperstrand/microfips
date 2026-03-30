@@ -394,13 +394,13 @@ impl NodeHandler for FspInitiatorHandler {
                     if flags & fsp::FLAG_UNENCRYPTED != 0 {
                         return HandleResult::None;
                     }
-                    let (_k_recv, k_send) = match fsp.session_keys() {
+                    let (k_recv, _k_send) = match fsp.session_keys() {
                         Some(keys) => keys,
                         None => return HandleResult::None,
                     };
                     let mut dec = [0u8; 512];
                     if let Ok(dl) =
-                        noise::aead_decrypt(&k_send, counter, header, encrypted, &mut dec)
+                        noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec)
                     {
                         if let Some((_ts, _mt, _flags, inner_payload)) =
                             fsp::fsp_strip_inner_header(&dec[..dl])
