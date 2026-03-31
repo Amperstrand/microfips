@@ -339,6 +339,7 @@ async fn ble_host_task() {
     };
 
     let _ = embassy_futures::join::join(runner.run(), async {
+        esp_println::println!("[ble_task] starting advertising loop");
         loop {
             let mut adv_data = [0u8; 31];
             let Ok(adv_len) = AdStructure::encode_slice(
@@ -377,12 +378,14 @@ async fn ble_host_task() {
             BLE_LINK_UP.store(true, Ordering::Relaxed);
             STAT_BLE_CONNECT.fetch_add(1, Ordering::Relaxed);
             BLE_CONNECTED_SIG.signal(());
+            esp_println::println!("[ble_task] central connected");
 
             loop {
                 match select(conn.next(), BLE_TX_CH.receive()).await {
                     Either::First(GattConnectionEvent::Disconnected { .. }) => {
                         BLE_LINK_UP.store(false, Ordering::Relaxed);
                         STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                        esp_println::println!("[ble_task] central disconnected, re-advertising");
                         break;
                     }
                     Either::First(GattConnectionEvent::Gatt { event }) => {
@@ -411,6 +414,7 @@ async fn ble_host_task() {
                         if server.fips_service.tx_data.notify(&conn, &frame).await.is_err() {
                             BLE_LINK_UP.store(false, Ordering::Relaxed);
                             STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                            esp_println::println!("[ble_task] central disconnected, re-advertising");
                             break;
                         }
                         STAT_BLE_TX.fetch_add(1, Ordering::Relaxed);
@@ -629,6 +633,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
+    #[cfg(not(feature = "ble"))]
+    {
     let uart_config = Config::default()
         .with_rx(RxConfig::default().with_fifo_full_threshold(UART_FIFO_THRESHOLD))
         .with_baudrate(UART_BAUDRATE);
@@ -647,4 +653,23 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut handler = EspHandler { led: &mut led, fsp };
 
     node.run(&mut handler).await;
+    }
+
+    #[cfg(feature = "ble")]
+    {
+        esp_println::println!("[microfips] BLE mode starting");
+
+        let transport = BleTransport::new();
+
+        esp_println::println!("[microfips] BLE advertising as '{}'", BLE_DEVICE_NAME);
+
+        let rng = EspRng(trng);
+        let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
+
+        let fsp = FspDualHandler::new_dual(ESP32_SECRET, resp_eph, init_eph, &STM32_PEER_PUB, STM32_NODE_ADDR);
+        let mut handler = EspHandler { led: &mut led, fsp };
+
+        esp_println::println!("[microfips] Node running...");
+        node.run(&mut handler).await;
+    }
 }
