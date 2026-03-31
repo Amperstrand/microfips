@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Minimal FIPS leaf node on ESP32 via UART"
 
+[features]
+default = []
+ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc"]
+
 [dependencies]
 microfips-core = { path = "../microfips-core" }
 microfips-protocol = { path = "../microfips-protocol" }
@@ -14,5 +18,10 @@ esp-bootloader-esp-idf = { version = "0.4", features = ["esp32"] }
 embassy-time = "0.5.1"
 embassy-futures = "0.1.2"
 embassy-executor = "0.9.1"
+embassy-sync = "0.8.0"
 embedded-io-async = "0.7"
+heapless = "0.9"
 static_cell = "2"
+esp-radio = { version = "0.17.0", features = ["esp32", "ble", "unstable"], optional = true }
+trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255"], optional = true }
+esp-alloc = { version = "0.7", optional = true }
