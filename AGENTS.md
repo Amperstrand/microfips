@@ -71,6 +71,14 @@ st-flash --connect-under-reset reset
 - Reading/writing flash option bytes (carefully — see warnings below)
 - `probe-rs download --chip STM32F469NIHx --connect-under-reset` (flashing only, then detach immediately)
 
+### defmt_rtt breaks USB CDC (confirmed cross-project)
+
+`defmt_rtt` (even when unused via `use defmt_rtt as _`) prevents USB OTG FS enumeration on this board. Root cause unknown — possibly SWD/ITM resource contention. This is distinct from the probe-rs issue above; even with `st-flash` and no probe-rs attached, `defmt_rtt` in the binary prevents enumeration.
+
+**Evidence**: Confirmed in gm65-scanner project via controlled A/B test on identical firmware — same code with `defmt_rtt` removed enumerates, with it present does not. The BSP's HAL unconditionally compiles with `defmt` feature enabled.
+
+**Current microfips status**: `use defmt_rtt as _;` is imported in `crates/microfips/src/main.rs:7`. The firmware appears to work with USB CDC based on test procedures, but no `defmt!` macros are actually called. If USB issues arise, try building without `defmt_rtt` and `panic_probe`.
+
 ### SWD recovery when USB is active (STM32)
 
 ```bash
