@@ -247,6 +247,21 @@ vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 mi
 **Note:** ESP32 does not use USB CDC, so there is no DTR-based `wait_connection()` blocking.
 The proxy can be started at any time; the ESP32 immediately begins sending MSG1 once booted.
 
+### MCU-to-MCU FSP test (both MCUs required)
+
+Both STM32 and ESP32 must be connected. The automated script handles setup, bridge startup, IK handshake waiting, and FSP frame detection. Supports `--flash` to build and flash both MCUs first.
+
+```bash
+# Full E2E test (build + flash + run)
+bash scripts/test_mcu_to_mcu_fsp.sh --flash
+
+# Run only (MCUs already flashed)
+bash scripts/test_mcu_to_mcu_fsp.sh
+```
+
+**Expected:** FSP SessionSetup (148B) and SessionAck frames in bridge logs, heartbeat sustained for both MCUs.
+See `.sisyphus/evidence/task-8-mcu-fsp-setup.txt` for reference output.
+
 ### PCAP Capture & Wireshark Analysis
 
 FIPS traffic (UDP port 2121) can be captured with standard tools:
