@@ -24,34 +24,11 @@ fn build_fsp_established_msg(
     app_payload: &[u8],
     fsp_k_send: &[u8; 32],
 ) -> Vec<u8> {
-    let inner = fsp::fsp_prepend_inner_header(
-        timestamp_ms,
-        fsp::FSP_MSG_DATA,
-        0x00,
-        app_payload,
-        &mut [0u8; 512],
-    );
-    let header = fsp::build_fsp_header(fsp_counter, 0x00, (inner + noise::TAG_SIZE) as u16);
-    let mut plaintext = [0u8; 512];
-    plaintext[..inner].copy_from_slice(&[0u8; 512][..inner]);
-    let _ = fsp::fsp_prepend_inner_header(
-        timestamp_ms,
-        fsp::FSP_MSG_DATA,
-        0x00,
-        app_payload,
-        &mut plaintext,
-    );
-    let mut ciphertext = vec![0u8; inner + noise::TAG_SIZE];
-    noise::aead_encrypt(
-        fsp_k_send,
-        fsp_counter,
-        &header,
-        &plaintext[..inner],
-        &mut ciphertext,
-    )
-    .unwrap();
-    let mut out = vec![0u8; fsp::FSP_HEADER_SIZE + ciphertext.len()];
-    fsp::build_fsp_encrypted(&header, &ciphertext, &mut out);
+    let mut out = vec![0u8; 512];
+    let len =
+        fsp::build_fsp_data_message(fsp_counter, timestamp_ms, app_payload, fsp_k_send, &mut out)
+            .unwrap();
+    out.truncate(len);
     out
 }
 
@@ -211,7 +188,7 @@ fn main() {
     };
 
     if ack_fsp.len() < SESSION_DATAGRAM_BODY_SIZE {
-        eprintln!("ERROR: SessionAck too short: {}B", ack_fsp.len());
+        log::error!("SessionAck too short: {}B", ack_fsp.len());
         std::process::exit(1);
     }
     let ack_fsp_data = &ack_fsp[SESSION_DATAGRAM_BODY_SIZE..];

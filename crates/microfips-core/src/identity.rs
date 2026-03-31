@@ -114,7 +114,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00,
         ];
         let addr = NodeAddr::from_pubkey_x(&x_only);
-        let expected_hash = Sha256::digest(&x_only);
+        let expected_hash = Sha256::digest(x_only);
         assert_eq!(addr.as_bytes(), &expected_hash[..16]);
     }
 
