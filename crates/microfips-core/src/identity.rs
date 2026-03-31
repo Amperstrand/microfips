@@ -29,6 +29,7 @@ impl NodeAddr {
         Self(addr)
     }
 
+    // FIPS: bd08505 identity/node_addr.rs:NodeAddr::from_pubkey()
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
@@ -47,11 +48,13 @@ impl FipsAddress {
         Self(bytes)
     }
 
+    // FIPS: bd08505 identity/node_addr.rs:FipsAddress::from_node_addr()
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 }
 
+// FIPS: bd08505 noise/mod.rs:sha256()
 pub fn sha256(input: &[u8]) -> [u8; 32] {
     let hash = Sha256::digest(input);
     let mut result = [0u8; 32];
@@ -63,6 +66,7 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
 /// falling back to `DEFAULT_SECRET` if not set.
 ///
 /// Panics on invalid hex or wrong length — acceptable for host-side tools.
+// FIPS: bd08505 identity/node_addr.rs:NodeAddr::from_pubkey()
 #[cfg(feature = "std")]
 pub fn load_secret() -> [u8; 32] {
     match std::env::var("FIPS_SECRET") {
@@ -82,6 +86,7 @@ pub fn load_secret() -> [u8; 32] {
 /// falling back to `DEFAULT_PEER_PUB` if not set.
 ///
 /// Panics on invalid hex or wrong length — acceptable for host-side tools.
+// FIPS: bd08505 identity/node_addr.rs:NodeAddr::from_pubkey()
 #[cfg(feature = "std")]
 pub fn load_peer_pub() -> [u8; 33] {
     match std::env::var("FIPS_PEER_PUB") {
