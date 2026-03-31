@@ -25,7 +25,7 @@ use esp_radio::ble::controller::BleConnector;
 #[cfg(feature = "ble")]
 use static_cell::StaticCell;
 #[cfg(feature = "ble")]
-use bt_hci::{ControllerToHostPacket, FromHciBytesError, HostToControllerPacket, ReadHci, WriteHci};
+use bt_hci::{ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci};
 #[cfg(feature = "ble")]
 use trouble_host::prelude::*;
 
@@ -271,16 +271,26 @@ impl embedded_io::ErrorType for BleHciTransport<'_> {
 #[cfg(feature = "ble")]
 impl bt_hci::transport::Transport for BleHciTransport<'_> {
     async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
-        let mut connector = self.connector.lock().await;
-        ControllerToHostPacket::read_hci_async(&mut *connector, rx).await.map_err(|_| BleHciError::Io)
+        // Use packet-oriented read: BleConnector::read_async waits for HCI data then returns
+        // one complete HCI packet per call (buffers per-packet from rx_queue via hci_read_data).
+        // Re-parse raw bytes with bt-hci 0.8's FromHciBytes.
+        let len = {
+            let mut connector = self.connector.lock().await;
+            embedded_io_async::Read::read(&mut *connector, rx).await.map_err(|_| BleHciError::Io)?
+        };
+        ControllerToHostPacket::from_hci_bytes_complete(&rx[..len])
+            .map_err(BleHciError::from)
     }
 
     async fn write<T: HostToControllerPacket>(&self, val: &T) -> Result<(), Self::Error> {
+        // Serialize full HCI packet (with type indicator) to a local buffer first,
+        // then send in one call so HciOutCollector receives a complete packet.
+        let mut buf = [0u8; 259];
+        let wi = bt_hci::transport::WithIndicator::new(val);
+        let len = wi.size();
+        wi.write_hci(&mut buf[..len]).map_err(|_| BleHciError::Io)?;
         let mut connector = self.connector.lock().await;
-        bt_hci::transport::WithIndicator::new(val)
-            .write_hci_async(&mut *connector)
-            .await
-            .map_err(|_| BleHciError::Io)
+        connector.write(&buf[..len]).map(|_| ()).map_err(|_| BleHciError::Io)
     }
 }
 
@@ -338,7 +348,7 @@ async fn ble_host_task() {
         }
     };
 
-    let _ = embassy_futures::join::join(runner.run(), async {
+        let _ = embassy_futures::join::join(runner.run(), async {
         esp_println::println!("[ble_task] starting advertising loop");
         loop {
             let mut adv_data = [0u8; 31];
@@ -346,33 +356,55 @@ async fn ble_host_task() {
                 &[
                     AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
                     AdStructure::CompleteLocalName(BLE_DEVICE_NAME.as_bytes()),
-                    AdStructure::ServiceUuids128(&FIPS_SERVICE_UUID_LE),
                 ],
                 &mut adv_data,
             ) else {
+                esp_println::println!("[ble_task] adv_data encode failed");
                 continue;
             };
 
+            let mut scan_data = [0u8; 31];
+            let Ok(scan_len) = AdStructure::encode_slice(
+                &[AdStructure::ServiceUuids128(&FIPS_SERVICE_UUID_LE)],
+                &mut scan_data,
+            ) else {
+                esp_println::println!("[ble_task] scan_data encode failed");
+                continue;
+            };
+
+            esp_println::println!("[ble_task] calling peripheral.advertise()...");
             let advertiser = match peripheral
                 .advertise(
                     &Default::default(),
                     Advertisement::ConnectableScannableUndirected {
                         adv_data: &adv_data[..adv_len],
-                        scan_data: &[],
+                        scan_data: &scan_data[..scan_len],
                     },
                 )
                 .await
             {
-                Ok(a) => a,
-                Err(_) => continue,
+                Ok(a) => {
+                    esp_println::println!("[ble_task] advertising started, waiting for connection");
+                    a
+                }
+                Err(e) => {
+                    esp_println::println!("[ble_task] advertise() error: {:?}", e);
+                    continue;
+                }
             };
 
             let conn = match advertiser.accept().await {
                 Ok(c) => match c.with_attribute_server(&server) {
                     Ok(conn) => conn,
-                    Err(_) => continue,
+                    Err(e) => {
+                        esp_println::println!("[ble_task] with_attribute_server error: {:?}", e);
+                        continue;
+                    }
                 },
-                Err(_) => continue,
+                Err(e) => {
+                    esp_println::println!("[ble_task] accept() error: {:?}", e);
+                    continue;
+                }
             };
 
             BLE_LINK_UP.store(true, Ordering::Relaxed);
