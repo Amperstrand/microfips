@@ -22,13 +22,15 @@ fn keygen() -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--keygen") {
         return keygen();
     }
 
-    println!("=== microfips FIPS handshake test ===");
+    log::info!("[LINK] microfips FIPS handshake test starting");
 
     let local_secret = load_secret();
     let peer_pub = load_peer_pub();
@@ -38,12 +40,12 @@ fn main() -> ExitCode {
     let local_pub = match noise::ecdh_pubkey(&local_secret) {
         Ok(pk) => pk,
         Err(e) => {
-            eprintln!("ERROR: failed to compute pubkey: {e:?}");
+            log::error!("[LINK] failed to compute pubkey: {e:?}");
             return ExitCode::from(2);
         }
     };
-    println!("Local pubkey: {}", hex::encode(local_pub));
-    println!("Peer pubkey:  {}", hex::encode(peer_pub));
+    log::debug!("[LINK] local pubkey: {}", hex::encode(local_pub));
+    log::debug!("[LINK] peer pubkey:  {}", hex::encode(peer_pub));
 
     let mut rng = rand::rng();
     let mut eph_bytes = [0u8; 32];
@@ -51,7 +53,7 @@ fn main() -> ExitCode {
     let eph_secret = match SecretKey::from_slice(&eph_bytes) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("ERROR: invalid ephemeral key: {e:?}");
+            log::error!("[LINK] invalid ephemeral key: {e:?}");
             return ExitCode::from(2);
         }
     };
@@ -60,27 +62,27 @@ fn main() -> ExitCode {
     let socket = match UdpSocket::bind("0.0.0.0:0") {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("ERROR: failed to bind socket: {e:?}");
+            log::error!("[LINK] failed to bind socket: {e:?}");
             return ExitCode::from(2);
         }
     };
     if let Err(e) = socket.set_read_timeout(Some(Duration::from_secs(5))) {
-        eprintln!("ERROR: failed to set timeout: {e:?}");
+        log::error!("[LINK] failed to set timeout: {e:?}");
         return ExitCode::from(2);
     }
-    println!("Bound to local: {}", socket.local_addr().unwrap());
-    println!("Target: {}", target);
+    log::info!("[LINK] bound to {}", socket.local_addr().unwrap());
+    log::info!("[LINK] target: {}", target);
 
     let (mut noise_state, e_pub) =
         match noise::NoiseIkInitiator::new(&eph_secret_bytes, &local_secret, &peer_pub) {
             Ok(state) => state,
             Err(e) => {
-                eprintln!("ERROR: failed to create Noise state: {e:?}");
+                log::error!("[LINK] failed to create Noise state: {e:?}");
                 return ExitCode::from(2);
             }
         };
 
-    println!("Ephemeral pubkey: {}", hex::encode(e_pub));
+    log::debug!("[LINK] ephemeral pubkey: {}", hex::encode(e_pub));
 
     let epoch: [u8; 8] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
@@ -88,25 +90,25 @@ fn main() -> ExitCode {
     let noise_len = match noise_state.write_message1(&local_pub, &epoch, &mut noise_msg1) {
         Ok(len) => len,
         Err(e) => {
-            eprintln!("ERROR: failed to write Noise msg1: {e:?}");
+            log::error!("[LINK] failed to write Noise msg1: {e:?}");
             return ExitCode::from(2);
         }
     };
 
     let mut fmp_msg1 = [0u8; 256];
     let fmp_len = fmp::build_msg1(0, &noise_msg1[..noise_len], &mut fmp_msg1).unwrap();
-    println!("FMP msg1: {fmp_len} bytes");
+    log::debug!("[LINK → FIPS] MSG1 frame ready: {}B", fmp_len);
 
     if let Err(e) = socket.send_to(&fmp_msg1[..fmp_len], target) {
-        eprintln!("ERROR: failed to send msg1: {e:?}");
+        log::error!("[LINK → FIPS] send MSG1 failed: {e:?}");
         return ExitCode::from(2);
     }
-    println!("Sent FMP msg1 to {target}");
+    log::info!("[LINK → FIPS] TX MSG1 {}B", fmp_len);
 
     let mut recv_buf = [0u8; 2048];
     match socket.recv_from(&mut recv_buf) {
         Ok((len, addr)) => {
-            println!("Received {len} bytes from {addr}");
+            log::info!("[FIPS → LINK] RX {}B from {}", len, addr);
 
             match fmp::parse_message(&recv_buf[..len]) {
                 Some(msg) => match msg {
@@ -115,49 +117,55 @@ fn main() -> ExitCode {
                         receiver_idx,
                         noise_payload,
                     } => {
-                        println!(
-                            "  sender_idx={sender_idx}, receiver_idx={receiver_idx}, noise_payload={} bytes",
+                        log::debug!(
+                            "[FIPS → LINK] MSG2 sender_idx={} receiver_idx={} noise={}B",
+                            sender_idx,
+                            receiver_idx,
                             noise_payload.len()
                         );
                         match noise_state.read_message2(noise_payload) {
                             Ok(received_epoch) => {
-                                println!(
-                                    "Handshake complete! Received epoch: {received_epoch:02x?}"
+                                log::info!(
+                                    "[LINK] handshake complete — epoch: {:02x?}",
+                                    received_epoch
                                 );
                                 let (k_send, k_recv) = noise_state.finalize();
-                                println!("k_send: {}", hex::encode(k_send));
-                                println!("k_recv: {}", hex::encode(k_recv));
-                                println!("SUCCESS: FIPS handshake completed!");
+                                log::debug!("[LINK] k_send: {}", hex::encode(k_send));
+                                log::debug!("[LINK] k_recv: {}", hex::encode(k_recv));
+                                log::info!("[LINK] SUCCESS: FIPS handshake completed!");
                                 ExitCode::SUCCESS
                             }
                             Err(e) => {
-                                eprintln!("ERROR: failed to read Noise msg2: {e:?}");
+                                log::error!("[LINK] failed to read Noise msg2: {e:?}");
                                 ExitCode::from(2)
                             }
                         }
                     }
                     fmp::FmpMessage::Msg1 { .. } => {
-                        eprintln!("ERROR: received Msg1 (expected Msg2)");
+                        log::error!("[FIPS → LINK] received MSG1 (expected MSG2)");
                         ExitCode::from(2)
                     }
                     fmp::FmpMessage::Established { .. } => {
-                        eprintln!("ERROR: received Established (expected Msg2)");
+                        log::error!("[FIPS → LINK] received Established (expected MSG2)");
                         ExitCode::from(2)
                     }
                 },
                 None => {
-                    eprintln!("ERROR: failed to parse FMP message");
-                    eprintln!("First 4 bytes: {:02x?}", &recv_buf[..4.min(len)]);
+                    log::error!("[FIPS → LINK] failed to parse FMP message");
+                    log::debug!(
+                        "[FIPS → LINK] first 4 bytes: {:02x?}",
+                        &recv_buf[..4.min(len)]
+                    );
                     ExitCode::from(2)
                 }
             }
         }
         Err(e) => {
-            eprintln!("Receive error (timeout?): {e:?}");
+            log::warn!("[FIPS → LINK] receive error (timeout?): {e:?}");
             if e.kind() == std::io::ErrorKind::TimedOut
                 || e.kind() == std::io::ErrorKind::WouldBlock
             {
-                eprintln!("TIMEOUT: no response from peer (IP not configured)");
+                log::warn!("[FIPS → LINK] TIMEOUT: no response from peer (IP not configured)");
                 ExitCode::from(1)
             } else {
                 ExitCode::from(2)
