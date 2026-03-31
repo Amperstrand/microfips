@@ -12,44 +12,44 @@
 //! This module implements a minimal subset of FSP: XK handshake (3-way), session
 //! datagram framing, and encrypted data exchange with inner headers.
 
-/// FIPS: session_wire.rs:43
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const FSP_VERSION: u8 = 0;
-/// FIPS: session_wire.rs:58
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const FSP_COMMON_PREFIX_SIZE: usize = 4;
-/// FIPS: session_wire.rs:61
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const FSP_HEADER_SIZE: usize = 12;
-/// FIPS: session_wire.rs:64
+// FIPS: bd08505 node/session_wire.rs:FspInnerHeader::parse()
 pub const FSP_INNER_HEADER_SIZE: usize = 6;
-/// FIPS: session_wire.rs:70
+// FIPS: bd08505 node/session_wire.rs:FspEncryptedHeader::parse()
 pub const FSP_ENCRYPTED_MIN_SIZE: usize = 28;
 
-/// FIPS: session_wire.rs:78
+// FIPS: bd08505 node/session_wire.rs:FspDatagram::parse()
 pub const FSP_PORT_IPV6_SHIM: u16 = 256;
 
-/// FIPS: mod.rs:83
+// FIPS: bd08505 noise/mod.rs:write_xk_message_1()
 pub const XK_HANDSHAKE_MSG1_SIZE: usize = 33;
-/// FIPS: mod.rs:86
+// FIPS: bd08505 noise/mod.rs:write_xk_message_2()
 pub const XK_HANDSHAKE_MSG2_SIZE: usize = 57;
-/// FIPS: mod.rs:89
+// FIPS: bd08505 noise/mod.rs:write_xk_message_3()
 pub const XK_HANDSHAKE_MSG3_SIZE: usize = 73;
 
-/// FIPS: session_wire.rs:46
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const PHASE_ESTABLISHED: u8 = 0x00;
-/// FIPS: session_wire.rs:49
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const PHASE_SESSION_SETUP: u8 = 0x01;
-/// FIPS: session_wire.rs:52
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const PHASE_SESSION_ACK: u8 = 0x02;
-/// FIPS: session_wire.rs:55
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const PHASE_SESSION_MSG3: u8 = 0x03;
 
-/// FIPS: session.rs:24
+// FIPS: bd08505 protocol/session.rs:SessionSetup::encode()
 pub const FSP_MSG_DATA: u8 = 0x10;
 
-/// FIPS: session_wire.rs:83
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const FLAG_COORDS_PRESENT: u8 = 0x01;
-/// FIPS: session_wire.rs:87
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const FLAG_KEY_EPOCH: u8 = 0x02;
-/// FIPS: session_wire.rs:90
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const FLAG_UNENCRYPTED: u8 = 0x04;
 
 /// Configuration constant (not in wire format)
@@ -57,17 +57,17 @@ pub const FIPS_UDP_PORT: u16 = 2121;
 /// Configuration constant
 pub const FIPS_IPV6_OVERHEAD: usize = 77;
 
-/// FIPS: session_wire.rs:75
+// FIPS: bd08505 node/session_wire.rs:FspDatagram::parse()
 pub const FSP_DATAGRAM_HEADER_SIZE: usize = 4;
 /// 16 bytes, standard NodeAddr size
 pub const NODE_ADDR_SIZE: usize = 16;
 
-/// FIPS: link.rs:355-378 (35 bytes: ttl+mtu+src+dst)
+// FIPS: bd08505 node/link.rs:SessionDatagram::encode()
 pub const SESSION_DATAGRAM_BODY_SIZE: usize = 35;
-/// FIPS: link.rs:301 (36 bytes: msg_type+body)
+// FIPS: bd08505 node/link.rs:SessionDatagram::encode()
 pub const SESSION_DATAGRAM_HEADER_SIZE: usize = 36;
 
-/// FIPS: link.rs:343-352 SessionDatagram::encode()
+// FIPS: bd08505 node/link.rs:SessionDatagram::encode()
 pub fn build_session_datagram_body(
     src: &[u8; NODE_ADDR_SIZE],
     dst: &[u8; NODE_ADDR_SIZE],
@@ -93,10 +93,12 @@ pub enum FspError {
     InvalidCoords,
 }
 
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::serialize()
 fn fsp_prefix_byte(phase: u8) -> u8 {
     (FSP_VERSION << 4) | (phase & 0x0F)
 }
 
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::serialize()
 fn fsp_prefix(phase: u8, flags: u8, payload_len: u16) -> [u8; FSP_COMMON_PREFIX_SIZE] {
     [
         fsp_prefix_byte(phase),
@@ -106,7 +108,7 @@ fn fsp_prefix(phase: u8, flags: u8, payload_len: u16) -> [u8; FSP_COMMON_PREFIX_
     ]
 }
 
-/// FIPS: session.rs:384-402 SessionSetup::encode()
+// FIPS: bd08505 protocol/session.rs:SessionSetup::encode()
 pub fn build_session_setup(
     session_flags: u8,
     src_coords: &[[u8; NODE_ADDR_SIZE]],
@@ -158,7 +160,7 @@ pub fn build_session_setup(
     Ok(pos)
 }
 
-/// FIPS: session.rs:405-444 SessionSetup::decode()
+// FIPS: bd08505 protocol/session.rs:SessionSetup::decode()
 pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -203,7 +205,7 @@ pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
     Ok((session_flags, &body[pos..pos + hs_len]))
 }
 
-/// FIPS: session.rs:504-522 SessionAck::encode()
+// FIPS: bd08505 protocol/session.rs:SessionAck::encode()
 pub fn build_session_ack(
     src_coords: &[[u8; NODE_ADDR_SIZE]],
     dest_coords: &[[u8; NODE_ADDR_SIZE]],
@@ -264,7 +266,7 @@ pub fn build_session_ack(
     Ok(pos)
 }
 
-/// FIPS: session.rs:525-564 SessionAck::decode()
+// FIPS: bd08505 protocol/session.rs:SessionAck::decode()
 pub fn parse_session_ack(data: &[u8]) -> Result<&[u8], FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -309,7 +311,7 @@ pub fn parse_session_ack(data: &[u8]) -> Result<&[u8], FspError> {
     Ok(&body[pos..pos + hs_len])
 }
 
-/// FIPS: session.rs:605-621 SessionMsg3::encode()
+// FIPS: bd08505 protocol/session.rs:SessionMsg3::encode()
 pub fn build_session_msg3(handshake: &[u8], out: &mut [u8]) -> Result<usize, FspError> {
     let body_len = 1 + 2 + handshake.len();
     let total = FSP_COMMON_PREFIX_SIZE + body_len;
@@ -331,7 +333,7 @@ pub fn build_session_msg3(handshake: &[u8], out: &mut [u8]) -> Result<usize, Fsp
     Ok(pos)
 }
 
-/// FIPS: session.rs:624-655 SessionMsg3::decode()
+// FIPS: bd08505 protocol/session.rs:SessionMsg3::decode()
 pub fn parse_session_msg3(data: &[u8]) -> Result<&[u8], FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
@@ -358,7 +360,7 @@ pub fn parse_session_msg3(data: &[u8]) -> Result<&[u8], FspError> {
     Ok(&body[3..3 + hs_len])
 }
 
-/// FIPS: session_wire.rs:75 (port header)
+// FIPS: bd08505 node/session_wire.rs:FspDatagram::parse()
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FspDatagram<'a> {
     pub src_port: u16,
@@ -367,6 +369,7 @@ pub struct FspDatagram<'a> {
 }
 
 impl<'a> FspDatagram<'a> {
+    // FIPS: bd08505 node/session_wire.rs:FspDatagram::serialize()
     pub fn serialize(&self, out: &mut [u8]) -> usize {
         let total = FSP_DATAGRAM_HEADER_SIZE + self.payload.len();
         assert!(out.len() >= total);
@@ -391,7 +394,7 @@ impl<'a> FspDatagram<'a> {
     }
 }
 
-/// FIPS: session.rs:276-279 (IPv6 shim decompression)
+// FIPS: bd08505 protocol/session.rs:decompress_ipv6_shim()
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv6Shim<'a> {
     pub next_header: u8,
@@ -402,6 +405,7 @@ pub struct Ipv6Shim<'a> {
 impl<'a> Ipv6Shim<'a> {
     pub const HEADER_SIZE: usize = 6;
 
+    // FIPS: bd08505 protocol/session.rs:compress_ipv6_shim()
     pub fn serialize(&self, out: &mut [u8]) -> usize {
         let total = Self::HEADER_SIZE + self.payload.len();
         assert!(out.len() >= total);
@@ -415,6 +419,7 @@ impl<'a> Ipv6Shim<'a> {
         total
     }
 
+    // FIPS: bd08505 protocol/session.rs:decompress_ipv6_shim()
     pub fn parse(data: &'a [u8]) -> Option<Self> {
         if data.len() < Self::HEADER_SIZE {
             return None;
@@ -430,7 +435,7 @@ impl<'a> Ipv6Shim<'a> {
     }
 }
 
-/// FIPS: session_wire.rs:245-256
+// FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::serialize()
 pub fn build_fsp_header(counter: u64, flags: u8, payload_len: u16) -> [u8; FSP_HEADER_SIZE] {
     let mut header = [0u8; FSP_HEADER_SIZE];
     header[0] = fsp_prefix_byte(PHASE_ESTABLISHED);
@@ -440,7 +445,7 @@ pub fn build_fsp_header(counter: u64, flags: u8, payload_len: u16) -> [u8; FSP_H
     header
 }
 
-/// FIPS: session_wire.rs:262-267
+// FIPS: bd08505 node/session_wire.rs:FspEncryptedHeader::serialize()
 pub fn build_fsp_encrypted(
     header: &[u8; FSP_HEADER_SIZE],
     ciphertext: &[u8],
@@ -455,7 +460,7 @@ pub fn build_fsp_encrypted(
     total
 }
 
-/// FIPS: session_wire.rs:305-317
+// FIPS: bd08505 node/session_wire.rs:FspInnerHeader::serialize()
 pub fn fsp_prepend_inner_header(
     timestamp_ms: u32,
     msg_type: u8,
@@ -474,7 +479,7 @@ pub fn fsp_prepend_inner_header(
     total
 }
 
-/// FIPS: session_wire.rs:322-332
+// FIPS: bd08505 node/session_wire.rs:FspInnerHeader::parse()
 pub fn fsp_strip_inner_header(data: &[u8]) -> Option<(u32, u8, u8, &[u8])> {
     if data.len() < FSP_INNER_HEADER_SIZE {
         return None;
@@ -490,7 +495,7 @@ pub fn fsp_strip_inner_header(data: &[u8]) -> Option<(u32, u8, u8, &[u8])> {
     ))
 }
 
-/// FIPS: session_wire.rs:190-224 FspEncryptedHeader::parse()
+// FIPS: bd08505 node/session_wire.rs:FspEncryptedHeader::parse()
 pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])> {
     if data.len() < FSP_ENCRYPTED_MIN_SIZE {
         return None;
@@ -564,7 +569,7 @@ impl From<NoiseError> for FspSessionError {
     }
 }
 
-/// FIPS: handlers/session.rs:361-823 (full responder flow)
+// FIPS: bd08505 handlers/session.rs:handle_session_setup()
 pub struct FspSession {
     state: FspSessionState,
     responder: Option<NoiseXkResponder>,
@@ -575,6 +580,7 @@ pub struct FspSession {
 }
 
 impl FspSession {
+    // FIPS: bd08505 handlers/session.rs:handle_session_setup()
     pub fn new() -> Self {
         Self {
             state: FspSessionState::Idle,
@@ -586,29 +592,34 @@ impl FspSession {
         }
     }
 
+    // FIPS: bd08505 handlers/session.rs:handle_session_setup()
     pub fn state(&self) -> FspSessionState {
         self.state
     }
 
+    // FIPS: bd08505 handlers/session.rs:handle_session_payload()
     pub fn session_keys(&self) -> Option<([u8; 32], [u8; 32])> {
         self.k_recv.zip(self.k_send)
     }
 
+    // FIPS: bd08505 handlers/session.rs:handle_session_setup()
     pub fn initiator_pub(&self) -> Option<[u8; PUBKEY_SIZE]> {
         self.initiator_pub
     }
 
+    // FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::serialize()
     pub fn next_send_counter(&mut self) -> u64 {
         let c = self.send_counter;
         self.send_counter += 1;
         c
     }
 
+    // FIPS: bd08505 handlers/session.rs:handle_session_payload()
     pub fn send_key(&self) -> Option<&[u8; 32]> {
         self.k_send.as_ref()
     }
 
-    /// FIPS: handlers/session.rs:361-541
+    // FIPS: bd08505 handlers/session.rs:handle_session_setup()
     pub fn handle_setup(
         &mut self,
         my_secret: &[u8; 32],
@@ -658,7 +669,7 @@ impl FspSession {
         Ok(ack_len)
     }
 
-    /// FIPS: handlers/session.rs:706-823
+    // FIPS: bd08505 handlers/session.rs:handle_session_msg3()
     pub fn handle_msg3(&mut self, msg3_data: &[u8]) -> Result<(), FspSessionError> {
         if self.state != FspSessionState::AwaitingMsg3 {
             return Err(FspSessionError::InvalidState);
@@ -691,6 +702,7 @@ impl FspSession {
         Ok(())
     }
 
+    // FIPS: bd08505 handlers/session.rs:handle_session_setup()
     pub fn reset(&mut self) {
         self.state = FspSessionState::Idle;
         self.responder = None;
@@ -739,7 +751,7 @@ impl From<FspError> for FspInitiatorError {
     }
 }
 
-/// FIPS: handlers/session.rs:546-698 (initiator flow)
+// FIPS: bd08505 handlers/session.rs:handle_session_ack()
 pub struct FspInitiatorSession {
     state: FspInitiatorState,
     initiator: Option<NoiseXkInitiator>,
@@ -752,6 +764,7 @@ pub struct FspInitiatorSession {
 }
 
 impl FspInitiatorSession {
+    // FIPS: bd08505 handlers/session.rs:initiate_session()
     pub fn new(
         my_static_secret: &[u8; 32],
         my_ephemeral_secret: &[u8; 32],
@@ -771,25 +784,29 @@ impl FspInitiatorSession {
         })
     }
 
+    // FIPS: bd08505 handlers/session.rs:initiate_session()
     pub fn state(&self) -> FspInitiatorState {
         self.state
     }
 
+    // FIPS: bd08505 handlers/session.rs:handle_session_payload()
     pub fn session_keys(&self) -> Option<([u8; 32], [u8; 32])> {
         self.k_recv.zip(self.k_send)
     }
 
+    // FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::serialize()
     pub fn next_send_counter(&mut self) -> u64 {
         let c = self.send_counter;
         self.send_counter += 1;
         c
     }
 
+    // FIPS: bd08505 handlers/session.rs:handle_session_payload()
     pub fn send_key(&self) -> Option<&[u8; 32]> {
         self.k_send.as_ref()
     }
 
-    /// FIPS: handlers/session.rs:1126-1174 initiate_session()
+    // FIPS: bd08505 handlers/session.rs:initiate_session()
     pub fn build_setup(
         &mut self,
         src_addr: &[u8; NODE_ADDR_SIZE],
@@ -818,7 +835,7 @@ impl FspInitiatorSession {
         Ok(setup_len)
     }
 
-    /// FIPS: handlers/session.rs:546-699 handle_session_ack()
+    // FIPS: bd08505 handlers/session.rs:handle_session_ack()
     pub fn handle_ack(&mut self, ack_data: &[u8]) -> Result<(), FspInitiatorError> {
         if self.state != FspInitiatorState::AwaitingAck {
             return Err(FspInitiatorError::InvalidState);
@@ -838,7 +855,7 @@ impl FspInitiatorSession {
         Ok(())
     }
 
-    /// FIPS: handlers/session.rs:656-674
+    // FIPS: bd08505 handlers/session.rs:build_session_msg3()
     pub fn build_msg3(
         &mut self,
         epoch: &[u8; EPOCH_SIZE],
@@ -865,6 +882,7 @@ impl FspInitiatorSession {
         Ok(msg3_fsp_len)
     }
 
+    // FIPS: bd08505 handlers/session.rs:initiate_session()
     pub fn reset(&mut self) {
         self.state = FspInitiatorState::Idle;
         self.initiator = None;
@@ -890,7 +908,8 @@ pub enum FspHandlerError {
     UnknownPhase,
 }
 
-/// FIPS: handlers/session.rs:41-98 handle_session_payload() + forwarding.rs:25-123 handle_session_datagram()
+// FIPS: bd08505 handlers/session.rs:handle_session_payload()
+// FIPS: bd08505 forwarding.rs:handle_session_datagram()
 pub fn handle_fsp_datagram(
     session: &mut FspSession,
     secret: &[u8; 32],

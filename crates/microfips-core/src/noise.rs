@@ -121,6 +121,7 @@ pub enum NoiseError {
 ///
 /// Reference: FIPS `HandshakeState::normalize_for_premessage()` in
 /// `/root/src/fips/src/noise/handshake.rs`
+// FIPS: bd08505 noise/handshake.rs:normalize_for_premessage()
 pub fn parity_normalize(pubkey: &[u8; PUBKEY_SIZE]) -> [u8; PUBKEY_SIZE] {
     let mut out = [0u8; PUBKEY_SIZE];
     out[0] = 0x02;
@@ -138,6 +139,7 @@ pub fn parity_normalize(pubkey: &[u8; PUBKEY_SIZE]) -> [u8; PUBKEY_SIZE] {
 /// Reference: FIPS `HandshakeState::ecdh()` in
 /// `/root/src/fips/src/noise/handshake.rs` — uses `shared_secret_point()`
 /// then `SHA256(point[..32])`.
+// FIPS: bd08505 noise/handshake.rs:ecdh()
 pub fn x_only_ecdh(
     my_secret: &[u8; 32],
     their_pub: &[u8; PUBKEY_SIZE],
@@ -149,9 +151,9 @@ pub fn x_only_ecdh(
     Ok(sha256(x))
 }
 
-/// FIPS: mod.rs:68 PUBKEY_SIZE=33, uses k256 compressed encoding
-///
-/// Compute the compressed public key for a given secret key.
+// FIPS: bd08505 noise/mod.rs:CipherState::new()
+//
+// Compute the compressed public key for a given secret key.
 pub fn ecdh_pubkey(secret: &[u8; 32]) -> Result<[u8; PUBKEY_SIZE], NoiseError> {
     let sk = SecretKey::from_slice(secret).map_err(|_| NoiseError::InvalidKey)?;
     let pk = sk.public_key();
@@ -166,6 +168,7 @@ pub fn ecdh_pubkey(secret: &[u8; 32]) -> Result<[u8; PUBKEY_SIZE], NoiseError> {
 ///
 /// Named to match the Noise spec's `HASH(data)` primitive (§4.1).
 /// Used by `mix_hash()` to implement MixHash(data) = h = HASH(h || data).
+// FIPS: bd08505 noise/mod.rs:SymmetricState::mix_hash()
 fn hash_concat(a: &[u8], b: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(a);
@@ -180,6 +183,7 @@ fn hash_concat(a: &[u8], b: &[u8]) -> [u8; 32] {
 ///
 /// Named to match the Noise spec's `HASH(data)` primitive (§4.1).
 /// Used for protocol name hashing during handshake initialization.
+// FIPS: bd08505 noise/mod.rs:SymmetricState::initialize()
 fn hash_one(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -194,6 +198,7 @@ fn hash_one(data: &[u8]) -> [u8; 32] {
 /// Reference: Noise spec §4.3 — HKDF with chaining_key as salt,
 /// input_key_material as IKM, zero-length info. We always request 2 outputs.
 /// FIPS uses `hkdf::Hkdf::<Sha256>::new(Some(&ck), ikm)` with expand(&[], &mut [0u8; 64]).
+// FIPS: bd08505 noise/mod.rs:SymmetricState::mix_key()
 fn mix_key(ck: &[u8; 32], ikm: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(ck), ikm);
     let mut okm = [0u8; 64];
@@ -217,6 +222,7 @@ fn mix_key(ck: &[u8; 32], ikm: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
 /// Mix data into the handshake hash: h = SHA256(h || data).
 ///
 /// Reference: Noise spec §5.2 SymmetricState.MixHash().
+// FIPS: bd08505 noise/mod.rs:SymmetricState::mix_hash()
 fn mix_hash(h: &[u8; 32], data: &[u8]) -> [u8; 32] {
     hash_concat(h, data)
 }
@@ -225,6 +231,7 @@ fn mix_hash(h: &[u8; 32], data: &[u8]) -> [u8; 32] {
 ///
 /// Reference: Noise spec §5.1 — "The maximum n value (2^64-1) is reserved."
 /// FIPS `CipherState::counter_to_nonce()` uses same layout: [0;4] || counter.to_le_bytes().
+// FIPS: bd08505 noise/mod.rs:CipherState::counter_to_nonce()
 fn make_nonce(n: u64) -> [u8; NONCE_SIZE] {
     let mut nonce = [0u8; NONCE_SIZE];
     nonce[4..].copy_from_slice(&n.to_le_bytes());
@@ -240,6 +247,7 @@ fn make_nonce(n: u64) -> [u8; NONCE_SIZE] {
 /// Reference: FIPS `CipherState::encrypt()` in `/root/src/fips/src/noise/mod.rs`
 ///   calls `cipher.encrypt(&nonce, plaintext)` with no AAD (the `Aead` trait's
 ///   `encrypt` method defaults to empty AAD when called without `Payload`).
+// FIPS: bd08505 noise/mod.rs:CipherState::encrypt()
 #[allow(deprecated)]
 pub fn aead_encrypt(
     key: &[u8; 32],
@@ -275,6 +283,7 @@ pub fn aead_encrypt(
 /// AEAD decrypt with ChaCha20-Poly1305.
 ///
 /// Reference: Noise spec §4.2 — DECRYPT(k, n, ad, ciphertext).
+// FIPS: bd08505 noise/mod.rs:CipherState::decrypt()
 #[allow(deprecated)]
 pub fn aead_decrypt(
     key: &[u8; 32],
@@ -313,6 +322,10 @@ pub fn aead_decrypt(
     Ok(pt_len)
 }
 
+// FIPS: bd08505 noise/handshake.rs:new_initiator()
+// FIPS: bd08505 noise/handshake.rs:write_message_1()
+// FIPS: bd08505 noise/handshake.rs:read_message_2()
+// FIPS: bd08505 noise/handshake.rs:SymmetricState::split()
 #[derive(Clone)]
 pub struct NoiseIkInitiator {
     h: [u8; 32],
@@ -336,6 +349,7 @@ impl NoiseIkInitiator {
     /// `/root/src/fips/src/noise/handshake.rs` — calls
     /// `SymmetricState::initialize(PROTOCOL_NAME_IK)` then
     /// `mix_hash(normalize_for_premessage(&remote_static))`.
+    // FIPS: bd08505 noise/handshake.rs:new_initiator()
     pub fn new(
         my_ephemeral_secret: &[u8; 32],
         my_static_secret: &[u8; 32],
@@ -380,6 +394,7 @@ impl NoiseIkInitiator {
     ///
     /// Reference: FIPS `HandshakeState::write_message_1()` in
     /// `/root/src/fips/src/noise/handshake.rs`
+    // FIPS: bd08505 noise/handshake.rs:write_message_1()
     pub fn write_message1(
         &mut self,
         my_static_pub: &[u8; PUBKEY_SIZE],
@@ -459,6 +474,7 @@ impl NoiseIkInitiator {
     /// `/root/src/fips/src/noise/handshake.rs` — note that FIPS computes
     /// `se = DH(e_initiator_priv, rs_responder_pub)` for the initiator's
     /// read_message_2, which swaps the key types vs the Noise spec.
+    // FIPS: bd08505 noise/handshake.rs:read_message_2()
     pub fn read_message2(&mut self, payload: &[u8]) -> Result<[u8; EPOCH_SIZE], NoiseError> {
         let expected = PUBKEY_SIZE + EPOCH_SIZE + TAG_SIZE;
         if payload.len() != expected {
@@ -523,6 +539,7 @@ impl NoiseIkInitiator {
     /// `/root/src/fips/src/noise/handshake.rs`:
     ///   Hkdf::<Sha256>::new(Some(&self.ck), &[]) with expand(&[], &mut [0u8; 64])
     ///   k1 = output[..32], k2 = output[32..64]
+    // FIPS: bd08505 noise/handshake.rs:SymmetricState::split()
     pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
         let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
         let mut okm = [0u8; 64];
@@ -548,6 +565,10 @@ impl NoiseIkInitiator {
 ///
 /// The initiator knows the responder's static key upfront (from the link-layer
 /// peer index). No AAD during handshake (FIPS deviation, same as IK).
+// FIPS: bd08505 noise/handshake.rs:new_xk_initiator()
+// FIPS: bd08505 noise/handshake.rs:write_xk_message_1()
+// FIPS: bd08505 noise/handshake.rs:read_xk_message_2()
+// FIPS: bd08505 noise/handshake.rs:write_xk_message_3()
 #[derive(Clone)]
 pub struct NoiseXkInitiator {
     h: [u8; 32],
@@ -562,12 +583,12 @@ pub struct NoiseXkInitiator {
 }
 
 impl NoiseXkInitiator {
-    /// FIPS: handshake.rs:213-234 new_xk_initiator()
-    ///
-    /// Initialize the XK initiator.
-    ///
-    /// The XK pattern has a pre-message `<- s` meaning the responder's static
-    /// key is known to the initiator before the handshake begins.
+    // FIPS: bd08505 noise/handshake.rs:new_xk_initiator()
+    //
+    // Initialize the XK initiator.
+    //
+    // The XK pattern has a pre-message `<- s` meaning the responder's static
+    // key is known to the initiator before the handshake begins.
     pub fn new(
         my_ephemeral_secret: &[u8; 32],
         my_static_secret: &[u8; 32],
@@ -597,14 +618,14 @@ impl NoiseXkInitiator {
         ))
     }
 
-    /// FIPS: handshake.rs:561-595 write_xk_message_1()
-    ///
-    /// Write Noise XK message 1: `-> e, es`
-    ///
-    /// Wire format (33 bytes):
-    /// ```text
-    ///   [e_pub: 33 bytes]
-    /// ```
+    // FIPS: bd08505 noise/handshake.rs:write_xk_message_1()
+    //
+    // Write Noise XK message 1: `-> e, es`
+    //
+    // Wire format (33 bytes):
+    // ```text
+    //   [e_pub: 33 bytes]
+    // ```
     pub fn write_message1(&mut self, out: &mut [u8]) -> Result<usize, NoiseError> {
         if out.len() < PUBKEY_SIZE {
             return Err(NoiseError::BufferTooSmall);
@@ -622,16 +643,16 @@ impl NoiseXkInitiator {
         Ok(PUBKEY_SIZE)
     }
 
-    /// FIPS: handshake.rs:691-734 read_xk_message_2()
-    ///
-    /// Read Noise XK message 2: `<- e, ee, epoch`
-    ///
-    /// Wire format (57 bytes):
-    /// ```text
-    ///   [re_pub: 33 bytes] [encrypted_epoch: 24 bytes]
-    /// ```
-    ///
-    /// Returns the responder's epoch.
+    // FIPS: bd08505 noise/handshake.rs:read_xk_message_2()
+    //
+    // Read Noise XK message 2: `<- e, ee, epoch`
+    //
+    // Wire format (57 bytes):
+    // ```text
+    //   [re_pub: 33 bytes] [encrypted_epoch: 24 bytes]
+    // ```
+    //
+    // Returns the responder's epoch.
     pub fn read_message2(&mut self, payload: &[u8]) -> Result<[u8; EPOCH_SIZE], NoiseError> {
         if payload.len() != PUBKEY_SIZE + EPOCH_SIZE + TAG_SIZE {
             return Err(NoiseError::InvalidMessage);
@@ -663,14 +684,14 @@ impl NoiseXkInitiator {
         Ok(epoch_buf)
     }
 
-    /// FIPS: handshake.rs:744-780 write_xk_message_3()
-    ///
-    /// Write Noise XK message 3: `-> s, se, epoch`
-    ///
-    /// Wire format (73 bytes):
-    /// ```text
-    ///   [encrypted_static: 49 bytes] [encrypted_epoch: 24 bytes]
-    /// ```
+    // FIPS: bd08505 noise/handshake.rs:write_xk_message_3()
+    //
+    // Write Noise XK message 3: `-> s, se, epoch`
+    //
+    // Wire format (73 bytes):
+    // ```text
+    //   [encrypted_static: 49 bytes] [encrypted_epoch: 24 bytes]
+    // ```
     pub fn write_message3(
         &mut self,
         my_static_pub: &[u8; PUBKEY_SIZE],
@@ -717,9 +738,10 @@ impl NoiseXkInitiator {
         Ok(pos)
     }
 
-    /// FIPS: handshake.rs:85-97 SymmetricState::split() and handshake.rs:837-862 into_session()
-    ///
-    /// Derive transport keys via Split() (same as IK).
+    // FIPS: bd08505 noise/handshake.rs:SymmetricState::split()
+    // FIPS: bd08505 noise/handshake.rs:into_session()
+    //
+    // Derive transport keys via Split() (same as IK).
     pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
         let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
         let mut okm = [0u8; 64];
@@ -733,17 +755,19 @@ impl NoiseXkInitiator {
     }
 }
 
-/// FIPS: handshake.rs:240-261 new_xk_responder() and lines 645-685 (write msg2), 786-832 (read msg3)
-///
-/// Noise XK Responder for FSP session-layer handshakes.
-///
-/// Implements `Noise_XK_secp256k1_ChaChaPoly_SHA256` responder side:
-/// ```text
-///   <- s                    (pre-message: our static key)
-///   -> e, es                (msg1: 33 bytes — read by new())
-///   <- e, ee, epoch          (msg2: 57 bytes — write_message2())
-///   -> s, se, epoch          (msg3: 73 bytes — read_message3())
-/// ```
+// FIPS: bd08505 noise/handshake.rs:new_xk_responder()
+// FIPS: bd08505 noise/handshake.rs:write_xk_message_2()
+// FIPS: bd08505 noise/handshake.rs:read_xk_message_3()
+//
+// Noise XK Responder for FSP session-layer handshakes.
+//
+// Implements `Noise_XK_secp256k1_ChaChaPoly_SHA256` responder side:
+// ```text
+//   <- s                    (pre-message: our static key)
+//   -> e, es                (msg1: 33 bytes — read by new())
+//   <- e, ee, epoch          (msg2: 57 bytes — write_message2())
+//   -> s, se, epoch          (msg3: 73 bytes — read_message3())
+// ```
 pub struct NoiseXkResponder {
     h: [u8; 32],
     ck: [u8; 32],
@@ -754,7 +778,7 @@ pub struct NoiseXkResponder {
 }
 
 impl NoiseXkResponder {
-    /// FIPS: handshake.rs:240-261 new_xk_responder() — pre-message is our own static key, mix_hash(normalize_for_premessage(our_static))
+    // FIPS: bd08505 noise/handshake.rs:new_xk_responder()
     pub fn new(
         responder_static_secret: &[u8; 32],
         initiator_ephemeral_pub: &[u8; PUBKEY_SIZE],
@@ -780,14 +804,14 @@ impl NoiseXkResponder {
         })
     }
 
-    /// FIPS: handshake.rs:645-685 write_xk_message_2() — tokens: e, ee, epoch
-    ///
-    /// Write Noise XK message 2: `<- e, ee, epoch`
-    ///
-    /// Wire format (57 bytes):
-    /// ```text
-    ///   [e_pub: 33 bytes] [encrypted_epoch: 24 bytes]
-    /// ```
+    // FIPS: bd08505 noise/handshake.rs:write_xk_message_2()
+    //
+    // Write Noise XK message 2: `<- e, ee, epoch`
+    //
+    // Wire format (57 bytes):
+    // ```text
+    //   [e_pub: 33 bytes] [encrypted_epoch: 24 bytes]
+    // ```
     pub fn write_message2(
         &mut self,
         responder_ephemeral_secret: &[u8; 32],
@@ -826,16 +850,16 @@ impl NoiseXkResponder {
         Ok(pos)
     }
 
-    /// FIPS: handshake.rs:786-832 read_xk_message_3() — tokens: s, se, epoch
-    ///
-    /// Read Noise XK message 3: `-> s, se, epoch`
-    ///
-    /// Wire format (73 bytes):
-    /// ```text
-    ///   [encrypted_static: 49 bytes] [encrypted_epoch: 24 bytes]
-    /// ```
-    ///
-    /// Returns (initiator_static_pub, initiator_epoch).
+    // FIPS: bd08505 noise/handshake.rs:read_xk_message_3()
+    //
+    // Read Noise XK message 3: `-> s, se, epoch`
+    //
+    // Wire format (73 bytes):
+    // ```text
+    //   [encrypted_static: 49 bytes] [encrypted_epoch: 24 bytes]
+    // ```
+    //
+    // Returns (initiator_static_pub, initiator_epoch).
     pub fn read_message3(
         &mut self,
         payload: &[u8],
@@ -881,11 +905,12 @@ impl NoiseXkResponder {
         Ok((static_buf, epoch_buf))
     }
 
-    /// FIPS: handshake.rs:85-97 split(), 837-862 into_session() — responder: k1=recv, k2=send
-    ///
-    /// Derive transport keys via Split().
-    /// Returns (k_recv, k_send) for responder.
-    /// k_recv = initiator→responder, k_send = responder→initiator.
+    // FIPS: bd08505 noise/handshake.rs:SymmetricState::split()
+    // FIPS: bd08505 noise/handshake.rs:into_session()
+    //
+    // Derive transport keys via Split().
+    // Returns (k_recv, k_send) for responder.
+    // k_recv = initiator→responder, k_send = responder→initiator.
     pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
         let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
         let mut okm = [0u8; 64];
@@ -1137,12 +1162,12 @@ mod responder_pub {
     }
 
     impl NoiseIkResponder {
-        /// FIPS: handshake.rs:185-207 new_responder() — pre-message is our own static key
-        ///
-        /// Create a new IK responder.
-        ///
-        /// Returns `Err` if the responder's static key or the initiator's
-        /// ephemeral public key is invalid (not on the secp256k1 curve).
+        // FIPS: bd08505 noise/handshake.rs:new_responder()
+        //
+        // Create a new IK responder.
+        //
+        // Returns `Err` if the responder's static key or the initiator's
+        // ephemeral public key is invalid (not on the secp256k1 curve).
         pub fn new(
             responder_static_secret: &[u8; 32],
             initiator_ephemeral_pub: &[u8; PUBKEY_SIZE],
@@ -1170,12 +1195,12 @@ mod responder_pub {
             })
         }
 
-        /// FIPS: handshake.rs:386-441 read_message_1()
-        ///
-        /// Read message 1 from the initiator.
-        ///
-        /// Returns `(initiator_static_pub, initiator_epoch)`.
-        /// Returns `Err` if payload is too short or AEAD decryption fails.
+        // FIPS: bd08505 noise/handshake.rs:read_message_1()
+        //
+        // Read message 1 from the initiator.
+        //
+        // Returns `(initiator_static_pub, initiator_epoch)`.
+        // Returns `Err` if payload is too short or AEAD decryption fails.
         pub fn read_message1(
             &mut self,
             payload: &[u8],
@@ -1225,12 +1250,12 @@ mod responder_pub {
             Ok((static_buf, epoch_buf))
         }
 
-        /// FIPS: handshake.rs:450-494 write_message_2() — note: FIPS se=DH(s,e_i) not DH(s,r_e)
-        ///
-        /// Write message 2 for the initiator.
-        ///
-        /// Returns the number of bytes written to `out`.
-        /// Returns `Err` if output buffer is too small.
+        // FIPS: bd08505 noise/handshake.rs:write_message_2()
+        //
+        // Write message 2 for the initiator.
+        //
+        // Returns the number of bytes written to `out`.
+        // Returns `Err` if output buffer is too small.
         pub fn write_message2(
             &mut self,
             responder_ephemeral_secret: &[u8; 32],
@@ -1282,14 +1307,14 @@ mod responder_pub {
             Ok(pos)
         }
 
-        /// FIPS: handshake.rs:85-97 split()
-        ///
-        /// Finalize the handshake, returning transport keys.
-        ///
-        /// Returns `(k1, k2)` where k1 and k2 are the first and second
-        /// 32-byte keys from HKDF-SHA256(ck, ""). The responder must use
-        /// **k2 as k_send** and **k1 as k_recv** (swapped from initiator
-        /// convention) because `se` uses the same DH inputs as `es`.
+        // FIPS: bd08505 noise/handshake.rs:SymmetricState::split()
+        //
+        // Finalize the handshake, returning transport keys.
+        //
+        // Returns `(k1, k2)` where k1 and k2 are the first and second
+        // 32-byte keys from HKDF-SHA256(ck, ""). The responder must use
+        // **k2 as k_send** and **k1 as k_recv** (swapped from initiator
+        // convention) because `se` uses the same DH inputs as `es`.
         pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
             let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
             let mut okm = [0u8; 64];
@@ -1584,7 +1609,7 @@ mod responder_tests {
         //                 e3, 5e, 61, 6d, 7a, e8, 6f, ce, e2, 68, a2, f7, 49, 45, 2b, 68, 42]
         assert_eq!(mcu_pub[0], 0x02);
         assert_eq!(mcu_pub[1], 0x63); // matches RTT log: pub: [02, 63, 56, 96, ...]
-        // The exact pubkey depends on k256's compressed encoding — just verify it's valid
+                                      // The exact pubkey depends on k256's compressed encoding — just verify it's valid
         assert_eq!(mcu_pub.len(), 33);
     }
 

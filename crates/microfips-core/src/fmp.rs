@@ -11,57 +11,57 @@
 //! | N2 | `path_mtu` default | hardcoded 1400 | `u16::MAX` | FIPS caps during forwarding. No functional impact. |
 //! | N3 | `session_flags` | initiator sends 0x03 | defaults to 0x00 | FIPS doesn't validate flags. No functional impact. |
 
-/// FIPS: wire.rs:28
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const FMP_VERSION: u8 = 0;
-/// FIPS: wire.rs:40
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const COMMON_PREFIX_SIZE: usize = 4;
-/// FIPS: inline in wire.rs (4 bytes for u32 peer index)
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const IDX_SIZE: usize = 4;
-/// FIPS: wire.rs:43
+// FIPS: bd08505 node/wire.rs:EncryptedHeader::parse()
 pub const ESTABLISHED_HEADER_SIZE: usize = 16;
-/// FIPS: wire.rs:55
+// FIPS: bd08505 node/wire.rs:EncryptedHeader::parse()
 pub const INNER_HEADER_SIZE: usize = 5; // 4-byte timestamp + at least 1 byte msg_type
-/// FIPS: wire.rs:52
+                                        // FIPS: bd08505 node/wire.rs:EncryptedHeader::parse()
 pub const ENCRYPTED_MIN_SIZE: usize = 32;
 
-/// FIPS: noise/mod.rs:77
+// FIPS: bd08505 noise/handshake.rs:write_message_1()
 pub const HANDSHAKE_MSG1_SIZE: usize = 106;
-/// FIPS: noise/mod.rs:80
+// FIPS: bd08505 noise/handshake.rs:read_message_2()
 pub const HANDSHAKE_MSG2_SIZE: usize = 57;
-/// FIPS: noise/mod.rs:74
+// FIPS: bd08505 noise/handshake.rs:write_message_1()
 pub const EPOCH_ENCRYPTED_SIZE: usize = 24;
 
-/// FIPS: wire.rs:46
+// FIPS: bd08505 node/wire.rs:build_msg1()
 pub const MSG1_WIRE_SIZE: usize = 114;
-/// FIPS: wire.rs:49
+// FIPS: bd08505 node/wire.rs:build_msg2()
 pub const MSG2_WIRE_SIZE: usize = 69;
 
-/// FIPS: wire.rs:31
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const PHASE_ESTABLISHED: u8 = 0x00;
-/// FIPS: wire.rs:34
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const PHASE_MSG1: u8 = 0x01;
-/// FIPS: wire.rs:37
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const PHASE_MSG2: u8 = 0x02;
 
-/// FIPS: link.rs:101
+// FIPS: bd08505 node/link.rs:handle_heartbeat()
 pub const MSG_HEARTBEAT: u8 = 0x51;
-/// FIPS: link.rs:74
+// FIPS: bd08505 node/link.rs:handle_session_datagram()
 pub const MSG_SESSION_DATAGRAM: u8 = 0x00;
-/// FIPS: link.rs:78
+// FIPS: bd08505 node/link.rs:handle_sender_report()
 pub const MSG_SENDER_REPORT: u8 = 0x01;
-/// FIPS: link.rs:80
+// FIPS: bd08505 node/link.rs:handle_receiver_report()
 pub const MSG_RECEIVER_REPORT: u8 = 0x02;
-/// FIPS: link.rs:98
+// FIPS: bd08505 node/link.rs:handle_disconnect()
 pub const MSG_DISCONNECT: u8 = 0x50;
 
-/// FIPS: wire.rs:61
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
-/// FIPS: wire.rs:64
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const FLAG_CONGESTION: u8 = 0x02;
-/// FIPS: wire.rs:67
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const FLAG_SPIN: u8 = 0x04;
 
-/// FIPS: wire.rs:73-193 (EncryptedHeader, Msg1Header, Msg2Header)
+// FIPS: bd08505 node/wire.rs:build_msg1() / build_msg2() / build_established_header()
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FmpMessage<'a> {
     Msg1 {
@@ -80,13 +80,13 @@ pub enum FmpMessage<'a> {
     },
 }
 
-/// FIPS: wire.rs:114-116 ver_phase_byte()
+// FIPS: bd08505 node/wire.rs:ver_phase_byte()
 pub fn build_prefix(phase: u8, flags: u8, payload_len: u16) -> [u8; COMMON_PREFIX_SIZE] {
     let byte0 = (FMP_VERSION << 4) | (phase & 0x0F);
     [byte0, flags, payload_len as u8, (payload_len >> 8) as u8]
 }
 
-/// FIPS: wire.rs:95-117 CommonPrefix::parse()
+// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub fn parse_prefix(data: &[u8]) -> Option<(u8, u8, u16)> {
     if data.len() < COMMON_PREFIX_SIZE {
         return None;
@@ -101,7 +101,7 @@ pub fn parse_prefix(data: &[u8]) -> Option<(u8, u8, u16)> {
     Some((phase, flags, payload_len))
 }
 
-/// FIPS: wire.rs:314-326 build_msg1()
+// FIPS: bd08505 node/wire.rs:build_msg1()
 pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> Option<usize> {
     let needed = COMMON_PREFIX_SIZE + IDX_SIZE + noise_payload.len();
     if out.len() < needed {
@@ -116,7 +116,7 @@ pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> Opti
     Some(needed)
 }
 
-/// FIPS: wire.rs:331-344 build_msg2()
+// FIPS: bd08505 node/wire.rs:build_msg2()
 pub fn build_msg2(
     sender_idx: u32,
     receiver_idx: u32,
@@ -138,7 +138,8 @@ pub fn build_msg2(
     Some(needed)
 }
 
-/// FIPS: wire.rs:349-362 build_established_header() + noise/mod.rs:1578-1663 send_encrypted_link_message_with_ce()
+// FIPS: bd08505 node/wire.rs:build_established_header()
+// FIPS: bd08505 noise/mod.rs:send_encrypted_link_message_with_ce()
 pub fn build_established(
     receiver_idx: u32,
     counter: u64,
@@ -199,7 +200,9 @@ pub fn build_established(
     Some(total)
 }
 
-/// FIPS: wire.rs:151-305 (EncryptedHeader::parse, Msg1Header::parse, Msg2Header::parse)
+// FIPS: bd08505 node/wire.rs:Msg1Header::parse()
+// FIPS: bd08505 node/wire.rs:Msg2Header::parse()
+// FIPS: bd08505 node/wire.rs:EncryptedHeader::parse()
 pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
     let (phase, _flags, _payload_len) = parse_prefix(data)?;
     let payload = &data[COMMON_PREFIX_SIZE..];
@@ -546,7 +549,7 @@ mod tests {
     #[test]
     fn noise_ik_initiator_msg1_exact_size() {
         // Full Noise IK initiator produces exactly 106 bytes for write_message1
-        use crate::noise::{EPOCH_SIZE, NoiseIkInitiator, PUBKEY_SIZE};
+        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE};
         let eph_secret = [0x01u8; 32];
         let s_secret = [0x11u8; 32];
         let responder_pub = [0x02u8; PUBKEY_SIZE];
@@ -565,7 +568,7 @@ mod tests {
     #[test]
     fn parse_msg1_noise_payload_sections() {
         // Build a real MSG1, parse it, verify noise_payload has correct structure
-        use crate::noise::{EPOCH_SIZE, NoiseIkInitiator, PUBKEY_SIZE, TAG_SIZE};
+        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE, TAG_SIZE};
         let eph_secret = [0x01u8; 32];
         let s_secret = [0x11u8; 32];
         let responder_pub = [0x02u8; PUBKEY_SIZE];
