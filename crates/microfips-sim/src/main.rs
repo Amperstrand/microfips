@@ -28,15 +28,16 @@ enum UdpError {
 struct UdpTransport {
     socket: UdpSocket,
     peer: std::net::SocketAddr,
+    label: &'static str,
 }
 
 impl UdpTransport {
-    fn new(peer: std::net::SocketAddr) -> Self {
+    fn new(peer: std::net::SocketAddr, label: &'static str) -> Self {
         let socket = UdpSocket::bind("0.0.0.0:0").expect("UDP bind failed");
         socket
             .set_read_timeout(Some(std::time::Duration::from_secs(120)))
             .ok();
-        Self { socket, peer }
+        Self { socket, peer, label }
     }
 }
 
@@ -55,11 +56,16 @@ impl Transport for UdpTransport {
             } else {
                 String::new()
             };
-            eprintln!(
-                "[UDP] TX {}B phase=0x{:01x}{} first4={:02x?}",
+            log::info!(
+                "[{} → FIPS] TX {}B phase=0x{:01x}{}",
+                self.label,
                 data.len(),
                 phase,
                 extra,
+            );
+            log::debug!(
+                "[{} → FIPS] TX first bytes: {:02x?}",
+                self.label,
                 &data[..data.len().min(16)]
             );
         }
@@ -73,10 +79,15 @@ impl Transport for UdpTransport {
                 Ok((n, _addr)) => {
                     if n >= 4 {
                         let phase = buf[0] & 0x0F;
-                        eprintln!(
-                            "[UDP] RX {}B phase=0x{:01x} first4={:02x?}",
+                        log::info!(
+                            "[FIPS → {}] RX {}B phase=0x{:01x}",
+                            self.label,
                             n,
                             phase,
+                        );
+                        log::debug!(
+                            "[FIPS → {}] RX first bytes: {:02x?}",
+                            self.label,
                             &buf[..n.min(16)]
                         );
                     }
@@ -167,15 +178,15 @@ impl Transport for SimTransport {
                 self.rx = Arc::new(Mutex::new(VecDeque::new()));
                 self.eof = Arc::new(AtomicBool::new(false));
                 let (stream, addr) = listener.accept().map_err(SimError::Io)?;
-                eprintln!("[SIM] connection from {}", addr);
+                log::debug!("[SIM] connection from {}", addr);
                 self.setup_tcp(stream)
             }
             SimConnector::Connect(addr) => {
                 self.rx = Arc::new(Mutex::new(VecDeque::new()));
                 self.eof = Arc::new(AtomicBool::new(false));
-                eprintln!("[SIM] connecting to {}...", addr);
+                log::debug!("[SIM] connecting to {}...", addr);
                 let stream = TcpStream::connect(addr.as_str()).map_err(SimError::Io)?;
-                eprintln!("[SIM] connected");
+                log::debug!("[SIM] connected");
                 self.setup_tcp(stream)
             }
             SimConnector::Stdio => {
@@ -225,19 +236,21 @@ impl Transport for SimTransport {
 struct SimHandler {
     inner: FspDualHandler,
     is_initiator: bool,
+    label: &'static str,
 }
 
 impl SimHandler {
-    fn new_responder(secret: [u8; 32]) -> Self {
+    fn new_responder(secret: [u8; 32], label: &'static str) -> Self {
         let mut eph = [0u8; 32];
         rand::rng().fill_bytes(&mut eph);
         Self {
             inner: FspDualHandler::new_responder(secret, eph),
             is_initiator: false,
+            label,
         }
     }
 
-    fn new_initiator(secret: [u8; 32], target_pub: &[u8; 33], target_addr: [u8; 16], test_ping: bool) -> Self {
+    fn new_initiator(secret: [u8; 32], target_pub: &[u8; 33], target_addr: [u8; 16], test_ping: bool, label: &'static str) -> Self {
         let mut resp_eph = [0u8; 32];
         rand::rng().fill_bytes(&mut resp_eph);
         let mut init_eph = [0u8; 32];
@@ -247,6 +260,7 @@ impl SimHandler {
         Self {
             inner,
             is_initiator: true,
+            label,
         }
     }
 }
@@ -254,22 +268,23 @@ impl SimHandler {
 impl NodeHandler for SimHandler {
     async fn on_event(&mut self, event: NodeEvent) {
         match event {
-            NodeEvent::Connected => eprintln!("[SIM] transport ready"),
-            NodeEvent::Msg1Sent => eprintln!("[SIM] MSG1 sent"),
+            NodeEvent::Connected => log::info!("[{}] transport ready", self.label),
+            NodeEvent::Msg1Sent => log::info!("[{} → FIPS] MSG1 sent", self.label),
             NodeEvent::HandshakeOk => {
                 self.inner.on_event_default(event);
-                eprintln!(
-                    "[SIM] handshake complete (FSP {})",
+                log::info!(
+                    "[{}] handshake complete (FSP {})",
+                    self.label,
                     if self.is_initiator { "initiator" } else { "responder" }
                 )
             }
             NodeEvent::HeartbeatSent => {}
             NodeEvent::HeartbeatRecv => {}
             NodeEvent::Disconnected => {
-                eprintln!("[SIM] session ended, reconnecting")
+                log::info!("[{}] session ended, reconnecting", self.label)
             }
             NodeEvent::Error => {
-                eprintln!("[SIM] handshake error, retrying")
+                log::warn!("[{}] handshake error, retrying", self.label)
             }
         }
     }
@@ -277,11 +292,11 @@ impl NodeHandler for SimHandler {
     fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
         let result = self.inner.on_message(msg_type, payload, resp);
         if result == HandleResult::Disconnect {
-            eprintln!("[SIM] *** test ping success, exiting ***");
+            log::info!("[{}] *** test ping success, exiting ***", self.label);
             std::process::exit(0);
         }
         if let HandleResult::SendDatagram(len) = result {
-            eprintln!("[SIM] sending {}B response", len);
+            log::info!("[{} → FIPS] TX datagram response {}B", self.label, len);
         }
         result
     }
@@ -294,9 +309,9 @@ impl NodeHandler for SimHandler {
         let result = self.inner.on_tick(resp);
         if let HandleResult::SendDatagram(len) = result {
             if self.inner.initiator.as_ref().map_or(false, |i| i.state() == microfips_core::fsp::FspInitiatorState::Established) {
-                eprintln!("[SIM] Sent PING to target ({}B datagram)", len);
+                log::info!("[{} → FIPS] TX PING {}B", self.label, len);
             } else {
-                eprintln!("[SIM] FSP action: {}B", len);
+                log::info!("[{} → FIPS] FSP action {}B", self.label, len);
             }
         }
         result
@@ -451,7 +466,7 @@ fn print_usage() {
     eprintln!("  --keygen       Generate a new keypair and print env vars");
 }
 
- fn main() {
+fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
     let args: Vec<String> = std::env::args().collect();
 
@@ -468,14 +483,23 @@ fn print_usage() {
         return;
     }
 
+    let use_sim_a = args.iter().any(|a| a == "--sim-a");
+    let use_sim_b = args.iter().any(|a| a == "--sim-b");
+
+    let node_label: &'static str = if use_sim_a {
+        "SIM-A"
+    } else if use_sim_b {
+        "SIM-B"
+    } else {
+        "SIM"
+    };
+
     if args.len() < 3 || args.get(1).map(|a| a.as_str()) != Some("--udp") {
         print_usage();
         std::process::exit(1);
     }
 
     let fips_addr = args.get(2).expect("--udp requires an address");
-    let use_sim_a = args.iter().any(|a| a == "--sim-a");
-    let use_sim_b = args.iter().any(|a| a == "--sim-b");
     let test_ping = args.iter().any(|a| a == "--test-ping");
     let is_initiator = args.iter().any(|a| a == "--initiator") || use_sim_b;
     let target_arg = args
@@ -494,12 +518,12 @@ fn print_usage() {
                     arr
                 }
                 _ => {
-                    eprintln!("ERROR: --target must be 16 bytes (32 hex chars)");
+                    log::error!("[{}] --target must be 16 bytes (32 hex chars)", node_label);
                     std::process::exit(1);
                 }
             },
             None if is_initiator => {
-                eprintln!("ERROR: --initiator requires --target <node_addr_hex>");
+                log::error!("[{}] --initiator requires --target <node_addr_hex>", node_label);
                 std::process::exit(1);
             }
             None => [0u8; 16],
@@ -530,7 +554,7 @@ fn print_usage() {
             Ok(ref bytes) if *bytes == stm32_target => STM32_PUBKEY,
             Ok(ref bytes) if *bytes == ESP32_TARGET => ESP32_PUBKEY,
             _ => {
-                eprintln!("WARNING: unknown target NodeAddr, FSP will fail (no pubkey mapping)");
+                log::warn!("[{}] unknown target NodeAddr, FSP will fail (no pubkey mapping)", node_label);
                 SIM_A_PUBKEY
             }
         }
@@ -538,22 +562,19 @@ fn print_usage() {
         SIM_A_PUBKEY
     };
 
-    eprintln!("[SIM] microfips leaf node starting");
+    log::info!("[{}] microfips leaf node starting", node_label);
     let npub = bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("npub"), &x_only)
         .expect("bech32 encode");
-    eprintln!("[SIM] npub: {}", npub);
-    eprintln!("[SIM] node_addr: {}", hex::encode(my_addr.as_bytes()));
-    eprintln!("[SIM] FIPS: {}", fips_addr);
-    eprintln!(
-        "[SIM] mode: {}",
-        if is_initiator {
-            "initiator"
-        } else {
-            "responder"
-        }
+    log::info!("[{}] npub: {}", node_label, npub);
+    log::info!("[{}] node_addr: {}", node_label, hex::encode(my_addr.as_bytes()));
+    log::info!("[{}] FIPS: {}", node_label, fips_addr);
+    log::info!(
+        "[{}] mode: {}",
+        node_label,
+        if is_initiator { "initiator" } else { "responder" }
     );
     if is_initiator {
-        eprintln!("[SIM] target: {}", hex::encode(&target_addr));
+        log::info!("[{}] target: {}", node_label, hex::encode(&target_addr));
     }
 
     use std::net::ToSocketAddrs;
@@ -562,7 +583,7 @@ fn print_usage() {
         .expect("DNS resolution failed")
         .next()
         .expect("no addresses resolved");
-    let transport = UdpTransport::new(peer);
+    let transport = UdpTransport::new(peer, node_label);
     let mut node = Node::new(transport, rand_core::OsRng, secret, peer_pub);
     node.set_raw_framing(true);
 
@@ -573,10 +594,11 @@ fn print_usage() {
                 &fsp_target_pub,
                 target_addr,
                 test_ping,
+                node_label,
             );
             node.run(&mut handler).await;
         } else {
-            let mut handler = SimHandler::new_responder(secret);
+            let mut handler = SimHandler::new_responder(secret, node_label);
             node.run(&mut handler).await;
         }
     });
