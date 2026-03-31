@@ -57,23 +57,31 @@ fn panic(_info: &PanicInfo) -> ! {
     let gpio = unsafe { &*esp_hal::peripherals::GPIO::PTR };
     loop {
         gpio.out_w1ts().write(|w| unsafe { w.out_data_w1ts().bits(1 << 2) });
-        for _ in 0..5_000_000 {
+        for _ in 0..PANIC_BLINK_CYCLES {
             core::hint::spin_loop();
         }
         gpio.out_w1tc().write(|w| unsafe { w.out_data_w1tc().bits(1 << 2) });
-        for _ in 0..5_000_000 {
+        for _ in 0..PANIC_BLINK_CYCLES {
             core::hint::spin_loop();
         }
     }
 }
+
+const LED_OFF: u32 = 0;
+const LED_ON: u32 = 2;
+const PANIC_BLINK_CYCLES: u32 = 5_000_000;
+const UART_FIFO_THRESHOLD: u16 = 64;
+const UART_BAUDRATE: u32 = 115200;
+const WAIT_READY_DELAY_MS: u64 = 500;
+const RECV_RETRY_DELAY_MS: u64 = 10;
 
 struct Led(Output<'static>);
 
 impl Led {
     fn set_state(&mut self, state: u32) {
         match state {
-            0 => self.0.set_low(),
-            2 => self.0.set_high(),
+            LED_OFF => self.0.set_low(),
+            LED_ON => self.0.set_high(),
             _ => {}
         }
     }
@@ -91,7 +99,7 @@ impl Transport for UartTransport {
     type Error = UartError;
 
     async fn wait_ready(&mut self) -> Result<(), UartError> {
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(WAIT_READY_DELAY_MS)).await;
         Ok(())
     }
 
@@ -107,7 +115,7 @@ impl Transport for UartTransport {
             match Read::read(&mut self.rx, buf).await {
                 Ok(n) => return Ok(n),
                 Err(_) => {
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
                     continue;
                 }
             }
@@ -150,13 +158,16 @@ struct EspHandler<'a> {
 impl NodeHandler for EspHandler<'_> {
     async fn on_event(&mut self, event: NodeEvent) {
         match event {
+            NodeEvent::Connected => {
+                self.led.set_state(LED_ON);
+            }
             NodeEvent::Msg1Sent => {
                 STAT_MSG1_TX.fetch_add(1, Ordering::Relaxed);
-                self.led.set_state(2);
+                self.led.set_state(LED_ON);
             }
             NodeEvent::HandshakeOk => {
                 STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
-                self.led.set_state(2);
+                self.led.set_state(LED_ON);
             }
             NodeEvent::HeartbeatSent => {
                 STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
@@ -164,7 +175,12 @@ impl NodeHandler for EspHandler<'_> {
             NodeEvent::HeartbeatRecv => {
                 STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
             }
-            _ => {}
+            NodeEvent::Disconnected => {
+                self.led.set_state(LED_OFF);
+            }
+            NodeEvent::Error => {
+                self.led.set_state(LED_OFF);
+            }
         }
         self.fsp.on_event_default(event);
     }
@@ -213,8 +229,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
     trng.fill_bytes(&mut init_eph);
 
     let uart_config = Config::default()
-        .with_rx(RxConfig::default().with_fifo_full_threshold(64))
-        .with_baudrate(115200);
+        .with_rx(RxConfig::default().with_fifo_full_threshold(UART_FIFO_THRESHOLD))
+        .with_baudrate(UART_BAUDRATE);
     let uart = Uart::new(peripherals.UART0, uart_config)
         .unwrap()
         .with_tx(peripherals.GPIO1)
