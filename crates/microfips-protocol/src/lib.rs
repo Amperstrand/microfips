@@ -5,6 +5,7 @@ extern crate std;
 
 pub mod error;
 pub mod framing;
+pub mod fsp_handler;
 pub mod node;
 pub mod transport;
 

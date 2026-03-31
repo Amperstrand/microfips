@@ -1,14 +1,14 @@
 use microfips_core::fmp;
 use microfips_core::fsp::{
-    self, FSP_HEADER_SIZE, FSP_MSG_DATA, FspInitiatorSession, FspSession, HTTP_RESPONSE,
-    SESSION_DATAGRAM_BODY_SIZE, build_fsp_encrypted, build_fsp_header, build_session_datagram_body,
-    build_session_msg3, build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram,
-    parse_session_ack,
+    self, build_fsp_encrypted, build_fsp_header, build_session_datagram_body, build_session_msg3,
+    build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack,
+    FspInitiatorSession, FspSession, FSP_HEADER_SIZE, FSP_MSG_DATA, HTTP_RESPONSE,
+    SESSION_DATAGRAM_BODY_SIZE,
 };
-use microfips_core::identity::{DEFAULT_SECRET, NodeAddr};
+use microfips_core::identity::{NodeAddr, DEFAULT_SECRET};
 use microfips_core::noise::{
-    NoiseIkInitiator, NoiseIkResponder, NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE, aead_decrypt,
-    aead_encrypt, ecdh_pubkey, parity_normalize,
+    aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseIkInitiator, NoiseIkResponder,
+    NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE,
 };
 use rand::RngCore;
 
@@ -309,7 +309,7 @@ fn test_fsp_full_handshake_over_fmp() {
     let reply_hdr: [u8; FSP_HEADER_SIZE] = fsp_reply[..FSP_HEADER_SIZE].try_into().unwrap();
     let ct = &fsp_reply[FSP_HEADER_SIZE..];
     let mut dec = [0u8; 512];
-    let dl = aead_decrypt(&k_recv_i, 1, &reply_hdr, ct, &mut dec).unwrap();
+    let dl = aead_decrypt(&k_recv_i, 0, &reply_hdr, ct, &mut dec).unwrap();
     let (ts, mt, ifl, inner) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();
     assert_eq!(mt, FSP_MSG_DATA);
     assert_eq!(inner, HTTP_RESPONSE);
@@ -590,7 +590,7 @@ fn test_ping_pong_roundtrip() {
     let reply_hdr: [u8; FSP_HEADER_SIZE] = fsp_reply[..FSP_HEADER_SIZE].try_into().unwrap();
     let ct = &fsp_reply[FSP_HEADER_SIZE..];
     let mut dec = [0u8; 512];
-    let dl = aead_decrypt(&init_k_recv, 1, &reply_hdr, ct, &mut dec).unwrap();
+    let dl = aead_decrypt(&init_k_recv, 0, &reply_hdr, ct, &mut dec).unwrap();
     let (_ts, mt, _ifl, inner) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();
     assert_eq!(mt, FSP_MSG_DATA);
     assert_eq!(inner, b"PONG");

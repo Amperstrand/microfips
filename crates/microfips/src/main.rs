@@ -18,9 +18,8 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use static_cell::StaticCell;
 
-use microfips_core::fmp;
-use microfips_core::fsp::{FspSession, handle_fsp_datagram};
 use microfips_core::identity::{DEFAULT_PEER_PUB, DEFAULT_SECRET};
+use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::Transport;
 
@@ -241,9 +240,7 @@ impl Leds {
 
 struct FipsHandler<'a> {
     leds: &'a mut Leds,
-    fsp_session: FspSession,
-    fsp_ephemeral: [u8; 32],
-    fsp_epoch: [u8; 8],
+    fsp: FspDualHandler,
 }
 
 impl NodeHandler for FipsHandler<'_> {
@@ -260,8 +257,7 @@ impl NodeHandler for FipsHandler<'_> {
             NodeEvent::HandshakeOk => {
                 STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
                 self.leds.set_state(S_HANDSHAKE_OK);
-                self.fsp_session.reset();
-                self.fsp_epoch = [0x01, 0, 0, 0, 0, 0, 0, 0];
+                self.fsp.on_event_default(event);
                 Timer::after(Duration::from_millis(500)).await;
             }
             NodeEvent::HeartbeatSent => {
@@ -283,25 +279,15 @@ impl NodeHandler for FipsHandler<'_> {
     }
 
     fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
-        if msg_type != fmp::MSG_SESSION_DATAGRAM {
+        if msg_type != 0x00 {
             return HandleResult::None;
         }
         STAT_DATA_RX.fetch_add(1, Ordering::Relaxed);
-        match handle_fsp_datagram(
-            &mut self.fsp_session,
-            &DEFAULT_SECRET,
-            &self.fsp_ephemeral,
-            &self.fsp_epoch,
-            payload,
-            resp,
-        ) {
-            Ok(microfips_core::fsp::FspHandlerResult::None) => HandleResult::None,
-            Ok(microfips_core::fsp::FspHandlerResult::SendDatagram(len)) => {
-                STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
-                HandleResult::SendDatagram(len)
-            }
-            Err(_) => HandleResult::None,
+        let result = self.fsp.on_message(msg_type, payload, resp);
+        if let HandleResult::SendDatagram(_) = result {
+            STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
         }
+        result
     }
 }
 
@@ -382,9 +368,7 @@ async fn main(_spawner: Spawner) {
     let mut node = Node::new(transport, hw_rng, DEFAULT_SECRET, DEFAULT_PEER_PUB);
     let mut handler = FipsHandler {
         leds: &mut leds,
-        fsp_session: FspSession::new(),
-        fsp_ephemeral,
-        fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
+        fsp: FspDualHandler::new_responder(DEFAULT_SECRET, fsp_ephemeral),
     };
 
     let usb_fut = usb.run();

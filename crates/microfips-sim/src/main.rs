@@ -10,12 +10,9 @@ use embassy_time::{Duration, Instant, Timer};
 use k256::SecretKey;
 use rand::RngCore;
 
-use microfips_core::fmp;
-use microfips_core::fsp::{
-    self, FspInitiatorSession, FspInitiatorState, FspSession, SESSION_DATAGRAM_BODY_SIZE,
-};
 use microfips_core::identity::{NodeAddr, load_peer_pub, load_secret};
 use microfips_core::noise;
+use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::Transport;
 
@@ -222,317 +219,85 @@ impl Transport for SimTransport {
 }
 
 // ---------------------------------------------------------------------------
-// LeafHandler: FSP responder (same role as STM32 firmware)
+// SimHandler: thin wrapper around FspDualHandler for sim-specific logging
 // ---------------------------------------------------------------------------
 
-struct LeafHandler {
-    fsp_session: FspSession,
-    fsp_ephemeral: [u8; 32],
-    fsp_epoch: [u8; 8],
-    secret: [u8; 32],
+struct SimHandler {
+    inner: FspDualHandler,
+    is_initiator: bool,
 }
 
-impl LeafHandler {
-    fn new(secret: [u8; 32]) -> Self {
+impl SimHandler {
+    fn new_responder(secret: [u8; 32]) -> Self {
         let mut eph = [0u8; 32];
         rand::rng().fill_bytes(&mut eph);
         Self {
-            fsp_session: FspSession::new(),
-            fsp_ephemeral: eph,
-            fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
-            secret,
-        }
-    }
-}
-
-impl NodeHandler for LeafHandler {
-    async fn on_event(&mut self, event: NodeEvent) {
-        match event {
-            NodeEvent::Connected => eprintln!("[LEAF] transport ready"),
-            NodeEvent::Msg1Sent => eprintln!("[LEAF] MSG1 sent"),
-            NodeEvent::HandshakeOk => {
-                self.fsp_session.reset();
-                self.fsp_epoch = [0x01, 0, 0, 0, 0, 0, 0, 0];
-                eprintln!("[LEAF] handshake complete (FSP responder ready)")
-            }
-            NodeEvent::HeartbeatSent => {}
-            NodeEvent::HeartbeatRecv => {}
-            NodeEvent::Disconnected => eprintln!("[LEAF] session ended, reconnecting"),
-            NodeEvent::Error => eprintln!("[LEAF] handshake error, retrying"),
+            inner: FspDualHandler::new_responder(secret, eph),
+            is_initiator: false,
         }
     }
 
-    fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
-        if msg_type != fmp::MSG_SESSION_DATAGRAM {
-            return HandleResult::None;
-        }
-        match fsp::handle_fsp_datagram(
-            &mut self.fsp_session,
-            &self.secret,
-            &self.fsp_ephemeral,
-            &self.fsp_epoch,
-            payload,
-            resp,
-        ) {
-            Ok(fsp::FspHandlerResult::None) => HandleResult::None,
-            Ok(fsp::FspHandlerResult::SendDatagram(len)) => {
-                eprintln!("[LEAF] sending {}B response", len);
-                HandleResult::SendDatagram(len)
-            }
-            Err(e) => {
-                eprintln!("[LEAF] FSP error: {:?}", e);
-                HandleResult::None
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FspInitiatorHandler: FSP initiator (same role as ESP32 firmware)
-// ---------------------------------------------------------------------------
-
-const FSP_START_DELAY_SECS: u64 = 5;
-const FSP_RETRY_SECS: u64 = 8;
-
-struct FspInitiatorHandler {
-    fsp: Option<FspInitiatorSession>,
-    fsp_timer: Option<Instant>,
-    target_addr: [u8; 16],
-    my_addr: [u8; 16],
-    secret: [u8; 32],
-    target_pub: [u8; 33],
-    test_ping: bool,
-}
-
-impl FspInitiatorHandler {
-    fn new(
-        secret: [u8; 32],
-        target_pub: [u8; 33],
-        target_addr: [u8; 16],
-        my_addr: [u8; 16],
-        test_ping: bool,
-    ) -> Self {
+    fn new_initiator(secret: [u8; 32], target_pub: &[u8; 33], target_addr: [u8; 16], test_ping: bool) -> Self {
+        let mut eph = [0u8; 32];
+        rand::rng().fill_bytes(&mut eph);
+        let mut inner = FspDualHandler::new_initiator(secret, eph, target_pub, target_addr);
+        inner.test_ping = test_ping;
         Self {
-            fsp: None,
-            fsp_timer: None,
-            target_addr,
-            my_addr,
-            secret,
-            target_pub,
-            test_ping,
-        }
-    }
-
-    fn ensure_fsp(&mut self) {
-        if self.fsp.is_none() {
-            let mut fsp_eph = [0u8; 32];
-            rand::rng().fill_bytes(&mut fsp_eph);
-            self.fsp = FspInitiatorSession::new(&self.secret, &fsp_eph, &self.target_pub).ok();
+            inner,
+            is_initiator: true,
         }
     }
 }
 
-impl NodeHandler for FspInitiatorHandler {
+impl NodeHandler for SimHandler {
     async fn on_event(&mut self, event: NodeEvent) {
         match event {
-            NodeEvent::Connected => eprintln!("[INIT] transport ready"),
-            NodeEvent::Msg1Sent => eprintln!("[INIT] MSG1 sent"),
+            NodeEvent::Connected => eprintln!("[SIM] transport ready"),
+            NodeEvent::Msg1Sent => eprintln!("[SIM] MSG1 sent"),
             NodeEvent::HandshakeOk => {
-                self.ensure_fsp();
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_START_DELAY_SECS));
+                self.inner.on_event_default(event);
                 eprintln!(
-                    "[INIT] handshake complete, FSP setup in {}s",
-                    FSP_START_DELAY_SECS
+                    "[SIM] handshake complete (FSP {})",
+                    if self.is_initiator { "initiator" } else { "responder" }
                 )
             }
             NodeEvent::HeartbeatSent => {}
             NodeEvent::HeartbeatRecv => {}
             NodeEvent::Disconnected => {
-                self.fsp = None;
-                self.fsp_timer = None;
-                eprintln!("[INIT] session ended, reconnecting")
+                eprintln!("[SIM] session ended, reconnecting")
             }
             NodeEvent::Error => {
-                self.fsp = None;
-                self.fsp_timer = None;
-                eprintln!("[INIT] handshake error, retrying")
+                eprintln!("[SIM] handshake error, retrying")
             }
         }
     }
 
     fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
-        if msg_type != fmp::MSG_SESSION_DATAGRAM {
-            return HandleResult::None;
+        let result = self.inner.on_message(msg_type, payload, resp);
+        if result == HandleResult::Disconnect {
+            eprintln!("[SIM] *** test ping success, exiting ***");
+            std::process::exit(0);
         }
-        let fsp = match &mut self.fsp {
-            Some(f) => f,
-            None => return HandleResult::None,
-        };
-        if payload.len() < SESSION_DATAGRAM_BODY_SIZE {
-            return HandleResult::None;
+        if let HandleResult::SendDatagram(len) = result {
+            eprintln!("[SIM] sending {}B response", len);
         }
-        let fsp_data = &payload[SESSION_DATAGRAM_BODY_SIZE..];
-        if fsp_data.is_empty() {
-            return HandleResult::None;
-        }
-        eprintln!(
-            "[INIT] on_message: msg_type=0x{:02x} fsp_state={:?} fsp_data_len={} payload_len={} payload_first8={:02x?}",
-            msg_type, fsp.state(), fsp_data.len(), payload.len(), &payload[..payload.len().min(8)]
-        );
-        let fsp_phase = fsp_data[0] & 0x0F;
-
-        match fsp.state() {
-            FspInitiatorState::AwaitingAck => {
-                if fsp_phase == 0x02 {
-                    eprintln!("[INIT] ACK raw fsp_data: {} ({}B)", hex::encode(fsp_data), fsp_data.len());
-                    match fsp.handle_ack(fsp_data) {
-                        Ok(()) => {
-                            eprintln!("[INIT] FSP ACK received");
-                            let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
-                            let mut msg3_buf = [0u8; 512];
-                            if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
-                                eprintln!("[INIT] FSP established! Sending MSG3");
-                                let dg_body =
-                                    fsp::build_session_datagram_body(&self.my_addr, &self.target_addr);
-                                let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
-                                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                                resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
-                                    .copy_from_slice(&msg3_buf[..msg3_len]);
-                                return HandleResult::SendDatagram(dg_len);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[INIT] FSP ACK error: {:?}", e);
-                        }
-                    }
-                }
-            }
-            FspInitiatorState::AwaitingEstablished => {
-                eprintln!("[INIT] FSP fully established!");
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(2));
-            }
-            FspInitiatorState::Established => {
-                if fsp_phase == 0x00 {
-                    let Some((flags, counter, header, encrypted)) =
-                        fsp::parse_fsp_encrypted_header(fsp_data)
-                    else {
-                        return HandleResult::None;
-                    };
-                    if flags & fsp::FLAG_UNENCRYPTED != 0 {
-                        return HandleResult::None;
-                    }
-                    let (k_recv, _k_send) = match fsp.session_keys() {
-                        Some(keys) => keys,
-                        None => return HandleResult::None,
-                    };
-                    let mut dec = [0u8; 512];
-                    if let Ok(dl) =
-                        noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec)
-                    {
-                        if let Some((_ts, _mt, _flags, inner_payload)) =
-                            fsp::fsp_strip_inner_header(&dec[..dl])
-                        {
-                            if inner_payload == b"PONG" {
-                                eprintln!("[INIT] *** PONG received from target! ***");
-                                if self.test_ping {
-                                    std::process::exit(0);
-                                }
-                            } else {
-                                eprintln!(
-                                    "[INIT] FSP data: {}B: {:?}",
-                                    inner_payload.len(),
-                                    &inner_payload[..inner_payload.len().min(64)]
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        HandleResult::None
+        result
     }
 
     fn poll_at(&self) -> Option<Instant> {
-        eprintln!(
-            "[INIT] poll_at called, fsp_timer={:?}",
-            self.fsp_timer.map(|t| t.as_millis())
-        );
-        self.fsp_timer
+        self.inner.poll_at()
     }
 
     fn on_tick(&mut self, resp: &mut [u8]) -> HandleResult {
-        eprintln!("[INIT] on_tick called, fsp={}", self.fsp.is_some());
-        let fsp = match &mut self.fsp {
-            Some(f) => f,
-            None => return HandleResult::None,
-        };
-
-        match fsp.state() {
-            FspInitiatorState::Idle => {
-                let dg_body = fsp::build_session_datagram_body(&self.my_addr, &self.target_addr);
-                let mut setup_buf = [0u8; 512];
-                let setup_len =
-                    match fsp.build_setup(&self.my_addr, &self.target_addr, &mut setup_buf) {
-                        Ok(l) => l,
-                        Err(_) => return HandleResult::None,
-                    };
-                eprintln!(
-                    "[INIT] Sending FSP SessionSetup ({}B) to {}",
-                    setup_len,
-                    hex::encode(&self.target_addr)
-                );
-                let dg_len = SESSION_DATAGRAM_BODY_SIZE + setup_len;
-                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
-                    .copy_from_slice(&setup_buf[..setup_len]);
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
-                HandleResult::SendDatagram(dg_len)
-            }
-            FspInitiatorState::AwaitingAck => {
-                eprintln!("[INIT] FSP ACK timeout, resetting session");
-                fsp.reset();
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
-                HandleResult::None
-            }
-            FspInitiatorState::AwaitingEstablished => {
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
-                HandleResult::None
-            }
-            FspInitiatorState::Established => {
-                let dg_body = fsp::build_session_datagram_body(&self.my_addr, &self.target_addr);
-                let (_k_recv, k_send) = fsp.session_keys().unwrap();
-                let ping = b"PING";
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u32;
-                let mut plaintext = [0u8; 512];
-                let il = fsp::fsp_prepend_inner_header(
-                    ts,
-                    fsp::FSP_MSG_DATA,
-                    0x00,
-                    ping,
-                    &mut plaintext,
-                );
-                let header = fsp::build_fsp_header(0, 0x00, (il + noise::TAG_SIZE) as u16);
-                let mut ciphertext = [0u8; 512];
-                let cl =
-                    noise::aead_encrypt(&k_send, 0, &header, &plaintext[..il], &mut ciphertext)
-                        .unwrap();
-                let fsp_total = fsp::FSP_HEADER_SIZE + cl;
-                let dg_len = SESSION_DATAGRAM_BODY_SIZE + fsp_total;
-                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp::FSP_HEADER_SIZE]
-                    .copy_from_slice(&header);
-                resp[SESSION_DATAGRAM_BODY_SIZE + fsp::FSP_HEADER_SIZE
-                    ..SESSION_DATAGRAM_BODY_SIZE + fsp_total]
-                    .copy_from_slice(&ciphertext[..cl]);
-                eprintln!("[INIT] Sent PING to target ({}B datagram)", dg_len);
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(10));
-                HandleResult::SendDatagram(dg_len)
+        let result = self.inner.on_tick(resp);
+        if let HandleResult::SendDatagram(len) = result {
+            if self.inner.initiator.as_ref().map_or(false, |i| i.state() == microfips_core::fsp::FspInitiatorState::Established) {
+                eprintln!("[SIM] Sent PING to target ({}B datagram)", len);
+            } else {
+                eprintln!("[SIM] FSP action: {}B", len);
             }
         }
+        result
     }
 }
 
@@ -787,16 +552,15 @@ fn print_usage() {
 
     block_on(async move {
         if is_initiator {
-            let mut handler = FspInitiatorHandler::new(
+            let mut handler = SimHandler::new_initiator(
                 secret,
-                fsp_target_pub,
+                &fsp_target_pub,
                 target_addr,
-                *my_addr.as_bytes(),
                 test_ping,
             );
             node.run(&mut handler).await;
         } else {
-            let mut handler = LeafHandler::new(secret);
+            let mut handler = SimHandler::new_responder(secret);
             node.run(&mut handler).await;
         }
     });

@@ -29,6 +29,7 @@ pub enum NodeEvent {
 }
 
 /// Result from the handler's message callback.
+#[derive(Debug, PartialEq)]
 pub enum HandleResult {
     /// No response needed.
     None,
