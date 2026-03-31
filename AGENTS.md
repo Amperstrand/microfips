@@ -566,34 +566,6 @@ ESP32 UART delivers data continuously, causing `select()` to always pick the rec
 and starving the heartbeat timer. The heartbeat check inside the recv branch
 (`if Instant::now() >= next_hb`) handles this, matching the STM32's approach.
 
-## FIPS Routing Blocker (2026-03-30)
-
-FIPS only forwards session datagrams between **tree peers** (peers that exchange
-TreeAnnounce/FilterAnnounce as part of the FIPS tree routing protocol). MCU firmware
-only implements IK handshake + heartbeat + FSP session initiation. MCU peers connect
-and authenticate but remain `tree_peer=false` in FIPS. FIPS receives FSP SessionSetup
-from ESP32 targeting STM32's NodeAddr but only caches coordinates — does not forward.
-
-Evidence from FIPS journal:
-```
-Cached coords from SessionSetup src=140181a585594aaaac841fb543057675 dest=244921e6606ac58f4b145313363fbb1c
-```
-No "Failed to forward" or "no route" — FIPS silently doesn't attempt forwarding to non-tree peers.
-
-Resolution options:
-- **A:** Implement TreeAnnounce/FilterAnnounce in MCU firmware (requires understanding FIPS tree protocol)
-- **B:** Ask FIPS maintainer to add a `route_all_connected` mode for non-tree peers
-- **C:** MCU-to-MCU direct communication (bypass FIPS routing entirely)
-
-## ESP32 Key Discrepancy (2026-03-30)
-
-The ESP32 firmware currently flashed on the device (flashed by other agent from commit
-`45c0a02`) uses a different secret than `ESP32_SECRET` in the current source code.
-The running firmware produces `npub1nqppng4kga6luldsu3s95hyayh8vl5gpvvvje0h8z422l6zegflqd8942y`
-but the current `ESP32_SECRET` constant produces `npub1hkp5xfnagydkg520twf7c3dhd9zyd9xwyuldn7ufjeqhmymh9jzs3mnay2`.
-FIPS config has been set to match the running firmware. Needs reconciliation — either
-update the code constant or reflash with the current code.
-
 ## Actual MCU Keys (verified 2026-03-30)
 
 | MCU | Source | Pubkey (x-only, hex) | npub |
