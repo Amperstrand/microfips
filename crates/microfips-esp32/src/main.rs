@@ -7,6 +7,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use core::panic::PanicInfo;
 
+#[cfg(feature = "ble")]
+extern crate alloc;
+
 use esp_hal::gpio::{Level, Output};
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::uart::{Config, RxConfig, Uart};
@@ -52,6 +55,19 @@ static STAT_DATA_TX: AtomicU32 = AtomicU32::new(0);
 #[used]
 static STAT_DATA_RX: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(feature = "ble")]
+#[used]
+static STAT_BLE_CONNECT: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "ble")]
+#[used]
+static STAT_BLE_DISCONNECT: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "ble")]
+#[used]
+static STAT_BLE_TX: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "ble")]
+#[used]
+static STAT_BLE_RX: AtomicU32 = AtomicU32::new(0);
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     let gpio = unsafe { &*esp_hal::peripherals::GPIO::PTR };
@@ -74,6 +90,35 @@ const UART_FIFO_THRESHOLD: u16 = 64;
 const UART_BAUDRATE: u32 = 115200;
 const WAIT_READY_DELAY_MS: u64 = 500;
 const RECV_RETRY_DELAY_MS: u64 = 10;
+
+#[cfg(feature = "ble")]
+#[allow(dead_code)]
+const BLE_DEVICE_NAME: &str = "microfips-esp32";
+#[cfg(feature = "ble")]
+#[allow(dead_code)]
+const BLE_MAX_FRAME: usize = 252;
+
+#[cfg(feature = "ble")]
+#[allow(dead_code)]
+mod ble_uuids {
+    pub const FIPS_SERVICE_UUID: &str = "6f696670-7300-4265-8001-000000000001";
+    pub const FIPS_RX_UUID: &str = "6f696670-7300-4265-8002-000000000002";
+    pub const FIPS_TX_UUID: &str = "6f696670-7300-4265-8003-000000000003";
+}
+
+#[cfg(feature = "ble")]
+#[allow(dead_code)]
+fn init_heap() {
+    const HEAP_SIZE: usize = 72 * 1024;
+    static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+    unsafe {
+        esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
+            &raw mut HEAP as *mut u8,
+            HEAP_SIZE,
+            esp_alloc::MemoryCapability::Internal.into(),
+        ));
+    }
+}
 
 struct Led(Output<'static>);
 
