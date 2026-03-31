@@ -119,9 +119,9 @@ done
 
 ### Unit tests (no hardware)
 ```bash
-cargo test -p microfips-core          # 83 tests: Noise, FMP, FSP, identity
+cargo test -p microfips-core          # 169 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture  # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # 26 tests: framing, transport, node
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 46 tests: framing, transport, node
 ```
 
 ### Host-side VPS handshake test (no MCU)
@@ -247,6 +247,24 @@ vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 mi
 **Note:** ESP32 does not use USB CDC, so there is no DTR-based `wait_connection()` blocking.
 The proxy can be started at any time; the ESP32 immediately begins sending MSG1 once booted.
 
+### PCAP Capture & Wireshark Analysis
+
+FIPS traffic (UDP port 2121) can be captured with standard tools:
+
+```sh
+# Capture FIPS traffic
+./tools/capture_fips.sh capture.pcap 100
+
+# Analyze with tshark + Lua dissector
+tshark -r capture.pcap -X lua_script:tools/fips_dissector.lua -V
+tshark -r capture.pcap -X lua_script:tools/fips_dissector.lua -T fields -e fips.phase -e fips.payload_length
+tshark -r capture.pcap -X lua_script:tools/fips_dissector.lua -Y 'fips.phase == 1'
+```
+
+A reference capture from a sim-to-sim FSP PING test is at `tools/reference.pcap`.
+The dissector (`tools/fips_dissector.lua`) parses FMP prefix, MSG1, MSG2, and established frames.
+Encrypted payloads are shown as opaque hex — no key material needed.
+
 ### Process management for hardware tests
 
 **CRITICAL: Do NOT use `pkill -f` patterns.** They kill the current SSH session running
@@ -371,6 +389,11 @@ See GitHub issue #6 for investigation details.
 
 5. **Minimal, separated changes.** One concern per PR. Don't bundle cleanup, errata
    workarounds, and speculative recovery paths.
+
+6. **Stale Cargo cache breaks critical-section**: If `cargo build` fails with
+   `RawRestoreStateInner defined multiple times` in critical-section, run `cargo clean`
+   before rebuilding. This is a Cargo feature unification cache issue, not a nightly
+   or crate version incompatibility.
 
 ## DANGER: Do NOT erase flash via probe-rs
 
