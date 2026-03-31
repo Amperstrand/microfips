@@ -168,6 +168,34 @@ impl Transport for UartTransport {
     }
 }
 
+#[cfg(feature = "ble")]
+#[allow(dead_code)]
+#[derive(Debug)]
+struct BleError;
+
+#[cfg(feature = "ble")]
+#[allow(dead_code)]
+struct BleTransport {
+    _placeholder: core::marker::PhantomData<()>,
+}
+
+#[cfg(feature = "ble")]
+impl Transport for BleTransport {
+    type Error = BleError;
+
+    async fn wait_ready(&mut self) -> Result<(), BleError> {
+        todo!("Wait for BLE central connection")
+    }
+
+    async fn send(&mut self, _data: &[u8]) -> Result<(), BleError> {
+        todo!("Notify TX characteristic")
+    }
+
+    async fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, BleError> {
+        todo!("Read from RX channel")
+    }
+}
+
 struct EspRng(Trng);
 
 impl rand_core::RngCore for EspRng {
