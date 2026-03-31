@@ -3,12 +3,31 @@
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
+#[cfg(feature = "ble")]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use core::panic::PanicInfo;
 
 #[cfg(feature = "ble")]
 extern crate alloc;
+
+#[cfg(feature = "ble")]
+use embassy_futures::select::{Either, select};
+#[cfg(feature = "ble")]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[cfg(feature = "ble")]
+use embassy_sync::channel::Channel;
+#[cfg(feature = "ble")]
+use embassy_sync::signal::Signal;
+#[cfg(feature = "ble")]
+use esp_radio::ble::controller::BleConnector;
+#[cfg(feature = "ble")]
+use static_cell::StaticCell;
+#[cfg(feature = "ble")]
+use bt_hci::{ControllerToHostPacket, FromHciBytesError, HostToControllerPacket, ReadHci, WriteHci};
+#[cfg(feature = "ble")]
+use trouble_host::prelude::*;
 
 use esp_hal::gpio::{Level, Output};
 use esp_hal::rng::{Trng, TrngSource};
@@ -101,10 +120,29 @@ const BLE_MAX_FRAME: usize = 252;
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
 mod ble_uuids {
-    pub const FIPS_SERVICE_UUID: &str = "6f696670-7300-4265-8001-000000000001";
-    pub const FIPS_RX_UUID: &str = "6f696670-7300-4265-8002-000000000002";
-    pub const FIPS_TX_UUID: &str = "6f696670-7300-4265-8003-000000000003";
+    pub const FIPS_SERVICE_UUID: u128 = 0x6f696670_7300_4265_8001_000000000001;
+    pub const FIPS_RX_UUID: u128 = 0x6f696670_7300_4265_8002_000000000002;
+    pub const FIPS_TX_UUID: u128 = 0x6f696670_7300_4265_8003_000000000003;
 }
+
+#[cfg(feature = "ble")]
+const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0x65, 0x42, 0x00, 0x73, 0x70, 0x66, 0x69,
+    0x6f,
+]];
+
+#[cfg(feature = "ble")]
+static HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2>> = StaticCell::new();
+#[cfg(feature = "ble")]
+static BLE_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> = Channel::new();
+#[cfg(feature = "ble")]
+static BLE_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> = Channel::new();
+#[cfg(feature = "ble")]
+static BLE_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+#[cfg(feature = "ble")]
+static BLE_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "ble")]
+static BLE_LINK_UP: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
@@ -170,13 +208,236 @@ impl Transport for UartTransport {
 
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
-#[derive(Debug)]
-struct BleError;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BleError {
+    Disconnected,
+    FrameTooLarge,
+    InitFailed,
+}
+
+#[cfg(feature = "ble")]
+#[derive(Debug, Clone, Copy)]
+enum BleHciError {
+    Io,
+    Parse,
+}
+
+#[cfg(feature = "ble")]
+impl core::fmt::Display for BleHciError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io => f.write_str("BLE HCI I/O error"),
+            Self::Parse => f.write_str("BLE HCI parse error"),
+        }
+    }
+}
+
+#[cfg(feature = "ble")]
+impl core::error::Error for BleHciError {}
+
+#[cfg(feature = "ble")]
+impl embedded_io::Error for BleHciError {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        embedded_io::ErrorKind::Other
+    }
+}
+
+#[cfg(feature = "ble")]
+impl From<FromHciBytesError> for BleHciError {
+    fn from(_: FromHciBytesError) -> Self {
+        Self::Parse
+    }
+}
+
+#[cfg(feature = "ble")]
+struct BleHciTransport<'d> {
+    connector: embassy_sync::mutex::Mutex<CriticalSectionRawMutex, BleConnector<'d>>,
+}
+
+#[cfg(feature = "ble")]
+impl<'d> BleHciTransport<'d> {
+    fn new(connector: BleConnector<'d>) -> Self {
+        Self {
+            connector: embassy_sync::mutex::Mutex::new(connector),
+        }
+    }
+}
+
+#[cfg(feature = "ble")]
+impl embedded_io::ErrorType for BleHciTransport<'_> {
+    type Error = BleHciError;
+}
+
+#[cfg(feature = "ble")]
+impl bt_hci::transport::Transport for BleHciTransport<'_> {
+    async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
+        let mut connector = self.connector.lock().await;
+        ControllerToHostPacket::read_hci_async(&mut *connector, rx).await.map_err(|_| BleHciError::Io)
+    }
+
+    async fn write<T: HostToControllerPacket>(&self, val: &T) -> Result<(), Self::Error> {
+        let mut connector = self.connector.lock().await;
+        bt_hci::transport::WithIndicator::new(val)
+            .write_hci_async(&mut *connector)
+            .await
+            .map_err(|_| BleHciError::Io)
+    }
+}
+
+#[cfg(feature = "ble")]
+#[gatt_server(mutex_type = CriticalSectionRawMutex)]
+struct FipsBleServer {
+    fips_service: FipsService,
+}
+
+#[cfg(feature = "ble")]
+#[gatt_service(uuid = ble_uuids::FIPS_SERVICE_UUID)]
+struct FipsService {
+    #[characteristic(uuid = ble_uuids::FIPS_RX_UUID, write)]
+    rx_data: heapless::Vec<u8, BLE_MAX_FRAME>,
+
+    #[characteristic(uuid = ble_uuids::FIPS_TX_UUID, read, notify)]
+    tx_data: heapless::Vec<u8, BLE_MAX_FRAME>,
+}
+
+#[cfg(feature = "ble")]
+#[embassy_executor::task]
+async fn ble_host_task() {
+    init_heap();
+
+    let Ok(radio) = esp_radio::init() else {
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+        }
+    };
+
+    let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
+    let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+        }
+    };
+
+    let controller: ExternalController<_, 20> = ExternalController::new(BleHciTransport::new(connector));
+    let resources = HOST_RESOURCES.init(HostResources::new());
+    let stack = trouble_host::new(controller, resources)
+        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+
+    let Host {
+        mut peripheral,
+        mut runner,
+        ..
+    } = stack.build();
+
+    let Ok(server) = FipsBleServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+        name: BLE_DEVICE_NAME,
+        appearance: &appearance::UNKNOWN,
+    })) else {
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+        }
+    };
+
+    let _ = embassy_futures::join::join(runner.run(), async {
+        loop {
+            let mut adv_data = [0u8; 31];
+            let Ok(adv_len) = AdStructure::encode_slice(
+                &[
+                    AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                    AdStructure::CompleteLocalName(BLE_DEVICE_NAME.as_bytes()),
+                    AdStructure::ServiceUuids128(&FIPS_SERVICE_UUID_LE),
+                ],
+                &mut adv_data,
+            ) else {
+                continue;
+            };
+
+            let advertiser = match peripheral
+                .advertise(
+                    &Default::default(),
+                    Advertisement::ConnectableScannableUndirected {
+                        adv_data: &adv_data[..adv_len],
+                        scan_data: &[],
+                    },
+                )
+                .await
+            {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+
+            let conn = match advertiser.accept().await {
+                Ok(c) => match c.with_attribute_server(&server) {
+                    Ok(conn) => conn,
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            };
+
+            BLE_LINK_UP.store(true, Ordering::Relaxed);
+            STAT_BLE_CONNECT.fetch_add(1, Ordering::Relaxed);
+            BLE_CONNECTED_SIG.signal(());
+
+            loop {
+                match select(conn.next(), BLE_TX_CH.receive()).await {
+                    Either::First(GattConnectionEvent::Disconnected { .. }) => {
+                        BLE_LINK_UP.store(false, Ordering::Relaxed);
+                        STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
+                    Either::First(GattConnectionEvent::Gatt { event }) => {
+                        match event {
+                            GattEvent::Write(e) => {
+                                if e.handle() == server.fips_service.rx_data.handle {
+                                    let mut frame = heapless::Vec::<u8, BLE_MAX_FRAME>::new();
+                                    if frame.extend_from_slice(e.data()).is_ok() {
+                                        BLE_RX_CH.send(frame).await;
+                                        STAT_BLE_RX.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                                if let Ok(reply) = e.accept() {
+                                    reply.send().await;
+                                }
+                            }
+                            other => {
+                                if let Ok(reply) = other.accept() {
+                                    reply.send().await;
+                                }
+                            }
+                        }
+                    }
+                    Either::First(_) => {}
+                    Either::Second(frame) => {
+                        if server.fips_service.tx_data.notify(&conn, &frame).await.is_err() {
+                            BLE_LINK_UP.store(false, Ordering::Relaxed);
+                            STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
+                        STAT_BLE_TX.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    })
+    .await;
+}
 
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
 struct BleTransport {
-    _placeholder: core::marker::PhantomData<()>,
+    tx_buf: [u8; 256],
+    tx_len: usize,
+}
+
+#[cfg(feature = "ble")]
+impl BleTransport {
+    #[allow(dead_code)]
+    fn new() -> Self {
+        Self {
+            tx_buf: [0u8; 256],
+            tx_len: 0,
+        }
+    }
 }
 
 #[cfg(feature = "ble")]
@@ -184,15 +445,82 @@ impl Transport for BleTransport {
     type Error = BleError;
 
     async fn wait_ready(&mut self) -> Result<(), BleError> {
-        todo!("Wait for BLE central connection")
+        if !BLE_TASK_STARTED.swap(true, Ordering::Relaxed) {
+            let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
+            spawner.spawn(ble_host_task()).map_err(|_| BleError::InitFailed)?;
+        }
+
+        if BLE_LINK_UP.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        loop {
+            BLE_CONNECTED_SIG.wait().await;
+            if BLE_LINK_UP.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+        }
     }
 
-    async fn send(&mut self, _data: &[u8]) -> Result<(), BleError> {
-        todo!("Notify TX characteristic")
+    async fn send(&mut self, data: &[u8]) -> Result<(), BleError> {
+        if !BLE_LINK_UP.load(Ordering::Relaxed) {
+            return Err(BleError::Disconnected);
+        }
+        if self.tx_len + data.len() > self.tx_buf.len() {
+            self.tx_len = 0;
+            return Err(BleError::FrameTooLarge);
+        }
+
+        self.tx_buf[self.tx_len..self.tx_len + data.len()].copy_from_slice(data);
+        self.tx_len += data.len();
+
+        if self.tx_len < 2 {
+            return Ok(());
+        }
+
+        let payload_len = u16::from_le_bytes([self.tx_buf[0], self.tx_buf[1]]) as usize;
+        let frame_len = 2 + payload_len;
+        if frame_len > BLE_MAX_FRAME {
+            self.tx_len = 0;
+            return Err(BleError::FrameTooLarge);
+        }
+        if self.tx_len < frame_len {
+            return Ok(());
+        }
+
+        let mut frame = heapless::Vec::<u8, BLE_MAX_FRAME>::new();
+        frame
+            .extend_from_slice(&self.tx_buf[..frame_len])
+            .map_err(|_| BleError::FrameTooLarge)?;
+        BLE_TX_CH.send(frame).await;
+
+        let remaining = self.tx_len - frame_len;
+        if remaining > 0 {
+            self.tx_buf.copy_within(frame_len..self.tx_len, 0);
+        }
+        self.tx_len = remaining;
+        Ok(())
     }
 
-    async fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, BleError> {
-        todo!("Read from RX channel")
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, BleError> {
+        loop {
+            if !BLE_LINK_UP.load(Ordering::Relaxed) {
+                return Err(BleError::Disconnected);
+            }
+            match select(
+                BLE_RX_CH.receive(),
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)),
+            )
+            .await
+            {
+                Either::First(frame) => {
+                    let n = frame.len().min(buf.len());
+                    buf[..n].copy_from_slice(&frame[..n]);
+                    return Ok(n);
+                }
+                Either::Second(()) => continue,
+            }
+        }
     }
 }
 
