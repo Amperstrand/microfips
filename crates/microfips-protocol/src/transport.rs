@@ -370,6 +370,8 @@ pub mod channel {
 
 #[cfg(test)]
 mod tests {
+    use embassy_futures::join::join;
+
     use super::Transport;
     use super::{FrameReader, FrameWriter, ProtocolError};
     use crate::test_helpers::block_on;
@@ -507,6 +509,47 @@ mod tests {
 
     fn channel() -> (ChannelTransport, ChannelTransport) {
         channel_pair()
+    }
+
+    async fn roundtrip_ble_chunk(max_chunk: usize, payload: &[u8]) {
+        let (a, mut b) = channel();
+        b.set_max_chunk(max_chunk);
+
+        let mut fw = FrameWriter::new(a);
+        let mut fr = FrameReader::new(b);
+        let mut out = [0u8; 256];
+
+        let (send_res, recv_res) = join(
+            fw.send_frame(payload),
+            fr.recv_frame(&mut out, 1000),
+        )
+        .await;
+
+        send_res.unwrap();
+        let n = recv_res.unwrap();
+        assert_eq!(n, payload.len());
+        assert_eq!(&out[..n], payload);
+    }
+
+    #[test]
+    fn test_ble_default_mtu_chunk_20() {
+        block_on(async {
+            roundtrip_ble_chunk(20, &[0x20u8; 114]).await;
+        });
+    }
+
+    #[test]
+    fn test_ble_mid_range_chunk_50() {
+        block_on(async {
+            roundtrip_ble_chunk(50, &[0x50u8; 114]).await;
+        });
+    }
+
+    #[test]
+    fn test_ble_negotiated_mtu_chunk_252() {
+        block_on(async {
+            roundtrip_ble_chunk(252, &[0xFCu8; 114]).await;
+        });
     }
 
     #[test]
