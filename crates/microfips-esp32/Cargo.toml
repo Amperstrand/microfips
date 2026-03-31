@@ -6,7 +6,7 @@ description = "Minimal FIPS leaf node on ESP32 via UART"
 
 [features]
 default = []
-ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io"]
+ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
@@ -27,3 +27,4 @@ trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255"], 
 esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }
+esp-println = { version = "0.16.0", features = ["esp32"], optional = true }
