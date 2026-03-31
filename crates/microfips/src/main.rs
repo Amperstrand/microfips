@@ -60,8 +60,8 @@ fn panic(info: &PanicInfo) -> ! {
     }
     STAT_STATE.store(S_ERR, Ordering::Relaxed);
     loop {
-        cortex_m::asm::delay(500_000);
-        cortex_m::asm::delay(500_000);
+        cortex_m::asm::delay(PANIC_BLINK_CYCLES);
+        cortex_m::asm::delay(PANIC_BLINK_CYCLES);
     }
 }
 
@@ -71,6 +71,9 @@ bind_interrupts!(struct Irqs {
 });
 
 const CDC_PKT: usize = 64;
+const PANIC_BLINK_CYCLES: u32 = 500_000;
+const USB_DESC_BUF_SIZE: usize = 256;
+const USB_CTL_BUF_SIZE: usize = 64;
 
 static GLOBAL_RNG: StaticCell<Rng<'static, peripherals::RNG>> = StaticCell::new();
 static EP_OUT_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
@@ -261,7 +264,6 @@ impl NodeHandler for FipsHandler<'_> {
             NodeEvent::HeartbeatSent => {
                 STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
                 self.leds.set_state(S_HB_TX);
-                self.leds.set_state(S_HANDSHAKE_OK);
             }
             NodeEvent::HeartbeatRecv => {
                 STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
@@ -342,9 +344,9 @@ async fn main(_spawner: Spawner) {
     usb_cfg.product = Some("microfips");
     usb_cfg.serial_number = Some("stm32f469i-disc");
 
-    let mut cfg_desc = [0; 256];
-    let mut bos_desc = [0; 256];
-    let mut ctl_buf = [0; 64];
+    let mut cfg_desc = [0; USB_DESC_BUF_SIZE];
+    let mut bos_desc = [0; USB_DESC_BUF_SIZE];
+    let mut ctl_buf = [0; USB_CTL_BUF_SIZE];
     let mut cdc_st = State::new();
 
     let mut builder = Builder::new(
