@@ -19,9 +19,10 @@ SIM-B (host) → UDP → FIPS (VPS) → UDP → serial bridge → STM32 (hardwar
 ```
 
 **What works:**
-- 165 unit tests pass (96 core + 17 wire format + 6 FSP integration + 46 protocol)
+- 169 unit tests pass (90 core + 21 error injection + 22 compatibility + 17 wire format + 13 FSP edge cases + 6 FSP integration + 46 protocol)
 - **Sim-to-sim FSP ping through FIPS** — SIM-B → FIPS → SIM-A, full XK handshake + PING/PONG
-- **Sim-to-STM32 FSP ping through FIPS** — SIM-B → FIPS → physical STM32, proven on hardware
+- **Sim-to-MCU FSP ping through FIPS** — SIM-B → FIPS → physical STM32, proven on hardware
+- **Dual-MCU simultaneous handshake** — both MCUs sustain heartbeat with VPS concurrently
 - Sim-to-MCU ping test passes with `--test-ping` flag (exit 0 on PONG received)
 - Host-side handshake test (`microfips-link`) proven against live VPS
 - USB CDC ACM enumeration with upstream embassy crates.io v0.6.0
@@ -29,6 +30,8 @@ SIM-B (host) → UDP → FIPS (VPS) → UDP → serial bridge → STM32 (hardwar
 - **ESP32 completes IK handshake with live VPS** — UART transport via CP210x USB-serial
 - FIPS forwards SessionDatagrams between any two authenticated peers (no tree_peer needed)
 - 4-LED state machine on STM32 for visual debugging, single LED on ESP32
+- FIPS cross-reference annotations normalized to canonical format (`// FIPS: bd08505 ...`)
+- Structured logging with `[SIM-A → FIPS]` labels in simulator and link tools
 - CI: unit tests, lint, firmware cross-build, sim-ping E2E test, FIPS integration
 
 **What doesn't work yet:**
@@ -115,7 +118,7 @@ All keys are deterministic: 31 zero bytes + last byte N (secp256k1 generator * N
 ### Unit tests (no hardware)
 
 ```sh
-cargo test -p microfips-core                    # 96 tests: Noise, FMP, FSP, identity
+cargo test -p microfips-core                    # 123 tests: Noise, FMP, FSP, identity, error injection, compatibility
 cargo test -p microfips-core -- --nocapture     # verbose output
 cargo test -p microfips-protocol --features std -- --test-threads=1  # 46 tests: framing, transport, node
 ```
@@ -138,6 +141,27 @@ cargo run -p microfips-link                     # sends MSG1 to VPS via UDP (def
 FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-link -- 127.0.0.1:2121
 # Exit 0 = success, 1 = timeout (expected from unconfigured IP), 2 = error
 ```
+
+## Observability
+
+### Wireshark Dissector
+
+A Lua dissector for FMP frames is available at `tools/fips_dissector.lua`:
+
+```sh
+tshark -r capture.pcap -X lua_script:tools/fips_dissector.lua -V
+tshark -r capture.pcap -X lua_script:tools/fips_dissector.lua -Y 'fips.phase == 1'
+```
+
+### PCAP Capture
+
+Capture FIPS traffic with tcpdump:
+
+```sh
+./tools/capture_fips.sh capture.pcap 100
+```
+
+A reference capture from a sim-to-sim test is at `tools/reference.pcap`.
 
 ### Sim-to-sim FSP ping through FIPS (no hardware)
 
@@ -235,9 +259,12 @@ Requires Espressif Rust toolchain (installed via `espup`, activated with `RUSTUP
 ## CI
 
 GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
-- **Unit Tests** — 96 tests in `microfips-core`, 46 tests in `microfips-protocol`
-- **Wire Format Tests** — 17 FIPS comparison tests in `microfips-core`
+- **Unit Tests** — 90 tests in `microfips-core`, 46 tests in `microfips-protocol`
+- **Error Injection** — 21 tests in `microfips-core`
+- **Compatibility** — 22 FIPS comparison tests in `microfips-core`
+- **Wire Format Tests** — 17 FMP format tests in `microfips-core`
 - **FSP Integration** — 6 FSP session tests in `microfips-core`
+- **FSP Edge Cases** — 13 FSP protocol edge cases in `microfips-core`
 - **Build Host Tools** — `microfips-link` + `microfips-sim` + `microfips-http-test` release binaries
 - **Lint & Format** — clippy + rustfmt on all host crates
 - **Sim Ping E2E** — SIM-B → FIPS → SIM-A FSP PING/PONG test (must pass)
