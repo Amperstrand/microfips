@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/microfips-core", "crates/microfips-link", "crates/microfips-sim", "crates/microfips", "crates/microfips-protocol", "crates/microfips-http-test", "crates/microfips-esp32"]
+members = ["crates/microfips-core", "crates/microfips-link", "crates/microfips-sim", "crates/microfips", "crates/microfips-protocol", "crates/microfips-http-test", "crates/microfips-esp32", "crates/fips-decrypt"]
 resolver = "2"
 
 [workspace.metadata.esp32]
