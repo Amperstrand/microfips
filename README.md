@@ -1,99 +1,123 @@
 # microfips
 
-Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO.
+Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32-D0WD.
 
-A Rust embedded firmware that implements a leaf-only FIPS node on an STM32F469 board
-using Embassy for async HAL, USB CDC ACM for serial transport, length-prefixed
-framing, Noise_IK handshake, and a no_std FIPS protocol stack.
+A Rust embedded firmware that implements leaf-only FIPS nodes using Embassy for async
+HAL, Noise_IK/XK handshakes, FMP link framing, FSP session protocol, and a no_std
+FIPS protocol stack. Both MCUs connect to a FIPS VPS via serial-to-UDP bridges.
 
 ## Current Status
 
-**M6 DONE — MCU full lifecycle proven on hardware (2026-03-28)**
+**M8 DONE — Sim-to-MCU FSP ping proven end-to-end (2026-03-31)**
 
-The MCU completes an IK handshake with the live VPS and sustains heartbeat exchange
-every ~10 seconds. Five bugs were found and fixed to get here (see below).
+A software simulator (SIM-B) successfully sent an encrypted FSP PING to the physical
+STM32 through the live FIPS VPS and received a PONG back. The full path is:
+
+```
+SIM-B (host) → UDP → FIPS (VPS) → UDP → serial bridge → STM32 (hardware)
+                                                    ← PONG ←
+```
 
 **What works:**
-- 87 unit tests pass for protocol logic (Noise IK, Noise XK, FMP, FSP, identity)
-- 26 unit tests pass for protocol crate (framing, transport, node)
+- 165 unit tests pass (96 core + 17 wire format + 6 FSP integration + 46 protocol)
+- **Sim-to-sim FSP ping through FIPS** — SIM-B → FIPS → SIM-A, full XK handshake + PING/PONG
+- **Sim-to-STM32 FSP ping through FIPS** — SIM-B → FIPS → physical STM32, proven on hardware
+- Sim-to-MCU ping test passes with `--test-ping` flag (exit 0 on PONG received)
 - Host-side handshake test (`microfips-link`) proven against live VPS
-- Host-side simulator (`microfips-sim`) uses `Node` from `microfips-protocol` (no duplicated protocol logic)
-- **CI integration test** — fresh key pairs per run, local Noise IK handshake verified
 - USB CDC ACM enumeration with upstream embassy crates.io v0.6.0
-- Firmware builds for `thumbv7em-none-eabi` (110 KB, CI verified)
-- **MCU completes IK handshake with live VPS** — MSG1 sent, MSG2 received, keys derived
-- **MCU sends heartbeats every ~10s** — proven on hardware, sustained 3+ minutes
-- **Bridge forwards MCU heartbeats to FIPS** — no link dead timeout
-- 4-LED state machine for visual debugging
-- Embassy crates at latest upstream (all v0.6.0, published 2026-03-20)
+- **STM32 completes IK handshake with live VPS** — MSG1 sent, MSG2 received, heartbeat sustained
+- **ESP32 completes IK handshake with live VPS** — UART transport via CP210x USB-serial
+- FIPS forwards SessionDatagrams between any two authenticated peers (no tree_peer needed)
+- 4-LED state machine on STM32 for visual debugging, single LED on ESP32
+- CI: unit tests, lint, firmware cross-build, sim-ping E2E test, FIPS integration
 
-**Bugs found and fixed this session:**
+**What doesn't work yet:**
 
-| # | Bug | Root Cause | Fix |
-|---|-----|-----------|-----|
-| 1 | recv_frame infinite loop | `continue` skipped `read_packet` on incomplete frames | Fall through to read always |
-| 2 | Handshake discarded non-Msg2 | Stale FIPS data caused Err(Invalid) | Loop until Msg2 |
-| 3 | steady() framing same pattern | Used `continue` in while loop | Used `break` |
-| 4 | Bridge thread race | Old thread survived reconnect, two readers split TCP | Stop both before reconnect |
-| 5 | Bridge CPU spin | No sleep in idle loop, GIL starvation | `time.sleep(0.001)` |
+| Issue | Description | Root Cause |
+|-------|-------------|------------|
+| MCU-to-MCU ping | ESP32 → STM32 FSP ping not yet tested on hardware | ESP32 has no FSP responder code (can only initiate) |
+| ESP32 FSP responder | ESP32 ignores incoming SessionSetups | `handle_incoming_fsp` has `_ => {}` for Idle/AwaitingEstablished states |
+| ESP32 tech debt | ESP32 uses hand-rolled protocol code, not `microfips-protocol::Node` | Protocol fixes in node.rs don't auto-apply to ESP32 |
+| FIPS routing | FIPS silently caches SessionSetup coords but doesn't forward to disconnected peers | Peer must be in FIPS peer table for direct forwarding |
+| USB timing | STM32 sends 5 MSG1 retries before handshake succeeds | Bridge must open serial port before MCU `wait_connection()` returns |
+| VPS key discrepancy | Prior session's ESP32 firmware used a different key than source code | Resolved: FIPS config now matches current `ESP32_SECRET` (...0002) |
 
-**Open issues:** #8 (proxy reconnection)
+**Key bugs found and fixed across all sessions:**
+
+| # | Bug | Impact | Fix |
+|---|-----|--------|-----|
+| 1 | recv_frame infinite loop | STM32 hung forever on MSG2 | Fall through to read, never `continue` without I/O |
+| 2 | Handshake discarded non-Msg2 | Stale FIPS data killed session | Loop recv_frame until Msg2 |
+| 3 | `fmp_raw_frame_size()` truncation | All FIPS-originated frames truncated | Use full UDP datagram for established frames |
+| 4 | SIM-B k_send/k_recv swap | Initiator couldn't decrypt responses | Use k_recv for decryption |
+| 5 | ESP32 k_send/k_recv swap | Same as #4 on ESP32 | Same fix |
+| 6 | AwaitingMsg3 no timeout | FSP responder stuck forever on stale state | Reset session on InvalidState, retry |
+| 7 | Bridge thread race | Two readers split TCP data on reconnect | Stop both threads before reconnect |
+| 8 | Bridge CPU spin | GIL starvation under Python | `time.sleep(0.001)` in idle path |
+| 9 | Stale ESP32 NodeAddr constants | ESP32 targeted wrong MCU | Updated to match current deterministic keys |
+| 10 | Sim hardcoded wrong FSP target pubkey | Sim used SIM-A pubkey for STM32 target | Added NodeAddr-to-pubkey mapping |
 
 **Fork issue resolved (2026-03-28):**
 The `Amperstrand/embassy` fork (commit `c0289d7a8`) breaks USB enumeration on STM32F469.
 Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
-
-**Key lessons:**
-- `loop + continue` in async framing parsers: every code path must either return or await I/O
-- Python threading: always join ALL threads before creating new ones on reconnect
-- `pkill -f` kills the test's own SSH session — use PID-based kills
-- SWD reset kills USB device — sequence operations: reset → enum → proxy → tunnel → bridge
-- Infrastructure bugs look like firmware bugs — instrument all layers
 
 ## Architecture
 
 ```
   STM32F469I-DISCO          Host (Linux)               VPS
   +----------------+    +-------------------+    +------------------+
-  | microfips fw   |    | serial_tcp_proxy  |    | fips_bridge.py   |
-  |                |CDC | (auto-detect MCU) |TCP | --tcp localhost  |
-  | FIPS protocol  |<-->|                   |<-->|                  |
-  | Noise_IK       |    | serial <-> TCP    |SSH | UDP <-> TCP      |
-  | FMP framing    |    |                   |-R  |                  |
-  | Heartbeats     |    +-------------------+    +--------+---------+
-  +----------------+                                     |
-         ^                                              | UDP
-         | USB OTG FS                                   v
-    /dev/ttyACM*                                  +------------------+
-                                                   | FIPS daemon     |
-                                                   | port 2121       |
+  | microfips fw   |    | serial_udp_bridge |    | FIPS daemon      |
+  | FIPS protocol  |CDC | (single-hop,      |UDP | port 2121        |
+  | Noise_IK/XK    |<-->|  auto-detect MCU) |<-->|                  |
+  | FMP + FSP      |    | serial <-> UDP    |    | forwards between |
+  | Heartbeats     |    +-------------------+    | all authenticated |
+  +----------------+                             | peers            |
                                                    +------------------+
+  ESP32-D0WD
+  +----------------+    +-------------------+
+  | microfips-esp32|    | serial_udp_bridge |
+  | FIPS protocol  |UART| (single-hop,      |UDP --+
+  | Noise_IK       |<-->|  auto-detect MCU) |<-->   |
+  | FMP + FSP      |    +-------------------+       |
+  | (hand-rolled)  |                                  |
+  +----------------+                                  v
+                                              +------------------+
+  Simulator (host)                             | FIPS daemon      |
+  +----------------+    +-------------------+  | port 2121        |
+  | microfips-sim   |    | (none needed)     |  |                  |
+  | uses Node from  |UDP | direct UDP        |->|                  |
+  | microfips-proto |<-->|                   |  +------------------+
+  +----------------+    +-------------------+
 ```
 
-The bridge **must** run on the VPS because FIPS replies to the UDP packet's source
-address. A local bridge would cause FIPS to reply to our public IP (unreachable).
-When the bridge runs on the VPS, FIPS sees the source as `127.0.0.1:31337`,
-which matches the configured peer address, so replies route correctly through
-the SSH tunnel.
+Two transport options:
+- **Single-hop bridge** (recommended): `serial_udp_bridge.py` sends UDP directly to FIPS
+  from the host. No SSH tunnel or VPS-side bridge needed.
+- **Legacy 3-hop** (deprecated): serial → TCP proxy → SSH tunnel → VPS bridge → FIPS
 
-All data over CDC ACM uses **length-prefixed frames**: `[2-byte LE length][payload]`.
+All serial data uses **length-prefixed frames**: `[2-byte LE length][payload]`.
+FIPS UDP transport uses **raw frames** (no length prefix).
 
-## MCU Identity
+## Node Identities (deterministic pattern keys)
 
-```
-Secret:  ac68af89462e7ed26ff670c186b4eeb53c4e82d72c8ef6cec4e676c7843f832e
-Pubkey:  02633860dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842
-npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
-```
+All keys are deterministic: 31 zero bytes + last byte N (secp256k1 generator * N).
+
+| Node | Secret (last byte) | Pubkey prefix | npub prefix | NodeAddr prefix |
+|------|--------------------|---------------|-------------|-----------------|
+| STM32 | `...0001` | `0279be667ef9dcbb` | `npub10xlxvlh...` | `132f39a9...` |
+| ESP32 | `...0002` | `02c6047f9441ed7d` | `npub1ccz8l9z...` | `0135da2f...` |
+| SIM-A | `...0003` | `02f9308a019258c3` | `npub1lycg5qv...` | `7c79f307...` |
+| SIM-B | `...0004` | `02eeb19fd1768397` | `npub1a6cel5t...` | `36be1ea4...` |
+| VPS | (real key) | `020e7a0da01a255` | `npub1wwsqf76...` | `73a004fb...` |
 
 ## Testing
 
 ### Unit tests (no hardware)
 
 ```sh
-cargo test -p microfips-core                    # 87 tests: Noise, FMP, FSP, identity
+cargo test -p microfips-core                    # 96 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture     # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # 26 tests: framing, transport, node
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 46 tests: framing, transport, node
 ```
 
 ### Key generation
@@ -115,35 +139,54 @@ FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-link -- 127.0.0.1:2
 # Exit 0 = success, 1 = timeout (expected from unconfigured IP), 2 = error
 ```
 
-### Local handshake test (no hardware, no VPS)
+### Sim-to-sim FSP ping through FIPS (no hardware)
+
+Requires both sims to connect to the live FIPS VPS. SIM-A acts as FSP responder,
+SIM-B as initiator. FIPS forwards SessionDatagrams between them.
 
 ```sh
-# Generate fresh key pairs
-NODE_KEYS=$(cargo run -p microfips-link -- --keygen)
-NODE_SECRET=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_SECRET=//p')
-NODE_PUB=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_PUB=//p')
+# Terminal 1: SIM-A (responder)
+cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-a
 
-LEAF_KEYS=$(cargo run -p microfips-link -- --keygen)
-LEAF_SECRET=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_SECRET=//p')
-
-# Start responder (background)
-FIPS_SECRET=$NODE_SECRET cargo run -p microfips-http-test -- 127.0.0.1:31338 &
-
-# Run initiator handshake
-FIPS_SECRET=$LEAF_SECRET FIPS_PEER_PUB=$NODE_PUB \
-  cargo run -p microfips-link -- 127.0.0.1:31338
-# Expect: "SUCCESS: FIPS handshake completed!"
+# Terminal 2: SIM-B (initiator, targets SIM-A, exits on PONG)
+cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-b --test-ping
+# Expected: "FSP ACK received" → "FSP established! Sending MSG3" → "*** PONG received from target! ***"
 ```
 
-### Host-side simulator (no hardware)
+### Sim-to-MCU FSP ping through FIPS (hardware: STM32 required)
+
+The simulator sends an encrypted FSP PING to the physical STM32 through FIPS.
+STM32 must be connected via serial bridge (see AGENTS.md for hardware setup).
 
 ```sh
-cargo run -p microfips-sim -- --listen 45679    # TCP server mode
-cargo run -p microfips-sim 127.0.0.1:45679      # TCP client mode
-cargo run -p microfips-sim                      # stdio mode
+# 1. Flash and reset STM32, wait for USB enumeration
+st-flash --connect-under-reset reset
+sleep 8
 
-# With custom keys:
-FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-sim -- --listen 45679
+# 2. Start serial bridge (auto-detects MCU by VID:PID c0de:cafe)
+python3 tools/serial_udp_bridge.py --serial /dev/ttyACM1 --udp-host orangeclaw.dns4sats.xyz &
+
+# 3. Run SIM-B targeting STM32's NodeAddr (exit 0 on PONG)
+FIPS_SECRET=0303030303030303030303030303030303030303030303030303030303030303 \
+  cargo run -p microfips-sim --release -- \
+  --udp orangeclaw.dns4sats.xyz:2121 \
+  --initiator --target 132f39a98c31baaddba6525f5d43f295 \
+  --test-ping
+# Expected: "*** PONG received from target! ***" (exit 0)
+```
+
+### Host-side simulator (general)
+
+```sh
+# Responder mode (default)
+cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-a
+
+# Initiator mode with custom identity and target
+FIPS_SECRET=<hex> cargo run -p microfips-sim --release -- \
+  --udp orangeclaw.dns4sats.xyz:2121 --initiator --target <16-byte-hex-nodeaddr>
+
+# Enable debug logging from core crates
+RUST_LOG=debug cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-a
 ```
 
 ### Hardware (STM32F469)
@@ -156,35 +199,50 @@ arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabi/release/microfips mic
 st-flash --connect-under-reset write microfips.bin 0x08000000
 ```
 
-### Hardware handshake test (automated)
+### Hardware (ESP32)
 
 ```sh
-# Set VPS credentials in environment first
-export VPS_HOST=orangeclaw.dns4sats.xyz VPS_USER=routstr VPS_PASS=<password>
-bash scripts/test_hw_handshake.sh
+# Kill stale processes holding serial port
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+
+# Flash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  espflash flash -p /dev/ttyUSB0 --chip esp32 \
+  target/xtensa-esp32-none-elf/release/microfips-esp32
 ```
 
 ## Build
 
-Requires nightly Rust, `thumbv7em-none-eabi` target, and `arm-none-eabi-objcopy`.
+Requires nightly Rust. See AGENTS.md for full toolchain setup.
+
+### STM32F469
 
 ```sh
-# Add firmware to workspace members first (excluded by default for CI)
-# In Cargo.toml: members = [..., "crates/microfips"]
 cargo build -p microfips --release --target thumbv7em-none-eabi
+# Output: target/thumbv7em-none-eabi/release/microfips
+```
+
+### ESP32-D0WD
+
+Requires Espressif Rust toolchain (installed via `espup`, activated with `RUSTUP_TOOLCHAIN=esp`):
+
+```sh
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
+# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
 ```
 
 ## CI
 
 GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
-- **Unit Tests** — 87 tests in `microfips-core`, 26 tests in `microfips-protocol`
+- **Unit Tests** — 96 tests in `microfips-core`, 46 tests in `microfips-protocol`
+- **Wire Format Tests** — 17 FIPS comparison tests in `microfips-core`
+- **FSP Integration** — 6 FSP session tests in `microfips-core`
 - **Build Host Tools** — `microfips-link` + `microfips-sim` + `microfips-http-test` release binaries
 - **Lint & Format** — clippy + rustfmt on all host crates
-- **Simulator Smoke** — verify sim starts and exits cleanly on EOF
-- **FIPS Handshake Integration** — two tests per run:
-  1. **Local**: generates fresh key pairs, starts http-test as responder, runs leaf handshake (must pass)
-  2. **Public**: attempts handshake with `orangeclaw.dns4sats.xyz:2121` using default MCU identity (best-effort, VPS may be unreachable)
-- **Build Firmware** — cross-builds for `thumbv7em-none-eabi`, validates .text size
+- **Sim Ping E2E** — SIM-B → FIPS → SIM-A FSP PING/PONG test (must pass)
+- **FIPS Handshake Integration** — local Noise IK handshake (must pass) + public VPS (best-effort)
+- **Build Firmware** — STM32 (`thumbv7em-none-eabi`) + ESP32 (`xtensa-esp32-none-elf`)
 - **Summary** — aggregate status table
 
 ### Environment variables for key override
@@ -200,13 +258,24 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 
 ## Hardware
 
-- **Board:** STM32F469I-DISCO
+### STM32F469I-DISCO
 - **MCU:** STM32F469NI (Cortex-M4F, 180 MHz, 1 MB Flash, 384 KB SRAM)
 - **USB OTG FS:** PA11 (DM), PA12 (DP) — CDC ACM
 - **LEDs:** PG6 (green), PD4 (orange), PD5 (red), PK3 (blue) — active high
 - **RNG:** HASH_RNG interrupt — hardware TRNG
 - **Debug:** ST-LINK/V2.1 (PA13 SWDIO, PA14 SWCLK)
 - **Clocks:** HSI 16 MHz + PLL → 168 MHz sys, 48 MHz USB (HSE bypass hangs)
+- **USB VID:PID:** `c0de:cafe` (CDC ACM, detected as `/dev/ttyACM*`)
+- **Flash:** `st-flash --connect-under-reset write` (NOT probe-rs during USB testing)
+
+### ESP32-D0WD
+- **MCU:** ESP32-D0WD (Xtensa LX6, 240 MHz, 4 MB Flash)
+- **UART:** GPIO1 (TX), GPIO3 (RX) — CP210x USB-serial
+- **LED:** GPIO2 (blue onboard, active high)
+- **USB VID:PID:** `10c4:ea60` (Silicon Labs CP210x, detected as `/dev/ttyUSB*`)
+- **Flash:** `espflash flash -p /dev/ttyUSB0 --chip esp32` (NOT probe-rs)
+- **Note:** ESP32 uses hand-rolled protocol code (not `microfips-protocol::Node`). Can only
+  act as FSP initiator (no responder code for incoming SessionSetups).
 
 ## Milestones
 
@@ -218,48 +287,57 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 | M3 | Host-side handshake test (`microfips-link`) | Done |
 | M4 | MCU handshake with live VPS | Done |
 | M5 | Host-side full lifecycle simulator (`microfips-sim`) | Done |
-| M6 | MCU full lifecycle (handshake + heartbeat exchange) | **Done** — sustained 3+ min on hardware |
-| M7 | HTTP status page over FIPS session | In progress |
+| M6 | MCU full lifecycle (handshake + heartbeat exchange) | Done |
+| M7 | FSP session protocol (XK handshake + encrypted data) | Done |
+| M8 | Sim-to-MCU FSP ping through FIPS | **Done** — SIM-B → FIPS → physical STM32 PING/PONG |
+| M9 | MCU-to-MCU ping (STM32 ↔ ESP32 through FIPS) | In progress — ESP32 needs FSP responder code |
+| M10 | FIPS DNS resolution (`.fips` names) | Future |
 
-### M6 sub-milestones (all done)
+### M8 sub-milestones (all done)
 
 | ID | Description | Status |
 |----|-------------|--------|
-| M6.1 | MCU MSG1 reaches FIPS through full chain | Done |
-| M6.2 | FIPS promotes MCU to active peer | Done |
-| M6.3 | MSG2 returns through full chain to MCU | Done |
-| M6.4 | MCU recv_frame handles multi-packet MSG2 | Done |
-| M6.5 | MCU handshake completes (Noise IK finalize) | Done |
-| M6.6 | MCU sends heartbeats every 10s | Done |
-| M6.7 | Sustained heartbeat exchange (3+ min) | Done |
+| M8.1 | Sim-to-sim FSP handshake through FIPS | Done |
+| M8.2 | Sim-to-sim FSP PING/PONG through FIPS | Done |
+| M8.3 | Sim-to-STM32 FSP handshake through FIPS | Done |
+| M8.4 | Sim-to-STM32 FSP PING/PONG through FIPS | Done |
+| M8.5 | FIPS forwards SessionDatagrams between authenticated peers | Verified — no tree_peer needed |
+
+### M9 blockers
+
+| Blocker | Description | Approach |
+|---------|-------------|----------|
+| ESP32 FSP responder | ESP32 ignores incoming SessionSetups (`_ => {}` in handle_incoming_fsp) | Add `FspSession` responder to ESP32, or refactor ESP32 to use `microfips-protocol::Node` |
+| ESP32 tech debt | Hand-rolled protocol code doesn't benefit from fixes in `microfips-protocol` | Long-term: refactor ESP32 to use `Node` like STM32 |
 
 ## Project Layout
 
 ```
 microfips/
-  Cargo.toml                    # Workspace: core, link, sim, protocol (firmware excluded for CI)
-  AGENTS.md                     # Build/flash/test/debug reference
+  Cargo.toml                    # Workspace: core, link, sim, protocol, esp32 (firmware excluded for CI)
+  AGENTS.md                     # Build/flash/test/debug reference (authoritative)
   rust-toolchain.toml           # Nightly Rust (no pinned date)
   crates/
-    microfips/                  # MCU firmware (package name: microfips)
+    microfips/                  # STM32 firmware (package name: microfips)
       build.rs                  # Linker flags: --nmagic, -Tlink.x
       .cargo/config.toml        # probe-rs runner config (local debug only)
-      src/main.rs               # FIPS leaf node firmware (4-LED state machine)
-    microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, identity
+      src/main.rs               # FIPS leaf node firmware (4-LED state machine, uses Node)
+    microfips-esp32/            # ESP32 firmware (package name: microfips-esp32)
+      src/main.rs               # FIPS leaf node (hand-rolled protocol, 1-LED, UART transport)
+    microfips-core/             # no_std FIPS protocol: Noise IK/XK, FMP, FSP, identity
     microfips-link/             # Host-side handshake test (UDP, --keygen, env var keys)
     microfips-sim/              # Host-side simulator using Node from microfips-protocol
     microfips-http-test/        # FIPS responder for integration tests (UDP, env var keys)
     microfips-protocol/         # no_std FIPS protocol state machine: Transport trait, framing, Node
   tools/
-    fips_bridge.py              # CDC/TCP <-> UDP bridge (runs on VPS)
-    serial_tcp_proxy.py         # Serial <-> TCP proxy (runs on host)
-    test_sim_vps.sh             # VPS integration test for microfips-sim
+    serial_udp_bridge.py        # Single-hop serial↔UDP bridge (recommended)
+    serial_tcp_proxy.py         # Serial↔TCP proxy (legacy 3-hop pipeline)
+    fips_bridge.py              # TCP↔UDP bridge (runs on VPS, legacy)
   scripts/
     test_hw_handshake.sh        # Automated hardware test with cleanup + assertions
-    ci-fips-node.sh             # Build and run full FIPS node for CI (future use)
   docs/
     architecture.md             # Protocol and transport details
-    milestones.md               # M0-M7 tracking
+    milestones.md               # M0-M10 tracking
     adr/                        # Architecture decision records
 ```
 

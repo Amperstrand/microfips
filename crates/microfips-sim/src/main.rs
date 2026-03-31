@@ -375,24 +375,34 @@ impl NodeHandler for FspInitiatorHandler {
         if fsp_data.is_empty() {
             return HandleResult::None;
         }
+        eprintln!(
+            "[INIT] on_message: msg_type=0x{:02x} fsp_state={:?} fsp_data_len={} payload_len={} payload_first8={:02x?}",
+            msg_type, fsp.state(), fsp_data.len(), payload.len(), &payload[..payload.len().min(8)]
+        );
         let fsp_phase = fsp_data[0] & 0x0F;
 
         match fsp.state() {
             FspInitiatorState::AwaitingAck => {
                 if fsp_phase == 0x02 {
-                    if fsp.handle_ack(fsp_data).is_ok() {
-                        eprintln!("[INIT] FSP ACK received");
-                        let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
-                        let mut msg3_buf = [0u8; 512];
-                        if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
-                            eprintln!("[INIT] FSP established! Sending MSG3");
-                            let dg_body =
-                                fsp::build_session_datagram_body(&self.my_addr, &self.target_addr);
-                            let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
-                            resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                            resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
-                                .copy_from_slice(&msg3_buf[..msg3_len]);
-                            return HandleResult::SendDatagram(dg_len);
+                    eprintln!("[INIT] ACK raw fsp_data: {} ({}B)", hex::encode(fsp_data), fsp_data.len());
+                    match fsp.handle_ack(fsp_data) {
+                        Ok(()) => {
+                            eprintln!("[INIT] FSP ACK received");
+                            let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
+                            let mut msg3_buf = [0u8; 512];
+                            if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
+                                eprintln!("[INIT] FSP established! Sending MSG3");
+                                let dg_body =
+                                    fsp::build_session_datagram_body(&self.my_addr, &self.target_addr);
+                                let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
+                                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                                resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+                                    .copy_from_slice(&msg3_buf[..msg3_len]);
+                                return HandleResult::SendDatagram(dg_len);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[INIT] FSP ACK error: {:?}", e);
                         }
                     }
                 }
@@ -598,6 +608,13 @@ const SIM_A_PUBKEY: [u8; 33] = [
     0xf9,
 ];
 
+/// STM32 compressed pubkey (DEFAULT_SECRET = gen*1).
+const STM32_PUBKEY: [u8; 33] = [
+    0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b,
+    0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17,
+    0x98,
+];
+
 /// SIM-A node_addr (target for SIM-B initiator).
 const SIM_A_TARGET: [u8; 16] = [
     0x7c, 0x79, 0xf3, 0x07, 0x1e, 0x28, 0x34, 0x4e, 0x81, 0x53, 0xbf, 0x6c, 0x73, 0xc2, 0x94, 0xeb,
@@ -654,7 +671,8 @@ fn print_usage() {
     eprintln!("  --keygen       Generate a new keypair and print env vars");
 }
 
-fn main() {
+ fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--keygen") {
@@ -721,6 +739,24 @@ fn main() {
     let x_only = &pub_normalized[1..];
     let my_addr = NodeAddr::from_pubkey_x(x_only.try_into().unwrap());
 
+    let stm32_target: [u8; 16] = [
+        0x13, 0x2f, 0x39, 0xa9, 0x8c, 0x31, 0xba, 0xad, 0xdb, 0xa6, 0x52, 0x5f, 0x5d, 0x43, 0xf2, 0x95,
+    ];
+    let fsp_target_pub = if use_sim_b {
+        SIM_A_PUBKEY
+    } else if let Some(hex_str) = target_arg {
+        match hex::decode(hex_str) {
+            Ok(ref bytes) if *bytes == SIM_A_TARGET => SIM_A_PUBKEY,
+            Ok(ref bytes) if *bytes == stm32_target => STM32_PUBKEY,
+            _ => {
+                eprintln!("WARNING: unknown target NodeAddr, FSP will fail (no pubkey mapping)");
+                SIM_A_PUBKEY
+            }
+        }
+    } else {
+        SIM_A_PUBKEY
+    };
+
     eprintln!("[SIM] microfips leaf node starting");
     let npub = bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("npub"), &x_only)
         .expect("bech32 encode");
@@ -753,7 +789,7 @@ fn main() {
         if is_initiator {
             let mut handler = FspInitiatorHandler::new(
                 secret,
-                SIM_A_PUBKEY,
+                fsp_target_pub,
                 target_addr,
                 *my_addr.as_bytes(),
                 test_ping,
