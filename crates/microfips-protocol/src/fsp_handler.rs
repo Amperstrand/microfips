@@ -169,27 +169,25 @@ impl FspDualHandler {
         let fsp_phase = fsp_data[0] & 0x0F;
 
         match fsp.state() {
+            FspInitiatorState::Idle => {}
             FspInitiatorState::AwaitingAck => {
-                if fsp_phase == 0x02 {
-                    match fsp.handle_ack(fsp_data) {
-                        Ok(()) => {
-                            let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
-                            let mut msg3_buf = [0u8; 512];
-                            if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
-                                let dg_body = microfips_core::fsp::build_session_datagram_body(
-                                    &my_addr, &target_addr,
-                                );
-                                let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
-                                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                                resp[SESSION_DATAGRAM_BODY_SIZE
-                                    ..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
-                                    .copy_from_slice(&msg3_buf[..msg3_len]);
-                                self.fsp_timer =
-                                    Some(Instant::now() + Duration::from_secs(2));
-                                return HandleResult::SendDatagram(dg_len);
-                            }
-                        }
-                        Err(_) => {}
+                if fsp_phase == 0x02
+                    && let Ok(()) = fsp.handle_ack(fsp_data)
+                {
+                    let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
+                    let mut msg3_buf = [0u8; 512];
+                    if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
+                        let dg_body = microfips_core::fsp::build_session_datagram_body(
+                            &my_addr, &target_addr,
+                        );
+                        let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
+                        resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                        resp[SESSION_DATAGRAM_BODY_SIZE
+                            ..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+                            .copy_from_slice(&msg3_buf[..msg3_len]);
+                        self.fsp_timer =
+                            Some(Instant::now() + Duration::from_secs(2));
+                        return HandleResult::SendDatagram(dg_len);
                     }
                 }
             }
@@ -198,7 +196,7 @@ impl FspDualHandler {
             }
             FspInitiatorState::Established => {
                 if fsp_phase == 0x00 {
-                    let Some((flags, _counter, header, encrypted)) =
+                    let Some((flags, counter, header, encrypted)) =
                         microfips_core::fsp::parse_fsp_encrypted_header(fsp_data)
                     else {
                         return HandleResult::None;
@@ -206,27 +204,26 @@ impl FspDualHandler {
                     if flags & microfips_core::fsp::FLAG_UNENCRYPTED != 0 {
                         return HandleResult::None;
                     }
-                    let (k_recv, _k_send) = match fsp.session_keys() {
+                    let (k_recv, _) = match fsp.session_keys() {
                         Some(keys) => keys,
                         None => return HandleResult::None,
                     };
                     let mut dec = [0u8; 512];
-                    if let Ok(dl) =
-                        noise::aead_decrypt(&k_recv, _counter, header, encrypted, &mut dec)
-                    {
-                        if let Some((_ts, _mt, _flags, inner_payload)) =
-                            microfips_core::fsp::fsp_strip_inner_header(&dec[..dl])
-                        {
-                            if inner_payload == b"PONG" {
-                                if self.test_ping {
-                                    return HandleResult::Disconnect;
-                                }
-                            }
-                        }
+                    let Ok(dl) =
+                        noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec)
+                    else {
+                        return HandleResult::None;
+                    };
+                    let Some((_ts, _mt, _flags, inner_payload)) =
+                        microfips_core::fsp::fsp_strip_inner_header(&dec[..dl])
+                    else {
+                        return HandleResult::None;
+                    };
+                    if inner_payload == b"PONG" && self.test_ping {
+                        return HandleResult::Disconnect;
                     }
                 }
             }
-            _ => {}
         }
         HandleResult::None
     }
