@@ -295,6 +295,20 @@ impl NodeHandler for FipsHandler<'_> {
 // Main entry point
 // ---------------------------------------------------------------------------
 
+/// ESP32 peer pubkey (ESP32_SECRET -> ecdh_pubkey -> compressed point).
+/// FIPS cross-reference: bd08505 src/node/handlers/session.rs:handle_session_setup()
+/// node_addr: 0135da2f8acf7b9e3090939432e47684
+const ESP32_PEER_PUB: [u8; 33] = [
+    0x02, 0xc6, 0x04, 0x7f, 0x94, 0x41, 0xed, 0x7d, 0x6d, 0x30, 0x45, 0x40, 0x6e, 0x95, 0xc0,
+    0x7c, 0xd8, 0x5c, 0x77, 0x8e, 0x4b, 0x8c, 0xef, 0x3c, 0xa7, 0xab, 0xac, 0x09, 0xb9, 0x5c,
+    0x70, 0x9e, 0xe5,
+];
+
+const ESP32_NODE_ADDR: [u8; 16] = [
+    0x01, 0x35, 0xda, 0x2f, 0x8a, 0xcf, 0x7b, 0x9e, 0x30, 0x90, 0x93, 0x94, 0x32, 0xe4, 0x76,
+    0x84,
+];
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let mut config = Config::default();
@@ -328,8 +342,10 @@ async fn main(_spawner: Spawner) {
 
     let rng = GLOBAL_RNG.init(Rng::new(p.RNG, Irqs));
 
-    let mut fsp_ephemeral = [0u8; 32];
-    rng.fill_bytes(&mut fsp_ephemeral);
+    let mut resp_eph = [0u8; 32];
+    rng.fill_bytes(&mut resp_eph);
+    let mut init_eph = [0u8; 32];
+    rng.fill_bytes(&mut init_eph);
 
     leds.blink_green_once();
 
@@ -368,7 +384,14 @@ async fn main(_spawner: Spawner) {
     let mut node = Node::new(transport, hw_rng, DEFAULT_SECRET, DEFAULT_PEER_PUB);
     let mut handler = FipsHandler {
         leds: &mut leds,
-        fsp: FspDualHandler::new_responder(DEFAULT_SECRET, fsp_ephemeral),
+        // FIPS: bd08505 src/node/handlers/session.rs:handle_session_setup()
+        fsp: FspDualHandler::new_dual(
+            DEFAULT_SECRET,
+            resp_eph,
+            init_eph,
+            &ESP32_PEER_PUB,
+            ESP32_NODE_ADDR,
+        ),
     };
 
     let usb_fut = usb.run();
