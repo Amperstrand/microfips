@@ -108,6 +108,7 @@ impl Transport for UdpTransport {
 struct SimHandler {
     inner: FspDualHandler,
     is_initiator: bool,
+    test_http: bool,
     label: &'static str,
 }
 
@@ -118,6 +119,7 @@ impl SimHandler {
         Self {
             inner: FspDualHandler::new_responder(secret, eph),
             is_initiator: false,
+            test_http: false,
             label,
         }
     }
@@ -127,6 +129,7 @@ impl SimHandler {
         target_pub: &[u8; 33],
         target_addr: [u8; 16],
         test_ping: bool,
+        test_http: bool,
         label: &'static str,
     ) -> Self {
         let mut resp_eph = [0u8; 32];
@@ -135,12 +138,56 @@ impl SimHandler {
         rand::rng().fill_bytes(&mut init_eph);
         let mut inner =
             FspDualHandler::new_dual(secret, resp_eph, init_eph, target_pub, target_addr);
-        inner.test_ping = test_ping;
+        inner.test_ping = test_ping && !test_http;
         Self {
             inner,
             is_initiator: true,
+            test_http,
             label,
         }
+    }
+
+    fn is_established(&self) -> bool {
+        self.inner
+            .initiator
+            .as_ref()
+            .is_some_and(|i| i.state() == microfips_core::fsp::FspInitiatorState::Established)
+    }
+
+    fn my_addr(&self) -> Option<[u8; 16]> {
+        let pub_key = noise::ecdh_pubkey(&self.inner.secret).ok()?;
+        let normalized = noise::parity_normalize(&pub_key);
+        let x_only: [u8; 32] = normalized[1..].try_into().ok()?;
+        Some(NodeAddr::from_pubkey_x(&x_only).0)
+    }
+
+    fn is_http_response(&self, payload: &[u8]) -> bool {
+        if payload.len() < microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE {
+            return false;
+        }
+        let fsp_data = &payload[microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE..];
+        if fsp_data.is_empty() {
+            return false;
+        }
+        let Some((_flags, counter, header, encrypted)) =
+            microfips_core::fsp::parse_fsp_encrypted_header(fsp_data)
+        else {
+            return false;
+        };
+        let (k_recv, _) = match self.inner.initiator.as_ref().and_then(|i| i.session_keys()) {
+            Some(k) => k,
+            None => return false,
+        };
+        let mut dec = [0u8; 512];
+        let Ok(dl) = noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec) else {
+            return false;
+        };
+        let Some((_ts, _mt, _flags, inner_payload)) =
+            microfips_core::fsp::fsp_strip_inner_header(&dec[..dl])
+        else {
+            return false;
+        };
+        inner_payload.starts_with(b"HTTP/1.1 200")
     }
 }
 
@@ -175,7 +222,18 @@ impl NodeHandler for SimHandler {
     fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
         let result = self.inner.on_message(msg_type, payload, resp);
         if result == HandleResult::Disconnect {
-            log::info!("[{}] *** test ping success, exiting ***", self.label);
+            log::info!(
+                "[{}] *** test {} success, exiting ***",
+                self.label,
+                if self.test_http { "http" } else { "ping" }
+            );
+            std::process::exit(0);
+        }
+        if self.test_http
+            && self.is_established()
+            && self.is_http_response(payload)
+        {
+            log::info!("[{}] *** test http success, exiting ***", self.label);
             std::process::exit(0);
         }
         if let HandleResult::SendDatagram(len) = result {
@@ -189,6 +247,47 @@ impl NodeHandler for SimHandler {
     }
 
     fn on_tick(&mut self, resp: &mut [u8]) -> HandleResult {
+        if self.test_http && self.is_established() {
+            let target_addr = match &self.inner.target_addr {
+                Some(a) => *a,
+                None => return HandleResult::None,
+            };
+            let my_addr = match self.my_addr() {
+                Some(a) => a,
+                None => return HandleResult::None,
+            };
+            let fsp = match &mut self.inner.initiator {
+                Some(f) => f,
+                None => return HandleResult::None,
+            };
+            let dg_body = microfips_core::fsp::build_session_datagram_body(&my_addr, &target_addr);
+            let (_k_recv, k_send) = match fsp.session_keys() {
+                Some(k) => k,
+                None => return HandleResult::None,
+            };
+            let send_ctr = fsp.next_send_counter();
+            let http = b"GET /healthz HTTP/1.1\r\nHost: fips\r\n\r\n";
+            let ts = 0u32;
+            let mut fsp_packet = [0u8; 512];
+            let fsp_total = match microfips_core::fsp::build_fsp_data_message(
+                send_ctr,
+                ts,
+                http,
+                &k_send,
+                &mut fsp_packet,
+            ) {
+                Ok(len) => len,
+                Err(_) => return HandleResult::None,
+            };
+            let dg_len = microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE + fsp_total;
+            resp[..microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+            resp[microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE..dg_len]
+                .copy_from_slice(&fsp_packet[..fsp_total]);
+            self.inner.fsp_timer = Some(Instant::now() + Duration::from_secs(10));
+            log::info!("[{} → FIPS] TX HTTP GET {}B", self.label, dg_len);
+            return HandleResult::SendDatagram(dg_len);
+        }
+
         let result = self.inner.on_tick(resp);
         if let HandleResult::SendDatagram(len) = result {
             if self
@@ -197,7 +296,12 @@ impl NodeHandler for SimHandler {
                 .as_ref()
                 .is_some_and(|i| i.state() == microfips_core::fsp::FspInitiatorState::Established)
             {
-                log::info!("[{} → FIPS] TX PING {}B", self.label, len);
+                log::info!(
+                    "[{} → FIPS] TX {} {}B",
+                    self.label,
+                    if self.test_http { "HTTP GET" } else { "PING" },
+                    len
+                );
             } else {
                 log::info!("[{} → FIPS] FSP action {}B", self.label, len);
             }
@@ -346,6 +450,8 @@ fn print_usage() {
     eprintln!("  --udp <addr>    Connect directly to FIPS via UDP (no bridge needed)");
     eprintln!("  --initiator    Act as FSP initiator (default: responder)");
     eprintln!("  --target <hex> Target NodeAddr for FSP session (16 bytes hex)");
+    eprintln!("  --test-http    Send HTTP GET and exit on HTTP/1.1 200 response");
+    eprintln!("  --test-ping    Send PING and exit on PONG response");
     eprintln!("  --keygen       Generate a new keypair and print env vars");
 }
 
@@ -384,6 +490,8 @@ fn main() {
 
     let fips_addr = args.get(2).expect("--udp requires an address");
     let test_ping = args.iter().any(|a| a == "--test-ping");
+    let test_http = args.iter().any(|a| a == "--test-http");
+    let test_ping = test_ping && !test_http;
     let is_initiator = args.iter().any(|a| a == "--initiator") || use_sim_b;
     let target_arg = args
         .iter()
@@ -492,6 +600,7 @@ fn main() {
                 &fsp_target_pub,
                 target_addr,
                 test_ping,
+                test_http,
                 node_label,
             );
             node.run(&mut handler).await;
