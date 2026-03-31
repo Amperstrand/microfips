@@ -6,6 +6,7 @@ description = "Minimal FIPS leaf node on ESP32 via UART"
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
+microfips-protocol = { path = "../microfips-protocol" }
 rand_core = { version = "0.6", default-features = false }
 esp-hal = { version = "1.0.0", features = ["esp32", "unstable"] }
 esp-rtos = { version = "0.2.0", features = ["esp32", "embassy"] }

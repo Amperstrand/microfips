@@ -571,6 +571,7 @@ pub struct FspSession {
     k_recv: Option<[u8; 32]>,
     k_send: Option<[u8; 32]>,
     initiator_pub: Option<[u8; PUBKEY_SIZE]>,
+    send_counter: u64,
 }
 
 impl FspSession {
@@ -581,6 +582,7 @@ impl FspSession {
             k_recv: None,
             k_send: None,
             initiator_pub: None,
+            send_counter: 0,
         }
     }
 
@@ -594,6 +596,16 @@ impl FspSession {
 
     pub fn initiator_pub(&self) -> Option<[u8; PUBKEY_SIZE]> {
         self.initiator_pub
+    }
+
+    pub fn next_send_counter(&mut self) -> u64 {
+        let c = self.send_counter;
+        self.send_counter += 1;
+        c
+    }
+
+    pub fn send_key(&self) -> Option<&[u8; 32]> {
+        self.k_send.as_ref()
     }
 
     /// FIPS: handlers/session.rs:361-541
@@ -685,6 +697,7 @@ impl FspSession {
         self.k_recv = None;
         self.k_send = None;
         self.initiator_pub = None;
+        self.send_counter = 0;
     }
 }
 
@@ -735,6 +748,7 @@ pub struct FspInitiatorSession {
     #[allow(dead_code)]
     responder_pub: [u8; PUBKEY_SIZE],
     my_pub: [u8; PUBKEY_SIZE],
+    send_counter: u64,
 }
 
 impl FspInitiatorSession {
@@ -753,6 +767,7 @@ impl FspInitiatorSession {
             k_send: None,
             responder_pub: *responder_static_pub,
             my_pub,
+            send_counter: 0,
         })
     }
 
@@ -762,6 +777,16 @@ impl FspInitiatorSession {
 
     pub fn session_keys(&self) -> Option<([u8; 32], [u8; 32])> {
         self.k_recv.zip(self.k_send)
+    }
+
+    pub fn next_send_counter(&mut self) -> u64 {
+        let c = self.send_counter;
+        self.send_counter += 1;
+        c
+    }
+
+    pub fn send_key(&self) -> Option<&[u8; 32]> {
+        self.k_send.as_ref()
     }
 
     /// FIPS: handlers/session.rs:1126-1174 initiate_session()
@@ -845,6 +870,7 @@ impl FspInitiatorSession {
         self.initiator = None;
         self.k_recv = None;
         self.k_send = None;
+        self.send_counter = 0;
     }
 }
 
@@ -953,7 +979,7 @@ pub fn handle_fsp_datagram(
                 }
             }
             if let Some(data) = reply_data {
-                let send_ctr: u64 = counter + 1;
+                let send_ctr = session.next_send_counter();
                 let ts = 0u32;
                 let mut plaintext = [0u8; 512];
                 let il = fsp_prepend_inner_header(ts, FSP_MSG_DATA, 0x00, data, &mut plaintext);
