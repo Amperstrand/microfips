@@ -55,6 +55,32 @@ impl FspDualHandler {
         }
     }
 
+    /// Create a dual-mode handler: can both respond to incoming FSP sessions
+    /// AND initiate outgoing FSP sessions to a specific target.
+    ///
+    /// Uses separate ephemeral keys for responder and initiator paths
+    /// (cryptographic requirement — reusing the same ephemeral in both
+    /// directions leaks key material).
+    pub fn new_dual(
+        secret: [u8; 32],
+        responder_ephemeral: [u8; 32],
+        initiator_ephemeral: [u8; 32],
+        target_pub: &[u8; 33],
+        target_addr: [u8; 16],
+    ) -> Self {
+        let initiator = FspInitiatorSession::new(&secret, &initiator_ephemeral, target_pub).ok();
+        Self {
+            secret,
+            fsp_session: FspSession::new(),
+            fsp_ephemeral: responder_ephemeral,
+            fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
+            initiator,
+            target_addr: Some(target_addr),
+            fsp_timer: None,
+            test_ping: false,
+        }
+    }
+
     pub fn ensure_initiator(&mut self, initiator_ephemeral: [u8; 32], target_pub: &[u8; 33]) {
         if self.initiator.is_none() {
             self.initiator =

@@ -238,9 +238,11 @@ impl SimHandler {
     }
 
     fn new_initiator(secret: [u8; 32], target_pub: &[u8; 33], target_addr: [u8; 16], test_ping: bool) -> Self {
-        let mut eph = [0u8; 32];
-        rand::rng().fill_bytes(&mut eph);
-        let mut inner = FspDualHandler::new_initiator(secret, eph, target_pub, target_addr);
+        let mut resp_eph = [0u8; 32];
+        rand::rng().fill_bytes(&mut resp_eph);
+        let mut init_eph = [0u8; 32];
+        rand::rng().fill_bytes(&mut init_eph);
+        let mut inner = FspDualHandler::new_dual(secret, resp_eph, init_eph, target_pub, target_addr);
         inner.test_ping = test_ping;
         Self {
             inner,
@@ -380,6 +382,13 @@ const STM32_PUBKEY: [u8; 33] = [
     0x98,
 ];
 
+/// ESP32 compressed pubkey (ESP32_SECRET = gen*2).
+const ESP32_PUBKEY: [u8; 33] = [
+    0x02, 0xc6, 0x04, 0x7f, 0x94, 0x41, 0xed, 0x7d, 0x6d, 0x30, 0x45, 0x40, 0x6e, 0x95, 0xc0, 0x7c,
+    0xd8, 0x5c, 0x77, 0x8e, 0x4b, 0x8c, 0xef, 0x3c, 0xa7, 0xab, 0xac, 0x09, 0xb9, 0x5c, 0x70, 0x9e,
+    0xe5,
+];
+
 /// SIM-A node_addr (target for SIM-B initiator).
 const SIM_A_TARGET: [u8; 16] = [
     0x7c, 0x79, 0xf3, 0x07, 0x1e, 0x28, 0x34, 0x4e, 0x81, 0x53, 0xbf, 0x6c, 0x73, 0xc2, 0x94, 0xeb,
@@ -389,6 +398,12 @@ const SIM_A_TARGET: [u8; 16] = [
 #[allow(dead_code)]
 const SIM_B_TARGET: [u8; 16] = [
     0x36, 0xbe, 0x1e, 0xa4, 0xd8, 0x14, 0xaf, 0x28, 0x88, 0xb8, 0x95, 0x06, 0x5a, 0x0b, 0x25, 0x38,
+];
+
+/// ESP32 node_addr (target for sim initiator pinging ESP32).
+#[allow(dead_code)]
+const ESP32_TARGET: [u8; 16] = [
+    0x01, 0x35, 0xda, 0x2f, 0x8a, 0xcf, 0x7b, 0x9e, 0x30, 0x90, 0x93, 0x94, 0x32, 0xe4, 0x76, 0x84,
 ];
 
 // ---------------------------------------------------------------------------
@@ -513,6 +528,7 @@ fn print_usage() {
         match hex::decode(hex_str) {
             Ok(ref bytes) if *bytes == SIM_A_TARGET => SIM_A_PUBKEY,
             Ok(ref bytes) if *bytes == stm32_target => STM32_PUBKEY,
+            Ok(ref bytes) if *bytes == ESP32_TARGET => ESP32_PUBKEY,
             _ => {
                 eprintln!("WARNING: unknown target NodeAddr, FSP will fail (no pubkey mapping)");
                 SIM_A_PUBKEY

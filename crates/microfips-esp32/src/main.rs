@@ -5,12 +5,12 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use esp_backtrace as _;
+use core::panic::PanicInfo;
+
 use esp_hal::gpio::{Level, Output};
-use esp_hal::rng::Trng;
+use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::uart::{Config, RxConfig, Uart};
 use esp_hal::{Async, interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
-use esp_println as _;
 use rand_core::RngCore;
 
 use microfips_core::identity::DEFAULT_PEER_PUB;
@@ -52,6 +52,21 @@ static STAT_DATA_TX: AtomicU32 = AtomicU32::new(0);
 #[used]
 static STAT_DATA_RX: AtomicU32 = AtomicU32::new(0);
 
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    let gpio = unsafe { &*esp_hal::peripherals::GPIO::PTR };
+    loop {
+        gpio.out_w1ts().write(|w| unsafe { w.out_data_w1ts().bits(1 << 2) });
+        for _ in 0..5_000_000 {
+            core::hint::spin_loop();
+        }
+        gpio.out_w1tc().write(|w| unsafe { w.out_data_w1tc().bits(1 << 2) });
+        for _ in 0..5_000_000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 struct Led(Output<'static>);
 
 impl Led {
@@ -88,7 +103,15 @@ impl Transport for UartTransport {
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, UartError> {
         use embedded_io_async::Read;
-        Read::read(&mut self.rx, buf).await.map_err(|_| UartError)
+        loop {
+            match Read::read(&mut self.rx, buf).await {
+                Ok(n) => return Ok(n),
+                Err(_) => {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
+                    continue;
+                }
+            }
+        }
     }
 }
 
@@ -169,10 +192,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     let mut led = Led(Output::new(peripherals.GPIO2, Level::Low, esp_hal::gpio::OutputConfig::default()));
 
+    let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
     let mut trng = Trng::try_new().unwrap();
 
-    let mut fsp_eph = [0u8; 32];
-    trng.fill_bytes(&mut fsp_eph);
+    let mut resp_eph = [0u8; 32];
+    trng.fill_bytes(&mut resp_eph);
+    let mut init_eph = [0u8; 32];
+    trng.fill_bytes(&mut init_eph);
 
     let uart_config = Config::default()
         .with_rx(RxConfig::default().with_fifo_full_threshold(64))
@@ -188,7 +214,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let rng = EspRng(trng);
     let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
 
-    let fsp = FspDualHandler::new_initiator(ESP32_SECRET, fsp_eph, &STM32_PEER_PUB, STM32_NODE_ADDR);
+    let fsp = FspDualHandler::new_dual(ESP32_SECRET, resp_eph, init_eph, &STM32_PEER_PUB, STM32_NODE_ADDR);
     let mut handler = EspHandler { led: &mut led, fsp };
 
     node.run(&mut handler).await;
