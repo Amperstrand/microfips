@@ -251,6 +251,16 @@ pub fn build_session_ack(
     out[pos..pos + handshake.len()].copy_from_slice(handshake);
     pos += handshake.len();
 
+    #[cfg(feature = "std")]
+    log::debug!(
+        "build_session_ack: total={} src_count={} dst_count={} hs_len={} body_bytes[0..8]={:02x?}",
+        pos,
+        src_coords.len(),
+        dest_coords.len(),
+        handshake.len(),
+        &out[FSP_COMMON_PREFIX_SIZE..FSP_COMMON_PREFIX_SIZE + 8.min(pos - FSP_COMMON_PREFIX_SIZE)]
+    );
+
     Ok(pos)
 }
 
@@ -516,7 +526,7 @@ pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])
     Some((flags, counter, header, payload))
 }
 
-use crate::noise::{EPOCH_SIZE, NoiseError, NoiseXkInitiator, NoiseXkResponder, PUBKEY_SIZE};
+use crate::noise::{NoiseError, NoiseXkInitiator, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspSessionState {
@@ -890,9 +900,16 @@ pub fn handle_fsp_datagram(
     match fsp_phase {
         PHASE_SESSION_SETUP => {
             let mut tmp = [0u8; 512];
-            let ack_len = session
-                .handle_setup(secret, ephemeral, epoch, fsp_data, &mut tmp)
-                .map_err(FspHandlerError::Setup)?;
+            let ack_len = match session.handle_setup(secret, ephemeral, epoch, fsp_data, &mut tmp) {
+                Ok(len) => len,
+                Err(FspSessionError::InvalidState) => {
+                    session.reset();
+                    session
+                        .handle_setup(secret, ephemeral, epoch, fsp_data, &mut tmp)
+                        .map_err(FspHandlerError::Setup)?
+                }
+                Err(e) => return Err(FspHandlerError::Setup(e)),
+            };
             let total = SESSION_DATAGRAM_BODY_SIZE + ack_len;
             if resp.len() < total {
                 return Err(FspHandlerError::BufferTooSmall);
@@ -1203,7 +1220,7 @@ mod tests {
 
     #[test]
     fn fsp_session_full_flow() {
-        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
+        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
 
         let (responder_secret, responder_eph, initiator_secret) = test_keys();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
@@ -1291,7 +1308,7 @@ mod tests {
 
     #[test]
     fn fsp_session_rejects_double_setup() {
-        use crate::noise::{NoiseXkInitiator, ecdh_pubkey};
+        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
 
         let (responder_secret, responder_eph, initiator_secret) = test_keys();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();

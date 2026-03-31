@@ -14,3 +14,5 @@ rand = "0.9"
 hex = "0.4"
 k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
 bech32 = "0.11"
+env_logger = "0.11"
+log = "0.4"
