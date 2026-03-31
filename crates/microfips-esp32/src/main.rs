@@ -180,6 +180,18 @@ impl NodeHandler for EspHandler<'_> {
         }
         result
     }
+
+    fn poll_at(&self) -> Option<embassy_time::Instant> {
+        self.fsp.poll_at()
+    }
+
+    fn on_tick(&mut self, resp: &mut [u8]) -> HandleResult {
+        let result = self.fsp.on_tick(resp);
+        if let HandleResult::SendDatagram(_) = result {
+            STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
 }
 
 #[esp_rtos::main]

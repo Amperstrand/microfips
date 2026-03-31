@@ -8,3 +8,5 @@ probe-rs/
 __pycache__/
 *.pyc
 fips
+.opencode/
+.sisyphus/
