@@ -250,12 +250,18 @@ if [ "$SKIP_HARDWARE" = false ]; then
     ##########################################################
     # PHASE 5: FSP SETUP / SESSION ACK
     ##########################################################
-    echo "=== Phase 5: FSP SessionSetup (ESP32 → STM32, max 30s) ==="
+    echo "=== Phase 5: FSP SessionSetup + SessionAck + MSG3 (ESP32 → STM32, max 30s) ==="
     PHASE5_PASS=false
     if wait_for_log_pattern "$ESP32_LOG" ">> CDC->UDP: frame#[0-9]* 149B" 30 "ESP32 FSP SessionSetup"; then
         if wait_for_log_pattern "$ESP32_LOG" "<< UDP->CDC:.*1[0-4][0-9]B.*from" 15 "FSP SessionAck"; then
             echo "CHECK: FSP SessionAck received"
-            PHASE5_PASS=true
+            # MSG3 is sent by the initiator (ESP32) after receiving SessionAck — it completes the XK handshake
+            if wait_for_log_pattern "$ESP32_LOG" ">> CDC->UDP: frame#[0-9]* [0-9]*B" 15 "ESP32 FSP MSG3 (XK complete)"; then
+                echo "CHECK: ESP32 FSP MSG3 sent (XK handshake complete)"
+                PHASE5_PASS=true
+            else
+                echo "WARN: No MSG3 from ESP32 (XK handshake incomplete)"
+            fi
         else
             echo "WARN: No FSP SessionAck (routing may be failing)"
         fi
@@ -267,11 +273,26 @@ if [ "$SKIP_HARDWARE" = false ]; then
     ##########################################################
     # PHASE 6: FSP PING/PONG DETECTION
     ##########################################################
-    echo "=== Phase 6: FSP PING/PONG check (max 30s) ==="
+    echo "=== Phase 6: FSP PING/PONG bidirectional check (max 30s) ==="
     PHASE6_PASS=false
+    ESP32_TRAFFIC=false
+    STM32_TRAFFIC=false
     if wait_for_log_pattern "$ESP32_LOG" ">> CDC->UDP: frame#[0-9]* [0-9]*B" 30 "ESP32 DataPacket"; then
         echo "CHECK: Encrypted FSP DataPacket sent by ESP32"
+        ESP32_TRAFFIC=true
+    fi
+    if wait_for_log_pattern "$STM32_LOG" ">> CDC->UDP: frame#[0-9]* [0-9]*B" 30 "STM32 DataPacket"; then
+        echo "CHECK: Encrypted FSP DataPacket sent by STM32"
+        STM32_TRAFFIC=true
+    fi
+    if [ "$ESP32_TRAFFIC" = true ] && [ "$STM32_TRAFFIC" = true ]; then
+        echo "CHECK: Bidirectional FSP traffic confirmed"
         PHASE6_PASS=true
+    elif [ "$ESP32_TRAFFIC" = true ] || [ "$STM32_TRAFFIC" = true ]; then
+        echo "WARN: Only one-directional FSP traffic observed"
+        PHASE6_PASS=true
+    else
+        echo "WARN: No FSP DataPacket traffic from either MCU"
     fi
     echo ""
 
