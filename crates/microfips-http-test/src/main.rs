@@ -4,7 +4,7 @@ use std::time::Duration;
 use k256::SecretKey;
 use microfips_core::fmp;
 use microfips_core::fsp::{self, SESSION_DATAGRAM_BODY_SIZE};
-use microfips_core::identity::{NodeAddr, load_peer_pub, load_secret};
+use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
 use rand::RngCore;
 
@@ -98,7 +98,7 @@ fn main() {
             (sender_idx, noise_payload)
         }
         other => {
-            eprintln!("ERROR: expected MSG1, got {:?}", other);
+            log::error!("expected MSG1, got {:?}", other);
             std::process::exit(2);
         }
     };
@@ -204,7 +204,7 @@ fn main() {
             }
             RecvResult::Other => continue,
             RecvResult::Timeout => {
-                eprintln!("TIMEOUT: no SessionAck in 15s");
+                log::error!("TIMEOUT: no SessionAck in 15s");
                 std::process::exit(1);
             }
         }
@@ -293,7 +293,7 @@ fn main() {
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(30) {
-            eprintln!("TIMEOUT: no HTTP response in 30s");
+            log::error!("TIMEOUT: no HTTP response in 30s");
             std::process::exit(1);
         }
         match recv_established_datagram(&sock, &mut buf, &ik_k_recv) {
@@ -349,7 +349,7 @@ fn main() {
             }
             RecvResult::Other => continue,
             RecvResult::Timeout => {
-                eprintln!("TIMEOUT: no HTTP response in 30s");
+                log::error!("TIMEOUT: no HTTP response in 30s");
                 std::process::exit(1);
             }
         }

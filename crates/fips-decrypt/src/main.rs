@@ -447,7 +447,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 
 fn main() {
     if let Err(e) = run(Cli::parse()) {
-        eprintln!("error: {e}");
+        log::error!("error: {e}");
         std::process::exit(1);
     }
 }
