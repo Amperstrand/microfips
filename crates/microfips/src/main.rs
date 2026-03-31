@@ -4,8 +4,6 @@
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use defmt_rtt as _;
-
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_stm32::gpio::{Level, Output, Speed};
