@@ -235,6 +235,11 @@ fn test_session_datagram_body_layout() {
 
     assert_eq!(body.len(), fsp::SESSION_DATAGRAM_BODY_SIZE, "35 bytes");
     assert_eq!(body.len(), 35);
+    assert_eq!(fsp::SESSION_DATAGRAM_HEADER_SIZE, 36);
+    assert_eq!(
+        fsp::SESSION_DATAGRAM_HEADER_SIZE,
+        fsp::SESSION_DATAGRAM_BODY_SIZE + 1
+    );
 
     // Byte 0: TTL
     assert_eq!(body[0], 64, "TTL=64");
@@ -373,7 +378,7 @@ fn test_noise_ik_transport_key_direction_matches_fips() {
     //
     // This test verifies our IK initiator produces non-zero, distinct k1 and k2
     // from finalize(), and that a matching responder produces swapped keys.
-    use noise::{NoiseIkInitiator, NoiseIkResponder, ecdh_pubkey};
+    use noise::{ecdh_pubkey, NoiseIkInitiator, NoiseIkResponder};
 
     let init_secret = gen_key();
     let resp_secret = gen_key();
@@ -404,18 +409,53 @@ fn test_noise_ik_transport_key_direction_matches_fips() {
     initiator.read_message2(&msg2[..msg2_len]).unwrap();
 
     let (k_send_i, k_recv_i) = initiator.finalize();
-    let (k1_r, k2_r) = responder.finalize();
+    let (k_recv_r, k_send_r) = responder.finalize();
 
     // FIPS: initiator send=k1, recv=k2. responder send=k2, recv=k1.
     assert_ne!(k_send_i, [0u8; 32], "k_send is non-zero");
     assert_ne!(k_recv_i, [0u8; 32], "k_recv is non-zero");
     assert_ne!(k_send_i, k_recv_i, "k_send != k_recv");
 
-    // FIPS: responder's k1_r should equal initiator's k_recv_i
-    // (NOTE: this is actually broken due to D2 deviation — k1_r != k_recv_i)
-    // but both are non-zero, which is what we verify here.
-    assert_ne!(k1_r, [0u8; 32], "responder k1 non-zero");
-    assert_ne!(k2_r, [0u8; 32], "responder k2 non-zero");
+    assert_eq!(k_recv_r, k_send_i, "responder k_recv == initiator k_send");
+    assert_eq!(k_send_r, k_recv_i, "responder k_send == initiator k_recv");
+}
+
+#[test]
+fn test_noise_ik_transport_key_symmetry_randomized() {
+    use noise::{ecdh_pubkey, NoiseIkInitiator, NoiseIkResponder};
+
+    for _ in 0..8 {
+        let init_secret = gen_key();
+        let resp_secret = gen_key();
+        let resp_pub = ecdh_pubkey(&resp_secret).unwrap();
+        let init_pub = ecdh_pubkey(&init_secret).unwrap();
+        let epoch_i = [0x01; 8];
+        let epoch_r = [0x02; 8];
+        let eph_init = gen_key();
+        let eph_resp = gen_key();
+
+        let (mut initiator, _) = NoiseIkInitiator::new(&eph_init, &init_secret, &resp_pub).unwrap();
+        let mut msg1 = [0u8; 256];
+        let msg1_len = initiator
+            .write_message1(&init_pub, &epoch_i, &mut msg1)
+            .unwrap();
+
+        let e_init: [u8; 33] = msg1[..33].try_into().unwrap();
+        let mut responder = NoiseIkResponder::new(&resp_secret, &e_init).unwrap();
+        let (_peer_pub, recv_epoch) = responder.read_message1(&msg1[33..msg1_len]).unwrap();
+        assert_eq!(recv_epoch, epoch_i);
+
+        let mut msg2 = [0u8; 128];
+        let msg2_len = responder
+            .write_message2(&eph_resp, &epoch_r, &mut msg2)
+            .unwrap();
+        initiator.read_message2(&msg2[..msg2_len]).unwrap();
+
+        let (k_send_i, k_recv_i) = initiator.finalize();
+        let (k_recv_r, k_send_r) = responder.finalize();
+        assert_eq!(k_recv_r, k_send_i);
+        assert_eq!(k_send_r, k_recv_i);
+    }
 }
 
 #[test]
@@ -425,7 +465,7 @@ fn test_noise_xk_transport_key_symmetry() {
     // XK: Initiator send=k1, recv=k2. Responder send=k2, recv=k1.
     // Our XK implementation MUST produce matching keys (unlike IK where D2 breaks symmetry).
     use fsp::FspSession;
-    use noise::{NoiseXkInitiator, ecdh_pubkey};
+    use noise::{ecdh_pubkey, NoiseXkInitiator};
 
     let init_secret = gen_key();
     let resp_secret = gen_key();
@@ -553,10 +593,7 @@ fn test_fsp_constants_match_fips() {
 
 #[test]
 fn test_fsp_encrypted_roundtrip_with_realistic_payload() {
-    // Simulates the full FSP encrypted message path:
-    // build_fsp_header (12B AAD) → aead_encrypt → parse_fsp_encrypted_header → aead_decrypt
-    // → fsp_strip_inner_header → verify payload
-    use noise::{aead_decrypt, aead_encrypt};
+    use noise::aead_decrypt;
 
     let key = [0xAB; 32];
     let counter = 7u64;
@@ -565,31 +602,17 @@ fn test_fsp_encrypted_roundtrip_with_realistic_payload() {
     let inner_flags = 0x00;
     let app_payload = b"PING";
 
-    // Build inner plaintext: [inner_header:6][app_payload]
-    let mut inner = [0u8; 64];
-    let inner_len =
-        fsp::fsp_prepend_inner_header(timestamp_ms, msg_type, inner_flags, app_payload, &mut inner);
-
-    // Build FSP header (12 bytes = AEAD AAD)
-    let header = fsp::build_fsp_header(counter, 0x00, inner_len as u16);
-
-    // Encrypt
-    let mut ct = [0u8; 128];
-    let ct_len = aead_encrypt(&key, counter, &header, &inner[..inner_len], &mut ct).unwrap();
-
-    // Assemble packet
     let mut packet = [0u8; 256];
-    let pkt_len = fsp::build_fsp_encrypted(&header, &ct[..ct_len], &mut packet);
+    let pkt_len =
+        fsp::build_fsp_data_message(counter, timestamp_ms, app_payload, &key, &mut packet).unwrap();
 
-    // Parse and verify
     let (flags, parsed_counter, parsed_header, parsed_ct) =
         fsp::parse_fsp_encrypted_header(&packet[..pkt_len]).unwrap();
     assert_eq!(flags, 0x00);
     assert_eq!(parsed_counter, counter);
-    assert_eq!(parsed_header, &header[..]);
-    assert_eq!(parsed_ct.len(), ct_len);
+    assert_eq!(parsed_header.len(), fsp::FSP_HEADER_SIZE);
+    assert_eq!(parsed_ct.len(), pkt_len - fsp::FSP_HEADER_SIZE);
 
-    // Decrypt
     let mut dec = [0u8; 64];
     let dl = aead_decrypt(&key, counter, parsed_header, parsed_ct, &mut dec).unwrap();
     let (ts, mt, ifl, rest) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();

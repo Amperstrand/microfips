@@ -630,4 +630,3 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 | #12 | M7: HTTP status page over FIPS | feature | Firmware has HTTP handler; needs E2E test |
 | #13 | Noise crate audit: snow not viable | resolved | Hand-rolled Noise is working, tested (113 tests) |
 | #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
-| #15 | IK responder transport keys mismatch | low | MCU is always initiator; untested code path |

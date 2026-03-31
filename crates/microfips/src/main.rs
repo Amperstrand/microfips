@@ -9,11 +9,11 @@ use embassy_futures::join::join;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::rng::Rng;
 use embassy_stm32::usb::Driver;
-use embassy_stm32::{Config, bind_interrupts, peripherals, rng, usb};
+use embassy_stm32::{bind_interrupts, peripherals, rng, usb, Config};
 use embassy_time::{Duration, Timer};
-use embassy_usb::Builder;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
+use embassy_usb::Builder;
 use static_cell::StaticCell;
 
 use microfips_core::identity::{DEFAULT_PEER_PUB, DEFAULT_SECRET};

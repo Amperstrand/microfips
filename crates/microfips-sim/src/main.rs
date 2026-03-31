@@ -1,8 +1,10 @@
-#![allow(clippy::needless_borrows_for_generic_args, clippy::needless_borrow, dead_code, clippy::collapsible_if)]
+#![allow(
+    clippy::needless_borrows_for_generic_args,
+    clippy::needless_borrow,
+    clippy::collapsible_if
+)]
 
-use std::collections::VecDeque;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -10,7 +12,7 @@ use embassy_time::{Duration, Instant, Timer};
 use k256::SecretKey;
 use rand::RngCore;
 
-use microfips_core::identity::{NodeAddr, load_peer_pub, load_secret};
+use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
 use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
@@ -21,9 +23,7 @@ use microfips_protocol::transport::Transport;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-enum UdpError {
-    Io(std::io::Error),
-}
+struct UdpError;
 
 struct UdpTransport {
     socket: UdpSocket,
@@ -37,7 +37,11 @@ impl UdpTransport {
         socket
             .set_read_timeout(Some(std::time::Duration::from_secs(120)))
             .ok();
-        Self { socket, peer, label }
+        Self {
+            socket,
+            peer,
+            label,
+        }
     }
 }
 
@@ -69,7 +73,7 @@ impl Transport for UdpTransport {
                 &data[..data.len().min(16)]
             );
         }
-        self.socket.send_to(data, self.peer).map_err(UdpError::Io)?;
+        self.socket.send_to(data, self.peer).map_err(|_| UdpError)?;
         Ok(())
     }
 
@@ -79,12 +83,7 @@ impl Transport for UdpTransport {
                 Ok((n, _addr)) => {
                     if n >= 4 {
                         let phase = buf[0] & 0x0F;
-                        log::info!(
-                            "[FIPS → {}] RX {}B phase=0x{:01x}",
-                            self.label,
-                            n,
-                            phase,
-                        );
+                        log::info!("[FIPS → {}] RX {}B phase=0x{:01x}", self.label, n, phase,);
                         log::debug!(
                             "[FIPS → {}] RX first bytes: {:02x?}",
                             self.label,
@@ -96,135 +95,8 @@ impl Transport for UdpTransport {
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     Timer::after(Duration::from_millis(1)).await;
                 }
-                Err(e) => return Err(UdpError::Io(e)),
+                Err(_) => return Err(UdpError),
             }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SimTransport: TCP/stdio for the protocol crate's Transport trait.
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-#[allow(dead_code)]
-enum SimError {
-    Io(std::io::Error),
-    Eof,
-}
-
-enum SimConnector {
-    Listen(TcpListener),
-    Connect(String),
-    Stdio,
-}
-
-struct SimTransport {
-    connector: SimConnector,
-    rx: Arc<Mutex<VecDeque<u8>>>,
-    writer: Option<Box<dyn Write + Send>>,
-    eof: Arc<AtomicBool>,
-    shutdown_handle: Option<TcpStream>,
-}
-
-impl SimTransport {
-    fn new(connector: SimConnector) -> Self {
-        Self {
-            connector,
-            rx: Arc::new(Mutex::new(VecDeque::new())),
-            writer: None,
-            eof: Arc::new(AtomicBool::new(false)),
-            shutdown_handle: None,
-        }
-    }
-
-    fn spawn_reader(&self, mut reader: impl Read + Send + 'static) {
-        let rx = self.rx.clone();
-        let eof = self.eof.clone();
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 2048];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => {
-                        eof.store(true, Ordering::Relaxed);
-                        break;
-                    }
-                    Ok(n) => {
-                        rx.lock().unwrap().extend(&buf[..n]);
-                    }
-                }
-            }
-        });
-    }
-
-    fn setup_tcp(&mut self, stream: TcpStream) -> Result<(), SimError> {
-        let reader = stream.try_clone().map_err(SimError::Io)?;
-        self.shutdown_handle = Some(stream.try_clone().map_err(SimError::Io)?);
-        self.spawn_reader(reader);
-        self.writer = Some(Box::new(stream));
-        Ok(())
-    }
-}
-
-impl Transport for SimTransport {
-    type Error = SimError;
-
-    async fn wait_ready(&mut self) -> Result<(), SimError> {
-        if let Some(old) = self.shutdown_handle.take() {
-            let _ = old.shutdown(std::net::Shutdown::Both);
-        }
-        match &self.connector {
-            SimConnector::Listen(listener) => {
-                self.rx = Arc::new(Mutex::new(VecDeque::new()));
-                self.eof = Arc::new(AtomicBool::new(false));
-                let (stream, addr) = listener.accept().map_err(SimError::Io)?;
-                log::debug!("[SIM] connection from {}", addr);
-                self.setup_tcp(stream)
-            }
-            SimConnector::Connect(addr) => {
-                self.rx = Arc::new(Mutex::new(VecDeque::new()));
-                self.eof = Arc::new(AtomicBool::new(false));
-                log::debug!("[SIM] connecting to {}...", addr);
-                let stream = TcpStream::connect(addr.as_str()).map_err(SimError::Io)?;
-                log::debug!("[SIM] connected");
-                self.setup_tcp(stream)
-            }
-            SimConnector::Stdio => {
-                if self.writer.is_none() {
-                    self.spawn_reader(std::io::stdin());
-                    self.writer = Some(Box::new(std::io::stdout()));
-                } else {
-                    self.rx.lock().unwrap().clear();
-                    self.eof.store(false, Ordering::Relaxed);
-                }
-                Ok(())
-            }
-        }
-    }
-
-    async fn send(&mut self, data: &[u8]) -> Result<(), SimError> {
-        let writer = self.writer.as_mut().ok_or(SimError::Eof)?;
-        writer.write_all(data).map_err(SimError::Io)?;
-        writer.flush().map_err(SimError::Io)?;
-        Ok(())
-    }
-
-    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, SimError> {
-        loop {
-            {
-                let mut rx = self.rx.lock().unwrap();
-                if !rx.is_empty() {
-                    let n = rx.len().min(buf.len());
-                    for (i, byte) in rx.drain(..n).enumerate() {
-                        buf[i] = byte;
-                    }
-                    return Ok(n);
-                }
-            }
-            if self.eof.load(Ordering::Relaxed) {
-                return Err(SimError::Eof);
-            }
-            Timer::after(Duration::from_millis(1)).await;
         }
     }
 }
@@ -250,12 +122,19 @@ impl SimHandler {
         }
     }
 
-    fn new_initiator(secret: [u8; 32], target_pub: &[u8; 33], target_addr: [u8; 16], test_ping: bool, label: &'static str) -> Self {
+    fn new_initiator(
+        secret: [u8; 32],
+        target_pub: &[u8; 33],
+        target_addr: [u8; 16],
+        test_ping: bool,
+        label: &'static str,
+    ) -> Self {
         let mut resp_eph = [0u8; 32];
         rand::rng().fill_bytes(&mut resp_eph);
         let mut init_eph = [0u8; 32];
         rand::rng().fill_bytes(&mut init_eph);
-        let mut inner = FspDualHandler::new_dual(secret, resp_eph, init_eph, target_pub, target_addr);
+        let mut inner =
+            FspDualHandler::new_dual(secret, resp_eph, init_eph, target_pub, target_addr);
         inner.test_ping = test_ping;
         Self {
             inner,
@@ -275,7 +154,11 @@ impl NodeHandler for SimHandler {
                 log::info!(
                     "[{}] handshake complete (FSP {})",
                     self.label,
-                    if self.is_initiator { "initiator" } else { "responder" }
+                    if self.is_initiator {
+                        "initiator"
+                    } else {
+                        "responder"
+                    }
                 )
             }
             NodeEvent::HeartbeatSent => {}
@@ -308,7 +191,12 @@ impl NodeHandler for SimHandler {
     fn on_tick(&mut self, resp: &mut [u8]) -> HandleResult {
         let result = self.inner.on_tick(resp);
         if let HandleResult::SendDatagram(len) = result {
-            if self.inner.initiator.as_ref().map_or(false, |i| i.state() == microfips_core::fsp::FspInitiatorState::Established) {
+            if self
+                .inner
+                .initiator
+                .as_ref()
+                .is_some_and(|i| i.state() == microfips_core::fsp::FspInitiatorState::Established)
+            {
                 log::info!("[{} → FIPS] TX PING {}B", self.label, len);
             } else {
                 log::info!("[{} → FIPS] FSP action {}B", self.label, len);
@@ -355,7 +243,8 @@ where
         move || done_check.load(Ordering::Relaxed),
     );
 
-    result.lock().unwrap().take().unwrap()
+    let output = result.lock().unwrap().take().unwrap();
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -407,12 +296,6 @@ const ESP32_PUBKEY: [u8; 33] = [
 /// SIM-A node_addr (target for SIM-B initiator).
 const SIM_A_TARGET: [u8; 16] = [
     0x7c, 0x79, 0xf3, 0x07, 0x1e, 0x28, 0x34, 0x4e, 0x81, 0x53, 0xbf, 0x6c, 0x73, 0xc2, 0x94, 0xeb,
-];
-
-/// SIM-B node_addr (unused currently — no initiator targets SIM-B).
-#[allow(dead_code)]
-const SIM_B_TARGET: [u8; 16] = [
-    0x36, 0xbe, 0x1e, 0xa4, 0xd8, 0x14, 0xaf, 0x28, 0x88, 0xb8, 0x95, 0x06, 0x5a, 0x0b, 0x25, 0x38,
 ];
 
 /// ESP32 node_addr (target for sim initiator pinging ESP32).
@@ -523,7 +406,10 @@ fn main() {
                 }
             },
             None if is_initiator => {
-                log::error!("[{}] --initiator requires --target <node_addr_hex>", node_label);
+                log::error!(
+                    "[{}] --initiator requires --target <node_addr_hex>",
+                    node_label
+                );
                 std::process::exit(1);
             }
             None => [0u8; 16],
@@ -544,7 +430,8 @@ fn main() {
     let my_addr = NodeAddr::from_pubkey_x(x_only.try_into().unwrap());
 
     let stm32_target: [u8; 16] = [
-        0x13, 0x2f, 0x39, 0xa9, 0x8c, 0x31, 0xba, 0xad, 0xdb, 0xa6, 0x52, 0x5f, 0x5d, 0x43, 0xf2, 0x95,
+        0x13, 0x2f, 0x39, 0xa9, 0x8c, 0x31, 0xba, 0xad, 0xdb, 0xa6, 0x52, 0x5f, 0x5d, 0x43, 0xf2,
+        0x95,
     ];
     let fsp_target_pub = if use_sim_b {
         SIM_A_PUBKEY
@@ -554,7 +441,10 @@ fn main() {
             Ok(ref bytes) if *bytes == stm32_target => STM32_PUBKEY,
             Ok(ref bytes) if *bytes == ESP32_TARGET => ESP32_PUBKEY,
             _ => {
-                log::warn!("[{}] unknown target NodeAddr, FSP will fail (no pubkey mapping)", node_label);
+                log::warn!(
+                    "[{}] unknown target NodeAddr, FSP will fail (no pubkey mapping)",
+                    node_label
+                );
                 SIM_A_PUBKEY
             }
         }
@@ -566,12 +456,20 @@ fn main() {
     let npub = bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("npub"), &x_only)
         .expect("bech32 encode");
     log::info!("[{}] npub: {}", node_label, npub);
-    log::info!("[{}] node_addr: {}", node_label, hex::encode(my_addr.as_bytes()));
+    log::info!(
+        "[{}] node_addr: {}",
+        node_label,
+        hex::encode(my_addr.as_bytes())
+    );
     log::info!("[{}] FIPS: {}", node_label, fips_addr);
     log::info!(
         "[{}] mode: {}",
         node_label,
-        if is_initiator { "initiator" } else { "responder" }
+        if is_initiator {
+            "initiator"
+        } else {
+            "responder"
+        }
     );
     if is_initiator {
         log::info!("[{}] target: {}", node_label, hex::encode(&target_addr));
