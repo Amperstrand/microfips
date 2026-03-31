@@ -10,8 +10,6 @@ microfips-protocol = { path = "../microfips-protocol" }
 rand_core = { version = "0.6", default-features = false }
 esp-hal = { version = "1.0.0", features = ["esp32", "unstable"] }
 esp-rtos = { version = "0.2.0", features = ["esp32", "embassy"] }
-esp-backtrace = { version = "0.15", features = ["esp32", "panic-handler", "println"] }
-esp-println = { version = "0.13", features = ["esp32"] }
 esp-bootloader-esp-idf = { version = "0.4", features = ["esp32"] }
 embassy-time = "0.5.1"
 embassy-futures = "0.1.2"

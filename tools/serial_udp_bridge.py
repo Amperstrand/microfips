@@ -65,6 +65,17 @@ class SerialUdpBridge:
 
         self._open_serial(serial_port, baud)
 
+        port_info = serial.tools.list_ports.grep(serial_port)
+        is_esp32 = False
+        for pi in port_info:
+            vid_hex = f"{pi.vid:04x}" if pi.vid else ""
+            pid_hex = f"{pi.pid:04x}" if pi.pid else ""
+            if f"{vid_hex}/{pid_hex}" == PRODUCT_ESP32:
+                is_esp32 = True
+                break
+        if is_esp32:
+            self._reset_esp32()
+
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind((bind_addr, bind_port))
@@ -74,7 +85,7 @@ class SerialUdpBridge:
         for attempt in range(40):
             try:
                 self.ser = serial.Serial(
-                    port, baud, timeout=0, dsrdtr=True, rtscts=False
+                    port, baud, timeout=0, dsrdtr=False, rtscts=False
                 )
                 print(f"{ts()} SERIAL opened: {port} @ {baud} baud", file=sys.stderr)
                 return
@@ -83,6 +94,25 @@ class SerialUdpBridge:
                     print(f"{ts()} SERIAL open attempt {attempt+1}/40: {e}", file=sys.stderr)
                 time.sleep(0.25)
         raise RuntimeError(f"Failed to open {port}")
+
+    def _reset_esp32(self):
+        self.ser.dtr = False
+        self.ser.rts = True
+        time.sleep(0.1)
+        self.ser.rts = False
+        time.sleep(0.1)
+        self.ser.dtr = True
+        time.sleep(1.0)
+        junk = b""
+        while True:
+            n = self.ser.in_waiting
+            if n == 0:
+                break
+            junk += self.ser.read(n)
+        if junk:
+            print(f"{ts()} ESP32 reset, drained {len(junk)}B", file=sys.stderr)
+        else:
+            print(f"{ts()} ESP32 reset", file=sys.stderr)
 
     def _parse_frames(self):
         frames = []
