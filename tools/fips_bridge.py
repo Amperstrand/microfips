@@ -162,9 +162,6 @@ def udp_to_serial(ser, udp_sock, log_prefix, state):
         except Exception as e:
             print(f"{ts()} {log_prefix} error: {e}", file=sys.stderr)
             break
-        except Exception as e:
-            print(f"{ts()} {log_prefix} error: {e}", file=sys.stderr)
-            break
 
 
 def main():
