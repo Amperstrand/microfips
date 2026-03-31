@@ -312,7 +312,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 | M6 | MCU full lifecycle (handshake + heartbeat exchange) | Done |
 | M7 | FSP session protocol (XK handshake + encrypted data) | Done |
 | M8 | Sim-to-MCU FSP ping through FIPS | **Done** — SIM-B → FIPS → physical STM32 PING/PONG |
-| M9 | MCU-to-MCU ping (STM32 ↔ ESP32 through FIPS) | In progress — MCU-to-MCU FSP dual mode enabled, E2E test pending |
+| M9 | MCU-to-MCU ping (STM32 ↔ ESP32 through FIPS) | **Done** — MCU-to-MCU FSP PING/PONG + HTTP through FIPS proven on hardware (2026-04-01) |
 | M10 | FIPS DNS resolution (`.fips` names) | Future |
 
 ### M8 sub-milestones (all done)
@@ -338,8 +338,8 @@ All blockers are resolved:
 |----|-------------|--------|
 | M9.1 | STM32 FSP dual mode (initiator+responder targeting ESP32) | Done |
 | M9.2 | ESP32 FSP dual mode (already done, commit c7da1c2) | Done |
-| M9.3 | Sim-to-MCU HTTP-over-FSP test | In progress |
-| M9.4 | MCU-to-MCU FSP PING/PONG through FIPS (hardware E2E) | Pending |
+| M9.3 | Sim-to-MCU HTTP-over-FSP test | Done |
+| M9.4 | MCU-to-MCU FSP PING/PONG through FIPS (hardware E2E) | Done |
 
 ## Project Layout
 
