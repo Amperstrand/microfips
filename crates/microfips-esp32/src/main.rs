@@ -21,7 +21,7 @@ use embassy_sync::channel::Channel;
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::signal::Signal;
 #[cfg(any(feature = "ble", feature = "l2cap"))]
-use esp_radio::ble::{controller::BleConnector, have_hci_read_data};
+use esp_radio::ble::controller::BleConnector;
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 use static_cell::StaticCell;
 #[cfg(any(feature = "ble", feature = "l2cap"))]
@@ -123,7 +123,7 @@ const BLE_DEVICE_NAME: &str = "microfips-esp32";
 #[allow(dead_code)]
 const BLE_MAX_FRAME: usize = 252;
 #[cfg(feature = "l2cap")]
-const L2CAP_FRAME_CAP: usize = 2048;
+const L2CAP_FRAME_CAP: usize = 512;
 #[cfg(feature = "l2cap")]
 const L2CAP_PSM: u16 = 0x0085;
 #[cfg(feature = "l2cap")]
@@ -149,9 +149,7 @@ const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 #[cfg(feature = "ble")]
 static HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2>> = StaticCell::new();
 #[cfg(feature = "l2cap")]
-type L2capPacketPool = DefaultPacketPool;
-#[cfg(feature = "l2cap")]
-static L2CAP_HOST_RESOURCES: StaticCell<HostResources<L2capPacketPool, 1, 3>> = StaticCell::new();
+static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> = StaticCell::new();
 #[cfg(feature = "ble")]
 static BLE_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> = Channel::new();
 #[cfg(feature = "ble")]
@@ -310,19 +308,21 @@ impl embedded_io::ErrorType for BleHciTransport<'_> {
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 impl bt_hci::transport::Transport for BleHciTransport<'_> {
     async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
+        let rx_ptr: *mut [u8] = rx;
         loop {
-            if !have_hci_read_data() {
-                embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
-                continue;
-            }
             let connector = unsafe { &mut *self.connector.get() };
-            let len = connector.read_async(rx).await.map_err(|_| BleHciError::Io)?;
+            let len = unsafe { connector.next(&mut *rx_ptr) }.map_err(|_| BleHciError::Io)?;
             if len == 0 {
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
                 continue;
             }
-            let (pkt, _) = ControllerToHostPacket::from_hci_bytes(&rx[..len]).map_err(BleHciError::from)?;
-            return Ok(pkt);
+            match ControllerToHostPacket::from_hci_bytes_complete(&rx[..len]) {
+                Ok(pkt) => return Ok(pkt),
+                Err(_) => {
+                    esp_println::println!("[hci] parse error, dropping packet");
+                    continue;
+                }
+            }
         }
     }
 
@@ -372,8 +372,7 @@ async fn ble_host_task() {
 
     let controller: ExternalController<_, 20> = ExternalController::new(BleHciTransport::new(connector));
     let resources = HOST_RESOURCES.init(HostResources::new());
-    let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+    let stack = trouble_host::new(controller, resources);
 
     let Host {
         mut peripheral,
@@ -503,36 +502,49 @@ async fn ble_host_task() {
 #[cfg(feature = "l2cap")]
 #[embassy_executor::task]
 async fn l2cap_host_task() {
+    esp_println::println!("[l2cap_task] started");
     init_heap();
+    esp_println::println!("[l2cap_task] heap initialized");
 
     let Ok(radio) = esp_radio::init() else {
+        esp_println::println!("[l2cap_task] esp_radio::init failed");
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
         }
     };
+    esp_println::println!("[l2cap_task] esp_radio initialized");
 
     let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
     let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
+        esp_println::println!("[l2cap_task] BleConnector::new failed");
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
         }
     };
+    esp_println::println!("[l2cap_task] connector ready");
 
     let controller: ExternalController<_, 20> = ExternalController::new(BleHciTransport::new(connector));
+    esp_println::println!("[l2cap_task] controller created");
     let resources = L2CAP_HOST_RESOURCES.init(HostResources::new());
+    esp_println::println!("[l2cap_task] host resources initialized");
     let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([0xfe, 0x8f, 0x1a, 0x05, 0xe4, 0xfe]));
+        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+    esp_println::println!("[l2cap_task] stack initialized");
 
     let Host {
         mut peripheral,
         mut runner,
         ..
     } = stack.build();
+    esp_println::println!("[l2cap_task] host built");
+    esp_println::println!("[l2cap_task] entering join loop");
 
     let _ = embassy_futures::join::join(async {
         esp_println::println!("[l2cap_task] runner.run() starting");
-        let _ = runner.run().await;
-        esp_println::println!("[l2cap_task] runner.run() exited");
+        match runner.run().await {
+            Ok(()) => esp_println::println!("[l2cap_task] runner.run() exited ok"),
+            Err(e) => esp_println::println!("[l2cap_task] runner.run() error: {:?}", e),
+        }
     }, async {
         esp_println::println!("[l2cap_task] L2CAP listener ready");
         loop {
@@ -540,10 +552,11 @@ async fn l2cap_host_task() {
             let Ok(adv_len) = AdStructure::encode_slice(
                 &[
                     AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                    AdStructure::CompleteLocalName(BLE_DEVICE_NAME.as_bytes()),
+                    AdStructure::CompleteLocalName(b"microfips-l2cap"),
                 ],
                 &mut adv_data,
             ) else {
+                esp_println::println!("[l2cap_task] adv_data encode failed");
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
                 continue;
             };
@@ -553,6 +566,7 @@ async fn l2cap_host_task() {
                 &[AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE)],
                 &mut scan_data,
             ) else {
+                esp_println::println!("[l2cap_task] scan_data encode failed");
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
                 continue;
             };
@@ -570,11 +584,12 @@ async fn l2cap_host_task() {
             {
                 Ok(a) => {
                     esp_println::println!("[l2cap] BLE advertising started");
+                    esp_println::println!("[l2cap_task] advertise() returned, calling accept()");
                     a
                 }
-                Err(_) => {
-                    esp_println::println!("[l2cap_task] advertise failed, retrying");
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                Err(e) => {
+                    esp_println::println!("[l2cap_task] advertise() error: {:?}", e);
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
                     continue;
                 }
             };
@@ -582,6 +597,7 @@ async fn l2cap_host_task() {
             let conn = match advertiser.accept().await {
                 Ok(c) => {
                     esp_println::println!("[l2cap] BLE connection accepted");
+                    esp_println::println!("[l2cap_task] accept() returned, calling L2capChannel::accept()");
                     c
                 }
                 Err(_) => {
@@ -938,6 +954,9 @@ async fn main(spawner: embassy_executor::Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0);
 
+    #[cfg(any(feature = "ble", feature = "l2cap"))]
+    esp_println::println!("[microfips] main started");
+
     let mut led = Led(Output::new(
         peripherals.GPIO2,
         Level::Low,
@@ -946,6 +965,8 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
     let mut trng = Trng::try_new().unwrap();
+    #[cfg(any(feature = "ble", feature = "l2cap"))]
+    esp_println::println!("[microfips] trng ready");
 
     let mut resp_eph = [0u8; 32];
     trng.fill_bytes(&mut resp_eph);
