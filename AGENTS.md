@@ -3,9 +3,9 @@
 ## Project
 
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
-Both MCUs use length-prefixed framing → serial_udp_bridge.py (host) → UDP → VPS running stock FIPS.
-- **STM32F469I-DISCO:** USB CDC ACM transport
-- **ESP32-D0WD:** UART transport (CP210x USB-serial)
+Both MCUs use length-prefixed framing → host bridge → UDP → VPS running stock FIPS.
+- **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py
+- **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated)
 
 ## VPS Access
 
@@ -41,6 +41,18 @@ Requires the Espressif Rust toolchain (installed via `espup`, activated with `RU
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
 # Output: target/xtensa-esp32-none-elf/release/microfips-esp32
 ```
+
+### ESP32-D0WD (BLE variant)
+
+Same toolchain. Feature flag `ble` enables BLE transport instead of UART:
+
+```bash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
+# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
+```
+
+Default build (no `--features ble`) produces UART transport firmware. The BLE variant uses
+UART0 for debug output via `esp_println!` instead of FIPS traffic.
 
 ## Flash and Run
 
@@ -84,6 +96,83 @@ st-flash --connect-under-reset reset
 ```bash
 st-flash --connect-under-reset reset
 ```
+
+### ESP32 BLE Transport
+
+The ESP32 firmware supports BLE as an alternative to UART serial. Feature-gated behind
+`--features ble`. When active, UART0 is repurposed for `esp_println!` debug output instead
+of FIPS traffic.
+
+**BLE stack:** trouble v0.6.0 + esp-radio v0.17.0 (pure Rust, no_std, Embassy-native)
+**Host bridge:** `tools/ble_udp_bridge.py` using `bleak` (Python async BLE library)
+
+**GATT service UUIDs (firmware ↔ bridge must match):**
+
+| Characteristic | UUID | Direction |
+|---------------|------|-----------|
+| Service | `6f696670-7300-4265-8001-000000000001` | — |
+| RX (write) | `6f696670-7300-4265-8002-000000000002` | Host → ESP32 |
+| TX (notify) | `6f696670-7300-4265-8003-000000000003` | ESP32 → Host |
+
+**Build BLE firmware:**
+```bash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
+```
+
+**Flash (same command as UART):**
+```bash
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+```
+
+**Verify BLE advertising:**
+```bash
+python3 -c "
+import asyncio
+from bleak import BleakScanner
+async def scan():
+    devices = await BleakScanner.discover(timeout=10)
+    found = [d for d in devices if d.name and 'microfips' in d.name.lower()]
+    if found:
+        print(f'Found: {found[0].name} ({found[0].address})')
+    else:
+        print('Not found')
+asyncio.run(scan())
+"
+```
+
+**Run BLE bridge to VPS:**
+```bash
+python3 tools/ble_udp_bridge.py --ble-name "microfips-esp32" --udp-host orangeclaw.dns4sats.xyz --verbose
+```
+
+**Expected:** `>> BLE->UDP: frame#1 114B` (MSG1), `<< UDP->BLE: frame#1 69B` (MSG2),
+then heartbeat frames every ~10s.
+
+**UART debug output:**
+While BLE is active, UART0 outputs debug via `esp_println!`. Read with:
+```bash
+python3 -c "
+import serial, time
+s = serial.Serial('/dev/ttyUSB0', 115200, timeout=2)
+deadline = time.time() + 20
+while time.time() < deadline:
+    line = s.readline().decode(errors='replace').strip()
+    if line: print(line, flush=True)
+s.close()
+"
+```
+
+**Dependencies:**
+```bash
+pip install bleak
+```
+
+**Troubleshooting:**
+- **No BLE device found in scan:** ESP32 may still be booting (wait 10s, retry). Check BLE adapter: `hciconfig hci0` (must show UP RUNNING).
+- **Bridge connects but no frames:** Check UART debug output for errors. Verify VPS is reachable.
+- **Bridge can't open serial for debug:** BLE bridge uses D-Bus/BlueZ, not the serial port. They can coexist.
+- **Default UART build broken after BLE work:** Both builds are tested. Run `cargo clean` if Cargo feature cache causes issues.
 
 ### ESP32 flash and monitor
 
@@ -247,6 +336,42 @@ vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 mi
 **Note:** ESP32 does not use USB CDC, so there is no DTR-based `wait_connection()` blocking.
 The proxy can be started at any time; the ESP32 immediately begins sending MSG1 once booted.
 
+### BLE bridge + ESP32 + VPS handshake test (hardware)
+
+Requires BLE firmware flashed and `bleak` installed (`pip install bleak`).
+
+```bash
+# 1. Flash BLE firmware (if not already)
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+
+# 2. Verify BLE advertising (wait 8s after flash for boot)
+sleep 8
+python3 -c "
+import asyncio
+from bleak import BleakScanner
+async def scan():
+    devices = await BleakScanner.discover(timeout=10)
+    found = [d for d in devices if d.name and 'microfips' in d.name.lower()]
+    assert found, 'microfips-esp32 not found'
+    print(f'Found: {found[0].name} ({found[0].address})')
+asyncio.run(scan())
+"
+
+# 3. Start BLE bridge
+python3 tools/ble_udp_bridge.py --ble-name "microfips-esp32" --udp-host orangeclaw.dns4sats.xyz --verbose &
+
+# 4. Wait for handshake (~30s)
+sleep 30
+
+# 5. Check results
+# Expected in bridge output: "BLE->UDP: frame#1" (MSG1), "UDP->BLE: frame#1" (MSG2)
+# Check VPS: vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 5 --since '1 min ago'"
+```
+
+**Note:** BLE bridge uses BlueZ D-Bus API, not the serial port. No DTR-based `wait_connection()`
+blocking. The ESP32 advertises immediately on boot and the bridge connects within seconds.
+
 ### MCU-to-MCU FSP test (both MCUs required)
 
 Both STM32 and ESP32 must be connected. The automated script handles setup, bridge startup, IK handshake waiting, and FSP frame detection. Supports `--flash` to build and flash both MCUs first.
@@ -356,7 +481,7 @@ probe-rs read --chip STM32F469NIHx --connect-under-reset b32 <STAT_STATE_addr> 1
 ### ESP32 LED State Machine
 
 The ESP32 has a single user LED on GPIO2 (blue onboard LED). State visibility is
-more limited than STM32's 4-LED display:
+more limited than STM32's 4-LED display. Behavior is identical for both UART and BLE transports.
 
 | State | GPIO2 (Blue) | Meaning |
 |-------|:------------:|---------|
@@ -469,6 +594,7 @@ sudo uhubctl -l 1 -a cycle -f -d 5 -r 2
 |------------|------|-------|
 | UART TX | GPIO1 | Connected to CP210x RX |
 | UART RX | GPIO3 | Connected to CP210x TX |
+| BLE | Internal | esp-radio BLE controller (antenna on-board) |
 | LED (blue) | GPIO2 | Active high, onboard |
 | Flash | GPIO6–GPIO11 | SPI flash (do not use) |
 
@@ -581,6 +707,13 @@ ESP32 UART delivers data continuously, causing `select()` to always pick the rec
 and starving the heartbeat timer. The heartbeat check inside the recv branch
 (`if Instant::now() >= next_hb`) handles this, matching the STM32's approach.
 
+### RESOLVED: BLE advertising data overflow
+
+BLE advertising data (adv_data) is limited to 31 bytes. The original BLE firmware tried to
+fit Flags(3B) + CompleteLocalName(17B) + ServiceUuids128(18B) = 38B into 31B, causing
+`AdStructure encode failed` and a tight loop on device. **Fix:** split into adv_data
+(Flags + CompleteLocalName = ~20B) and scan_data (ServiceUuids128 = 18B).
+
 ## Actual MCU Keys (verified 2026-03-30)
 
 | MCU | Source | Pubkey (x-only, hex) | npub |
@@ -599,7 +732,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 - **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
 - **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
 - **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
-- **build-firmware**: STM32 `cargo build -p microfips --release --target thumbv7em-none-eabi` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` using upstream crates.io embassy v0.6.0
+- **build-firmware**: STM32 `cargo build -p microfips --release --target thumbv7em-none-eabi` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` (UART default) + ESP32 BLE `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble` using upstream crates.io embassy v0.6.0
 - **fips-integration**: local keygen + Noise IK handshake test (must pass), public VPS handshake (continue-on-error)
 - **summary**: aggregate status table
 
