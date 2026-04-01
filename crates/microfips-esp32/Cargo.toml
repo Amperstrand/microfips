@@ -7,6 +7,7 @@ description = "Minimal FIPS leaf node on ESP32 via UART"
 [features]
 default = []
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
+l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
