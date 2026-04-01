@@ -21,7 +21,7 @@ use embassy_sync::channel::Channel;
 #[cfg(feature = "ble")]
 use embassy_sync::signal::Signal;
 #[cfg(feature = "ble")]
-use esp_radio::ble::controller::BleConnector;
+use esp_radio::ble::{controller::BleConnector, have_hci_read_data};
 #[cfg(feature = "ble")]
 use static_cell::StaticCell;
 #[cfg(feature = "ble")]
@@ -251,14 +251,23 @@ impl From<FromHciBytesError> for BleHciError {
 
 #[cfg(feature = "ble")]
 struct BleHciTransport<'d> {
-    connector: embassy_sync::mutex::Mutex<CriticalSectionRawMutex, BleConnector<'d>>,
+    // Safety: single-threaded Embassy executor — read() and write() are never called
+    // concurrently. Using UnsafeCell avoids holding a mutex lock across an .await point
+    // (which would deadlock when runner and advertiser share the same join()).
+    connector: core::cell::UnsafeCell<BleConnector<'d>>,
 }
+
+// Safety: BleConnector is used only from one executor task at a time (single-threaded).
+#[cfg(feature = "ble")]
+unsafe impl Sync for BleHciTransport<'_> {}
+#[cfg(feature = "ble")]
+unsafe impl Send for BleHciTransport<'_> {}
 
 #[cfg(feature = "ble")]
 impl<'d> BleHciTransport<'d> {
     fn new(connector: BleConnector<'d>) -> Self {
         Self {
-            connector: embassy_sync::mutex::Mutex::new(connector),
+            connector: core::cell::UnsafeCell::new(connector),
         }
     }
 }
@@ -271,25 +280,27 @@ impl embedded_io::ErrorType for BleHciTransport<'_> {
 #[cfg(feature = "ble")]
 impl bt_hci::transport::Transport for BleHciTransport<'_> {
     async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
-        // Use packet-oriented read: BleConnector::read_async waits for HCI data then returns
-        // one complete HCI packet per call (buffers per-packet from rx_queue via hci_read_data).
-        // Re-parse raw bytes with bt-hci 0.8's FromHciBytes.
-        let len = {
-            let mut connector = self.connector.lock().await;
-            embedded_io_async::Read::read(&mut *connector, rx).await.map_err(|_| BleHciError::Io)?
-        };
-        ControllerToHostPacket::from_hci_bytes_complete(&rx[..len])
-            .map_err(BleHciError::from)
+        loop {
+            if !have_hci_read_data() {
+                embassy_futures::yield_now().await;
+                continue;
+            }
+            let connector = unsafe { &mut *self.connector.get() };
+            let len = connector.next(rx).map_err(|_| BleHciError::Io)?;
+            if len > 0 {
+                return ControllerToHostPacket::from_hci_bytes_complete(&rx[..len])
+                    .map_err(BleHciError::from);
+            }
+            embassy_futures::yield_now().await;
+        }
     }
 
     async fn write<T: HostToControllerPacket>(&self, val: &T) -> Result<(), Self::Error> {
-        // Serialize full HCI packet (with type indicator) to a local buffer first,
-        // then send in one call so HciOutCollector receives a complete packet.
         let mut buf = [0u8; 259];
         let wi = bt_hci::transport::WithIndicator::new(val);
         let len = wi.size();
         wi.write_hci(&mut buf[..len]).map_err(|_| BleHciError::Io)?;
-        let mut connector = self.connector.lock().await;
+        let connector = unsafe { &mut *self.connector.get() };
         connector.write(&buf[..len]).map(|_| ()).map_err(|_| BleHciError::Io)
     }
 }
