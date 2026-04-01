@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generator": "fips-golden-gen v0.1.0",
-  "generated_at": "2026-04-01T07:36:02.631954188+00:00",
+  "generated_at": "2026-04-01T07:44:09.829271387+00:00",
   "vectors": [
     {
       "comment": "scalar bytes are 0x01 repeated",
@@ -141,6 +141,74 @@
       "nonce": 1,
       "plaintext_hex": "0000000000000000000000000000000000000000000000000000000000000000",
       "type": "aead"
+    },
+    {
+      "chaining_key_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "comment": "ck=0x01.., dh=0x02..",
+      "dh_output_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "name": "mix-key-1",
+      "new_chaining_key_hex": "0d1e94c641dfd61a216ed04f1b390079459dea71ae4d466f574c260d1b6554db",
+      "new_key_hex": "b4069ed7a4a753cb5c779fb38a33dc02c63199ce58b6b7bf56286b844cacc358",
+      "type": "mix_key"
+    },
+    {
+      "chaining_key_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "comment": "ck=0x11.., dh=0x22..",
+      "dh_output_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "name": "mix-key-2",
+      "new_chaining_key_hex": "69849248ec90c5b7c0745ba9c380ba7c98a5fb51cca3c1c7fa789866542c6218",
+      "new_key_hex": "3b25c1bc41f8918c5d8b73d66ec47ab86ab2033b67a1a38de6d906bf0d2392fe",
+      "type": "mix_key"
+    },
+    {
+      "chaining_key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "comment": "ck=0xaa.., dh=0x55..",
+      "dh_output_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+      "name": "mix-key-3",
+      "new_chaining_key_hex": "845c83f32121f5219997019b8d77a0631300a3c8ee25cd6f04008446eb902377",
+      "new_key_hex": "670f62cac8093756806d432e74810397d01ed7fc9b5be0c70263a32d1c802aa7",
+      "type": "mix_key"
+    },
+    {
+      "chaining_key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "comment": "ck=0xff.., dh=0x01..",
+      "dh_output_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "name": "mix-key-4",
+      "new_chaining_key_hex": "ebc208c28052c1fe57e81196b6395fe29c56409f0c3844c7be9253d37ca6bd26",
+      "new_key_hex": "5a1d5040a551a602ac2fca9500242fc57bd594e1f93c1ec02ebbe406f0634978",
+      "type": "mix_key"
+    },
+    {
+      "chaining_key_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "comment": "ck=0x01..",
+      "k1_hex": "b5a5789af1d00c74773ef327dc63f0f11c7041252d4916c43a252b92e3358ad2",
+      "k2_hex": "72d7e204fba7b0ac19964ebcba5e88e3609cb8c3cafa4b940945df49da83680f",
+      "name": "split-1",
+      "type": "split"
+    },
+    {
+      "chaining_key_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "comment": "ck=0x11..",
+      "k1_hex": "0ec5683e5de9a6e70747dbecdd7b7f83d9bac14ffbae5780c9b4425fa9ef2368",
+      "k2_hex": "1f05404e9dea44e8904b4e1a8236deb46ccb5e636c2abfafc24cd69fa1f91306",
+      "name": "split-2",
+      "type": "split"
+    },
+    {
+      "chaining_key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "comment": "ck=0xaa..",
+      "k1_hex": "b9d62e2427f13a81b2351b55be37b22f6a497840ea2e90fca58504d8e89420d2",
+      "k2_hex": "063bb9f7b263ebd89af91a82ca804e09cdf810d0354c3d6f91ec57b52403c984",
+      "name": "split-3",
+      "type": "split"
+    },
+    {
+      "chaining_key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "comment": "ck=0xff..",
+      "k1_hex": "da7490dc0100d549fce53f73b6cbca4eef6afa6936787cd2b85f19723ad82173",
+      "k2_hex": "26fe63b10817205f6d1f6888b2c88f493d937e62cc9983a055417c07a3981c0c",
+      "name": "split-4",
+      "type": "split"
     }
   ]
 }

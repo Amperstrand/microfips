@@ -20,6 +20,8 @@ pub enum Vector {
     Ik(IkVector),
     Xk(XkVector),
     Transport(TransportVector),
+    MixKey(MixKeyVector),
+    Split(SplitVector),
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,4 +129,23 @@ pub struct TransportFrame {
     pub plaintext_hex: String,
     pub aad_hex: String,
     pub ciphertext_hex: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MixKeyVector {
+    pub name: String,
+    pub comment: String,
+    pub chaining_key_hex: String,
+    pub dh_output_hex: String,
+    pub new_chaining_key_hex: String,
+    pub new_key_hex: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SplitVector {
+    pub name: String,
+    pub comment: String,
+    pub chaining_key_hex: String,
+    pub k1_hex: String,
+    pub k2_hex: String,
 }
