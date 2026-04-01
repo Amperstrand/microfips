@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "generator": "fips-golden-gen v0.1.0",
+  "generated_at": "2026-04-01T07:36:02.631954188+00:00",
+  "vectors": [
+    {
+      "comment": "scalar bytes are 0x01 repeated",
+      "name": "pubkey-1",
+      "pubkey_hex": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "secret_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "type": "pubkey"
+    },
+    {
+      "comment": "scalar bytes are 0x02 repeated",
+      "name": "pubkey-2",
+      "pubkey_hex": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "secret_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "type": "pubkey"
+    },
+    {
+      "comment": "scalar bytes are 0x11 repeated",
+      "name": "pubkey-3",
+      "pubkey_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "secret_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "type": "pubkey"
+    },
+    {
+      "comment": "scalar bytes are 0xaa repeated",
+      "name": "pubkey-4",
+      "pubkey_hex": "026a04ab98d9e4774ad806e302dddeb63bea16b5cb5f223ee77478e861bb583eb3",
+      "secret_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "pubkey"
+    },
+    {
+      "comment": "compressed pubkey with odd parity prefix 0x03",
+      "name": "pubkey-5-odd-prefix",
+      "pubkey_hex": "0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+      "secret_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+      "type": "pubkey"
+    },
+    {
+      "comment": "DH(0x01.., pubkey(0x02..)) then SHA256(x)",
+      "initiator_secret_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "name": "ecdh-1",
+      "responder_pubkey_hex": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "shared_secret_hex": "442e7d713aece59b796393c4eb7deb384863209f6751a93d84faf8955d41a284",
+      "type": "ecdh"
+    },
+    {
+      "comment": "DH(0x02.., pubkey(0x01..)) then SHA256(x)",
+      "initiator_secret_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "name": "ecdh-2",
+      "responder_pubkey_hex": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "shared_secret_hex": "442e7d713aece59b796393c4eb7deb384863209f6751a93d84faf8955d41a284",
+      "type": "ecdh"
+    },
+    {
+      "comment": "DH(0x11.., pubkey(0x22..)) then SHA256(x)",
+      "initiator_secret_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "name": "ecdh-3",
+      "responder_pubkey_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "shared_secret_hex": "fd264454c8f37c9c4b000f0672399b9c76011de71f489fd8a043e25e558226f9",
+      "type": "ecdh"
+    },
+    {
+      "comment": "DH(0xaa.., pubkey(0x55..)) then SHA256(x)",
+      "initiator_secret_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "ecdh-4",
+      "responder_pubkey_hex": "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b",
+      "shared_secret_hex": "ad89dd572157bc03e1a707d4fcdb68b538aa3a35a3979c4afae989d315c12886",
+      "type": "ecdh"
+    },
+    {
+      "comment": "HKDF-SHA256(salt=00.., ikm=00..) -> 64 bytes",
+      "ikm_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "hkdf-1",
+      "output_hex": "df7204546f1bee78b85324a7898ca119b387e01386d1aef037781d4a8a036aeea7b65a6e7f873068dd147c56493e71294acc89e73baae2e4a87075f18739b4cd",
+      "salt_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "type": "hkdf"
+    },
+    {
+      "comment": "HKDF-SHA256(salt=01.., ikm=02..) -> 64 bytes",
+      "ikm_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "name": "hkdf-2",
+      "output_hex": "0d1e94c641dfd61a216ed04f1b390079459dea71ae4d466f574c260d1b6554dbb4069ed7a4a753cb5c779fb38a33dc02c63199ce58b6b7bf56286b844cacc358",
+      "salt_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "type": "hkdf"
+    },
+    {
+      "comment": "HKDF-SHA256(salt=SHA256('test_chain_key'), ikm=SHA256('ecdh_output'))",
+      "ikm_hex": "5e97a71148a587334df7ca28ea25339b690b3443b90cdce3173034cafa2911da",
+      "name": "hkdf-3",
+      "output_hex": "8cd27c8541ce8bf09af7a72cf3c1c986e1b51734531fe17086c8707150571d6a4e41d09e968475730a762202eb101d584e90a9a4593469c888ee6dfbee5f4ef7",
+      "salt_hex": "d033300bd320df310c3f3fe35eef5824addce7b34b5b0019a97e7f81685c36a9",
+      "type": "hkdf"
+    },
+    {
+      "comment": "HKDF-SHA256(salt=aa.., ikm=bb..) -> 64 bytes",
+      "ikm_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "name": "hkdf-4",
+      "output_hex": "d35bfaa2389d045d8e310a6e49ae792a83c779f814d9ba5778d9281f09d70309b6cf64d83ed1b0e8bc6c7d4075c5315eb2f4fcb451af77084da7726f428ca922",
+      "salt_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "hkdf"
+    },
+    {
+      "aad_hex": "",
+      "ciphertext_hex": "f7628bd23adce962340b6fd6a0a4d1fe736f29456f",
+      "comment": "ChaCha20Poly1305 key=00.. nonce=0 aad='' plaintext='hello'",
+      "key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "aead-1",
+      "nonce": 0,
+      "plaintext_hex": "68656c6c6f",
+      "type": "aead"
+    },
+    {
+      "aad_hex": "",
+      "ciphertext_hex": "6f4824a28b727ea36a9f1ae5cfcf3e729dee1c7b3254436b3794a1a6df417a06deb48417",
+      "comment": "ChaCha20Poly1305 key=01.. nonce=0 aad='' plaintext='noise handshake test'",
+      "key_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "name": "aead-2",
+      "nonce": 0,
+      "plaintext_hex": "6e6f6973652068616e647368616b652074657374",
+      "type": "aead"
+    },
+    {
+      "aad_hex": "7465737420616164",
+      "ciphertext_hex": "2a03875978c013bd8dd8385b9e4b09399e4207f36a73ca3b061191d54a63",
+      "comment": "ChaCha20Poly1305 key=42.. nonce=0 aad='test aad' plaintext='secret payload'",
+      "key_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "name": "aead-3",
+      "nonce": 0,
+      "plaintext_hex": "736563726574207061796c6f6164",
+      "type": "aead"
+    },
+    {
+      "aad_hex": "",
+      "ciphertext_hex": "952139bf096e179aefccdd2e7257a0a43da65a87bc6687dd4c3bf3b6ee7aff2fb2ac6c11e54a246689b267397ed41f23",
+      "comment": "ChaCha20Poly1305 key=ff.. nonce=1 aad='' plaintext=32 zero bytes",
+      "key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "name": "aead-4",
+      "nonce": 1,
+      "plaintext_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "type": "aead"
+    }
+  ]
+}
