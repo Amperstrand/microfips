@@ -3,6 +3,7 @@ name = "microfips-core"
 version = "0.1.0"
 edition = "2021"
 description = "FIPS protocol core: SLIP, identity, Noise, wire format (no_std)"
+autotests = false
 
 [dependencies]
 sha2 = { version = "0.10", default-features = false, features = ["oid"] }
@@ -17,6 +18,32 @@ log = { version = "0.4", optional = true }
 hex = "0.4"
 rand = "0.9"
 log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[test]]
+name = "error_injection"
+path = "tests/error_injection.rs"
+
+[[test]]
+name = "fips_compatibility"
+path = "tests/fips_compatibility.rs"
+
+[[test]]
+name = "fips_wire_format"
+path = "tests/fips_wire_format.rs"
+
+[[test]]
+name = "fsp_edge_cases"
+path = "tests/fsp_edge_cases.rs"
+
+[[test]]
+name = "fsp_over_fmp"
+path = "tests/fsp_over_fmp.rs"
+
+[[test]]
+name = "golden_vectors"
+path = "tests/golden_vectors.rs"
 
 [features]
 default = []
