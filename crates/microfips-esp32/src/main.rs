@@ -740,6 +740,49 @@ enum L2capError {
 }
 
 #[cfg(feature = "l2cap")]
+async fn l2cap_pubkey_exchange(transport: &mut L2capTransport, secret: &[u8; 32]) -> [u8; 33] {
+    let local_pub = match microfips_core::noise::ecdh_pubkey(secret) {
+        Ok(pubkey) => pubkey,
+        Err(_) => loop {
+            core::hint::spin_loop();
+        },
+    };
+
+    let mut tx = [0u8; 33];
+    tx[0] = 0x00;
+    tx[1..].copy_from_slice(&local_pub[1..33]);
+    if transport.send(&tx).await.is_err() {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    let mut rx = [0u8; 33];
+    let n = match embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(5),
+        transport.recv(&mut rx),
+    )
+    .await
+    {
+        Ok(Ok(n)) => n,
+        _ => loop {
+            core::hint::spin_loop();
+        },
+    };
+
+    if n != 33 || rx[0] != 0x00 {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    let mut peer_pub = [0u8; 33];
+    peer_pub[0] = 0x02;
+    peer_pub[1..33].copy_from_slice(&rx[1..33]);
+    peer_pub
+}
+
+#[cfg(feature = "l2cap")]
 impl Transport for L2capTransport {
     type Error = L2capError;
 
@@ -947,9 +990,11 @@ async fn main(_spawner: embassy_executor::Spawner) {
     {
         esp_println::println!("[microfips] L2CAP mode starting");
         let mut transport = L2capTransport;
-        // T7 will replace DEFAULT_PEER_PUB with the result of l2cap_pubkey_exchange()
+        transport.wait_ready().await.ok();
+        let peer_pub = l2cap_pubkey_exchange(&mut transport, &ESP32_SECRET).await;
+        esp_println::println!("[microfips] pubkey exchange complete");
         let rng = EspRng(trng);
-        let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
+        let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
         node.set_raw_framing(true);
         let fsp = FspDualHandler::new_dual(ESP32_SECRET, resp_eph, init_eph, &STM32_PEER_PUB, STM32_NODE_ADDR);
         let mut handler = EspHandler { led: &mut led, fsp };
