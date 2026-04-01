@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generator": "fips-golden-gen v0.1.0",
-  "generated_at": "2026-04-01T08:19:22.186884236+00:00",
+  "generated_at": "2026-04-01T08:58:38.017754490+00:00",
   "vectors": [
     {
       "comment": "scalar bytes are 0x01 repeated",
@@ -941,6 +941,580 @@
         "responder_send": "7ad9c5cd6f789cc4e76e0bde2c2fd10fe2f794844fbecf27fa45b090cf6d3046"
       },
       "type": "xk_handshake"
+    },
+    {
+      "comment": "Transport vectors from IK key-set ik-1 (D1 empty aad, D2 se swap)",
+      "frames": [
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "cdf3f6ede1d6c78d0c8decf7e50405c52714eef52574c5282264c6656bd944b4",
+          "direction": "initiator_to_responder",
+          "nonce": 0,
+          "plaintext_hex": "48656c6c6f2c20464950532100000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "30ee7cc7cdb78b351f1d78b6011bd575b16a93be52b46d9d89400bca9151c133ab5a3741a0662abab0e681740fec64fdb2baa918ca50ad058ea97c1f83b38e47163051971b9ee229ef95305dc3715b9c",
+          "direction": "initiator_to_responder",
+          "nonce": 1,
+          "plaintext_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "ada3f36c97d1e3f1c76232f4e3a79547a58bad1224f7d08519a543845e8e35eec80981b361540303be3bfdd147d90a22e95f755d79ecacf27d2d15bef3fa7e2d0a1737d5a3af28cc4e36a65cc66bed5c11b924b191fe8367f36769d54ed605aff1777cb2ad93d6b869b2fa21b645de12748485ad2f2a3067daf11107b3c66a9881ce2ae384edba61b849b0e88598af7a857f0667f0112d500479e3ce096b7424e77106fc7ca2a4dd218ae4c19084ff7eb84821c602d34e5281b5b9e4fa3fbb30416aea79a596392dc3da023d4033fa08773cd77a0762e9fdb4869cacea3c3c3c2ad21a03a9810b876d7d3fb1cab81441ac843a678bf2f2d738acd98dd572870eca072c2c101a2c765229e3218357acf9",
+          "direction": "initiator_to_responder",
+          "nonce": 2,
+          "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "34a9030d384ac84de8668d025729ad3131d3bdda0bedd383b4a153141ade5a42",
+          "direction": "responder_to_initiator",
+          "nonce": 0,
+          "plaintext_hex": "48656c6c6f2c20464950532100000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "4b9fde19bae4366fc0ba6c1832f48ca50050419baa2553763197c1ec87c424ae1f41397cc7c0909d7b1e6e0e0c17b194c1e4a49daebe1b80fe3be37e55524d33e1f52fdcecdba3f7ca03ebfb3e65e696",
+          "direction": "responder_to_initiator",
+          "nonce": 1,
+          "plaintext_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "be1a5867af4353355bcfc8526855a92522831540f2abfc2ee4a84521fa4dc293a363fc7f3b1645c152452d3b42f0237ea0a88e8cdbaa2e6b01fa800a02cbd1de69aa83ef9a3ea6ffeb9562dd9b77c78043587a63f626171620e75f1467e3857bda88563581b1502c8a1b895bc2c8ad23ebf7c2c619b6897c50e2ec70b727b3600f5b1298559f88c4e3b6e7342ca622e43197c92c794e295dc4080cfedde5b8f8d90a7f9801a52a81fa6fda67060c68950f24d2b2dd1d33c1b87b5c41ad72dd95c81a04edf12c90cef9aa70c85aa8ec1795805bd0bd97de6ee833d7c5f90139804a6bd57787b400aab82782486c58010f76213ba3f2be2afde1e8b82043535c89cada6c272d619cb999113c0c19ea4435",
+          "direction": "responder_to_initiator",
+          "nonce": 2,
+          "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        }
+      ],
+      "handshake_name": "ik-1",
+      "handshake_type": "ik_handshake",
+      "initiator_transport_recv_key_hex": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+      "initiator_transport_send_key_hex": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+      "name": "transport-ik-1",
+      "responder_transport_recv_key_hex": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+      "responder_transport_send_key_hex": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+      "type": "transport"
+    },
+    {
+      "comment": "Transport vectors from IK key-set ik-2 (D1 empty aad, D2 se swap)",
+      "frames": [
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "0c2251ba896cacc2db4cf5731e17aa4ac8b7e4f6b6704ac885f0ce532e7378c0",
+          "direction": "initiator_to_responder",
+          "nonce": 0,
+          "plaintext_hex": "48656c6c6f2c20464950532100000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "ff080de86975b600699ae2b738d0b33c260641dc3dfcf4fa2797b33310cfd83cdf8690d047465d81b9d2f3900f69a8d5a4bd4868ed182efe57e04299463e96524efea27f164e478dfece2788b8760564",
+          "direction": "initiator_to_responder",
+          "nonce": 1,
+          "plaintext_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "ed9ef1599986ef2d160af9320c5bf3b312b1232ef30aadd89ff45e7df044fe68f83ea8b1ccd1e8f9efa67b4aae8301d1df2657dfc862820a428ba3c64587c7549cdcbd1f04132fb91cf987a2ae76e2b5e073fb9de5869f16fbaa2b7433669958d0b9758bd0e2ebfd7d7810df0893be4d83ef1cef8d51cd1a956391e35678d11d99ab00fba51a11abaabd16244131a760a65667448e349289f6c768feabd3eefb9502a75d8e459070dc09be3b52601015f2c19cb63b068c869fe61fec1961a6975f5ceccd39b925ebca43c758c25d88a73c2693ae29e39b5316538fa72a56706016e3038047c6fd91ab84da89407f8d6b753dd772ca50a3863d7288af0a10798c5e56dde4d71e0bcfdad6a489318e2cc7",
+          "direction": "initiator_to_responder",
+          "nonce": 2,
+          "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "a38a018f712467835adb11756b7816682758800f31e802153898cae2a1aceb40",
+          "direction": "responder_to_initiator",
+          "nonce": 0,
+          "plaintext_hex": "48656c6c6f2c20464950532100000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "03c2a94b7b2f89e5ba2959612f33454efecca82b25925deb5b58539a54801d89ab4ba964f5c13961124e3e28e021ede13e79b9261c7b8aa28b1c18e0be560d5348131f5e04bbd9ef03fcfe5da0e8cd2c",
+          "direction": "responder_to_initiator",
+          "nonce": 1,
+          "plaintext_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "2324712a0e38b4c5d78ac3848689efbfaa598c9008fa2eba2e513daf5b77630cdf3b4f674ee5f4881ff3d4762e9bb810c06b2fc2147ee6d8804de2d37bc614b134763f0e0f4c429dd08a478eb0a0b52cd002c995bf36ea3bfc054c798a1655f4a2588268dcd6e55697264f594a5be3f20123f47c6f72260cd2f6317ef1207a579c90762bcfe2e724fadde7ced1fe4b4961e79fa58178636eb8c73e3cf4dfcac550606191dcd93ac7ff94dc7eb34b7d0759510c34e6abac989a2c5a0e6d4bd53e82b6973d88e3f1c994e04b6f0dd41c7b85ee5086c12af45c7ef2b6350d9f8e196ca551190546aec584160f11c227a33b26d3f4680e32cb817ef355fe6597119156d89c619c3fd1e8400652a09f8b1727",
+          "direction": "responder_to_initiator",
+          "nonce": 2,
+          "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        }
+      ],
+      "handshake_name": "ik-2",
+      "handshake_type": "ik_handshake",
+      "initiator_transport_recv_key_hex": "2ebfeb3f6db07b4e0a8d1afe1336b0c91841346602997cff80b9a6066b0a1fd1",
+      "initiator_transport_send_key_hex": "51d787e6b04faf396172b234a302c29c535da249fa69e644af8785e9b973dbaa",
+      "name": "transport-ik-2",
+      "responder_transport_recv_key_hex": "51d787e6b04faf396172b234a302c29c535da249fa69e644af8785e9b973dbaa",
+      "responder_transport_send_key_hex": "2ebfeb3f6db07b4e0a8d1afe1336b0c91841346602997cff80b9a6066b0a1fd1",
+      "type": "transport"
+    },
+    {
+      "comment": "Transport vectors from XK key-set xk-1 (D1 empty aad)",
+      "frames": [
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "84bd3667895b746724d7e6a061fb3980863813712463eff0d83185fa562cd73c",
+          "direction": "initiator_to_responder",
+          "nonce": 0,
+          "plaintext_hex": "48656c6c6f2c20464950532100000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "37bc7de49a004ccfc2885cf63f399fbe739e221286f8cf0f8e1889b65b47bc1e0bacfae92ae6bb0b05b48708b4e22d212a08cb316701f0628db1b6d1c1361b69115931a056f41e348d86d98527cbb35b",
+          "direction": "initiator_to_responder",
+          "nonce": 1,
+          "plaintext_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "a24089dbceccff0ce78542b9ac8661d9b6ff654426a4f06475c66011b21311efb62bc6e633348262fb9285427fc99cfb5105e67017b3963f640c7f15aad3223b4df87b68511dc38d18711c76d5683a60b33eb398add9cba27cf240b0bca340494c087bf6f7e1c25829cabc8b703eb1e95389341e909e5e120406be2957936e4c518d46c5cab9e347402e78d612850cb8b64c189ff7956afba05beae8a975528c7f77ee3d709cb5ff84957f80fb424424316c41bdba96cfb8719b15e5502f6465c09bb36eb1d16399952944aa819986f65d58e992ff7fe34278901acb38b30cf57876389efe70bfa4b58cd5b795f54d3351a78413dbdaa4528831e6f15b365e762604cd27d7db4277ed54f81da77b9ca3",
+          "direction": "initiator_to_responder",
+          "nonce": 2,
+          "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "919e3b4e2976453ec069c6c3af61fce2142726572e6111df8bd66717956b6c04",
+          "direction": "responder_to_initiator",
+          "nonce": 0,
+          "plaintext_hex": "48656c6c6f2c20464950532100000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "fa62a6699fb699be6b486439dabee7d1bc37d65445e9862480a02d8712ae39b02c228b418dc8fb8e7db624901abfb7a41751ee0005771871dc470faf53e1239d056d5b79f421b82b464e2e0f9b4ff3ee",
+          "direction": "responder_to_initiator",
+          "nonce": 1,
+          "plaintext_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "ea92448dea52df86a04d41cc8037a3194c4acf90a05285e7bb0ce6a9eae245d7f3ff9c447cb1b7fdd26e8642d5e20afa8e28f3e4b68dde32fb6339c6bff4885b4f8767cff242b94f152c3e7ad7c4655c35d443fc9c60aea9c924a1f186ec507ec9a14841fcf8ec000c03527aff9d78194609d127bf28d47a280cbfd006ca9aa992125f9499ecf2875f6f4bff951e8b473af8a4db5e1147c862f32b134b88f00c2727dec5ca794d8dbd0c8837f01eca0500e2271000746b653135679804f43d156608e642dbd0b2c267788e83dabb798e37ac95ae50ff0899c35977e989163a3763ff43c6b37d418a7c76f58afd4aeb6f26b363552e73497ad6e2302b353bb4badf9f290d43af79bff8ffaec5c686a4ab",
+          "direction": "responder_to_initiator",
+          "nonce": 2,
+          "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        }
+      ],
+      "handshake_name": "xk-1",
+      "handshake_type": "xk_handshake",
+      "initiator_transport_recv_key_hex": "142af43f5e48d5491ae503930bfeff524624731352728d78801da1b7d712e884",
+      "initiator_transport_send_key_hex": "4b2194469d488842ba05bbcd572614dcd8987484c98c423e7bee43fb4866510e",
+      "name": "transport-xk-1",
+      "responder_transport_recv_key_hex": "4b2194469d488842ba05bbcd572614dcd8987484c98c423e7bee43fb4866510e",
+      "responder_transport_send_key_hex": "142af43f5e48d5491ae503930bfeff524624731352728d78801da1b7d712e884",
+      "type": "transport"
+    },
+    {
+      "comment": "Transport vectors from XK key-set xk-2 (D1 empty aad)",
+      "frames": [
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "b424f21411e1799cec878c1d2be761251001114f14811b73e693b1c7d49881a1",
+          "direction": "initiator_to_responder",
+          "nonce": 0,
+          "plaintext_hex": "48656c6c6f2c20464950532100000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "254e9b2ec957ac4b4abc35fb3675ff262452c79d89d983c0890c50933e5600fa232b6b2b7f4704a4ed0147635ca5f5eef3925329bae68fab00e30218fbd14ac9a3a23b2cea8d599cfcd798059abc17ac",
+          "direction": "initiator_to_responder",
+          "nonce": 1,
+          "plaintext_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "7726eee3a4b8a66b99e4cc5e374b0ef55c515d2145268b2ddba4c988d96c76a4ba49f9bba51f44b100d7fca7eaa12455632b0238deba0c503425e7780d8171206a84e5b8fe28953d6985e445e8f8cc990cab755219e4c171429e3761a7bba3fde0c2d8f0e9045593b95b993154df4dbf7eb5cec7e04b6abd7c3531ab5846125f8bace8ec6d5b826aa494c2b9a1fad731b2e00c1d193dd62d061f12be91d68e5cd8e879e7e59555f76fe61f61882bf21e6cb38d4c5c6bbda05a54544a4325255256c305cc0dbc0ca50e9cad720db84f556b57acd1e9b57ea5c36ded32ca0ec1dd199b80d916e9dbfe5c797164607a0c77da37831649034b2fa729faad327ce5d9ba1a260586de23e9488127594b9992d9",
+          "direction": "initiator_to_responder",
+          "nonce": 2,
+          "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "cef6f3cd31707acf87b102e5ddeed06843e3c958d6c70a966cc8dcee7dc3413e",
+          "direction": "responder_to_initiator",
+          "nonce": 0,
+          "plaintext_hex": "48656c6c6f2c20464950532100000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "371f1fb659af85b9646259092333f2f2e05b0cf8a9a2623f68d4aa1d6f2985db0090eac7748f3bf945b8d29978baf006439b58ecc930ddc30638d72fc0cc0f1597866baaa78a0af8762d92fd734e30d3",
+          "direction": "responder_to_initiator",
+          "nonce": 1,
+          "plaintext_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "aad_hex": "",
+          "ciphertext_hex": "9a24cec7f9da48764893f468c713ec62620b5e55a65a97c572bfb51cc0d4b549493721784ed42fcf2b6b1604ca29c37e138cc21aed03441dcd2ace3e0621d573e3ebd0350bb2fd2bdb572ba1ba3497b8dd4ad8faf44b8f954bdb0fd8258d8e2812e43bc95cdde1a710602282bd89ac8bd0ceeead350d1f8afd8579ce134e394b6b8b7b0c59972e6e8c59485945f33bfe1b84d19f0d9061fe7c1fe5f61feeece10749e6760bf689e886b6e7b1aa40c2c4ae0ff46f55448e3dacca7c3cd36a6d8fdbdee12a31c07a5691a0228013743b704a013e5f6fb9729ec16cb0102762927e1408109dd36854a6881e36294118b82ce63d3e858871130ec78e69aa914d91bf09a24c1e3c746a65c4081a7407a42408",
+          "direction": "responder_to_initiator",
+          "nonce": 2,
+          "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        }
+      ],
+      "handshake_name": "xk-2",
+      "handshake_type": "xk_handshake",
+      "initiator_transport_recv_key_hex": "88ce2acf9d318b3af401d99d4a855ed816a8ffcf2bfc45d0f643a3b1fea7a783",
+      "initiator_transport_send_key_hex": "9a8994f424000180338d06fe95132aa080bf1deb34dd8d5a38dfdc483d86bf8a",
+      "name": "transport-xk-2",
+      "responder_transport_recv_key_hex": "9a8994f424000180338d06fe95132aa080bf1deb34dd8d5a38dfdc483d86bf8a",
+      "responder_transport_send_key_hex": "88ce2acf9d318b3af401d99d4a855ed816a8ffcf2bfc45d0f643a3b1fea7a783",
+      "type": "transport"
+    },
+    {
+      "comment": "IK handshake with all-zero epoch bytes for both initiator and responder",
+      "deviations": [
+        "D1_empty_aad",
+        "D2_ik_se_swap"
+      ],
+      "epoch": 1,
+      "handshake_hash": "e14fa50fb746d657d417451f0e0a9b53201c04c8462a43d37a93155fd5f549f4",
+      "handshake_hash_hex": "e14fa50fb746d657d417451f0e0a9b53201c04c8462a43d37a93155fd5f549f4",
+      "init_eph_pub": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "init_eph_secret": "1111111111111111111111111111111111111111111111111111111111111111",
+      "init_epoch": "0000000000000000",
+      "init_static_pub": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "init_static_secret": "0101010101010101010101010101010101010101010101010101010101010101",
+      "initiator_ephemeral_pubkey_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "initiator_ephemeral_secret_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "initiator_epoch_hex": "0000000000000000",
+      "initiator_static_pubkey_hex": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "initiator_static_secret_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "initiator_transport_recv_key_hex": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+      "initiator_transport_send_key_hex": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+      "messages": [
+        {
+          "direction": "init->resp",
+          "hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa8fee0d0b0fdac4c25e04277d2b48007f780c1567c523b6aa1e4e0cbc1eb89014dd30e04afd519594cefac9d8e19b0ba43ea0e8919f3911117f57d6e0de8dabcebe36e35fda2a87740e",
+          "payload_hex": "0000000000000000"
+        },
+        {
+          "direction": "resp->init",
+          "hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27623fb0cf0105b12c898aefe3fa0d47a4bccaec9ab7ee1923",
+          "payload_hex": "0000000000000000"
+        }
+      ],
+      "msg1_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa8fee0d0b0fdac4c25e04277d2b48007f780c1567c523b6aa1e4e0cbc1eb89014dd30e04afd519594cefac9d8e19b0ba43ea0e8919f3911117f57d6e0de8dabcebe36e35fda2a87740e",
+      "msg1_payload_hex": "0000000000000000",
+      "msg2_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27623fb0cf0105b12c898aefe3fa0d47a4bccaec9ab7ee1923",
+      "msg2_payload_hex": "0000000000000000",
+      "name": "edge-zero-epoch-ik",
+      "resp_eph_pub": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "resp_eph_secret": "2222222222222222222222222222222222222222222222222222222222222222",
+      "resp_epoch": "0000000000000000",
+      "resp_static_pub": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "resp_static_secret": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_ephemeral_pubkey_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "responder_ephemeral_secret_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "responder_epoch_hex": "0000000000000000",
+      "responder_static_pubkey_hex": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "responder_static_secret_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_transport_recv_key_hex": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+      "responder_transport_send_key_hex": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+      "transport_keys": {
+        "initiator_recv": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+        "initiator_send": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+        "responder_recv": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+        "responder_send": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb"
+      },
+      "type": "ik_handshake"
+    },
+    {
+      "comment": "IK handshake with all-0xFF epoch bytes (max epoch value) for both parties",
+      "deviations": [
+        "D1_empty_aad",
+        "D2_ik_se_swap"
+      ],
+      "epoch": 1,
+      "handshake_hash": "796b1fdc90f60d8f2a005fa5f2cf7170488a41641ee2e961ae5fd67f28830df4",
+      "handshake_hash_hex": "796b1fdc90f60d8f2a005fa5f2cf7170488a41641ee2e961ae5fd67f28830df4",
+      "init_eph_pub": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "init_eph_secret": "1111111111111111111111111111111111111111111111111111111111111111",
+      "init_epoch": "ffffffffffffffff",
+      "init_static_pub": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "init_static_secret": "0101010101010101010101010101010101010101010101010101010101010101",
+      "initiator_ephemeral_pubkey_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "initiator_ephemeral_secret_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "initiator_epoch_hex": "ffffffffffffffff",
+      "initiator_static_pubkey_hex": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "initiator_static_secret_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "initiator_transport_recv_key_hex": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+      "initiator_transport_send_key_hex": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+      "messages": [
+        {
+          "direction": "init->resp",
+          "hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa8fee0d0b0fdac4c25e04277d2b48007f780c1567c523b6aa1e4e0cbc1eb89014dd30e04afd519594cefac9d8e19b0ba43e5f176e60c6eeee80d04af7860cb72c597f4e2f55dddb20f3",
+          "payload_hex": "ffffffffffffffff"
+        },
+        {
+          "direction": "resp->init",
+          "hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f279dc04f30fefa4ed39ff2c1c04345cc4aa931e76df25a481e",
+          "payload_hex": "ffffffffffffffff"
+        }
+      ],
+      "msg1_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa8fee0d0b0fdac4c25e04277d2b48007f780c1567c523b6aa1e4e0cbc1eb89014dd30e04afd519594cefac9d8e19b0ba43e5f176e60c6eeee80d04af7860cb72c597f4e2f55dddb20f3",
+      "msg1_payload_hex": "ffffffffffffffff",
+      "msg2_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f279dc04f30fefa4ed39ff2c1c04345cc4aa931e76df25a481e",
+      "msg2_payload_hex": "ffffffffffffffff",
+      "name": "edge-max-epoch-ik",
+      "resp_eph_pub": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "resp_eph_secret": "2222222222222222222222222222222222222222222222222222222222222222",
+      "resp_epoch": "ffffffffffffffff",
+      "resp_static_pub": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "resp_static_secret": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_ephemeral_pubkey_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "responder_ephemeral_secret_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "responder_epoch_hex": "ffffffffffffffff",
+      "responder_static_pubkey_hex": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "responder_static_secret_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_transport_recv_key_hex": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+      "responder_transport_send_key_hex": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+      "transport_keys": {
+        "initiator_recv": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+        "initiator_send": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+        "responder_recv": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+        "responder_send": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb"
+      },
+      "type": "ik_handshake"
+    },
+    {
+      "comment": "IK handshake where initiator static secret = [0u8;31]+[0x03] (small scalar near group generator)",
+      "deviations": [
+        "D1_empty_aad",
+        "D2_ik_se_swap"
+      ],
+      "epoch": 1,
+      "handshake_hash": "238b54141216755a5867a5bb9faf64550d58d58694aa41b34ab019f0f6886621",
+      "handshake_hash_hex": "238b54141216755a5867a5bb9faf64550d58d58694aa41b34ab019f0f6886621",
+      "init_eph_pub": "023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+      "init_eph_secret": "3333333333333333333333333333333333333333333333333333333333333333",
+      "init_epoch": "0100000000000000",
+      "init_static_pub": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "init_static_secret": "0000000000000000000000000000000000000000000000000000000000000003",
+      "initiator_ephemeral_pubkey_hex": "023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+      "initiator_ephemeral_secret_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+      "initiator_epoch_hex": "0100000000000000",
+      "initiator_static_pubkey_hex": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "initiator_static_secret_hex": "0000000000000000000000000000000000000000000000000000000000000003",
+      "initiator_transport_recv_key_hex": "123b27e8d4f242c55b2b4ccb9072cf073bda1965d338f0acbfea62639b192c39",
+      "initiator_transport_send_key_hex": "5a7098cec26f9f8a5b0df4126892a5904ce0f68e2ea8e4cf715ab322994157f7",
+      "messages": [
+        {
+          "direction": "init->resp",
+          "hex": "023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b116ebd41eeca7d69068e1e18374059ae24b3dabc38256042684bee806fa92041cafc7d731f7c6db4e95cdac2c23293ac861e02fcdcdea5f85ace3548c22c54dc207ede4ddc1b907218d",
+          "payload_hex": "0100000000000000"
+        },
+        {
+          "direction": "resp->init",
+          "hex": "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991b9ccc51aa5e58a0312968949fa7a6274410aaa1524697366",
+          "payload_hex": "0200000000000000"
+        }
+      ],
+      "msg1_hex": "023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b116ebd41eeca7d69068e1e18374059ae24b3dabc38256042684bee806fa92041cafc7d731f7c6db4e95cdac2c23293ac861e02fcdcdea5f85ace3548c22c54dc207ede4ddc1b907218d",
+      "msg1_payload_hex": "0100000000000000",
+      "msg2_hex": "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991b9ccc51aa5e58a0312968949fa7a6274410aaa1524697366",
+      "msg2_payload_hex": "0200000000000000",
+      "name": "edge-small-scalar-ik",
+      "resp_eph_pub": "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+      "resp_eph_secret": "4444444444444444444444444444444444444444444444444444444444444444",
+      "resp_epoch": "0200000000000000",
+      "resp_static_pub": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "resp_static_secret": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_ephemeral_pubkey_hex": "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+      "responder_ephemeral_secret_hex": "4444444444444444444444444444444444444444444444444444444444444444",
+      "responder_epoch_hex": "0200000000000000",
+      "responder_static_pubkey_hex": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "responder_static_secret_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_transport_recv_key_hex": "5a7098cec26f9f8a5b0df4126892a5904ce0f68e2ea8e4cf715ab322994157f7",
+      "responder_transport_send_key_hex": "123b27e8d4f242c55b2b4ccb9072cf073bda1965d338f0acbfea62639b192c39",
+      "transport_keys": {
+        "initiator_recv": "123b27e8d4f242c55b2b4ccb9072cf073bda1965d338f0acbfea62639b192c39",
+        "initiator_send": "5a7098cec26f9f8a5b0df4126892a5904ce0f68e2ea8e4cf715ab322994157f7",
+        "responder_recv": "5a7098cec26f9f8a5b0df4126892a5904ce0f68e2ea8e4cf715ab322994157f7",
+        "responder_send": "123b27e8d4f242c55b2b4ccb9072cf073bda1965d338f0acbfea62639b192c39"
+      },
+      "type": "ik_handshake"
+    },
+    {
+      "comment": "IK handshake with pattern keys (init=0x01.., resp=0x02..) and zero epoch — for key-reuse comparison with edge-key-reuse-xk",
+      "deviations": [
+        "D1_empty_aad",
+        "D2_ik_se_swap"
+      ],
+      "epoch": 1,
+      "handshake_hash": "e14fa50fb746d657d417451f0e0a9b53201c04c8462a43d37a93155fd5f549f4",
+      "handshake_hash_hex": "e14fa50fb746d657d417451f0e0a9b53201c04c8462a43d37a93155fd5f549f4",
+      "init_eph_pub": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "init_eph_secret": "1111111111111111111111111111111111111111111111111111111111111111",
+      "init_epoch": "0000000000000000",
+      "init_static_pub": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "init_static_secret": "0101010101010101010101010101010101010101010101010101010101010101",
+      "initiator_ephemeral_pubkey_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "initiator_ephemeral_secret_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "initiator_epoch_hex": "0000000000000000",
+      "initiator_static_pubkey_hex": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "initiator_static_secret_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "initiator_transport_recv_key_hex": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+      "initiator_transport_send_key_hex": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+      "messages": [
+        {
+          "direction": "init->resp",
+          "hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa8fee0d0b0fdac4c25e04277d2b48007f780c1567c523b6aa1e4e0cbc1eb89014dd30e04afd519594cefac9d8e19b0ba43ea0e8919f3911117f57d6e0de8dabcebe36e35fda2a87740e",
+          "payload_hex": "0000000000000000"
+        },
+        {
+          "direction": "resp->init",
+          "hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27623fb0cf0105b12c898aefe3fa0d47a4bccaec9ab7ee1923",
+          "payload_hex": "0000000000000000"
+        }
+      ],
+      "msg1_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa8fee0d0b0fdac4c25e04277d2b48007f780c1567c523b6aa1e4e0cbc1eb89014dd30e04afd519594cefac9d8e19b0ba43ea0e8919f3911117f57d6e0de8dabcebe36e35fda2a87740e",
+      "msg1_payload_hex": "0000000000000000",
+      "msg2_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27623fb0cf0105b12c898aefe3fa0d47a4bccaec9ab7ee1923",
+      "msg2_payload_hex": "0000000000000000",
+      "name": "edge-key-reuse-ik",
+      "resp_eph_pub": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "resp_eph_secret": "2222222222222222222222222222222222222222222222222222222222222222",
+      "resp_epoch": "0000000000000000",
+      "resp_static_pub": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "resp_static_secret": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_ephemeral_pubkey_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "responder_ephemeral_secret_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "responder_epoch_hex": "0000000000000000",
+      "responder_static_pubkey_hex": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "responder_static_secret_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_transport_recv_key_hex": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+      "responder_transport_send_key_hex": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+      "transport_keys": {
+        "initiator_recv": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb",
+        "initiator_send": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+        "responder_recv": "29dbc3c0d2b8689bee6b338fdd23b055e68b52a73111d4b455b1533ad778017c",
+        "responder_send": "cba6a8145471c1c5fa4d737d93a568ea9048d9cff688f3882f77a86c98a92afb"
+      },
+      "type": "ik_handshake"
+    },
+    {
+      "comment": "XK handshake with SAME pattern keys (init=0x01.., resp=0x02..) and zero epoch — transport keys MUST differ from edge-key-reuse-ik",
+      "deviations": [
+        "D1_empty_aad"
+      ],
+      "epoch": 1,
+      "handshake_hash": "fd0bd4a46cedfb72db9c6e0dd55bf7fc771d70801c4acff9d9486d951a3eb7ea",
+      "handshake_hash_hex": "fd0bd4a46cedfb72db9c6e0dd55bf7fc771d70801c4acff9d9486d951a3eb7ea",
+      "init_eph_pub": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "init_eph_secret": "1111111111111111111111111111111111111111111111111111111111111111",
+      "init_epoch": "0000000000000000",
+      "init_static_pub": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "init_static_secret": "0101010101010101010101010101010101010101010101010101010101010101",
+      "initiator_ephemeral_pubkey_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "initiator_ephemeral_secret_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "initiator_epoch_hex": "0000000000000000",
+      "initiator_static_pubkey_hex": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "initiator_static_secret_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "initiator_transport_recv_key_hex": "142af43f5e48d5491ae503930bfeff524624731352728d78801da1b7d712e884",
+      "initiator_transport_send_key_hex": "4b2194469d488842ba05bbcd572614dcd8987484c98c423e7bee43fb4866510e",
+      "messages": [
+        {
+          "direction": "init->resp",
+          "hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "payload_hex": ""
+        },
+        {
+          "direction": "resp->init",
+          "hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f275fbcd176b13848ae951e58a23fdb602143d791ec2bb9d714",
+          "payload_hex": "0000000000000000"
+        },
+        {
+          "direction": "init->resp",
+          "hex": "3c2fb0ef7951f4b456ab5f975df8648ede1ae243888f96363ea9a4ca6079edbb2a6569d54697c087f412a5e9846ed1141e883bbd7e2125e7d34839118bd1dde02c94d79ff21c4bccb1",
+          "payload_hex": "0000000000000000"
+        }
+      ],
+      "msg1_hex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "msg1_payload_hex": "",
+      "msg2_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f275fbcd176b13848ae951e58a23fdb602143d791ec2bb9d714",
+      "msg2_payload_hex": "0000000000000000",
+      "msg3_hex": "3c2fb0ef7951f4b456ab5f975df8648ede1ae243888f96363ea9a4ca6079edbb2a6569d54697c087f412a5e9846ed1141e883bbd7e2125e7d34839118bd1dde02c94d79ff21c4bccb1",
+      "msg3_payload_hex": "0000000000000000",
+      "name": "edge-key-reuse-xk",
+      "resp_eph_pub": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "resp_eph_secret": "2222222222222222222222222222222222222222222222222222222222222222",
+      "resp_epoch": "0000000000000000",
+      "resp_static_pub": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "resp_static_secret": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_ephemeral_pubkey_hex": "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "responder_ephemeral_secret_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+      "responder_epoch_hex": "0000000000000000",
+      "responder_static_pubkey_hex": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "responder_static_secret_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "responder_transport_recv_key_hex": "4b2194469d488842ba05bbcd572614dcd8987484c98c423e7bee43fb4866510e",
+      "responder_transport_send_key_hex": "142af43f5e48d5491ae503930bfeff524624731352728d78801da1b7d712e884",
+      "transport_keys": {
+        "initiator_recv": "142af43f5e48d5491ae503930bfeff524624731352728d78801da1b7d712e884",
+        "initiator_send": "4b2194469d488842ba05bbcd572614dcd8987484c98c423e7bee43fb4866510e",
+        "responder_recv": "4b2194469d488842ba05bbcd572614dcd8987484c98c423e7bee43fb4866510e",
+        "responder_send": "142af43f5e48d5491ae503930bfeff524624731352728d78801da1b7d712e884"
+      },
+      "type": "xk_handshake"
+    },
+    {
+      "comment": "IK handshake where both initiator and responder share the same static key (0x05..) — self-to-self scenario",
+      "deviations": [
+        "D1_empty_aad",
+        "D2_ik_se_swap"
+      ],
+      "epoch": 1,
+      "handshake_hash": "6288d20f73d4f5f852be0c1bb49a885cd22441128dca918f953d47ed8f2e95ed",
+      "handshake_hash_hex": "6288d20f73d4f5f852be0c1bb49a885cd22441128dca918f953d47ed8f2e95ed",
+      "init_eph_pub": "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b",
+      "init_eph_secret": "5555555555555555555555555555555555555555555555555555555555555555",
+      "init_epoch": "0100000000000000",
+      "init_static_pub": "0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+      "init_static_secret": "0505050505050505050505050505050505050505050505050505050505050505",
+      "initiator_ephemeral_pubkey_hex": "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b",
+      "initiator_ephemeral_secret_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+      "initiator_epoch_hex": "0100000000000000",
+      "initiator_static_pubkey_hex": "0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+      "initiator_static_secret_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+      "initiator_transport_recv_key_hex": "d2b36c70e27c6b7f8c70a733806baad09fdb88924b2be22cd75f70a8c15d7a9d",
+      "initiator_transport_send_key_hex": "a38add4756c7e403334561d08b49f750ddcb8b0cb7ca788c44c268198369c88d",
+      "messages": [
+        {
+          "direction": "init->resp",
+          "hex": "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895bade5c311603194f995a88df94160de3e7b3205c01a185e7c94917d0deda40da09c4cf1b3f2496d09603182fa96b18fa176602a9f4aef469745f2d49b0e70e42f0a752543b2f46c6cbe",
+          "payload_hex": "0100000000000000"
+        },
+        {
+          "direction": "resp->init",
+          "hex": "035ab4689e400a4a160cf01cd44730845a54768df8547dcdf073d964f109f18c30be93a23bf0f544cc499aa00bcd2b953d031e2a6b37037666",
+          "payload_hex": "0100000000000000"
+        }
+      ],
+      "msg1_hex": "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895bade5c311603194f995a88df94160de3e7b3205c01a185e7c94917d0deda40da09c4cf1b3f2496d09603182fa96b18fa176602a9f4aef469745f2d49b0e70e42f0a752543b2f46c6cbe",
+      "msg1_payload_hex": "0100000000000000",
+      "msg2_hex": "035ab4689e400a4a160cf01cd44730845a54768df8547dcdf073d964f109f18c30be93a23bf0f544cc499aa00bcd2b953d031e2a6b37037666",
+      "msg2_payload_hex": "0100000000000000",
+      "name": "edge-same-static-key",
+      "resp_eph_pub": "035ab4689e400a4a160cf01cd44730845a54768df8547dcdf073d964f109f18c30",
+      "resp_eph_secret": "6666666666666666666666666666666666666666666666666666666666666666",
+      "resp_epoch": "0100000000000000",
+      "resp_static_pub": "0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+      "resp_static_secret": "0505050505050505050505050505050505050505050505050505050505050505",
+      "responder_ephemeral_pubkey_hex": "035ab4689e400a4a160cf01cd44730845a54768df8547dcdf073d964f109f18c30",
+      "responder_ephemeral_secret_hex": "6666666666666666666666666666666666666666666666666666666666666666",
+      "responder_epoch_hex": "0100000000000000",
+      "responder_static_pubkey_hex": "0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+      "responder_static_secret_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+      "responder_transport_recv_key_hex": "a38add4756c7e403334561d08b49f750ddcb8b0cb7ca788c44c268198369c88d",
+      "responder_transport_send_key_hex": "d2b36c70e27c6b7f8c70a733806baad09fdb88924b2be22cd75f70a8c15d7a9d",
+      "transport_keys": {
+        "initiator_recv": "d2b36c70e27c6b7f8c70a733806baad09fdb88924b2be22cd75f70a8c15d7a9d",
+        "initiator_send": "a38add4756c7e403334561d08b49f750ddcb8b0cb7ca788c44c268198369c88d",
+        "responder_recv": "a38add4756c7e403334561d08b49f750ddcb8b0cb7ca788c44c268198369c88d",
+        "responder_send": "d2b36c70e27c6b7f8c70a733806baad09fdb88924b2be22cd75f70a8c15d7a9d"
+      },
+      "type": "ik_handshake"
     }
   ]
 }

@@ -123,14 +123,18 @@ pub struct XkVector {
 pub struct TransportVector {
     pub name: String,
     pub comment: String,
-    pub derived_from: String,
-    pub direction: String,
-    pub key_hex: String,
+    pub handshake_name: String,
+    pub handshake_type: String,
+    pub initiator_transport_send_key_hex: String,
+    pub initiator_transport_recv_key_hex: String,
+    pub responder_transport_send_key_hex: String,
+    pub responder_transport_recv_key_hex: String,
     pub frames: Vec<TransportFrame>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TransportFrame {
+    pub direction: String,
     pub nonce: u64,
     pub plaintext_hex: String,
     pub aad_hex: String,
