@@ -68,43 +68,31 @@ Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
 
 ## Architecture
 
-```
-  STM32F469I-DISCO          Host (Linux)               VPS
-  +----------------+    +-------------------+    +------------------+
-  | microfips fw   |    | serial_udp_bridge |    | FIPS daemon      |
-  | FIPS protocol  |CDC | (single-hop,      |UDP | port 2121        |
-  | Noise_IK/XK    |<-->|  auto-detect MCU) |<-->|                  |
-  | FMP + FSP      |    | serial <-> UDP    |    | forwards between |
-  | Heartbeats     |    +-------------------+    | all authenticated |
-  +----------------+                             | peers            |
-                                                   +------------------+
-  ESP32-D0WD
-  +----------------+    +-------------------+
-  | microfips-esp32|    | serial_udp_bridge |
-  | FIPS protocol  |UART| (single-hop)      |UDP --+
-  | Noise_IK       |<-->|                   |<-->   |
-  | FMP + FSP      |    +-------------------+       |
-  +----------------+    +-------------------+       |
-  | microfips-esp32|    | ble_udp_bridge    |       |
-  | FIPS protocol  |BLE | (single-hop)      |UDP --+
-  | Noise_IK       |<-->|                   |<-->   |
-  | FMP + FSP      |    +-------------------+       |
-  +----------------+                                  v
-                                              +------------------+
-  Simulator (host)                             | FIPS daemon      |
-  +----------------+    +-------------------+  | port 2121        |
-  | microfips-sim   |    | (none needed)     |  |                  |
-  | uses Node from  |UDP | direct UDP        |->|                  |
-  | microfips-proto |<-->|                   |  +------------------+
-  +----------------+    +-------------------+
+```mermaid
+flowchart LR
+    subgraph MCUs["MCU Nodes"]
+        STM32["STM32F469\nUSB CDC"]
+        ESP32["ESP32\nUART / BLE"]
+    end
+
+    subgraph Host["Host (Linux)"]
+        Bridge["serial_udp_bridge.py\nor ble_udp_bridge.py"]
+    end
+
+    subgraph VPS["VPS"]
+        FIPS["FIPS daemon\n:2121"]
+    end
+
+    STM32 -- "serial\nlength-prefixed" --> Bridge
+    ESP32 -- "serial / BLE\nlength-prefixed" --> Bridge
+    Bridge -- "UDP\nraw frames" --> FIPS
+    FIPS -.->|"forwards between\nauthenticated peers"| FIPS
 ```
 
-Two transport options:
-- **Single-hop bridge** (recommended): `serial_udp_bridge.py` sends UDP directly to FIPS
-  from the host. No SSH tunnel or VPS-side bridge needed.
-- **ESP32 BLE bridge**: `ble_udp_bridge.py` bridges ESP32 BLE GATT to UDP. Feature-gated
-  behind `--features ble`. See AGENTS.md "ESP32 BLE Transport" section.
-- **Legacy 3-hop** (deprecated): serial → TCP proxy → SSH tunnel → VPS bridge → FIPS
+Each MCU runs the same FIPS stack (Noise_IK/XK, FMP, FSP) and connects through a
+single-hop bridge — no SSH tunnel or VPS-side bridge needed.
+ESP32 supports both UART (`serial_udp_bridge`) and BLE (`ble_udp_bridge`, feature-gated).
+Host-side simulators connect via direct UDP with no bridge at all.
 
 All serial data uses **length-prefixed frames**: `[2-byte LE length][payload]`.
 FIPS UDP transport uses **raw frames** (no length prefix).
@@ -323,8 +311,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 - **LED:** GPIO2 (blue onboard, active high)
 - **USB VID:PID:** `10c4:ea60` (Silicon Labs CP210x, detected as `/dev/ttyUSB*`)
 - **Flash:** `espflash flash -p /dev/ttyUSB0 --chip esp32` (NOT probe-rs)
-- **Note:** ESP32 uses hand-rolled protocol code (not `microfips-protocol::Node`). Can only
-  act as FSP initiator (no responder code for incoming SessionSetups).
+- **Note:** Runs the same FIPS protocol stack as STM32 (Noise_IK, FMP, FSP dual mode).
 
 ## Milestones
 
