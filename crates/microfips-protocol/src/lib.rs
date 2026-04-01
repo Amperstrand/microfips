@@ -49,6 +49,7 @@ pub mod test_helpers {
             move || done_check.load(Ordering::Relaxed),
         );
 
-        result.lock().unwrap().take().unwrap()
+        let output = result.lock().unwrap().take().unwrap();
+        output
     }
 }

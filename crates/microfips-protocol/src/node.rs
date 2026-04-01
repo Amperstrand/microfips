@@ -1,4 +1,4 @@
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Timer};
 
 use crate::error::ProtocolError;
@@ -10,6 +10,7 @@ pub const RECV_TIMEOUT_MS: u64 = 30_000;
 pub const RETRY_SECS: u64 = 3;
 pub const CONNECT_DELAY_MS: u64 = 500;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Protocol state events emitted to the handler.
 pub enum NodeEvent {
     /// Transport is ready (wait_ready completed).
@@ -263,7 +264,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     if let Some(t) = tick {
                         #[allow(clippy::collapsible_if)]
                         if now >= t {
-                            if let HandleResult::SendDatagram(len) = handler.on_tick(&mut self.resp_buf) {
+                            if let HandleResult::SendDatagram(len) =
+                                handler.on_tick(&mut self.resp_buf)
+                            {
                                 self.send_datagram(them, &mut send_ctr, len, ks).await;
                             }
                         }
@@ -281,7 +284,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     if let Some(t) = tick {
                         #[allow(clippy::collapsible_if)]
                         if now >= t {
-                            if let HandleResult::SendDatagram(len) = handler.on_tick(&mut self.resp_buf) {
+                            if let HandleResult::SendDatagram(len) =
+                                handler.on_tick(&mut self.resp_buf)
+                            {
                                 self.send_datagram(them, &mut send_ctr, len, ks).await;
                             }
                         }
@@ -488,13 +493,13 @@ fn handle_frame_inner<H: NodeHandler>(
             let dl =
                 match microfips_core::noise::aead_decrypt(kr, counter, hdr, encrypted, &mut dec) {
                     Ok(l) => l,
-                    Err(e) => {
+                    Err(_err) => {
                         #[cfg(feature = "std")]
                         log::debug!(
                             "FMP decrypt failed: counter={} hdr={:02x?} err={:?}",
                             counter,
                             &hdr[..16.min(hdr.len())],
-                            e
+                            _err
                         );
                         return FrameAction::Continue;
                     }
@@ -644,6 +649,7 @@ mod tests {
     use super::*;
     use crate::test_helpers::block_on;
     use std::sync::LazyLock;
+    use std::vec;
 
     struct TestRng {
         bytes: std::sync::Mutex<std::vec::Vec<u8>>,
@@ -697,7 +703,7 @@ mod tests {
     fn inner() -> &'static crate::transport::mock::MockTransportInner {
         static INNER: LazyLock<crate::transport::mock::MockTransportInner> =
             LazyLock::new(crate::transport::mock::MockTransportInner::new);
-        &*INNER
+        &INNER
     }
 
     fn fresh_inner() -> &'static crate::transport::mock::MockTransportInner {
@@ -749,6 +755,21 @@ mod tests {
     struct NoopTestHandler;
     impl NodeHandler for NoopTestHandler {
         async fn on_event(&mut self, _event: NodeEvent) {}
+        fn on_message(&mut self, _msg_type: u8, _payload: &[u8], _resp: &mut [u8]) -> HandleResult {
+            HandleResult::None
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingHandler {
+        events: std::vec::Vec<NodeEvent>,
+    }
+
+    impl NodeHandler for RecordingHandler {
+        async fn on_event(&mut self, event: NodeEvent) {
+            self.events.push(event);
+        }
+
         fn on_message(&mut self, _msg_type: u8, _payload: &[u8], _resp: &mut [u8]) -> HandleResult {
             HandleResult::None
         }
@@ -888,7 +909,7 @@ mod tests {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
         use microfips_core::fmp;
-        use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE, ecdh_pubkey};
+        use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
 
         // Use fresh random keys to prove the handshake works with any valid keypair.
         let initiator_secret = random_secret();
@@ -1031,6 +1052,104 @@ mod tests {
             let mut handler = NoopTestHandler;
             let result = node.handshake(&mut handler).await;
             assert_eq!(result, Err(ProtocolError::Timeout));
+        });
+    }
+
+    #[test]
+    fn test_session_emits_connected_then_error_on_handshake_timeout() {
+        use crate::transport::channel::pair as channel_pair;
+
+        let (init_transport, _resp_transport) = channel_pair();
+
+        block_on(async move {
+            let secret = random_secret();
+            let mut node = Node::new(init_transport, TestRng::from_os_rng(), secret, [0x02; 33]);
+            let mut handler = RecordingHandler::default();
+            let result = node.session(&mut handler).await;
+            assert_eq!(result, Err(ProtocolError::Timeout));
+            assert_eq!(
+                handler.events,
+                vec![NodeEvent::Connected, NodeEvent::Msg1Sent, NodeEvent::Error]
+            );
+        });
+    }
+
+    #[test]
+    fn test_session_emits_disconnected_after_transport_close() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::fmp;
+        use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, mut resp_transport) = channel_pair();
+
+        block_on(async move {
+            let responder = async {
+                let mut hdr = [0u8; 2];
+                let mut total = 0;
+                while total < 2 {
+                    total += resp_transport.recv(&mut hdr[total..]).await.unwrap();
+                }
+                let msg1_len = u16::from_le_bytes(hdr) as usize;
+                let mut buf = [0u8; 256];
+                total = 0;
+                while total < msg1_len {
+                    total += resp_transport.recv(&mut buf[total..]).await.unwrap();
+                }
+
+                let msg = fmp::parse_message(&buf[..msg1_len]).unwrap();
+                let noise_payload = match msg {
+                    fmp::FmpMessage::Msg1 { noise_payload, .. } => noise_payload,
+                    _ => panic!("expected Msg1"),
+                };
+
+                let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
+                let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub).unwrap();
+                let (_init_pub, epoch) = resp.read_message1(&noise_payload[PUBKEY_SIZE..]).unwrap();
+
+                let resp_eph = random_secret();
+                let mut msg2_noise = [0u8; 128];
+                let msg2_noise_len = resp
+                    .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                    .unwrap();
+
+                let mut msg2_buf = [0u8; 256];
+                let msg2_len =
+                    fmp::build_msg2(1, 0, &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
+                let frame_hdr = (msg2_len as u16).to_le_bytes();
+                resp_transport.send(&frame_hdr).await.unwrap();
+                resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
+
+                let _ = resp.finalize();
+                resp_transport.close();
+            };
+
+            let initiator = async move {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.session(&mut handler).await;
+                assert_eq!(result, Err(ProtocolError::Disconnected));
+                assert_eq!(
+                    handler.events,
+                    vec![
+                        NodeEvent::Connected,
+                        NodeEvent::Msg1Sent,
+                        NodeEvent::HandshakeOk,
+                        NodeEvent::Disconnected
+                    ]
+                );
+            };
+
+            join(responder, initiator).await;
         });
     }
 

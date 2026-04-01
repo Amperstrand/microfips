@@ -488,6 +488,31 @@ pub fn fsp_prepend_inner_header(
     total
 }
 
+pub fn build_fsp_data_message(
+    counter: u64,
+    timestamp_ms: u32,
+    payload: &[u8],
+    key: &[u8; 32],
+    out: &mut [u8],
+) -> Result<usize, NoiseError> {
+    let mut inner = [0u8; 512];
+    let inner_len = fsp_prepend_inner_header(timestamp_ms, FSP_MSG_DATA, 0x00, payload, &mut inner);
+    if inner_len == 0 {
+        return Err(NoiseError::BufferTooSmall);
+    }
+
+    let header = build_fsp_header(counter, 0x00, (inner_len + crate::noise::TAG_SIZE) as u16);
+    let mut ciphertext = [0u8; 512];
+    let ciphertext_len =
+        crate::noise::aead_encrypt(key, counter, &header, &inner[..inner_len], &mut ciphertext)?;
+
+    let total = build_fsp_encrypted(&header, &ciphertext[..ciphertext_len], out);
+    if total == 0 {
+        return Err(NoiseError::BufferTooSmall);
+    }
+    Ok(total)
+}
+
 // FIPS: bd08505 node/session_wire.rs:FspInnerHeader::parse()
 pub fn fsp_strip_inner_header(data: &[u8]) -> Option<(u32, u8, u8, &[u8])> {
     if data.len() < FSP_INNER_HEADER_SIZE {
@@ -768,8 +793,6 @@ pub struct FspInitiatorSession {
     initiator: Option<NoiseXkInitiator>,
     k_recv: Option<[u8; 32]>,
     k_send: Option<[u8; 32]>,
-    #[allow(dead_code)]
-    responder_pub: [u8; PUBKEY_SIZE],
     my_pub: [u8; PUBKEY_SIZE],
     send_counter: u64,
 }
@@ -789,7 +812,6 @@ impl FspInitiatorSession {
             initiator: Some(initiator),
             k_recv: None,
             k_send: None,
-            responder_pub: *responder_static_pub,
             my_pub,
             send_counter: 0,
         })

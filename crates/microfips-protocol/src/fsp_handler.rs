@@ -2,7 +2,7 @@ use embassy_time::{Duration, Instant};
 
 use microfips_core::fmp;
 use microfips_core::fsp::{
-    FspInitiatorSession, FspInitiatorState, FspSession, FSP_MSG_DATA, SESSION_DATAGRAM_BODY_SIZE,
+    FspInitiatorSession, FspInitiatorState, FspSession, SESSION_DATAGRAM_BODY_SIZE,
 };
 use microfips_core::noise;
 
@@ -36,25 +36,6 @@ impl FspDualHandler {
         }
     }
 
-    pub fn new_initiator(
-        secret: [u8; 32],
-        initiator_ephemeral: [u8; 32],
-        target_pub: &[u8; 33],
-        target_addr: [u8; 16],
-    ) -> Self {
-        let initiator = FspInitiatorSession::new(&secret, &initiator_ephemeral, target_pub).ok();
-        Self {
-            secret,
-            fsp_session: FspSession::new(),
-            fsp_ephemeral: [0u8; 32],
-            fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
-            initiator,
-            target_addr: Some(target_addr),
-            fsp_timer: None,
-            test_ping: false,
-        }
-    }
-
     /// Create a dual-mode handler: can both respond to incoming FSP sessions
     /// AND initiate outgoing FSP sessions to a specific target.
     ///
@@ -78,13 +59,6 @@ impl FspDualHandler {
             target_addr: Some(target_addr),
             fsp_timer: None,
             test_ping: false,
-        }
-    }
-
-    pub fn ensure_initiator(&mut self, initiator_ephemeral: [u8; 32], target_pub: &[u8; 33]) {
-        if self.initiator.is_none() {
-            self.initiator =
-                FspInitiatorSession::new(&self.secret, &initiator_ephemeral, target_pub).ok();
         }
     }
 
@@ -113,12 +87,7 @@ impl FspDualHandler {
         }
     }
 
-    fn handle_responder(
-        &mut self,
-        msg_type: u8,
-        payload: &[u8],
-        resp: &mut [u8],
-    ) -> HandleResult {
+    fn handle_responder(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
         if msg_type != fmp::MSG_SESSION_DATAGRAM {
             return HandleResult::None;
         }
@@ -138,12 +107,7 @@ impl FspDualHandler {
         }
     }
 
-    fn handle_initiator(
-        &mut self,
-        msg_type: u8,
-        payload: &[u8],
-        resp: &mut [u8],
-    ) -> HandleResult {
+    fn handle_initiator(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
         if msg_type != fmp::MSG_SESSION_DATAGRAM {
             return HandleResult::None;
         }
@@ -171,23 +135,22 @@ impl FspDualHandler {
         match fsp.state() {
             FspInitiatorState::Idle => {}
             FspInitiatorState::AwaitingAck => {
-                if fsp_phase == 0x02
-                    && let Ok(()) = fsp.handle_ack(fsp_data)
-                {
-                    let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
-                    let mut msg3_buf = [0u8; 512];
-                    if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
-                        let dg_body = microfips_core::fsp::build_session_datagram_body(
-                            &my_addr, &target_addr,
-                        );
-                        let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
-                        resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                        resp[SESSION_DATAGRAM_BODY_SIZE
-                            ..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
-                            .copy_from_slice(&msg3_buf[..msg3_len]);
-                        self.fsp_timer =
-                            Some(Instant::now() + Duration::from_secs(2));
-                        return HandleResult::SendDatagram(dg_len);
+                if fsp_phase == 0x02 {
+                    if let Ok(()) = fsp.handle_ack(fsp_data) {
+                        let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
+                        let mut msg3_buf = [0u8; 512];
+                        if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
+                            let dg_body = microfips_core::fsp::build_session_datagram_body(
+                                &my_addr,
+                                &target_addr,
+                            );
+                            let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
+                            resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                            resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+                                .copy_from_slice(&msg3_buf[..msg3_len]);
+                            self.fsp_timer = Some(Instant::now() + Duration::from_secs(2));
+                            return HandleResult::SendDatagram(dg_len);
+                        }
                     }
                 }
             }
@@ -209,8 +172,7 @@ impl FspDualHandler {
                         None => return HandleResult::None,
                     };
                     let mut dec = [0u8; 512];
-                    let Ok(dl) =
-                        noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec)
+                    let Ok(dl) = noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec)
                     else {
                         return HandleResult::None;
                     };
@@ -248,8 +210,7 @@ impl FspDualHandler {
             Some(f) => f,
             None => return HandleResult::None,
         };
-        let dg_body =
-            microfips_core::fsp::build_session_datagram_body(&my_addr, &target_addr);
+        let dg_body = microfips_core::fsp::build_session_datagram_body(&my_addr, &target_addr);
         let (_k_recv, k_send) = match fsp.session_keys() {
             Some(k) => k,
             None => return HandleResult::None,
@@ -257,29 +218,21 @@ impl FspDualHandler {
         let send_ctr = fsp.next_send_counter();
         let ping = b"PING";
         let ts = 0u32;
-        let mut plaintext = [0u8; 512];
-        let il = microfips_core::fsp::fsp_prepend_inner_header(
+        let mut fsp_packet = [0u8; 512];
+        let fsp_total = match microfips_core::fsp::build_fsp_data_message(
+            send_ctr,
             ts,
-            FSP_MSG_DATA,
-            0x00,
             ping,
-            &mut plaintext,
-        );
-        let header =
-            microfips_core::fsp::build_fsp_header(send_ctr, 0x00, (il + noise::TAG_SIZE) as u16);
-        let mut ciphertext = [0u8; 512];
-        let cl = match noise::aead_encrypt(&k_send, send_ctr, &header, &plaintext[..il], &mut ciphertext) {
-            Ok(l) => l,
+            &k_send,
+            &mut fsp_packet,
+        ) {
+            Ok(len) => len,
             Err(_) => return HandleResult::None,
         };
-        let fsp_total = microfips_core::fsp::FSP_HEADER_SIZE + cl;
         let dg_len = SESSION_DATAGRAM_BODY_SIZE + fsp_total;
         resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-        resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + microfips_core::fsp::FSP_HEADER_SIZE]
-            .copy_from_slice(&header);
-        resp[SESSION_DATAGRAM_BODY_SIZE + microfips_core::fsp::FSP_HEADER_SIZE
-            ..SESSION_DATAGRAM_BODY_SIZE + fsp_total]
-            .copy_from_slice(&ciphertext[..cl]);
+        resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp_total]
+            .copy_from_slice(&fsp_packet[..fsp_total]);
         self.fsp_timer = Some(Instant::now() + Duration::from_secs(10));
         HandleResult::SendDatagram(dg_len)
     }
@@ -321,11 +274,10 @@ impl NodeHandler for FspDualHandler {
                 let dg_body =
                     microfips_core::fsp::build_session_datagram_body(&my_addr, &target_addr);
                 let mut setup_buf = [0u8; 512];
-                let setup_len =
-                    match fsp.build_setup(&my_addr, &target_addr, &mut setup_buf) {
-                        Ok(l) => l,
-                        Err(_) => return HandleResult::None,
-                    };
+                let setup_len = match fsp.build_setup(&my_addr, &target_addr, &mut setup_buf) {
+                    Ok(l) => l,
+                    Err(_) => return HandleResult::None,
+                };
                 let dg_len = SESSION_DATAGRAM_BODY_SIZE + setup_len;
                 resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
                 resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
@@ -343,6 +295,62 @@ impl NodeHandler for FspDualHandler {
                 HandleResult::None
             }
             FspInitiatorState::Established => self.send_ping(resp),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use microfips_core::identity::DEFAULT_SECRET;
+    use microfips_core::noise::ecdh_pubkey;
+
+    fn test_target_pub() -> [u8; 33] {
+        ecdh_pubkey(&[0x22; 32]).unwrap()
+    }
+
+    #[test]
+    fn dual_handler_starts_timer_after_handshake() {
+        let mut handler = FspDualHandler::new_dual(
+            DEFAULT_SECRET,
+            [0x11; 32],
+            [0x22; 32],
+            &test_target_pub(),
+            [0x33; 16],
+        );
+        assert_eq!(handler.fsp_timer, None);
+        handler.on_event_default(NodeEvent::HandshakeOk);
+        assert!(handler.fsp_timer.is_some());
+    }
+
+    #[test]
+    fn responder_handler_does_not_start_timer_after_handshake() {
+        let mut handler = FspDualHandler::new_responder(DEFAULT_SECRET, [0x11; 32]);
+        handler.on_event_default(NodeEvent::HandshakeOk);
+        assert_eq!(handler.fsp_timer, None);
+    }
+
+    #[test]
+    fn on_tick_from_idle_builds_session_setup() {
+        let mut handler = FspDualHandler::new_dual(
+            DEFAULT_SECRET,
+            [0x11; 32],
+            [0x22; 32],
+            &test_target_pub(),
+            [0x33; 16],
+        );
+        let mut resp = [0u8; 512];
+        let result = handler.on_tick(&mut resp);
+        match result {
+            HandleResult::SendDatagram(len) => {
+                assert!(len > SESSION_DATAGRAM_BODY_SIZE);
+                assert_eq!(
+                    handler.initiator.as_ref().unwrap().state(),
+                    FspInitiatorState::AwaitingAck
+                );
+                assert!(handler.fsp_timer.is_some());
+            }
+            other => panic!("unexpected on_tick result: {:?}", other),
         }
     }
 }

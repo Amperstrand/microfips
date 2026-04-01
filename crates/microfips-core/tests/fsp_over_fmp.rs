@@ -310,7 +310,7 @@ fn test_fsp_full_handshake_over_fmp() {
     let ct = &fsp_reply[FSP_HEADER_SIZE..];
     let mut dec = [0u8; 512];
     let dl = aead_decrypt(&k_recv_i, 0, &reply_hdr, ct, &mut dec).unwrap();
-    let (ts, mt, ifl, inner) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();
+    let (_ts, mt, _ifl, inner) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();
     assert_eq!(mt, FSP_MSG_DATA);
     assert_eq!(inner, HTTP_RESPONSE);
 }

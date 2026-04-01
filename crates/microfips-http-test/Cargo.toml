@@ -1,7 +1,7 @@
 [package]
 name = "microfips-http-test"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "FIPS responder that tests HTTP over FMP with the MCU"
 
 [dependencies]
