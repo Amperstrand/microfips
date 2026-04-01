@@ -5,8 +5,8 @@ mod vector_types;
 
 use hkdf::Hkdf;
 use microfips_core::noise::{
-    aead_encrypt, ecdh_pubkey, x_only_ecdh, NoiseIkInitiator, NoiseIkResponder, EPOCH_SIZE,
-    PUBKEY_SIZE, TAG_SIZE,
+    aead_encrypt, ecdh_pubkey, x_only_ecdh, NoiseIkInitiator, NoiseIkResponder, NoiseXkInitiator,
+    NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE, TAG_SIZE,
 };
 use sha2::Sha256;
 use vector_types::*;
@@ -330,4 +330,153 @@ fn test_ik_handshake_vectors() {
 
     assert_eq!(count, 6, "expected 6 IK vectors, got {count}");
     println!("ik vectors: {count} passed");
+}
+
+#[test]
+fn test_xk_handshake_vectors() {
+    let vf = load_vectors();
+    let mut count = 0;
+
+    for v in &vf.vectors {
+        if let Vector::Xk(xk) = v {
+            let initiator_static_secret = hex_to_bytes::<32>(&xk.initiator_static_secret_hex);
+            let initiator_static_pub = hex_to_bytes::<PUBKEY_SIZE>(&xk.initiator_static_pubkey_hex);
+            let initiator_ephemeral_secret = hex_to_bytes::<32>(&xk.initiator_ephemeral_secret_hex);
+            let initiator_ephemeral_pub =
+                hex_to_bytes::<PUBKEY_SIZE>(&xk.initiator_ephemeral_pubkey_hex);
+
+            let responder_static_secret = hex_to_bytes::<32>(&xk.responder_static_secret_hex);
+            let responder_static_pub = hex_to_bytes::<PUBKEY_SIZE>(&xk.responder_static_pubkey_hex);
+            let responder_ephemeral_secret = hex_to_bytes::<32>(&xk.responder_ephemeral_secret_hex);
+            let responder_ephemeral_pub =
+                hex_to_bytes::<PUBKEY_SIZE>(&xk.responder_ephemeral_pubkey_hex);
+
+            let initiator_epoch = hex_to_bytes::<EPOCH_SIZE>(&xk.initiator_epoch_hex);
+            let responder_epoch = hex_to_bytes::<EPOCH_SIZE>(&xk.responder_epoch_hex);
+
+            let expected_msg1 = hex_decode(&xk.msg1_hex);
+            let expected_msg2 = hex_decode(&xk.msg2_hex);
+            let expected_msg3 = hex_decode(&xk.msg3_hex);
+
+            let expected_i_send = hex_to_bytes::<32>(&xk.initiator_transport_send_key_hex);
+            let expected_i_recv = hex_to_bytes::<32>(&xk.initiator_transport_recv_key_hex);
+            let expected_r_send = hex_to_bytes::<32>(&xk.responder_transport_send_key_hex);
+            let expected_r_recv = hex_to_bytes::<32>(&xk.responder_transport_recv_key_hex);
+
+            let (mut initiator, got_init_eph_pub) = NoiseXkInitiator::new(
+                &initiator_ephemeral_secret,
+                &initiator_static_secret,
+                &responder_static_pub,
+            )
+            .expect("xk initiator init");
+            assert_eq!(
+                got_init_eph_pub, initiator_ephemeral_pub,
+                "FAILED {}: initiator ephemeral pub mismatch",
+                xk.name
+            );
+
+            let mut msg1 = [0u8; 128];
+            let msg1_len = initiator.write_message1(&mut msg1).expect("xk write msg1");
+            assert_eq!(msg1_len, 33, "FAILED {}: msg1 size mismatch", xk.name);
+            assert_eq!(
+                &msg1[..msg1_len],
+                expected_msg1.as_slice(),
+                "FAILED {}: msg1 mismatch",
+                xk.name
+            );
+
+            let mut responder = NoiseXkResponder::new(
+                &responder_static_secret,
+                (&msg1[..PUBKEY_SIZE]).try_into().expect("msg1 eph pub"),
+            )
+            .expect("xk responder init");
+
+            let mut msg2 = [0u8; 128];
+            let msg2_len = responder
+                .write_message2(&responder_ephemeral_secret, &responder_epoch, &mut msg2)
+                .expect("xk write msg2");
+            assert_eq!(msg2_len, 57, "FAILED {}: msg2 size mismatch", xk.name);
+            assert_eq!(
+                &msg2[..msg2_len],
+                expected_msg2.as_slice(),
+                "FAILED {}: msg2 mismatch",
+                xk.name
+            );
+            let got_responder_ephemeral_pub: [u8; PUBKEY_SIZE] =
+                msg2[..PUBKEY_SIZE].try_into().expect("msg2 eph pub");
+            assert_eq!(
+                responder_ephemeral_pub, got_responder_ephemeral_pub,
+                "FAILED {}: responder ephemeral pub mismatch",
+                xk.name
+            );
+
+            let got_responder_epoch = initiator
+                .read_message2(&msg2[..msg2_len])
+                .expect("xk read msg2");
+            assert_eq!(
+                got_responder_epoch, responder_epoch,
+                "FAILED {}: recovered responder epoch mismatch",
+                xk.name
+            );
+
+            let mut msg3 = [0u8; 128];
+            let msg3_len = initiator
+                .write_message3(&initiator_static_pub, &initiator_epoch, &mut msg3)
+                .expect("xk write msg3");
+            assert_eq!(msg3_len, 73, "FAILED {}: msg3 size mismatch", xk.name);
+            assert_eq!(
+                &msg3[..msg3_len],
+                expected_msg3.as_slice(),
+                "FAILED {}: msg3 mismatch",
+                xk.name
+            );
+
+            let (got_init_static_pub, got_init_epoch) = responder
+                .read_message3(&msg3[..msg3_len])
+                .expect("xk read msg3");
+            assert_eq!(
+                got_init_static_pub, initiator_static_pub,
+                "FAILED {}: recovered initiator static pub mismatch",
+                xk.name
+            );
+            assert_eq!(
+                got_init_epoch, initiator_epoch,
+                "FAILED {}: recovered initiator epoch mismatch",
+                xk.name
+            );
+
+            let (i_send, i_recv) = initiator.finalize();
+            let (r_recv, r_send) = responder.finalize();
+
+            assert_eq!(
+                i_send, expected_i_send,
+                "FAILED {}: initiator transport send key mismatch",
+                xk.name
+            );
+            assert_eq!(
+                i_recv, expected_i_recv,
+                "FAILED {}: initiator transport recv key mismatch",
+                xk.name
+            );
+            assert_eq!(
+                r_send, expected_r_send,
+                "FAILED {}: responder transport send key mismatch",
+                xk.name
+            );
+            assert_eq!(
+                r_recv, expected_r_recv,
+                "FAILED {}: responder transport recv key mismatch",
+                xk.name
+            );
+
+            println!(
+                "{} ok: msg1={}B msg2={}B msg3={}B",
+                xk.name, msg1_len, msg2_len, msg3_len
+            );
+            count += 1;
+        }
+    }
+
+    assert_eq!(count, 6, "expected 6 XK vectors, got {count}");
+    println!("xk vectors: {count} passed");
 }
