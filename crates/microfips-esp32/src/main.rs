@@ -12,15 +12,13 @@ use core::panic::PanicInfo;
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 extern crate alloc;
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_futures::select::{Either, select};
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::channel::Channel;
-#[cfg(feature = "l2cap")]
-use embassy_sync::channel::{Receiver, Sender};
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::signal::Signal;
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 use esp_radio::ble::{controller::BleConnector, have_hci_read_data};
@@ -33,7 +31,7 @@ use trouble_host::prelude::*;
 #[cfg(feature = "l2cap")]
 use trouble_host::prelude::{
     Address, AdStructure, Advertisement, DefaultPacketPool, ExternalController, Host,
-    HostResources, L2capChannel, L2capChannelConfig,
+    HostResources, L2capChannel, L2capChannelConfig, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
 };
 
 use esp_hal::gpio::{Level, Output};
@@ -125,9 +123,14 @@ const BLE_DEVICE_NAME: &str = "microfips-esp32";
 #[allow(dead_code)]
 const BLE_MAX_FRAME: usize = 252;
 #[cfg(feature = "l2cap")]
-const L2CAP_FRAME_CAP: usize = 512;
+const L2CAP_FRAME_CAP: usize = 2048;
 #[cfg(feature = "l2cap")]
 const L2CAP_PSM: u16 = 0x0085;
+#[cfg(feature = "l2cap")]
+const L2CAP_FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
+    0x4c, 0x8f, 0x64, 0x40, 0xcc, 0xc9, 0x87, 0x9f, 0xc0, 0x42, 0xc5, 0x2c, 0x90, 0xb7, 0x90,
+    0x9c,
+]];
 
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
@@ -167,6 +170,10 @@ static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRA
     Channel::new();
 #[cfg(feature = "l2cap")]
 static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "l2cap")]
+static L2CAP_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+#[cfg(feature = "l2cap")]
+static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
 
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 #[allow(dead_code)]
@@ -498,10 +505,7 @@ async fn ble_host_task() {
 
 #[cfg(feature = "l2cap")]
 #[embassy_executor::task]
-async fn l2cap_host_task(
-    _l2cap_rx: Sender<'static, CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4>,
-    _l2cap_tx: Receiver<'static, CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4>,
-) {
+async fn l2cap_host_task() {
     init_heap();
 
     let Ok(radio) = esp_radio::init() else {
@@ -533,8 +537,20 @@ async fn l2cap_host_task(
         loop {
             let mut adv_data = [0u8; 31];
             let Ok(adv_len) = AdStructure::encode_slice(
-                &[AdStructure::CompleteLocalName(BLE_DEVICE_NAME.as_bytes())],
+                &[
+                    AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                    AdStructure::CompleteLocalName(BLE_DEVICE_NAME.as_bytes()),
+                ],
                 &mut adv_data,
+            ) else {
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                continue;
+            };
+
+            let mut scan_data = [0u8; 31];
+            let Ok(scan_len) = AdStructure::encode_slice(
+                &[AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE)],
+                &mut scan_data,
             ) else {
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
                 continue;
@@ -545,7 +561,7 @@ async fn l2cap_host_task(
                     &Default::default(),
                     Advertisement::ConnectableScannableUndirected {
                         adv_data: &adv_data[..adv_len],
-                        scan_data: &[],
+                        scan_data: &scan_data[..scan_len],
                     },
                 )
                 .await
@@ -570,10 +586,40 @@ async fn l2cap_host_task(
                 ..Default::default()
             };
 
-            let _ = L2capChannel::accept(&stack, &conn, &[L2CAP_PSM], &config).await;
+            let channel = match L2capChannel::accept(&stack, &conn, &[L2CAP_PSM], &config).await {
+                Ok(ch) => ch,
+                Err(_) => {
+                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                    continue;
+                }
+            };
+
+            L2CAP_LINK_UP.store(true, Ordering::Relaxed);
+            L2CAP_CONNECTED_SIG.signal(());
+            let (mut writer, mut reader) = channel.split();
+            let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
 
             loop {
-                embassy_time::Timer::after_millis(1000).await;
+                match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
+                    Either::First(Ok(n)) => {
+                        let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                        if frame.extend_from_slice(&rx_buf[..n]).is_err() {
+                            L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                            break;
+                        }
+                        L2CAP_RX_CH.send(frame).await;
+                    }
+                    Either::First(Err(_)) => {
+                        L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                        break;
+                    }
+                    Either::Second(frame) => {
+                        if writer.send(&stack, &frame).await.is_err() {
+                            L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
             }
         }
     })
@@ -679,6 +725,66 @@ impl Transport for BleTransport {
                 Either::Second(()) => continue,
             }
         }
+    }
+}
+
+#[cfg(feature = "l2cap")]
+struct L2capTransport;
+
+#[cfg(feature = "l2cap")]
+#[derive(Debug, Clone, Copy)]
+enum L2capError {
+    Disconnected,
+    FrameTooLarge,
+    InitFailed,
+}
+
+#[cfg(feature = "l2cap")]
+impl Transport for L2capTransport {
+    type Error = L2capError;
+
+    async fn wait_ready(&mut self) -> Result<(), L2capError> {
+        if !L2CAP_TASK_STARTED.swap(true, Ordering::Relaxed) {
+            let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
+            spawner.spawn(l2cap_host_task()).map_err(|_| L2capError::InitFailed)?;
+        }
+
+        if L2CAP_LINK_UP.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        loop {
+            L2CAP_CONNECTED_SIG.wait().await;
+            if L2CAP_LINK_UP.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn send(&mut self, data: &[u8]) -> Result<(), L2capError> {
+        if !L2CAP_LINK_UP.load(Ordering::Relaxed) {
+            return Err(L2capError::Disconnected);
+        }
+        if data.len() > L2CAP_FRAME_CAP {
+            return Err(L2capError::FrameTooLarge);
+        }
+
+        let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+        frame
+            .extend_from_slice(data)
+            .map_err(|_| L2capError::FrameTooLarge)?;
+        L2CAP_TX_CH.send(frame).await;
+        Ok(())
+    }
+
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, L2capError> {
+        if !L2CAP_LINK_UP.load(Ordering::Relaxed) {
+            return Err(L2capError::Disconnected);
+        }
+        let frame = L2CAP_RX_CH.receive().await;
+        let n = frame.len().min(buf.len());
+        buf[..n].copy_from_slice(&frame[..n]);
+        Ok(n)
     }
 }
 
@@ -840,21 +946,14 @@ async fn main(_spawner: embassy_executor::Spawner) {
     #[cfg(feature = "l2cap")]
     {
         esp_println::println!("[microfips] L2CAP mode starting");
-
-        if !L2CAP_TASK_STARTED.swap(true, Ordering::Relaxed) {
-            let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
-            if spawner
-                .spawn(l2cap_host_task(L2CAP_RX_CH.sender(), L2CAP_TX_CH.receiver()))
-                .is_err()
-            {
-                loop {
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
-                }
-            }
-        }
-
-        loop {
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(1000)).await;
-        }
+        let mut transport = L2capTransport;
+        // T7 will replace DEFAULT_PEER_PUB with the result of l2cap_pubkey_exchange()
+        let rng = EspRng(trng);
+        let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
+        node.set_raw_framing(true);
+        let fsp = FspDualHandler::new_dual(ESP32_SECRET, resp_eph, init_eph, &STM32_PEER_PUB, STM32_NODE_ADDR);
+        let mut handler = EspHandler { led: &mut led, fsp };
+        esp_println::println!("[microfips] Node running (L2CAP)...");
+        node.run(&mut handler).await;
     }
 }
