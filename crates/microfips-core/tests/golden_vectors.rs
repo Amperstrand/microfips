@@ -1,4 +1,12 @@
 // Integration test for golden cross-implementation vectors.
+//
+// ⚠️ EXPERIMENTAL — not a substitute for a formal audit.
+//
+// These tests verify that microfips (k256 pure-Rust) produces identical crypto output
+// to the reference FIPS implementation (secp256k1 C bindings) for a fixed set of inputs.
+// This is a regression detection tool, not a security proof. The vector set is limited
+// (47 vectors, fixed key sets) and may not cover edge cases in production usage.
+// If you rely on this for security-critical purposes, get a proper audit.
 
 #[path = "vector_types.rs"]
 mod vector_types;
