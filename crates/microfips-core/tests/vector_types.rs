@@ -104,6 +104,8 @@ pub struct XkVector {
     pub responder_ephemeral_secret_hex: String,
     pub responder_ephemeral_pubkey_hex: String,
     pub epoch: u64,
+    pub initiator_epoch_hex: String,
+    pub responder_epoch_hex: String,
     pub msg1_hex: String,
     pub msg1_payload_hex: String,
     pub msg2_hex: String,
