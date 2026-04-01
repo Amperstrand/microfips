@@ -45,12 +45,7 @@ UART0 repurposed for debug output when BLE is active. Feature-gated behind `--fe
 
 | Issue | Description | Root Cause |
 |-------|-------------|------------|
-| MCU-to-MCU ping | ESP32 → STM32 FSP ping not yet tested on hardware | ESP32 has no FSP responder code (can only initiate) |
-| ESP32 FSP responder | ESP32 ignores incoming SessionSetups | `handle_incoming_fsp` has `_ => {}` for Idle/AwaitingEstablished states |
-| ESP32 tech debt | ESP32 uses hand-rolled protocol code, not `microfips-protocol::Node` | Protocol fixes in node.rs don't auto-apply to ESP32 |
-| FIPS routing | FIPS silently caches SessionSetup coords but doesn't forward to disconnected peers | Peer must be in FIPS peer table for direct forwarding |
 | USB timing | STM32 sends 5 MSG1 retries before handshake succeeds | Bridge must open serial port before MCU `wait_connection()` returns |
-| VPS key discrepancy | Prior session's ESP32 firmware used a different key than source code | Resolved: FIPS config now matches current `ESP32_SECRET` (...0002) |
 
 **Key bugs found and fixed across all sessions:**
 
@@ -344,7 +339,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 | M6 | MCU full lifecycle (handshake + heartbeat exchange) | Done |
 | M7 | FSP session protocol (XK handshake + encrypted data) | Done |
 | M8 | Sim-to-MCU FSP ping through FIPS | **Done** — SIM-B → FIPS → physical STM32 PING/PONG |
-| M9 | MCU-to-MCU ping (STM32 ↔ ESP32 through FIPS) | In progress — ESP32 needs FSP responder code |
+| M9 | MCU-to-MCU ping (STM32 ↔ ESP32 through FIPS) | **Done** — MCU-to-MCU FSP PING/PONG + HTTP through FIPS proven on hardware (2026-04-01) |
 | M10 | FIPS DNS resolution (`.fips` names) | Future |
 
 ### M8 sub-milestones (all done)
@@ -357,12 +352,21 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 | M8.4 | Sim-to-STM32 FSP PING/PONG through FIPS | Done |
 | M8.5 | FIPS forwards SessionDatagrams between authenticated peers | Verified — no tree_peer needed |
 
-### M9 blockers
+### M9 blockers (resolved)
 
-| Blocker | Description | Approach |
-|---------|-------------|----------|
-| ESP32 FSP responder | ESP32 ignores incoming SessionSetups (`_ => {}` in handle_incoming_fsp) | Add `FspSession` responder to ESP32, or refactor ESP32 to use `microfips-protocol::Node` |
-| ESP32 tech debt | Hand-rolled protocol code doesn't benefit from fixes in `microfips-protocol` | Long-term: refactor ESP32 to use `Node` like STM32 |
+All blockers are resolved:
+- STM32 now uses `FspDualHandler::new_dual()` targeting ESP32 (dual mode: initiator + responder)
+- ESP32 already uses `FspDualHandler::new_dual()` targeting STM32 (since commit `c7da1c2`)
+- FIPS routes SessionDatagrams between direct peers via `find_next_hop()` — no `tree_peer` needed
+
+### M9 sub-milestones
+
+| ID | Description | Status |
+|----|-------------|--------|
+| M9.1 | STM32 FSP dual mode (initiator+responder targeting ESP32) | Done |
+| M9.2 | ESP32 FSP dual mode (already done, commit c7da1c2) | Done |
+| M9.3 | Sim-to-MCU HTTP-over-FSP test | Done |
+| M9.4 | MCU-to-MCU FSP PING/PONG through FIPS (hardware E2E) | Done |
 
 ## Project Layout
 

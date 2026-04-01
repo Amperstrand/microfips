@@ -372,6 +372,21 @@ sleep 30
 **Note:** BLE bridge uses BlueZ D-Bus API, not the serial port. No DTR-based `wait_connection()`
 blocking. The ESP32 advertises immediately on boot and the bridge connects within seconds.
 
+### MCU-to-MCU FSP test (both MCUs required)
+
+Both STM32 and ESP32 must be connected. The automated script handles setup, bridge startup, IK handshake waiting, and FSP frame detection. Supports `--flash` to build and flash both MCUs first.
+
+```bash
+# Full E2E test (build + flash + run)
+bash scripts/test_mcu_to_mcu_fsp.sh --flash
+
+# Run only (MCUs already flashed)
+bash scripts/test_mcu_to_mcu_fsp.sh
+```
+
+**Expected:** FSP SessionSetup (148B) and SessionAck frames in bridge logs, heartbeat sustained for both MCUs.
+See `.sisyphus/evidence/task-8-mcu-fsp-setup.txt` for reference output.
+
 ### PCAP Capture & Wireshark Analysis
 
 FIPS traffic (UDP port 2121) can be captured with standard tools:
@@ -699,34 +714,6 @@ fit Flags(3B) + CompleteLocalName(17B) + ServiceUuids128(18B) = 38B into 31B, ca
 `AdStructure encode failed` and a tight loop on device. **Fix:** split into adv_data
 (Flags + CompleteLocalName = ~20B) and scan_data (ServiceUuids128 = 18B).
 
-## FIPS Routing Blocker (2026-03-30)
-
-FIPS only forwards session datagrams between **tree peers** (peers that exchange
-TreeAnnounce/FilterAnnounce as part of the FIPS tree routing protocol). MCU firmware
-only implements IK handshake + heartbeat + FSP session initiation. MCU peers connect
-and authenticate but remain `tree_peer=false` in FIPS. FIPS receives FSP SessionSetup
-from ESP32 targeting STM32's NodeAddr but only caches coordinates — does not forward.
-
-Evidence from FIPS journal:
-```
-Cached coords from SessionSetup src=140181a585594aaaac841fb543057675 dest=244921e6606ac58f4b145313363fbb1c
-```
-No "Failed to forward" or "no route" — FIPS silently doesn't attempt forwarding to non-tree peers.
-
-Resolution options:
-- **A:** Implement TreeAnnounce/FilterAnnounce in MCU firmware (requires understanding FIPS tree protocol)
-- **B:** Ask FIPS maintainer to add a `route_all_connected` mode for non-tree peers
-- **C:** MCU-to-MCU direct communication (bypass FIPS routing entirely)
-
-## ESP32 Key Discrepancy (2026-03-30)
-
-The ESP32 firmware currently flashed on the device (flashed by other agent from commit
-`45c0a02`) uses a different secret than `ESP32_SECRET` in the current source code.
-The running firmware produces `npub1nqppng4kga6luldsu3s95hyayh8vl5gpvvvje0h8z422l6zegflqd8942y`
-but the current `ESP32_SECRET` constant produces `npub1hkp5xfnagydkg520twf7c3dhd9zyd9xwyuldn7ufjeqhmymh9jzs3mnay2`.
-FIPS config has been set to match the running firmware. Needs reconciliation — either
-update the code constant or reflash with the current code.
-
 ## Actual MCU Keys (verified 2026-03-30)
 
 | MCU | Source | Pubkey (x-only, hex) | npub |
@@ -763,4 +750,3 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 | #12 | M7: HTTP status page over FIPS | feature | Firmware has HTTP handler; needs E2E test |
 | #13 | Noise crate audit: snow not viable | resolved | Hand-rolled Noise is working, tested (113 tests) |
 | #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
-| #15 | IK responder transport keys mismatch | low | MCU is always initiator; untested code path |

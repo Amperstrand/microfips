@@ -1,7 +1,7 @@
 use core::fmt::Debug;
 use core::future::Future;
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Timer};
 
 use crate::error::ProtocolError;
@@ -136,8 +136,8 @@ impl<T: Transport> FrameReader<T> {
 
 #[cfg(any(test, feature = "std"))]
 pub mod mock {
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
     use std::vec::Vec;
 
     use embassy_time::{Duration, Timer};
@@ -375,13 +375,13 @@ mod tests {
     use super::Transport;
     use super::{FrameReader, FrameWriter, ProtocolError};
     use crate::test_helpers::block_on;
-    use crate::transport::channel::{ChannelTransport, pair as channel_pair};
+    use crate::transport::channel::{pair as channel_pair, ChannelTransport};
     use crate::transport::mock::{MockTransport, MockTransportInner};
     use std::sync::LazyLock;
 
     fn inner() -> &'static MockTransportInner {
         static INNER: LazyLock<MockTransportInner> = LazyLock::new(MockTransportInner::new);
-        &*INNER
+        &INNER
     }
 
     fn fresh_inner() -> &'static MockTransportInner {

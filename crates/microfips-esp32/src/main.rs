@@ -32,7 +32,7 @@ use trouble_host::prelude::*;
 use esp_hal::gpio::{Level, Output};
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::uart::{Config, RxConfig, Uart};
-use esp_hal::{Async, interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
+use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup, Async};
 use rand_core::RngCore;
 
 use microfips_core::identity::DEFAULT_PEER_PUB;
@@ -57,8 +57,7 @@ const STM32_PEER_PUB: [u8; 33] = [
 ];
 
 const STM32_NODE_ADDR: [u8; 16] = [
-    0x13, 0x2f, 0x39, 0xa9, 0x8c, 0x31, 0xba, 0xad,
-    0xdb, 0xa6, 0x52, 0x5f, 0x5d, 0x43, 0xf2, 0x95,
+    0x13, 0x2f, 0x39, 0xa9, 0x8c, 0x31, 0xba, 0xad, 0xdb, 0xa6, 0x52, 0x5f, 0x5d, 0x43, 0xf2, 0x95,
 ];
 
 #[used]
@@ -91,11 +90,13 @@ static STAT_BLE_RX: AtomicU32 = AtomicU32::new(0);
 fn panic(_info: &PanicInfo) -> ! {
     let gpio = unsafe { &*esp_hal::peripherals::GPIO::PTR };
     loop {
-        gpio.out_w1ts().write(|w| unsafe { w.out_data_w1ts().bits(1 << 2) });
+        gpio.out_w1ts()
+            .write(|w| unsafe { w.out_data_w1ts().bits(1 << 2) });
         for _ in 0..PANIC_BLINK_CYCLES {
             core::hint::spin_loop();
         }
-        gpio.out_w1tc().write(|w| unsafe { w.out_data_w1tc().bits(1 << 2) });
+        gpio.out_w1tc()
+            .write(|w| unsafe { w.out_data_w1tc().bits(1 << 2) });
         for _ in 0..PANIC_BLINK_CYCLES {
             core::hint::spin_loop();
         }
@@ -198,7 +199,10 @@ impl Transport for UartTransport {
             match Read::read(&mut self.rx, buf).await {
                 Ok(n) => return Ok(n),
                 Err(_) => {
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                        RECV_RETRY_DELAY_MS,
+                    ))
+                    .await;
                     continue;
                 }
             }
@@ -666,7 +670,11 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0);
 
-    let mut led = Led(Output::new(peripherals.GPIO2, Level::Low, esp_hal::gpio::OutputConfig::default()));
+    let mut led = Led(Output::new(
+        peripherals.GPIO2,
+        Level::Low,
+        esp_hal::gpio::OutputConfig::default(),
+    ));
 
     let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
     let mut trng = Trng::try_new().unwrap();
@@ -692,7 +700,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let rng = EspRng(trng);
     let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
 
-    let fsp = FspDualHandler::new_dual(ESP32_SECRET, resp_eph, init_eph, &STM32_PEER_PUB, STM32_NODE_ADDR);
+    let fsp = FspDualHandler::new_dual(
+        ESP32_SECRET,
+        resp_eph,
+        init_eph,
+        &STM32_PEER_PUB,
+        STM32_NODE_ADDR,
+    );
     let mut handler = EspHandler { led: &mut led, fsp };
 
     node.run(&mut handler).await;
