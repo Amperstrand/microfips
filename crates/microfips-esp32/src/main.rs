@@ -173,6 +173,12 @@ static L2CAP_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 #[cfg(feature = "l2cap")]
 static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "l2cap")]
+fn drain_l2cap_channels() {
+    while L2CAP_TX_CH.try_receive().is_ok() {}
+    while L2CAP_RX_CH.try_receive().is_ok() {}
+}
+
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 #[allow(dead_code)]
 fn init_heap() {
@@ -618,9 +624,12 @@ async fn l2cap_host_task() {
                 }
                 Err(_) => {
                     L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                    drain_l2cap_channels();
                     continue;
                 }
             };
+
+            drain_l2cap_channels();
 
             L2CAP_LINK_UP.store(true, Ordering::Relaxed);
             L2CAP_CONNECTED_SIG.signal(());
@@ -649,6 +658,9 @@ async fn l2cap_host_task() {
                     }
                 }
             }
+
+            L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+            drain_l2cap_channels();
         }
     })
     .await;
@@ -768,46 +780,33 @@ enum L2capError {
 }
 
 #[cfg(feature = "l2cap")]
-async fn l2cap_pubkey_exchange(transport: &mut L2capTransport, secret: &[u8; 32]) -> [u8; 33] {
-    let local_pub = match microfips_core::noise::ecdh_pubkey(secret) {
-        Ok(pubkey) => pubkey,
-        Err(_) => loop {
-            core::hint::spin_loop();
-        },
-    };
+async fn l2cap_pubkey_exchange(
+    transport: &mut L2capTransport,
+    secret: &[u8; 32],
+) -> Result<[u8; 33], L2capError> {
+    let local_pub = microfips_core::noise::ecdh_pubkey(secret).map_err(|_| L2capError::InitFailed)?;
 
     let mut tx = [0u8; 33];
     tx[0] = 0x00;
     tx[1..].copy_from_slice(&local_pub[1..33]);
-    if transport.send(&tx).await.is_err() {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
+    transport.send(&tx).await?;
 
     let mut rx = [0u8; 33];
-    let n = match embassy_time::with_timeout(
+    let n = embassy_time::with_timeout(
         embassy_time::Duration::from_secs(5),
         transport.recv(&mut rx),
     )
     .await
-    {
-        Ok(Ok(n)) => n,
-        _ => loop {
-            core::hint::spin_loop();
-        },
-    };
+    .map_err(|_| L2capError::Disconnected)??;
 
     if n != 33 || rx[0] != 0x00 {
-        loop {
-            core::hint::spin_loop();
-        }
+        return Err(L2capError::Disconnected);
     }
 
     let mut peer_pub = [0u8; 33];
     peer_pub[0] = 0x02;
     peer_pub[1..33].copy_from_slice(&rx[1..33]);
-    peer_pub
+    Ok(peer_pub)
 }
 
 #[cfg(feature = "l2cap")]
@@ -849,13 +848,24 @@ impl Transport for L2capTransport {
     }
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, L2capError> {
-        if !L2CAP_LINK_UP.load(Ordering::Relaxed) {
-            return Err(L2capError::Disconnected);
+        loop {
+            if !L2CAP_LINK_UP.load(Ordering::Relaxed) {
+                return Err(L2capError::Disconnected);
+            }
+            match select(
+                L2CAP_RX_CH.receive(),
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)),
+            )
+            .await
+            {
+                Either::First(frame) => {
+                    let n = frame.len().min(buf.len());
+                    buf[..n].copy_from_slice(&frame[..n]);
+                    return Ok(n);
+                }
+                Either::Second(()) => continue,
+            }
         }
-        let frame = L2CAP_RX_CH.receive().await;
-        let n = frame.len().min(buf.len());
-        buf[..n].copy_from_slice(&frame[..n]);
-        Ok(n)
     }
 }
 
@@ -1037,7 +1047,15 @@ async fn main(spawner: embassy_executor::Spawner) {
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
             }
         }
-        let peer_pub = l2cap_pubkey_exchange(&mut transport, &ESP32_SECRET).await;
+        let peer_pub = match l2cap_pubkey_exchange(&mut transport, &ESP32_SECRET).await {
+            Ok(peer_pub) => peer_pub,
+            Err(_) => {
+                esp_println::println!("[microfips] ERROR: L2CAP pubkey exchange failed");
+                loop {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                }
+            }
+        };
         esp_println::println!("[microfips] pubkey exchange complete");
         let rng = EspRng(trng);
         let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
