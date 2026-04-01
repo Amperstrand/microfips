@@ -4,7 +4,7 @@ Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO
 
 A Rust embedded firmware that implements leaf-only FIPS nodes using Embassy for async
 HAL, Noise_IK/XK handshakes, FMP link framing, FSP session protocol, and a no_std
-FIPS protocol stack. Both MCUs connect to a FIPS VPS via serial-to-UDP bridges.
+FIPS protocol stack. Both MCUs connect to a FIPS VPS via host bridges (serial or BLE).
 
 ## Current Status
 
@@ -18,6 +18,12 @@ SIM-B (host) → UDP → FIPS (VPS) → UDP → serial bridge → STM32 (hardwar
                                                     ← PONG ←
 ```
 
+**ESP32 BLE transport proven (2026-04-01)**
+
+ESP32 connects to FIPS VPS via BLE GATT (trouble v0.6.0) instead of UART serial.
+Full Noise IK handshake + sustained heartbeats over BLE, with Python bridge (`bleak`).
+UART0 repurposed for debug output when BLE is active. Feature-gated behind `--features ble`.
+
 **What works:**
 - 169 unit tests pass (90 core + 21 error injection + 22 compatibility + 17 wire format + 13 FSP edge cases + 6 FSP integration + 46 protocol)
 - **Sim-to-sim FSP ping through FIPS** — SIM-B → FIPS → SIM-A, full XK handshake + PING/PONG
@@ -28,6 +34,7 @@ SIM-B (host) → UDP → FIPS (VPS) → UDP → serial bridge → STM32 (hardwar
 - USB CDC ACM enumeration with upstream embassy crates.io v0.6.0
 - **STM32 completes IK handshake with live VPS** — MSG1 sent, MSG2 received, heartbeat sustained
 - **ESP32 completes IK handshake with live VPS** — UART transport via CP210x USB-serial
+- **ESP32 BLE transport** — BLE GATT bridge to VPS, alternative to UART serial
 - FIPS forwards SessionDatagrams between any two authenticated peers (no tree_peer needed)
 - 4-LED state machine on STM32 for visual debugging, single LED on ESP32
 - FIPS cross-reference annotations normalized to canonical format (`// FIPS: bd08505 ...`)
@@ -74,10 +81,14 @@ Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
   ESP32-D0WD
   +----------------+    +-------------------+
   | microfips-esp32|    | serial_udp_bridge |
-  | FIPS protocol  |UART| (single-hop,      |UDP --+
-  | Noise_IK       |<-->|  auto-detect MCU) |<-->   |
+  | FIPS protocol  |UART| (single-hop)      |UDP --+
+  | Noise_IK       |<-->|                   |<-->   |
   | FMP + FSP      |    +-------------------+       |
-  | (hand-rolled)  |                                  |
+  +----------------+    +-------------------+       |
+  | microfips-esp32|    | ble_udp_bridge    |       |
+  | FIPS protocol  |BLE | (single-hop)      |UDP --+
+  | Noise_IK       |<-->|                   |<-->   |
+  | FMP + FSP      |    +-------------------+       |
   +----------------+                                  v
                                               +------------------+
   Simulator (host)                             | FIPS daemon      |
@@ -91,6 +102,8 @@ Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
 Two transport options:
 - **Single-hop bridge** (recommended): `serial_udp_bridge.py` sends UDP directly to FIPS
   from the host. No SSH tunnel or VPS-side bridge needed.
+- **ESP32 BLE bridge**: `ble_udp_bridge.py` bridges ESP32 BLE GATT to UDP. Feature-gated
+  behind `--features ble`. See AGENTS.md "ESP32 BLE Transport" section.
 - **Legacy 3-hop** (deprecated): serial → TCP proxy → SSH tunnel → VPS bridge → FIPS
 
 All serial data uses **length-prefixed frames**: `[2-byte LE length][payload]`.
@@ -224,11 +237,16 @@ st-flash --connect-under-reset write microfips.bin 0x08000000
 # Kill stale processes holding serial port
 kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
 
-# Flash
+# Flash (same command for UART and BLE variants)
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
   espflash flash -p /dev/ttyUSB0 --chip esp32 \
   target/xtensa-esp32-none-elf/release/microfips-esp32
 ```
+
+- **Note:** ESP32 uses hand-rolled protocol code (not `microfips-protocol::Node`). Can only
+  act as FSP initiator (no responder code for incoming SessionSetups).
+- **BLE variant:** Flash same way, build with `--features ble`. Uses `ble_udp_bridge.py` instead
+  of serial bridge. UART0 repurposed for debug output. See AGENTS.md for full BLE instructions.
 
 ## Build
 
@@ -249,6 +267,15 @@ Requires Espressif Rust toolchain (installed via `espup`, activated with `RUSTUP
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
   cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
 # Output: target/xtensa-esp32-none-elf/release/microfips-esp32
+```
+
+#### BLE variant (feature-gated)
+
+```sh
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
+# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
+# Same binary, BLE transport instead of UART. UART0 used for debug output.
 ```
 
 ## CI
@@ -354,7 +381,7 @@ microfips/
       .cargo/config.toml        # probe-rs runner config (local debug only)
       src/main.rs               # FIPS leaf node firmware (4-LED state machine, uses Node)
     microfips-esp32/            # ESP32 firmware (package name: microfips-esp32)
-      src/main.rs               # FIPS leaf node (hand-rolled protocol, 1-LED, UART transport)
+      src/main.rs               # FIPS leaf node (1-LED, UART + BLE transport)
     microfips-core/             # no_std FIPS protocol: Noise IK/XK, FMP, FSP, identity
     microfips-link/             # Host-side handshake test (UDP, --keygen, env var keys)
     microfips-sim/              # Host-side simulator using Node from microfips-protocol
@@ -362,6 +389,7 @@ microfips/
     microfips-protocol/         # no_std FIPS protocol state machine: Transport trait, framing, Node
   tools/
     serial_udp_bridge.py        # Single-hop serial↔UDP bridge (recommended)
+    ble_udp_bridge.py           # Single-hop BLE↔UDP bridge (ESP32, feature-gated)
     serial_tcp_proxy.py         # Serial↔TCP proxy (legacy 3-hop pipeline)
     fips_bridge.py              # TCP↔UDP bridge (runs on VPS, legacy)
   scripts/
