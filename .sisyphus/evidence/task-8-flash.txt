@@ -1,0 +1,11 @@
+[2026-03-31T23:13:35Z WARN ] Monitor options were provided, but `--monitor/-M` flag isn't set. These options will be ignored.
+[2026-03-31T23:13:35Z INFO ] Serial port: '/dev/ttyUSB0'
+[2026-03-31T23:13:35Z INFO ] Connecting...
+[2026-03-31T23:13:41Z INFO ] Using flash stub
+Chip type:         esp32 (revision v1.0)
+Crystal frequency: 40 MHz
+Flash size:        4MB
+Features:          WiFi, BT, Dual Core, Coding Scheme None
+MAC address:       30:ae:a4:99:7e:e4
+App/part. size:    450,560/4,128,768 bytes, 10.91%
+[2026-03-31T23:14:08Z INFO ] Flashing has completed!

@@ -1,0 +1,51 @@
+warning: unused variable: `e`
+   --> crates/microfips-protocol/src/node.rs:491:25
+    |
+491 |                     Err(e) => {
+    |                         ^ help: if this is intentional, prefix it with an underscore: `_e`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `microfips-protocol` (lib) generated 1 warning (run `cargo fix --lib -p microfips-protocol` to apply 1 suggestion)
+warning: unused imports: `Config`, `RxConfig`, and `Uart`
+  --> crates/microfips-esp32/src/main.rs:34:21
+   |
+34 | use esp_hal::uart::{Config, RxConfig, Uart};
+   |                     ^^^^^^  ^^^^^^^^  ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `UART_FIFO_THRESHOLD` is never used
+   --> crates/microfips-esp32/src/main.rs:108:7
+    |
+108 | const UART_FIFO_THRESHOLD: u16 = 64;
+    |       ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `UART_BAUDRATE` is never used
+   --> crates/microfips-esp32/src/main.rs:109:7
+    |
+109 | const UART_BAUDRATE: u32 = 115200;
+    |       ^^^^^^^^^^^^^
+
+warning: constant `WAIT_READY_DELAY_MS` is never used
+   --> crates/microfips-esp32/src/main.rs:110:7
+    |
+110 | const WAIT_READY_DELAY_MS: u64 = 500;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: struct `UartTransport` is never constructed
+   --> crates/microfips-esp32/src/main.rs:173:8
+    |
+173 | struct UartTransport {
+    |        ^^^^^^^^^^^^^
+
+warning: struct `UartError` is never constructed
+   --> crates/microfips-esp32/src/main.rs:179:8
+    |
+179 | struct UartError;
+    |        ^^^^^^^^^
+
+warning: `microfips-esp32` (bin "microfips-esp32") generated 6 warnings (run `cargo fix --bin "microfips-esp32" -p microfips-esp32` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.20s

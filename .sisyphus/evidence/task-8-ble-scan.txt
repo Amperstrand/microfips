@@ -1,0 +1,39 @@
+Scanning for 15 seconds...
+Total devices found: 34
+  65:5A:C2:AF:A9:53: <no name>
+  61:45:57:7F:4D:CF: <no name>
+  4C:C9:F8:32:B7:10: <no name>
+  72:4C:58:B6:80:13: <no name>
+  FF:E4:05:1A:8F:FF: microfips-esp32
+  41:A3:0F:2D:FA:A1: <no name>
+  4E:86:2F:D2:62:3E: <no name>
+  BC:A8:9B:F4:DB:46: S58eb1a1e5144fdc7C
+  B8:D6:1A:A3:18:F2: CAF-P583S-KEU
+  1F:21:65:43:DC:BE: <no name>
+  64:E7:D8:30:52:61: <no name>
+  F9:C8:8D:78:F9:4B: Smart Smoke Alarm
+  77:51:C7:C9:2A:4E: <no name>
+  D4:F5:E0:34:9D:47: <no name>
+  FB:D2:CC:4A:C9:F4: Smart Smoke Alarm
+  43:9C:96:E2:3C:B2: <no name>
+  5C:73:B9:52:3D:9B: <no name>
+  B4:D2:85:4A:CC:9E: S7aa6f15f123f4ce9C
+  C2:A2:58:E2:9E:F1: <no name>
+  70:5D:98:68:18:50: <no name>
+  58:97:1B:63:13:A8: <no name>
+  D1:3E:71:8A:7B:57: <no name>
+  E7:03:92:E6:BC:41: <no name>
+  54:5F:E4:06:FC:20: <no name>
+  54:BD:79:26:1A:7B: <no name>
+  7F:AC:E0:F6:64:00: <no name>
+  F9:85:CB:3D:59:CA: Smart Smoke Alarm
+  09:81:1D:13:35:8F: <no name>
+  DF:7A:28:C5:83:34: Smart Smoke Alarm
+  CB:BD:8F:A3:6A:2E: <no name>
+  A0:28:84:5E:DA:9D: <no name>
+  48:06:56:19:58:07: <no name>
+  F5:A3:36:FD:A3:25: <no name>
+  5F:40:BD:4C:94:14: <no name>
+
+FOUND: microfips-esp32 (FF:E4:05:1A:8F:FF)
+SCAN SUCCESS
