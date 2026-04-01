@@ -3,31 +3,38 @@
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use core::panic::PanicInfo;
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 extern crate alloc;
 
 #[cfg(feature = "ble")]
 use embassy_futures::select::{Either, select};
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::channel::Channel;
+#[cfg(feature = "l2cap")]
+use embassy_sync::channel::{Receiver, Sender};
 #[cfg(feature = "ble")]
 use embassy_sync::signal::Signal;
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use esp_radio::ble::{controller::BleConnector, have_hci_read_data};
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use static_cell::StaticCell;
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use bt_hci::{ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci};
 #[cfg(feature = "ble")]
 use trouble_host::prelude::*;
+#[cfg(feature = "l2cap")]
+use trouble_host::prelude::{
+    Address, AdStructure, Advertisement, DefaultPacketPool, ExternalController, Host,
+    HostResources, L2capChannel, L2capChannelConfig,
+};
 
 use esp_hal::gpio::{Level, Output};
 use esp_hal::rng::{Trng, TrngSource};
@@ -111,12 +118,16 @@ const UART_BAUDRATE: u32 = 115200;
 const WAIT_READY_DELAY_MS: u64 = 500;
 const RECV_RETRY_DELAY_MS: u64 = 10;
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 #[allow(dead_code)]
 const BLE_DEVICE_NAME: &str = "microfips-esp32";
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
 const BLE_MAX_FRAME: usize = 252;
+#[cfg(feature = "l2cap")]
+const L2CAP_FRAME_CAP: usize = 512;
+#[cfg(feature = "l2cap")]
+const L2CAP_PSM: u16 = 0x0085;
 
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
@@ -134,6 +145,10 @@ const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 
 #[cfg(feature = "ble")]
 static HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2>> = StaticCell::new();
+#[cfg(feature = "l2cap")]
+type L2capPacketPool = DefaultPacketPool;
+#[cfg(feature = "l2cap")]
+static L2CAP_HOST_RESOURCES: StaticCell<HostResources<L2capPacketPool, 1, 3>> = StaticCell::new();
 #[cfg(feature = "ble")]
 static BLE_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> = Channel::new();
 #[cfg(feature = "ble")]
@@ -144,8 +159,16 @@ static BLE_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static BLE_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "ble")]
 static BLE_LINK_UP: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "l2cap")]
+static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
+    Channel::new();
+#[cfg(feature = "l2cap")]
+static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
+    Channel::new();
+#[cfg(feature = "l2cap")]
+static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 #[allow(dead_code)]
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
@@ -219,14 +242,14 @@ enum BleError {
     InitFailed,
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 #[derive(Debug, Clone, Copy)]
 enum BleHciError {
     Io,
     Parse,
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl core::fmt::Display for BleHciError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -236,24 +259,24 @@ impl core::fmt::Display for BleHciError {
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl core::error::Error for BleHciError {}
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl embedded_io::Error for BleHciError {
     fn kind(&self) -> embedded_io::ErrorKind {
         embedded_io::ErrorKind::Other
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl From<FromHciBytesError> for BleHciError {
     fn from(_: FromHciBytesError) -> Self {
         Self::Parse
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 struct BleHciTransport<'d> {
     // Safety: single-threaded Embassy executor — read() and write() are never called
     // concurrently. Using UnsafeCell avoids holding a mutex lock across an .await point
@@ -262,12 +285,12 @@ struct BleHciTransport<'d> {
 }
 
 // Safety: BleConnector is used only from one executor task at a time (single-threaded).
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 unsafe impl Sync for BleHciTransport<'_> {}
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 unsafe impl Send for BleHciTransport<'_> {}
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl<'d> BleHciTransport<'d> {
     fn new(connector: BleConnector<'d>) -> Self {
         Self {
@@ -276,12 +299,12 @@ impl<'d> BleHciTransport<'d> {
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl embedded_io::ErrorType for BleHciTransport<'_> {
     type Error = BleHciError;
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl bt_hci::transport::Transport for BleHciTransport<'_> {
     async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
         loop {
@@ -467,6 +490,90 @@ async fn ble_host_task() {
                         STAT_BLE_TX.fetch_add(1, Ordering::Relaxed);
                     }
                 }
+            }
+        }
+    })
+    .await;
+}
+
+#[cfg(feature = "l2cap")]
+#[embassy_executor::task]
+async fn l2cap_host_task(
+    _l2cap_rx: Sender<'static, CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4>,
+    _l2cap_tx: Receiver<'static, CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4>,
+) {
+    init_heap();
+
+    let Ok(radio) = esp_radio::init() else {
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+        }
+    };
+
+    let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
+    let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+        }
+    };
+
+    let controller: ExternalController<_, 20> = ExternalController::new(BleHciTransport::new(connector));
+    let resources = L2CAP_HOST_RESOURCES.init(HostResources::new());
+    let stack = trouble_host::new(controller, resources)
+        .set_random_address(Address::random([0xfe, 0x8f, 0x1a, 0x05, 0xe4, 0xfe]));
+
+    let Host {
+        mut peripheral,
+        mut runner,
+        ..
+    } = stack.build();
+
+    let _ = embassy_futures::join::join(runner.run(), async {
+        esp_println::println!("[l2cap_task] L2CAP listener ready");
+        loop {
+            let mut adv_data = [0u8; 31];
+            let Ok(adv_len) = AdStructure::encode_slice(
+                &[AdStructure::CompleteLocalName(BLE_DEVICE_NAME.as_bytes())],
+                &mut adv_data,
+            ) else {
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                continue;
+            };
+
+            let advertiser = match peripheral
+                .advertise(
+                    &Default::default(),
+                    Advertisement::ConnectableScannableUndirected {
+                        adv_data: &adv_data[..adv_len],
+                        scan_data: &[],
+                    },
+                )
+                .await
+            {
+                Ok(a) => a,
+                Err(_) => {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                    continue;
+                }
+            };
+
+            let conn = match advertiser.accept().await {
+                Ok(c) => c,
+                Err(_) => {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                    continue;
+                }
+            };
+
+            let config = L2capChannelConfig {
+                mtu: Some(2048),
+                ..Default::default()
+            };
+
+            let _ = L2capChannel::accept(&stack, &conn, &[L2CAP_PSM], &config).await;
+
+            loop {
+                embassy_time::Timer::after_millis(1000).await;
             }
         }
     })
@@ -684,7 +791,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
-    #[cfg(not(feature = "ble"))]
+    #[cfg(not(any(feature = "ble", feature = "l2cap")))]
     {
     let uart_config = Config::default()
         .with_rx(RxConfig::default().with_fifo_full_threshold(UART_FIFO_THRESHOLD))
@@ -728,5 +835,26 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
         esp_println::println!("[microfips] Node running...");
         node.run(&mut handler).await;
+    }
+
+    #[cfg(feature = "l2cap")]
+    {
+        esp_println::println!("[microfips] L2CAP mode starting");
+
+        if !L2CAP_TASK_STARTED.swap(true, Ordering::Relaxed) {
+            let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
+            if spawner
+                .spawn(l2cap_host_task(L2CAP_RX_CH.sender(), L2CAP_TX_CH.receiver()))
+                .is_err()
+            {
+                loop {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                }
+            }
+        }
+
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(1000)).await;
+        }
     }
 }
