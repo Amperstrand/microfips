@@ -740,3 +740,74 @@ pub mod http {
         }
     }
 }
+
+#[cfg(test)]
+mod service_tests {
+    use super::*;
+
+    #[test]
+    fn demo_service_supports_info_echo_and_ping() {
+        let mut service = DemoService::new();
+        let mut buf = [0u8; 256];
+
+        let info = service
+            .handle(
+                ServiceRequest {
+                    method: ServiceMethod::Get,
+                    route: "/info",
+                    payload: b"",
+                },
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(info.status, ServiceStatus::OK);
+        assert!(core::str::from_utf8(&buf[..info.body_len])
+            .unwrap()
+            .contains("microfips-http-demo"));
+
+        let echo = service
+            .handle(
+                ServiceRequest {
+                    method: ServiceMethod::Post,
+                    route: "/echo",
+                    payload: b"hello",
+                },
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(&buf[..echo.body_len], b"hello");
+
+        let ping = service
+            .handle(
+                ServiceRequest {
+                    method: ServiceMethod::Post,
+                    route: "/rpc/ping",
+                    payload: b"",
+                },
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(ping.status, ServiceStatus::OK);
+        assert!(core::str::from_utf8(&buf[..ping.body_len])
+            .unwrap()
+            .contains("pong"));
+    }
+
+    #[test]
+    fn demo_service_returns_structured_not_found() {
+        let mut service = DemoService::new();
+        let mut buf = [0u8; 64];
+        let err = service
+            .handle(
+                ServiceRequest {
+                    method: ServiceMethod::Get,
+                    route: "/missing",
+                    payload: b"",
+                },
+                &mut buf,
+            )
+            .unwrap_err();
+        assert_eq!(err, ServiceError::NotFound);
+        assert_eq!(err.status(), ServiceStatus::NOT_FOUND);
+    }
+}
