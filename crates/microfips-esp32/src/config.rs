@@ -43,3 +43,14 @@ pub mod ble_uuids {
 pub const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0x65, 0x42, 0x00, 0x73, 0x70, 0x66, 0x69, 0x6f,
 ]];
+
+#[cfg(feature = "wifi")]
+pub const WIFI_SSID: &str = "";
+#[cfg(feature = "wifi")]
+pub const WIFI_PASS: &str = "";
+#[cfg(feature = "wifi")]
+pub const WIFI_FIPS_IPV4: [u8; 4] = [91, 99, 211, 197];
+#[cfg(feature = "wifi")]
+pub const WIFI_FIPS_PORT: u16 = 2121;
+#[cfg(feature = "wifi")]
+pub const WIFI_DHCP_POLL_MS: u64 = 500;
