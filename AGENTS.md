@@ -7,6 +7,17 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated)
 
+## Workspace architecture
+
+- `microfips-core`: cryptographic/session primitives
+- `microfips-protocol`: `Node`, framing, transport trait, FSP runtime
+- `microfips-service`: transport-neutral request/response layer above protocol
+- `microfips-http-demo`: optional demo-only HTTP adapter and demo service
+
+STM32, ESP32, simulator, and host demo binaries are composition roots over those layers.
+ESP32 now uses `microfips-protocol::Node` and `FspDualHandler::new_dual()` just like the other
+targets; BLE is feature-gated transport plumbing, not a separate protocol stack.
+
 ## VPS Access
 
 VPS credentials are stored in environment variables (or a `.env` file, never committed):

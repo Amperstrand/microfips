@@ -2,11 +2,16 @@
 
 ## Overview
 
-microfips is a minimal FIPS leaf node on STM32F469I-DISCO and ESP32-D0WD. Both connect
-to a VPS running stock FIPS over serial with length-prefixed framing, bridged through
-an SSH tunnel to a Python bridge on the VPS that speaks UDP to FIPS.
+microfips is a minimal FIPS leaf node on STM32F469I-DISCO and ESP32-D0WD. Both firmware
+targets use `microfips-protocol::Node` for handshake, framing, heartbeats, and dual FSP
+session handling. Above that runtime, `microfips-service` provides a compact request/
+response boundary that downstream apps can reuse without depending on HTTP.
+
+Both MCUs connect to a VPS running stock FIPS through host-side bridges that translate
+length-prefixed serial or BLE frames into UDP. HTTP remains optional and lives in the
+demo-only `microfips-http-demo` crate.
 - **STM32F469I-DISCO:** USB CDC ACM transport (embassy-usb, 64B packets)
-- **ESP32-D0WD:** UART transport (CP210x USB-serial, 115200 baud)
+- **ESP32-D0WD:** UART transport (CP210x USB-serial, 115200 baud) or BLE transport (`--features ble`)
 
 ## Layer Stack
 
@@ -26,7 +31,7 @@ an SSH tunnel to a Python bridge on the VPS that speaks UDP to FIPS.
 +---------------------------+
 ```
 
-### ESP32-D0WD (UART)
+### ESP32-D0WD (UART / BLE)
 
 ```
 +---------------------------+
@@ -36,7 +41,7 @@ an SSH tunnel to a Python bridge on the VPS that speaks UDP to FIPS.
 +---------------------------+
 |  Length-prefixed framing  |  2-byte LE length + payload     [DONE]
 +---------------------------+
-|  UART (115200 baud)       |  esp-hal, GPIO1/GPIO3           [DONE]
+|  UART or BLE transport    |  esp-hal / trouble-host         [DONE]
 +---------------------------+
 |  ESP32-D0WD               |  esp-hal v1.0.0 + esp-rtos     [DONE]
 +---------------------------+
@@ -47,68 +52,57 @@ because the MCU is leaf-only (no routing, no transit, no discovery), and
 length-prefixed frames over CDC are simpler and sufficient for single-peer
 communication.
 
+## Service boundary
+
+```
++---------------------------+
+|  Application handler      |  demo app / downstream RPC
++---------------------------+
+|  microfips-service        |  request/response router + adapter
++---------------------------+
+|  microfips-protocol       |  Node runtime, FSP orchestration
++---------------------------+
+|  microfips-core           |  Noise, FMP, FSP, identity
++---------------------------+
+```
+
+`microfips-service` is transport-agnostic and HTTP-free. Optional HTTP demos layer on top
+in `microfips-http-demo`, while binaries such as STM32, ESP32, and the simulator remain
+thin composition roots.
+
 ## Transport: MCU <-> Host <-> VPS
 
 ### STM32F469 (USB CDC)
 
 ```
-  STM32F469I-DISCO          Host (Linux)               VPS
-  +----------------+    +-------------------+    +------------------+
-  | microfips fw   |    | serial_tcp_proxy  |    | fips_bridge.py   |
-  |                |CDC | (auto-detect MCU  |TCP | --tcp localhost  |
-  | FIPS protocol  |<-->|  by USB VID/PID)  |<-->|                  |
-  | Noise_IK       |    |                   |SSH | UDP <-> TCP      |
-  | FMP framing    |    | serial <-> TCP    |-R  |                  |
-  | Heartbeats     |    +-------------------+    +--------+---------+
-  +----------------+                                     |
-         ^                                              | UDP :2121
-         | USB OTG FS                                   v
-    /dev/ttyACM*                                  +------------------+
-    (VID:PID = c0de:cafe)                         | FIPS daemon     |
-                                                   | peer config:   |
-                                                   | 127.0.0.1:31337|
-                                                   +------------------+
+   STM32F469I-DISCO          Host (Linux)               VPS
+   +----------------+    +-------------------+    +------------------+
+   | microfips fw   |    | serial_udp_bridge |    | FIPS daemon      |
+   | FIPS protocol  |CDC | UDP <-> serial    |UDP | :2121            |
+   | + service app  |<-->| auto-detect MCU   |<-->| forwards peers   |
+   +----------------+    +-------------------+    +------------------+
 ```
 
-### ESP32-D0WD (UART)
+### ESP32-D0WD (UART / BLE)
 
 ```
-  ESP32-D0WD              Host (Linux)               VPS
-  +----------------+    +-------------------+    +------------------+
-  | microfips-esp32|    | serial_tcp_proxy  |    | fips_bridge.py   |
-  |                |UART | (auto-detect by   |TCP | --tcp localhost  |
-  | FIPS protocol  |<-->|  CP210x VID/PID)  |<-->|  --local-port    |
-  | Noise_IK       |    |                   |SSH |   31338          |
-  | FMP framing    |    | serial <-> TCP    |-R  | UDP <-> TCP      |
-  | Heartbeats     |    +-------------------+    +--------+---------+
-  +----------------+                                     |
-         ^                                              | UDP :2121
-         | UART (GPIO1/3)                               v
-    /dev/ttyUSB0                                  +------------------+
-    (VID:PID = 10c4:ea60)                         | FIPS daemon     |
-                                                   | peer config:   |
-                                                   | 127.0.0.1:31338|
-                                                   +------------------+
+   ESP32-D0WD              Host (Linux)               VPS
+   +----------------+    +-------------------+    +------------------+
+   | microfips-esp32|    | serial_udp_bridge |    | FIPS daemon      |
+   | Node + service |UART| or ble_udp_bridge |UDP | :2121            |
+   | dual FSP mode  |/BLE|                   |<-->| forwards peers   |
+   +----------------+    +-------------------+    +------------------+
 ```
 
-### Why the bridge runs on the VPS
-
-FIPS replies to the **source address** of incoming UDP packets, not the
-configured peer address. When the bridge runs on the host, FIPS replies to the
-host's public IP (unreachable from behind NAT). When the bridge runs on the VPS,
-it sends from `127.0.0.1:31337` (or `127.0.0.1:31338` for ESP32) — which matches
-the peer address in FIPS's config — so replies route correctly back through the
-SSH tunnel.
+The current bridge layout is single-hop: the host bridge sends UDP directly to FIPS.
+There is no SSH tunnel or VPS-side bridge in the normal path anymore.
 
 ### Startup sequence
 
-1. MCU boots, enumerates USB CDC, waits 2s for host-side setup
-2. `serial_tcp_proxy.py` starts on host, listens for TCP connections, auto-detects
-   MCU by USB VID/PID (`c0de:cafe`)
-3. SSH reverse tunnel: `ssh -fNR 45678:127.0.0.1:45678 vps`
-4. `fips_bridge.py --tcp 127.0.0.1:45678` starts on VPS, connects through tunnel
-5. MCU sends MSG1 → proxy → tunnel → bridge → UDP → FIPS
-6. FIPS replies MSG2 → bridge → tunnel → proxy → CDC → MCU
+1. MCU boots and waits for host-side transport readiness
+2. Host bridge opens UART/BLE/USB CDC transport
+3. Bridge forwards length-prefixed frames as UDP to FIPS
+4. FIPS replies over UDP to the same bridge
 
 ### Serial framing
 
