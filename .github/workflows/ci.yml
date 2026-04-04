@@ -32,6 +32,8 @@ jobs:
       - run: cargo test -p microfips-core --features std -- --test-threads=1
 
       - run: cargo test -p microfips-protocol --features std -- --test-threads=1
+      - run: cargo test -p microfips-service
+      - run: cargo test -p microfips-http-demo --features http
 
   golden-vectors:
     name: Golden Vectors
@@ -133,6 +135,7 @@ jobs:
       - run: cargo build -p microfips-link --release
       - run: cargo build -p microfips-sim --release
       - run: cargo build -p microfips-http-test --release
+      - run: cargo build -p microfips-http-demo --features http --release
 
       - uses: actions/upload-artifact@v4
         with:
@@ -152,6 +155,12 @@ jobs:
           path: target/release/microfips-http-test
           retention-days: 7
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microfips-http-demo
+          path: target/release/microfips-http-demo
+          retention-days: 7
+
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
@@ -166,10 +175,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-link -p microfips-sim -p microfips-http-test -- --check
+        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-service -p microfips-http-demo -p microfips-link -p microfips-sim -p microfips-http-test -- --check
 
       - name: Run clippy
-        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-link -p microfips-sim -p microfips-http-test -- -D warnings
+        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-service -p microfips-http-demo --features microfips-http-demo/http -p microfips-link -p microfips-sim -p microfips-http-test -- -D warnings
 
   sim-smoke:
     name: Simulator Smoke Test

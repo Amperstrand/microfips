@@ -1,0 +1,19 @@
+[package]
+name = "microfips-http-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Optional picoserve demo adapter for microfips services"
+
+[features]
+default = []
+http = ["dep:picoserve", "dep:tokio"]
+
+[dependencies]
+microfips-service = { path = "../microfips-service" }
+picoserve = { version = "0.18.0", features = ["std", "tokio"], optional = true }
+tokio = { version = "1.51.0", features = ["macros", "net", "rt", "sync", "time"], optional = true }
+
+[[bin]]
+name = "microfips-http-demo"
+path = "src/main.rs"
+required-features = ["http"]

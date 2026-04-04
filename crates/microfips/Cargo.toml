@@ -21,7 +21,9 @@ defmt = [
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
+microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol" }
+microfips-service = { path = "../microfips-service" }
 rand_core = { version = "0.6", default-features = false }
 embassy-stm32 = { version = "0.6.0", features = [
     "stm32f469ni",
