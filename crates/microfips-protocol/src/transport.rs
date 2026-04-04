@@ -519,11 +519,8 @@ mod tests {
         let mut fr = FrameReader::new(b);
         let mut out = [0u8; 256];
 
-        let (send_res, recv_res) = join(
-            fw.send_frame(payload),
-            fr.recv_frame(&mut out, 1000),
-        )
-        .await;
+        let (send_res, recv_res) =
+            join(fw.send_frame(payload), fr.recv_frame(&mut out, 1000)).await;
 
         send_res.unwrap();
         let n = recv_res.unwrap();

@@ -4,8 +4,8 @@ extern crate alloc;
 
 use alloc::format;
 use microfips_service::{
-    route_suffix, ContentType, Route, RouteMatch, Router, ServiceError, ServiceHandler, ServiceMethod,
-    ServiceReply, ServiceRequest, ServiceStatus,
+    route_suffix, ContentType, Route, RouteMatch, Router, ServiceError, ServiceHandler,
+    ServiceMethod, ServiceReply, ServiceRequest, ServiceStatus,
 };
 
 const HEALTH_JSON: &[u8] = br#"{"ok":true,"transport":"fips","adapter":"service"}"#;
@@ -151,7 +151,12 @@ fn info(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceRepl
 }
 
 fn echo(request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
-    copy_response(response, request.payload, ServiceStatus::OK, ContentType::Binary)
+    copy_response(
+        response,
+        request.payload,
+        ServiceStatus::OK,
+        ContentType::Binary,
+    )
 }
 
 fn rpc(request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
@@ -165,7 +170,10 @@ fn rpc(request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply,
     copy_response(response, body, ServiceStatus::OK, ContentType::Json)
 }
 
-fn cashu_info(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn cashu_info(
+    _request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-06: mint info
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
     copy_response(
@@ -176,62 +184,126 @@ fn cashu_info(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<Servi
     )
 }
 
-fn cashu_keys(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn cashu_keys(
+    _request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-01: mint public keys
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
     copy_response(response, KEYS_JSON, ServiceStatus::OK, ContentType::Json)
 }
 
-fn cashu_keysets(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn cashu_keysets(
+    _request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-02: keyset discovery
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
     copy_response(response, KEYSETS_JSON, ServiceStatus::OK, ContentType::Json)
 }
 
-fn mint_quote_create(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn mint_quote_create(
+    _request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-04: mint quote request/response
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
-    copy_response(response, MINT_QUOTE_JSON, ServiceStatus::OK, ContentType::Json)
+    copy_response(
+        response,
+        MINT_QUOTE_JSON,
+        ServiceStatus::OK,
+        ContentType::Json,
+    )
 }
 
-fn mint_quote_get(request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn mint_quote_get(
+    request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-04: mint quote request/response
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
     let quote_id = route_suffix(request.route, "/v1/mint/quote/bolt11/").unwrap_or("unknown");
-    let body = format!(r#"{{"quote":"{quote_id}","paid":false,"request":"lnbc1demo","expiry":1735689600}}"#);
-    copy_response(response, body.as_bytes(), ServiceStatus::OK, ContentType::Json)
+    let body = format!(
+        r#"{{"quote":"{quote_id}","paid":false,"request":"lnbc1demo","expiry":1735689600}}"#
+    );
+    copy_response(
+        response,
+        body.as_bytes(),
+        ServiceStatus::OK,
+        ContentType::Json,
+    )
 }
 
-fn mint_tokens(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn mint_tokens(
+    _request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-04: mint quote settlement
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
-    copy_response(response, MINT_RESULT_JSON, ServiceStatus::OK, ContentType::Json)
+    copy_response(
+        response,
+        MINT_RESULT_JSON,
+        ServiceStatus::OK,
+        ContentType::Json,
+    )
 }
 
-fn melt_quote_create(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn melt_quote_create(
+    _request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-05: melt quote request/response
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
-    copy_response(response, MELT_QUOTE_JSON, ServiceStatus::OK, ContentType::Json)
+    copy_response(
+        response,
+        MELT_QUOTE_JSON,
+        ServiceStatus::OK,
+        ContentType::Json,
+    )
 }
 
-fn melt_quote_get(request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn melt_quote_get(
+    request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-05: melt quote request/response
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
     let quote_id = route_suffix(request.route, "/v1/melt/quote/bolt11/").unwrap_or("unknown");
     let body = format!(r#"{{"quote":"{quote_id}","paid":false,"fee_reserve":1,"amount":21}}"#);
-    copy_response(response, body.as_bytes(), ServiceStatus::OK, ContentType::Json)
+    copy_response(
+        response,
+        body.as_bytes(),
+        ServiceStatus::OK,
+        ContentType::Json,
+    )
 }
 
-fn melt_tokens(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn melt_tokens(
+    _request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-05: melt settlement
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
-    copy_response(response, MELT_RESULT_JSON, ServiceStatus::OK, ContentType::Json)
+    copy_response(
+        response,
+        MELT_RESULT_JSON,
+        ServiceStatus::OK,
+        ContentType::Json,
+    )
 }
 
-fn swap_tokens(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+fn swap_tokens(
+    _request: ServiceRequest<'_>,
+    response: &mut [u8],
+) -> Result<ServiceReply, ServiceError> {
     // NUT-03: token swap
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
-    copy_response(response, SWAP_RESULT_JSON, ServiceStatus::OK, ContentType::Json)
+    copy_response(
+        response,
+        SWAP_RESULT_JSON,
+        ServiceStatus::OK,
+        ContentType::Json,
+    )
 }
 
 #[cfg(feature = "http")]
@@ -242,9 +314,10 @@ pub mod http {
     use std::sync::Mutex;
 
     use microfips_service::{
-        decode_response, dispatch_request, encode_request, ContentType, ServiceError, ServiceHandler, ServiceMethod,
+        decode_response, dispatch_request, encode_request, ContentType, ServiceError,
+        ServiceHandler, ServiceMethod,
     };
-    use picoserve::response::{IntoResponse, Response, StatusCode};
+    use picoserve::response::{Content, IntoResponse, Response, StatusCode};
     use picoserve::routing::{get, parse_path_segment, post};
 
     pub struct OwnedServiceResponse {
@@ -285,10 +358,15 @@ pub mod http {
             route: &str,
             payload: &[u8],
         ) -> Result<OwnedServiceResponse, ServiceError> {
-            let mut request = vec![0u8; self.request_buffer_size.max(payload.len() + route.len() + 16)];
+            let mut request = vec![
+                0u8;
+                self.request_buffer_size
+                    .max(payload.len() + route.len() + 16)
+            ];
             let request_len = encode_request(method, route, payload, &mut request)?;
             let mut response = vec![0u8; self.response_buffer_size];
-            let response_len = dispatch_request(&mut self.handler, &request[..request_len], &mut response)?;
+            let response_len =
+                dispatch_request(&mut self.handler, &request[..request_len], &mut response)?;
             let decoded = decode_response(&response[..response_len])?;
             Ok(OwnedServiceResponse {
                 status: decoded.status.as_u16(),
@@ -312,6 +390,28 @@ pub mod http {
         pub body: Vec<u8>,
     }
 
+    struct TypedBody {
+        content_type: &'static str,
+        body: Vec<u8>,
+    }
+
+    impl Content for TypedBody {
+        fn content_type(&self) -> &'static str {
+            self.content_type
+        }
+
+        fn content_length(&self) -> usize {
+            self.body.len()
+        }
+
+        async fn write_content<W: picoserve::io::Write>(
+            self,
+            mut writer: W,
+        ) -> Result<(), W::Error> {
+            writer.write_all(&self.body).await
+        }
+    }
+
     impl IntoResponse for HttpResponse {
         async fn write_to<
             R: picoserve::io::Read,
@@ -324,8 +424,13 @@ pub mod http {
             response_writer
                 .write_response(
                     connection,
-                    Response::new(StatusCode::new(self.status), self.body)
-                        .with_header("Content-Type", self.content_type),
+                    Response::new(
+                        StatusCode::new(self.status),
+                        TypedBody {
+                            content_type: self.content_type,
+                            body: self.body,
+                        },
+                    ),
                 )
                 .await
         }
@@ -567,11 +672,35 @@ pub mod http {
 
         fn http_request(addr: &str, raw: &str) -> String {
             let mut stream = std::net::TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
             stream.write_all(raw.as_bytes()).unwrap();
             stream.shutdown(std::net::Shutdown::Write).unwrap();
-            let mut response = String::new();
-            stream.read_to_string(&mut response).unwrap();
-            response
+            let mut response = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => response.extend_from_slice(&buf[..n]),
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break
+                    }
+                    Err(err) => panic!("http read failed: {err}"),
+                }
+            }
+            String::from_utf8(response).unwrap()
+        }
+
+        async fn http_request_async(addr: String, raw: &'static str) -> String {
+            tokio::task::spawn_blocking(move || http_request(&addr, raw))
+                .await
+                .unwrap()
         }
 
         #[tokio::test(flavor = "current_thread")]
@@ -579,11 +708,12 @@ pub mod http {
             tokio::task::LocalSet::new()
                 .run_until(async {
                     with_server(|addr| async move {
-                        let response = http_request(
-                            &addr,
+                        let response = http_request_async(
+                            addr,
                             "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-                        );
-                        assert!(response.contains("200 OK"));
+                        )
+                        .await;
+                        assert!(response.starts_with("HTTP/1.1 200 "));
                         assert!(response.contains("\"ok\":true"));
                     })
                     .await;
@@ -596,11 +726,12 @@ pub mod http {
             tokio::task::LocalSet::new()
                 .run_until(async {
                     with_server(|addr| async move {
-                        let response = http_request(
-                            &addr,
+                        let response = http_request_async(
+                            addr,
                             "POST /rpc/ping HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        );
-                        assert!(response.contains("200 OK"));
+                        )
+                        .await;
+                        assert!(response.starts_with("HTTP/1.1 200 "));
                         assert!(response.contains("\"pong\""));
                     })
                     .await;

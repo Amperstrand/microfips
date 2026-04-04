@@ -214,7 +214,10 @@ pub fn encode_request(
 ) -> Result<usize, ServiceError> {
     let route_bytes = route.as_bytes();
     let total = SERVICE_REQUEST_HEADER_LEN + route_bytes.len() + payload.len();
-    if out.len() < total || route_bytes.len() > u16::MAX as usize || payload.len() > u16::MAX as usize {
+    if out.len() < total
+        || route_bytes.len() > u16::MAX as usize
+        || payload.len() > u16::MAX as usize
+    {
         return Err(ServiceError::BufferTooSmall);
     }
 
@@ -322,7 +325,12 @@ pub fn dispatch_request<H: ServiceHandler>(
             header_buf[6..8].copy_from_slice(&(reply.body_len as u16).to_le_bytes());
             Ok(SERVICE_RESPONSE_HEADER_LEN + reply.body_len)
         }
-        Err(err) => encode_response(err.status(), ContentType::Text, err.message().as_bytes(), response_bytes),
+        Err(err) => encode_response(
+            err.status(),
+            ContentType::Text,
+            err.message().as_bytes(),
+            response_bytes,
+        ),
     }
 }
 
@@ -345,7 +353,12 @@ impl<H> FspServiceAdapter<H> {
 }
 
 impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
-    fn on_fsp_message(&mut self, msg_type: u8, payload: &[u8], response: &mut [u8]) -> FspAppResult {
+    fn on_fsp_message(
+        &mut self,
+        msg_type: u8,
+        payload: &[u8],
+        response: &mut [u8],
+    ) -> FspAppResult {
         if msg_type != FSP_MSG_DATA {
             return FspAppResult::None;
         }
@@ -356,7 +369,12 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
                 len,
             },
             Err(ServiceError::BufferTooSmall) => FspAppResult::Disconnect,
-            Err(err) => match encode_response(err.status(), ContentType::Text, err.message().as_bytes(), response) {
+            Err(err) => match encode_response(
+                err.status(),
+                ContentType::Text,
+                err.message().as_bytes(),
+                response,
+            ) {
                 Ok(len) => FspAppResult::Reply {
                     msg_type: FSP_MSG_DATA,
                     len,
@@ -376,15 +394,18 @@ mod tests {
     use super::*;
     use microfips_core::fmp;
     use microfips_core::fsp::{
-        build_fsp_data_message, build_session_datagram_body, FspInitiatorSession, FspInitiatorState,
-        SESSION_DATAGRAM_BODY_SIZE,
+        build_fsp_data_message, build_session_datagram_body, FspInitiatorSession,
+        FspInitiatorState, SESSION_DATAGRAM_BODY_SIZE,
     };
     use microfips_core::identity::NodeAddr;
     use microfips_core::noise::{aead_decrypt, ecdh_pubkey, parity_normalize};
     use microfips_protocol::fsp_handler::FspDualHandler;
     use microfips_protocol::node::{HandleResult, NodeHandler};
 
-    fn health_handler(_request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+    fn health_handler(
+        _request: ServiceRequest<'_>,
+        response: &mut [u8],
+    ) -> Result<ServiceReply, ServiceError> {
         let body = br#"{"ok":true}"#;
         response[..body.len()].copy_from_slice(body);
         Ok(ServiceReply {
@@ -406,7 +427,10 @@ mod tests {
 
     #[test]
     fn router_dispatches_exact_and_prefix_routes() {
-        fn prefix_handler(request: ServiceRequest<'_>, response: &mut [u8]) -> Result<ServiceReply, ServiceError> {
+        fn prefix_handler(
+            request: ServiceRequest<'_>,
+            response: &mut [u8],
+        ) -> Result<ServiceReply, ServiceError> {
             let suffix = route_suffix(request.route, "/rpc/").unwrap_or("");
             response[..suffix.len()].copy_from_slice(suffix.as_bytes());
             Ok(ServiceReply {
@@ -467,8 +491,10 @@ mod tests {
         let resp_secret = [0x22; 32];
         let init_pub = ecdh_pubkey(&init_secret).unwrap();
         let resp_pub = ecdh_pubkey(&resp_secret).unwrap();
-        let init_addr = NodeAddr::from_pubkey_x(&parity_normalize(&init_pub)[1..].try_into().unwrap());
-        let resp_addr = NodeAddr::from_pubkey_x(&parity_normalize(&resp_pub)[1..].try_into().unwrap());
+        let init_addr =
+            NodeAddr::from_pubkey_x(&parity_normalize(&init_pub)[1..].try_into().unwrap());
+        let resp_addr =
+            NodeAddr::from_pubkey_x(&parity_normalize(&resp_pub)[1..].try_into().unwrap());
 
         let routes = [Route {
             method: ServiceMethod::Get,
@@ -487,8 +513,10 @@ mod tests {
             .build_setup(init_addr.as_bytes(), resp_addr.as_bytes(), &mut setup)
             .unwrap();
         let mut setup_payload = [0u8; 512];
-        setup_payload[..SESSION_DATAGRAM_BODY_SIZE]
-            .copy_from_slice(&build_session_datagram_body(init_addr.as_bytes(), resp_addr.as_bytes()));
+        setup_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
         setup_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
             .copy_from_slice(&setup[..setup_len]);
 
@@ -506,10 +534,14 @@ mod tests {
             .unwrap();
 
         let mut msg3 = [0u8; 512];
-        let msg3_len = initiator.build_msg3(&[0x02, 0, 0, 0, 0, 0, 0, 0], &mut msg3).unwrap();
+        let msg3_len = initiator
+            .build_msg3(&[0x02, 0, 0, 0, 0, 0, 0, 0], &mut msg3)
+            .unwrap();
         let mut msg3_payload = [0u8; 512];
-        msg3_payload[..SESSION_DATAGRAM_BODY_SIZE]
-            .copy_from_slice(&build_session_datagram_body(init_addr.as_bytes(), resp_addr.as_bytes()));
+        msg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
         msg3_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
             .copy_from_slice(&msg3[..msg3_len]);
         assert_eq!(
@@ -525,13 +557,21 @@ mod tests {
         let (_k_recv_i, k_send_i) = initiator.session_keys().unwrap();
         let (k_recv_i, _) = initiator.session_keys().unwrap();
         let mut service_request = [0u8; 128];
-        let req_len = encode_request(ServiceMethod::Get, "/health", b"", &mut service_request).unwrap();
+        let req_len =
+            encode_request(ServiceMethod::Get, "/health", b"", &mut service_request).unwrap();
         let mut fsp_packet = [0u8; 256];
-        let fsp_len = build_fsp_data_message(0, 0, &service_request[..req_len], &k_send_i, &mut fsp_packet)
-            .unwrap();
+        let fsp_len = build_fsp_data_message(
+            0,
+            0,
+            &service_request[..req_len],
+            &k_send_i,
+            &mut fsp_packet,
+        )
+        .unwrap();
         let mut request_payload = [0u8; 512];
-        request_payload[..SESSION_DATAGRAM_BODY_SIZE]
-            .copy_from_slice(&build_session_datagram_body(init_addr.as_bytes(), resp_addr.as_bytes()));
+        request_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(
+            &build_session_datagram_body(init_addr.as_bytes(), resp_addr.as_bytes()),
+        );
         request_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp_len]
             .copy_from_slice(&fsp_packet[..fsp_len]);
 
@@ -549,7 +589,8 @@ mod tests {
         let (_flags, counter, header, encrypted) =
             microfips_core::fsp::parse_fsp_encrypted_header(reply_fsp).unwrap();
         let mut decrypted = [0u8; 256];
-        let decrypted_len = aead_decrypt(&k_recv_i, counter, header, encrypted, &mut decrypted).unwrap();
+        let decrypted_len =
+            aead_decrypt(&k_recv_i, counter, header, encrypted, &mut decrypted).unwrap();
         let (_ts, msg_type, _flags, inner_payload) =
             microfips_core::fsp::fsp_strip_inner_header(&decrypted[..decrypted_len]).unwrap();
         assert_eq!(msg_type, FSP_MSG_DATA);

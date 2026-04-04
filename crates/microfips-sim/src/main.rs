@@ -13,12 +13,14 @@ use k256::SecretKey;
 use rand::RngCore;
 
 use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
-use microfips_http_demo::DemoService;
 use microfips_core::noise;
+use microfips_http_demo::DemoService;
 use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::Transport;
-use microfips_service::{decode_response, encode_request, FspServiceAdapter, ServiceMethod, ServiceStatus};
+use microfips_service::{
+    decode_response, encode_request, FspServiceAdapter, ServiceMethod, ServiceStatus,
+};
 
 // ---------------------------------------------------------------------------
 // UdpTransport: raw FMP over UDP (no length-prefix framing)
@@ -243,10 +245,7 @@ impl NodeHandler for SimHandler {
             );
             std::process::exit(0);
         }
-        if self.test_http
-            && self.is_established()
-            && self.is_http_response(payload)
-        {
+        if self.test_http && self.is_established() && self.is_http_response(payload) {
             log::info!("[{}] *** test http success, exiting ***", self.label);
             std::process::exit(0);
         }
@@ -281,11 +280,11 @@ impl NodeHandler for SimHandler {
             };
             let send_ctr = fsp.next_send_counter();
             let mut request = [0u8; 128];
-            let request_len =
-                match encode_request(ServiceMethod::Get, "/health", b"", &mut request) {
-                    Ok(len) => len,
-                    Err(_) => return HandleResult::None,
-                };
+            let request_len = match encode_request(ServiceMethod::Get, "/health", b"", &mut request)
+            {
+                Ok(len) => len,
+                Err(_) => return HandleResult::None,
+            };
             let ts = 0u32;
             let mut fsp_packet = [0u8; 512];
             let fsp_total = match microfips_core::fsp::build_fsp_data_message(
