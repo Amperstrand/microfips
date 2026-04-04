@@ -36,9 +36,11 @@ use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerG
 use rand_core::RngCore;
 
 use microfips_core::identity::DEFAULT_PEER_PUB;
+use microfips_http_demo::DemoService;
 use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::Transport;
+use microfips_service::FspServiceAdapter;
 
 /// ESP32 identity secret key: 31 zero bytes + 0x02 (secp256k1 generator * 2).
 /// npub: npub1ccz8l9zpa47k6vz9gphftsrumpw80rjt3nhnefat4symjhrsnmjs38mnyd
@@ -604,7 +606,7 @@ impl rand_core::CryptoRng for EspRng {}
 
 struct EspHandler<'a> {
     led: &'a mut Led,
-    fsp: FspDualHandler,
+    fsp: FspDualHandler<FspServiceAdapter<DemoService>>,
 }
 
 impl NodeHandler for EspHandler<'_> {
@@ -706,6 +708,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         init_eph,
         &STM32_PEER_PUB,
         STM32_NODE_ADDR,
+        FspServiceAdapter::new(DemoService::new()),
     );
     let mut handler = EspHandler { led: &mut led, fsp };
 
@@ -723,7 +726,14 @@ async fn main(_spawner: embassy_executor::Spawner) {
         let rng = EspRng(trng);
         let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
 
-        let fsp = FspDualHandler::new_dual(ESP32_SECRET, resp_eph, init_eph, &STM32_PEER_PUB, STM32_NODE_ADDR);
+        let fsp = FspDualHandler::new_dual(
+            ESP32_SECRET,
+            resp_eph,
+            init_eph,
+            &STM32_PEER_PUB,
+            STM32_NODE_ADDR,
+            FspServiceAdapter::new(DemoService::new()),
+        );
         let mut handler = EspHandler { led: &mut led, fsp };
 
         esp_println::println!("[microfips] Node running...");

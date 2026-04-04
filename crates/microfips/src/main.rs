@@ -17,9 +17,11 @@ use embassy_usb::Builder;
 use static_cell::StaticCell;
 
 use microfips_core::identity::{DEFAULT_PEER_PUB, DEFAULT_SECRET};
+use microfips_http_demo::DemoService;
 use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::Transport;
+use microfips_service::FspServiceAdapter;
 
 static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
 #[used]
@@ -241,7 +243,7 @@ impl Leds {
 
 struct FipsHandler<'a> {
     leds: &'a mut Leds,
-    fsp: FspDualHandler,
+    fsp: FspDualHandler<FspServiceAdapter<DemoService>>,
 }
 
 impl NodeHandler for FipsHandler<'_> {
@@ -391,6 +393,7 @@ async fn main(_spawner: Spawner) {
             init_eph,
             &ESP32_PEER_PUB,
             ESP32_NODE_ADDR,
+            FspServiceAdapter::new(DemoService::new()),
         ),
     };
 

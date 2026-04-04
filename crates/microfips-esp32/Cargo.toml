@@ -10,7 +10,9 @@ ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
+microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol" }
+microfips-service = { path = "../microfips-service" }
 rand_core = { version = "0.6", default-features = false }
 esp-hal = { version = "1.0.0", features = ["esp32", "unstable"] }
 esp-rtos = { version = "0.2.0", features = ["esp32", "embassy", "esp-alloc", "esp-radio"] }
@@ -27,4 +29,4 @@ trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255"], 
 esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }
-esp-println = { version = "0.16.0", features = ["esp32"], optional = true }
+esp-println = { version = "0.16.1", features = ["esp32"], optional = true }
