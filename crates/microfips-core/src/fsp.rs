@@ -83,12 +83,6 @@ pub fn build_session_datagram_body(
     body
 }
 
-// FIPS: bd08505 handlers/http.rs:handle_http_request()
-pub const HTTP_RESPONSE: &[u8] =
-    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nmicrofips OK\n";
-
-pub const PONG: &[u8] = b"PONG";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspError {
     BufferTooSmall,
@@ -1006,7 +1000,7 @@ pub fn handle_fsp_datagram(
             if session.state() != FspSessionState::Established {
                 return Ok(FspHandlerResult::None);
             }
-            let (k_recv, k_send) = session.session_keys().unwrap();
+            let (k_recv, _k_send) = session.session_keys().unwrap();
             let Some((flags, counter, header, encrypted)) = parse_fsp_encrypted_header(fsp_data)
             else {
                 return Ok(FspHandlerResult::None);
@@ -1017,42 +1011,11 @@ pub fn handle_fsp_datagram(
             let mut dec = [0u8; 512];
             let dl = crate::noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec)
                 .map_err(|_| FspHandlerError::DecryptFailed)?;
-            let Some((_timestamp, inner_msg_type, _inner_flags, inner_payload)) =
+            let Some((_timestamp, _inner_msg_type, _inner_flags, _inner_payload)) =
                 fsp_strip_inner_header(&dec[..dl])
             else {
                 return Err(FspHandlerError::InnerHeaderTooShort);
             };
-            let mut reply_data: Option<&[u8]> = None;
-            if inner_msg_type == FSP_MSG_DATA {
-                if inner_payload.len() >= 4 && &inner_payload[..4] == b"PING" {
-                    reply_data = Some(PONG);
-                } else if inner_payload.len() >= 3 && &inner_payload[..3] == b"GET" {
-                    reply_data = Some(HTTP_RESPONSE);
-                }
-            }
-            if let Some(data) = reply_data {
-                let send_ctr = session.next_send_counter();
-                let ts = 0u32;
-                let mut plaintext = [0u8; 512];
-                let il = fsp_prepend_inner_header(ts, FSP_MSG_DATA, 0x00, data, &mut plaintext);
-                let hdr = build_fsp_header(send_ctr, 0x00, (il + crate::noise::TAG_SIZE) as u16);
-                let mut ct = [0u8; 512];
-                let cl =
-                    crate::noise::aead_encrypt(&k_send, send_ctr, &hdr, &plaintext[..il], &mut ct)
-                        .map_err(|_| FspHandlerError::DecryptFailed)?;
-                let fsp_total = FSP_HEADER_SIZE + cl;
-                let total = SESSION_DATAGRAM_BODY_SIZE + fsp_total;
-                if resp.len() < total {
-                    return Err(FspHandlerError::BufferTooSmall);
-                }
-                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&reply_body);
-                resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE]
-                    .copy_from_slice(&hdr);
-                resp[SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE
-                    ..SESSION_DATAGRAM_BODY_SIZE + fsp_total]
-                    .copy_from_slice(&ct[..cl]);
-                return Ok(FspHandlerResult::SendDatagram(total));
-            }
             Ok(FspHandlerResult::None)
         }
         _ => Err(FspHandlerError::UnknownPhase),

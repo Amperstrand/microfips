@@ -6,7 +6,9 @@ description = "Host-side FIPS lifecycle simulator — simulates MCU protocol wit
 
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["std"] }
+microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["std"] }
+microfips-service = { path = "../microfips-service" }
 embassy-executor = { version = "0.10.0", features = ["platform-std", "executor-thread"] }
 embassy-time = { version = "0.5.1", features = ["std"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
