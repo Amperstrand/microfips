@@ -36,6 +36,7 @@ The demo service exposes:
 - Cashu-shaped demo routes under `/v1/*`
 
 Cashu-shaped handlers are mocked and include NUT comments in source. They demonstrate shape and layering only.
+Here NUT means Cashu "Notation, Usage, and Terminology" specification documents.
 
 ## Build and run
 
