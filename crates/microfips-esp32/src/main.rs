@@ -9,6 +9,8 @@ mod led;
 mod rng;
 mod stats;
 mod uart_transport;
+#[cfg(feature = "wifi")]
+mod wifi_transport;
 
 #[cfg(feature = "ble")]
 mod ble_host;
@@ -19,7 +21,7 @@ use core::panic::PanicInfo;
 
 use esp_hal::gpio::{Level, Output};
 use esp_hal::rng::{Trng, TrngSource};
-#[cfg(not(feature = "ble"))]
+#[cfg(all(not(feature = "ble"), not(feature = "wifi")))]
 use esp_hal::uart::{Config, RxConfig, Uart};
 use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
 use microfips_core::identity::DEFAULT_PEER_PUB;
@@ -29,13 +31,18 @@ use rand_core::RngCore;
 #[cfg(feature = "ble")]
 use crate::ble_transport::BleTransport;
 use crate::config::{ESP32_SECRET, PANIC_BLINK_CYCLES};
-#[cfg(not(feature = "ble"))]
+#[cfg(all(not(feature = "ble"), not(feature = "wifi")))]
 use crate::config::{UART_BAUDRATE, UART_FIFO_THRESHOLD};
 use crate::handler::{build_demo_fsp, EspHandler};
 use crate::led::Led;
 use crate::rng::EspRng;
-#[cfg(not(feature = "ble"))]
+#[cfg(all(not(feature = "ble"), not(feature = "wifi")))]
 use crate::uart_transport::UartTransport;
+#[cfg(feature = "wifi")]
+use crate::wifi_transport::build_wifi_transport;
+
+#[cfg(all(feature = "ble", feature = "wifi"))]
+compile_error!("features `ble` and `wifi` are mutually exclusive");
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -76,7 +83,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut initiator_ephemeral = [0u8; 32];
     trng.fill_bytes(&mut initiator_ephemeral);
 
-    #[cfg(not(feature = "ble"))]
+    #[cfg(all(not(feature = "ble"), not(feature = "wifi")))]
     {
         let uart_config = Config::default()
             .with_rx(RxConfig::default().with_fifo_full_threshold(UART_FIFO_THRESHOLD))
@@ -92,6 +99,19 @@ async fn main(_spawner: embassy_executor::Spawner) {
         let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
         let fsp = build_demo_fsp(responder_ephemeral, initiator_ephemeral);
         let mut handler = EspHandler { led: &mut led, fsp };
+        node.run(&mut handler).await;
+    }
+
+    #[cfg(feature = "wifi")]
+    {
+        esp_println::println!("[microfips] WiFi mode starting");
+        let transport = build_wifi_transport(_spawner, peripherals.WIFI, &mut trng).await;
+        let rng = EspRng(trng);
+        let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
+        node.set_raw_framing(true);
+        let fsp = build_demo_fsp(responder_ephemeral, initiator_ephemeral);
+        let mut handler = EspHandler { led: &mut led, fsp };
+        esp_println::println!("[microfips] Node running over WiFi...");
         node.run(&mut handler).await;
     }
 
