@@ -554,8 +554,7 @@ mod tests {
         );
         assert_eq!(initiator.state(), FspInitiatorState::Established);
 
-        let (_k_recv_i, k_send_i) = initiator.session_keys().unwrap();
-        let (k_recv_i, _) = initiator.session_keys().unwrap();
+        let (k_recv_i, k_send_i) = initiator.session_keys().unwrap();
         let mut service_request = [0u8; 128];
         let req_len =
             encode_request(ServiceMethod::Get, "/health", b"", &mut service_request).unwrap();
