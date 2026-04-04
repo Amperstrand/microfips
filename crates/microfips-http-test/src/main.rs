@@ -245,7 +245,8 @@ fn main() {
 
     let mut service_request = [0u8; 256];
     let service_request_len =
-        encode_request(ServiceMethod::Get, "/health", b"", &mut service_request).expect("service request");
+        encode_request(ServiceMethod::Get, "/health", b"", &mut service_request)
+            .expect("service request");
     let fsp_encrypted =
         build_fsp_established_msg(0, ts, &service_request[..service_request_len], &fsp_k_send);
 
@@ -316,9 +317,13 @@ fn main() {
                                         println!("  Service status={}", response.status.as_u16());
                                         match std::str::from_utf8(response.body) {
                                             Ok(s) => println!("{s}"),
-                                            Err(_) => println!("  hex: {}", hex::encode(response.body)),
+                                            Err(_) => {
+                                                println!("  hex: {}", hex::encode(response.body))
+                                            }
                                         }
-                                        println!("\nSUCCESS: MCU responded with service data via FSP!");
+                                        println!(
+                                            "\nSUCCESS: MCU responded with service data via FSP!"
+                                        );
                                     }
                                     Err(_) => {
                                         println!("  hex: {}", hex::encode(inner_payload));
