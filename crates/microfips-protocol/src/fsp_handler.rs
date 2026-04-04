@@ -20,7 +20,8 @@ pub enum FspAppResult {
 }
 
 pub trait FspAppHandler {
-    fn on_fsp_message(&mut self, msg_type: u8, payload: &[u8], response: &mut [u8]) -> FspAppResult;
+    fn on_fsp_message(&mut self, msg_type: u8, payload: &[u8], response: &mut [u8])
+        -> FspAppResult;
 }
 
 pub struct NoopFspApp;
@@ -206,7 +207,8 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                     return HandleResult::None;
                 };
 
-                let app_offset = SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE + FSP_INNER_HEADER_SIZE;
+                let app_offset =
+                    SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE + FSP_INNER_HEADER_SIZE;
                 if resp.len() <= app_offset {
                     return HandleResult::None;
                 }
@@ -234,8 +236,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                             (plaintext_len + microfips_core::noise::TAG_SIZE) as u16,
                         );
                         let ciphertext_offset = SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE;
-                        let max_ciphertext =
-                            resp.len().saturating_sub(ciphertext_offset);
+                        let max_ciphertext = resp.len().saturating_sub(ciphertext_offset);
                         if max_ciphertext < plaintext_len + microfips_core::noise::TAG_SIZE {
                             return HandleResult::None;
                         }
@@ -245,12 +246,15 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                             &header,
                             &self.app_buf[..plaintext_len],
                             &mut resp[ciphertext_offset
-                                ..ciphertext_offset + plaintext_len + microfips_core::noise::TAG_SIZE],
+                                ..ciphertext_offset
+                                    + plaintext_len
+                                    + microfips_core::noise::TAG_SIZE],
                         ) else {
                             return HandleResult::None;
                         };
                         resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&reply_body);
-                        resp[SESSION_DATAGRAM_BODY_SIZE..ciphertext_offset].copy_from_slice(&header);
+                        resp[SESSION_DATAGRAM_BODY_SIZE..ciphertext_offset]
+                            .copy_from_slice(&header);
                         HandleResult::SendDatagram(ciphertext_offset + ciphertext_len)
                     }
                 }
@@ -463,7 +467,7 @@ mod tests {
 
     #[test]
     fn dual_handler_starts_timer_after_handshake() {
-        let mut handler = FspDualHandler::new_dual(
+        let mut handler: FspDualHandler<_, 1024> = FspDualHandler::new_dual(
             DEFAULT_SECRET,
             [0x11; 32],
             [0x22; 32],
@@ -478,14 +482,15 @@ mod tests {
 
     #[test]
     fn responder_handler_does_not_start_timer_after_handshake() {
-        let mut handler = FspDualHandler::new_responder(DEFAULT_SECRET, [0x11; 32], NoopFspApp);
+        let mut handler: FspDualHandler<_, 1024> =
+            FspDualHandler::new_responder(DEFAULT_SECRET, [0x11; 32], NoopFspApp);
         handler.on_event_default(NodeEvent::HandshakeOk);
         assert_eq!(handler.fsp_timer, None);
     }
 
     #[test]
     fn on_tick_from_idle_builds_session_setup() {
-        let mut handler = FspDualHandler::new_dual(
+        let mut handler: FspDualHandler<_, 1024> = FspDualHandler::new_dual(
             DEFAULT_SECRET,
             [0x11; 32],
             [0x22; 32],

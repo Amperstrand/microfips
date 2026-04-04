@@ -499,7 +499,7 @@ fn test_ping_pong_roundtrip() {
         .unwrap();
     fsp_session.handle_msg3(&msg3_buf[..msg3_len]).unwrap();
 
-    let (init_k_recv, init_k_send) = init_session.session_keys().unwrap();
+    let (_init_k_recv, init_k_send) = init_session.session_keys().unwrap();
 
     let ping_payload = b"PING";
     let mut plaintext = [0u8; 512];
