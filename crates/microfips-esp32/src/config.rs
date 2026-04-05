@@ -27,10 +27,23 @@ pub const STM32_NODE_ADDR: [u8; 16] = [
     0x13, 0x2f, 0x39, 0xa9, 0x8c, 0x31, 0xba, 0xad, 0xdb, 0xa6, 0x52, 0x5f, 0x5d, 0x43, 0xf2, 0x95,
 ];
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 pub const BLE_DEVICE_NAME: &str = "microfips-esp32";
 #[cfg(feature = "ble")]
 pub const BLE_MAX_FRAME: usize = 252;
+
+#[cfg(feature = "l2cap")]
+pub const L2CAP_FRAME_CAP: usize = 512;
+#[cfg(feature = "l2cap")]
+pub const L2CAP_PSM: u16 = 0x0085;
+#[cfg(feature = "l2cap")]
+pub const L2CAP_SCAN_DURATION_SECS: u64 = 3;
+#[cfg(feature = "l2cap")]
+pub const L2CAP_AD_TYPE_COMPLETE_UUID128: u8 = 0x07;
+#[cfg(feature = "l2cap")]
+pub const L2CAP_FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
+    0x4c, 0x8f, 0x64, 0x40, 0xcc, 0xc9, 0x87, 0x9f, 0xc0, 0x42, 0xc5, 0x2c, 0x90, 0xb7, 0x90, 0x9c,
+]];
 
 #[cfg(feature = "ble")]
 pub mod ble_uuids {

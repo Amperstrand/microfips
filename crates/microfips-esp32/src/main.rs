@@ -14,27 +14,33 @@ mod uart_transport;
 mod ble_host;
 #[cfg(feature = "ble")]
 mod ble_transport;
+#[cfg(feature = "l2cap")]
+mod l2cap_transport;
 
 use core::panic::PanicInfo;
 
 use esp_hal::gpio::{Level, Output};
 use esp_hal::rng::{Trng, TrngSource};
-#[cfg(not(feature = "ble"))]
+#[cfg(not(any(feature = "ble", feature = "l2cap")))]
 use esp_hal::uart::{Config, RxConfig, Uart};
 use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
 use microfips_core::identity::DEFAULT_PEER_PUB;
 use microfips_protocol::node::Node;
+#[cfg(feature = "l2cap")]
+use microfips_protocol::transport::Transport;
 use rand_core::RngCore;
 
 #[cfg(feature = "ble")]
 use crate::ble_transport::BleTransport;
 use crate::config::{ESP32_SECRET, PANIC_BLINK_CYCLES};
-#[cfg(not(feature = "ble"))]
+#[cfg(not(any(feature = "ble", feature = "l2cap")))]
 use crate::config::{UART_BAUDRATE, UART_FIFO_THRESHOLD};
 use crate::handler::{build_demo_fsp, EspHandler};
+#[cfg(feature = "l2cap")]
+use crate::l2cap_transport::{l2cap_pubkey_exchange, L2capTransport};
 use crate::led::Led;
 use crate::rng::EspRng;
-#[cfg(not(feature = "ble"))]
+#[cfg(not(any(feature = "ble", feature = "l2cap")))]
 use crate::uart_transport::UartTransport;
 
 #[panic_handler]
@@ -76,7 +82,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut initiator_ephemeral = [0u8; 32];
     trng.fill_bytes(&mut initiator_ephemeral);
 
-    #[cfg(not(feature = "ble"))]
+    #[cfg(not(any(feature = "ble", feature = "l2cap")))]
     {
         let uart_config = Config::default()
             .with_rx(RxConfig::default().with_fifo_full_threshold(UART_FIFO_THRESHOLD))
@@ -104,6 +110,36 @@ async fn main(_spawner: embassy_executor::Spawner) {
         let fsp = build_demo_fsp(responder_ephemeral, initiator_ephemeral);
         let mut handler = EspHandler { led: &mut led, fsp };
         esp_println::println!("[microfips] Node running...");
+        node.run(&mut handler).await;
+    }
+
+    #[cfg(feature = "l2cap")]
+    {
+        esp_println::println!("[microfips] L2CAP mode starting");
+        let mut transport = L2capTransport;
+        if transport.wait_ready().await.is_err() {
+            esp_println::println!("[microfips] ERROR: L2CAP transport wait_ready failed");
+            loop {
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
+            }
+        }
+
+        let peer_pub = match l2cap_pubkey_exchange(&mut transport).await {
+            Ok(peer_pub) => peer_pub,
+            Err(_) => {
+                esp_println::println!("[microfips] ERROR: L2CAP pubkey exchange failed");
+                loop {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
+                }
+            }
+        };
+
+        let rng = EspRng(trng);
+        let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
+        node.set_raw_framing(true);
+        let fsp = build_demo_fsp(responder_ephemeral, initiator_ephemeral);
+        let mut handler = EspHandler { led: &mut led, fsp };
+        esp_println::println!("[microfips] Node running (L2CAP)...");
         node.run(&mut handler).await;
     }
 }
