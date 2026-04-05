@@ -2,8 +2,7 @@ use microfips_core::fmp;
 use microfips_core::fsp::{
     self, build_fsp_encrypted, build_fsp_header, build_session_datagram_body, build_session_msg3,
     build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack,
-    FspInitiatorSession, FspSession, FSP_HEADER_SIZE, FSP_MSG_DATA, HTTP_RESPONSE,
-    SESSION_DATAGRAM_BODY_SIZE,
+    FspInitiatorSession, FspSession, FSP_HEADER_SIZE, FSP_MSG_DATA, SESSION_DATAGRAM_BODY_SIZE,
 };
 use microfips_core::identity::{NodeAddr, DEFAULT_SECRET};
 use microfips_core::noise::{
@@ -269,7 +268,7 @@ fn test_fsp_full_handshake_over_fmp() {
     http_payload[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&fsp_enc_packet);
 
     let mut http_buf = [0u8; 512];
-    let http_response_len = match handle_fsp_datagram(
+    let result = handle_fsp_datagram(
         &mut fsp_session,
         &fsp_resp_secret,
         &fsp_resp_eph,
@@ -277,42 +276,8 @@ fn test_fsp_full_handshake_over_fmp() {
         &http_payload,
         &mut http_buf,
     )
-    .unwrap()
-    {
-        fsp::FspHandlerResult::SendDatagram(len) => len,
-        other => panic!(
-            "Step 3 (HTTP GET): Expected SendDatagram with HTTP response, got {:?}",
-            other
-        ),
-    };
-    assert!(
-        http_response_len > SESSION_DATAGRAM_BODY_SIZE,
-        "response must include SessionDatagram body"
-    );
-    let reply_dg = &http_buf[..http_response_len];
-    assert_eq!(
-        &reply_dg[3..19],
-        responder_addr.as_bytes(),
-        "reply src should be original dst"
-    );
-    assert_eq!(
-        &reply_dg[19..35],
-        initiator_addr.as_bytes(),
-        "reply dst should be original src"
-    );
-    let fsp_reply = &reply_dg[SESSION_DATAGRAM_BODY_SIZE..];
-    assert_eq!(
-        fsp_reply[0] & 0x0F,
-        0x00,
-        "reply should be phase ESTABLISHED (encrypted)"
-    );
-    let reply_hdr: [u8; FSP_HEADER_SIZE] = fsp_reply[..FSP_HEADER_SIZE].try_into().unwrap();
-    let ct = &fsp_reply[FSP_HEADER_SIZE..];
-    let mut dec = [0u8; 512];
-    let dl = aead_decrypt(&k_recv_i, 0, &reply_hdr, ct, &mut dec).unwrap();
-    let (_ts, mt, _ifl, inner) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();
-    assert_eq!(mt, FSP_MSG_DATA);
-    assert_eq!(inner, HTTP_RESPONSE);
+    .unwrap();
+    assert_eq!(result, fsp::FspHandlerResult::None);
 }
 
 #[test]
@@ -534,7 +499,7 @@ fn test_ping_pong_roundtrip() {
         .unwrap();
     fsp_session.handle_msg3(&msg3_buf[..msg3_len]).unwrap();
 
-    let (init_k_recv, init_k_send) = init_session.session_keys().unwrap();
+    let (_init_k_recv, init_k_send) = init_session.session_keys().unwrap();
 
     let ping_payload = b"PING";
     let mut plaintext = [0u8; 512];
@@ -557,7 +522,7 @@ fn test_ping_pong_roundtrip() {
     ping_dg[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&fsp_enc_packet);
 
     let mut pong_buf = [0u8; 512];
-    let pong_len = match handle_fsp_datagram(
+    let result = handle_fsp_datagram(
         &mut fsp_session,
         &fsp_resp_secret,
         &fsp_resp_eph,
@@ -565,33 +530,6 @@ fn test_ping_pong_roundtrip() {
         &ping_dg,
         &mut pong_buf,
     )
-    .unwrap()
-    {
-        fsp::FspHandlerResult::SendDatagram(len) => len,
-        other => panic!("Expected SendDatagram(PONG), got {:?}", other),
-    };
-    assert!(
-        pong_len > SESSION_DATAGRAM_BODY_SIZE,
-        "PONG must include SessionDatagram body"
-    );
-    let reply_dg = &pong_buf[..pong_len];
-    assert_eq!(
-        &reply_dg[3..19],
-        responder_addr.as_bytes(),
-        "reply src should be original dst"
-    );
-    assert_eq!(
-        &reply_dg[19..35],
-        initiator_addr.as_bytes(),
-        "reply dst should be original src"
-    );
-    let fsp_reply = &reply_dg[SESSION_DATAGRAM_BODY_SIZE..];
-    assert_eq!(fsp_reply[0] & 0x0F, 0x00, "PONG reply should be encrypted");
-    let reply_hdr: [u8; FSP_HEADER_SIZE] = fsp_reply[..FSP_HEADER_SIZE].try_into().unwrap();
-    let ct = &fsp_reply[FSP_HEADER_SIZE..];
-    let mut dec = [0u8; 512];
-    let dl = aead_decrypt(&init_k_recv, 0, &reply_hdr, ct, &mut dec).unwrap();
-    let (_ts, mt, _ifl, inner) = fsp::fsp_strip_inner_header(&dec[..dl]).unwrap();
-    assert_eq!(mt, FSP_MSG_DATA);
-    assert_eq!(inner, b"PONG");
+    .unwrap();
+    assert_eq!(result, fsp::FspHandlerResult::None);
 }

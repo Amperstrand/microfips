@@ -1,0 +1,13 @@
+[package]
+name = "microfips-service"
+version = "0.1.0"
+edition = "2021"
+description = "Transport-neutral request/response service layer for microfips"
+
+[dependencies]
+microfips-core = { path = "../microfips-core" }
+microfips-protocol = { path = "../microfips-protocol" }
+
+[dev-dependencies]
+microfips-core = { path = "../microfips-core", features = ["std"] }
+microfips-protocol = { path = "../microfips-protocol", features = ["std"] }

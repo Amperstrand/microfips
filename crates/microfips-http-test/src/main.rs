@@ -6,6 +6,7 @@ use microfips_core::fmp;
 use microfips_core::fsp::{self, SESSION_DATAGRAM_BODY_SIZE};
 use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
+use microfips_service::{decode_response, encode_request, ServiceMethod};
 use rand::RngCore;
 
 fn make_session_datagram_body(src: &[u8; 16], dst: &[u8; 16]) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
@@ -240,10 +241,14 @@ fn main() {
     println!("  FSP k_send: {}", hex::encode(fsp_k_send));
     println!("  FSP k_recv: {}", hex::encode(fsp_k_recv));
 
-    println!("\n--- Sending HTTP GET via FSP ---");
+    println!("\n--- Sending service GET /health via FSP ---");
 
-    let http_request = b"GET / HTTP/1.1\r\nHost: microfips-stm32\r\n\r\n";
-    let fsp_encrypted = build_fsp_established_msg(0, ts, http_request, &fsp_k_send);
+    let mut service_request = [0u8; 256];
+    let service_request_len =
+        encode_request(ServiceMethod::Get, "/health", b"", &mut service_request)
+            .expect("service request");
+    let fsp_encrypted =
+        build_fsp_established_msg(0, ts, &service_request[..service_request_len], &fsp_k_send);
 
     let mut dg_http = vec![0u8; SESSION_DATAGRAM_BODY_SIZE + fsp_encrypted.len()];
     dg_http[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
@@ -258,19 +263,19 @@ fn main() {
         &ik_k_send,
         &mut fmp_out,
     )
-    .expect("build_established failed for HTTP GET");
+    .expect("build_established failed for service request");
     println!(
-        "  Sending HTTP GET: {}B (FMP Established)",
+        "  Sending service request: {}B (FMP Established)",
         fsp_http_fmp_len
     );
     sock.send_to(&fmp_out[..fsp_http_fmp_len], peer)
-        .expect("send HTTP GET");
+        .expect("send service request");
 
-    println!("  Waiting for HTTP response...");
+    println!("  Waiting for service response...");
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(30) {
-            log::error!("TIMEOUT: no HTTP response in 30s");
+            log::error!("TIMEOUT: no service response in 30s");
             std::process::exit(1);
         }
         match recv_established_datagram(&sock, &mut buf, &ik_k_recv) {
@@ -307,11 +312,24 @@ fn main() {
                                 inner_payload.len()
                             );
                             if inner_msg_type == fsp::FSP_MSG_DATA {
-                                match std::str::from_utf8(inner_payload) {
-                                    Ok(s) => println!("{}", s),
-                                    Err(_) => println!("  hex: {}", hex::encode(inner_payload)),
+                                match decode_response(inner_payload) {
+                                    Ok(response) => {
+                                        println!("  Service status={}", response.status.as_u16());
+                                        match std::str::from_utf8(response.body) {
+                                            Ok(s) => println!("{s}"),
+                                            Err(_) => {
+                                                println!("  hex: {}", hex::encode(response.body))
+                                            }
+                                        }
+                                        println!(
+                                            "\nSUCCESS: MCU responded with service data via FSP!"
+                                        );
+                                    }
+                                    Err(_) => {
+                                        println!("  hex: {}", hex::encode(inner_payload));
+                                        println!("\nSUCCESS: MCU responded with opaque service data via FSP!");
+                                    }
                                 }
-                                println!("\nSUCCESS: MCU responded with HTTP data via FSP!");
                                 return;
                             }
                         }
@@ -326,7 +344,7 @@ fn main() {
             }
             RecvResult::Other => continue,
             RecvResult::Timeout => {
-                log::error!("TIMEOUT: no HTTP response in 30s");
+                log::error!("TIMEOUT: no service response in 30s");
                 std::process::exit(1);
             }
         }
