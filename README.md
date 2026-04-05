@@ -7,6 +7,7 @@ Noise_IK/XK handshakes, FMP link framing, FSP session protocol, and a no_std FIP
 protocol stack. Both MCUs use `microfips-protocol::Node`, can participate in dual FSP
 mode, and can expose application request/response traffic through the transport-neutral
 `microfips-service` layer. Both MCUs connect to a FIPS VPS via host bridges (serial or BLE).
+ESP32 also supports direct BLE L2CAP connection to a local FIPS daemon.
 
 ## Current Status
 
@@ -26,6 +27,13 @@ ESP32 connects to FIPS VPS via BLE GATT (trouble v0.6.0) instead of UART serial.
 Full Noise IK handshake + sustained heartbeats over BLE, with Python bridge (`bleak`).
 UART0 repurposed for debug output when BLE is active. Feature-gated behind `--features ble`.
 
+**ESP32 L2CAP direct transport proven (2026-04-05)**
+
+ESP32 connects directly to local FIPS daemon via BLE L2CAP CoC (PSM 0x0085). No Python
+bridge, no UDP hop. Full Noise IK handshake + sustained heartbeats over L2CAP. ESP32
+supports both central (scan+connect) and peripheral (advertise+accept) roles. Feature-gated
+behind `--features l2cap`.
+
 **What works:**
 - 169 unit tests pass (90 core + 21 error injection + 22 compatibility + 17 wire format + 13 FSP edge cases + 6 FSP integration + 46 protocol)
 - **Sim-to-sim FSP ping through FIPS** — SIM-B → FIPS → SIM-A, full XK handshake + PING/PONG
@@ -37,6 +45,7 @@ UART0 repurposed for debug output when BLE is active. Feature-gated behind `--fe
 - **STM32 completes IK handshake with live VPS** — MSG1 sent, MSG2 received, heartbeat sustained
 - **ESP32 completes IK handshake with live VPS** — UART transport via CP210x USB-serial
 - **ESP32 BLE transport** — BLE GATT bridge to VPS, alternative to UART serial
+- **ESP32 L2CAP direct** — ESP32 to BLE L2CAP to FIPS daemon, Noise IK + heartbeats, no bridge
 - FIPS forwards SessionDatagrams between any two authenticated peers (no tree_peer needed)
 - 4-LED state machine on STM32 for visual debugging, single LED on ESP32
 - FIPS cross-reference annotations normalized to canonical format (`// FIPS: bd08505 ...`)
@@ -70,30 +79,58 @@ Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph MCUs["MCU Nodes"]
-        STM32["STM32F469\nUSB CDC"]
-        ESP32["ESP32\nUART / BLE"]
-    end
-
-    subgraph Host["Host (Linux)"]
-        Bridge["serial_udp_bridge.py\nor ble_udp_bridge.py"]
-    end
-
-    subgraph VPS["VPS"]
-        FIPS["FIPS daemon\n:2121"]
-    end
-
-    STM32 -- "serial\nlength-prefixed" --> Bridge
-    ESP32 -- "serial / BLE\nlength-prefixed" --> Bridge
-    Bridge -- "UDP\nraw frames" --> FIPS
-    FIPS -.->|"forwards between\nauthenticated peers"| FIPS
 ```
+  STM32F469I-DISCO          Host (Linux)               VPS
+  +----------------+    +-------------------+    +------------------+
+  | microfips fw   |    | serial_udp_bridge |    | FIPS daemon      |
+  | FIPS protocol  |CDC | (single-hop,      |UDP | port 2121        |
+  | Noise_IK/XK    |<-->|  auto-detect MCU) |<-->|                  |
+  | FMP + FSP      |    | serial <-> UDP    |    | forwards between |
+  | Heartbeats     |    +-------------------+    | all authenticated |
+  +----------------+                             | peers            |
+                                                   +------------------+
+  ESP32-D0WD
+  +----------------+    +-------------------+
+  | microfips-esp32|    | serial_udp_bridge |
+  | FIPS protocol  |UART| (single-hop)      |UDP --+
+  | Noise_IK       |<-->|                   |<-->   |
+  | FMP + FSP      |    +-------------------+       |
+  +----------------+    +-------------------+       |
+  | microfips-esp32|    | ble_udp_bridge    |       |
+  | FIPS protocol  |BLE | (single-hop)      |UDP --+
+  | Noise_IK       |<-->|                   |<-->   |
+  | FMP + FSP      |    +-------------------+       |
+  +----------------+                                  v
+                                               +------------------+
+  ESP32-D0WD (L2CAP)                            | FIPS daemon      |
+  +----------------+                            | port 2121        |
+  | microfips-esp32|                            |                  |
+  | FIPS protocol  |BLE                         +------------------+
+  | Noise_IK       |L2CAP  FIPS daemon (local)
+  | FMP + FSP      |<----> PSM 0x0085
+  +----------------+
+
+  Simulator (host)                             | FIPS daemon      |
+  +----------------+    +-------------------+  | port 2121        |
+  | microfips-sim   |    | (none needed)     |  |                  |
+  | uses Node from  |UDP | direct UDP        |->|                  |
+  | microfips-proto |<-->|                   |  +------------------+
+  +----------------+    +-------------------+
+```
+
+Two transport options:
+- **Single-hop bridge** (recommended): `serial_udp_bridge.py` sends UDP directly to FIPS
+  from the host. No SSH tunnel or VPS-side bridge needed.
+- **ESP32 BLE bridge**: `ble_udp_bridge.py` bridges ESP32 BLE GATT to UDP. Feature-gated
+  behind `--features ble`. See AGENTS.md "ESP32 BLE Transport" section.
+- **ESP32 L2CAP direct**: ESP32 connects directly to local FIPS daemon via BLE L2CAP CoC.
+  Feature-gated behind `--features l2cap`. No bridge needed. See AGENTS.md "ESP32 L2CAP Transport" section.
+- **Legacy 3-hop** (deprecated): serial → TCP proxy → SSH tunnel → VPS bridge → FIPS
 
 Each MCU runs the same FIPS stack (Noise_IK/XK, FMP, FSP) and connects through a
 single-hop bridge — no SSH tunnel or VPS-side bridge needed.
-ESP32 supports both UART (`serial_udp_bridge`) and BLE (`ble_udp_bridge`, feature-gated).
+ESP32 supports UART (`serial_udp_bridge`), BLE GATT (`ble_udp_bridge`, feature-gated),
+and direct BLE L2CAP to a local FIPS daemon (feature-gated).
 Host-side simulators connect via direct UDP with no bridge at all.
 
 Above the protocol/runtime crates, `microfips-service` provides a compact byte-oriented
@@ -242,6 +279,8 @@ kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
   switches the transport to BLE while keeping the same service/FSP wiring.
 - **BLE variant:** Flash same way, build with `--features ble`. Uses `ble_udp_bridge.py` instead
   of serial bridge. UART0 repurposed for debug output. See AGENTS.md for full BLE instructions.
+- **L2CAP variant:** Build with `--features l2cap`. Connects directly to local FIPS daemon
+  via BLE L2CAP CoC. No bridge needed. See AGENTS.md for full L2CAP instructions.
 
 ## Build
 
@@ -271,6 +310,15 @@ Requires Espressif Rust toolchain (installed via `espup`, activated with `RUSTUP
   cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
 # Output: target/xtensa-esp32-none-elf/release/microfips-esp32
 # Same binary, BLE transport instead of UART. UART0 used for debug output.
+```
+
+#### L2CAP variant (feature-gated, direct FIPS connection)
+
+```sh
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
+# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
+# L2CAP transport to local FIPS daemon. No bridge needed. UART0 used for debug output.
 ```
 
 ## CI
@@ -335,6 +383,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 | M8 | Sim-to-MCU FSP ping through FIPS | **Done** — SIM-B → FIPS → physical STM32 PING/PONG |
 | M9 | MCU-to-MCU ping (STM32 ↔ ESP32 through FIPS) | **Done** — MCU-to-MCU FSP PING/PONG + HTTP through FIPS proven on hardware (2026-04-01) |
 | M10 | FIPS DNS resolution (`.fips` names) | Future |
+| M11 | ESP32 L2CAP direct transport to FIPS daemon | **Done** — ESP32 to FIPS daemon via L2CAP CoC, Noise IK + heartbeats, central+peripheral roles (2026-04-05) |
 
 ### M8 sub-milestones (all done)
 
@@ -375,7 +424,7 @@ microfips/
       .cargo/config.toml        # probe-rs runner config (local debug only)
       src/main.rs               # FIPS leaf node firmware (4-LED state machine, uses Node)
     microfips-esp32/            # ESP32 firmware (package name: microfips-esp32)
-      src/main.rs               # FIPS leaf node (1-LED, UART + BLE transport)
+      src/main.rs               # FIPS leaf node (1-LED, UART + BLE + L2CAP transport)
     microfips-core/             # no_std FIPS protocol: Noise IK/XK, FMP, FSP, identity
     microfips-link/             # Host-side handshake test (UDP, --keygen, env var keys)
     microfips-sim/              # Host-side simulator using Node from microfips-protocol
