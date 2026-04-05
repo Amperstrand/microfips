@@ -861,6 +861,34 @@ All host tools accept `FIPS_SECRET` (64 hex chars) to override the identity secr
 `FIPS_PEER_PUB` (66 hex chars) overrides the peer's public key (used by `fips-handshake` and `microfips-sim`).
 When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubkey).
 
+## BLE L2CAP Lessons Learned
+
+1. **microfips-protocol::Node is initiator-only**: `Node::handshake()` always creates `NoiseIkInitiator` and sends MSG1 first. There is no responder path. The ESP32 must always be the Noise initiator. FIPS's `handle_msg1()` drops inbound MSG1 unless `transport.accept_connections()` is true. The correct host BLE config for an ESP32 peer is: `scan: true`, `auto_connect: false`, `accept_connections: true`.
+
+2. **BLE role arbitration requires asymmetry**: Both sides scanning simultaneously causes cross-connection instability. ESP32 advertises as peripheral for 3s (bounded window), then falls back to scan+connect as central. Host runs scan+probe but with `auto_connect: false` so it doesn't race the Noise handshake. `disable_tiebreaker: true` on the host prevents both sides from trying to be central.
+
+3. **Readiness must be gated on channel+pubkey, not just link existence**: The old code fired a signal on bare BLE link existence and used a separate global atomic for the peer pubkey. This created a race where the protocol layer could start before the pubkey was available. The fix: a single signal (`L2CAP_READY_SIG`) that carries the peer pubkey and only fires after L2CAP channel accept/create + pubkey exchange are both complete. `L2capTransport` holds the peer pubkey as instance state.
+
+4. **L2CAP SeqPacket preserves message boundaries**: Unlike GATT characteristics (which require length-prefixed framing), L2CAP CoC channels with SeqPacket semantics preserve message boundaries. Raw FMP frames can be sent without the 2-byte LE length prefix used by serial transports.
+
+5. **BLE advertising data is limited to 31 bytes**: Flags(3B) + CompleteLocalName(17B) + ServiceUuids128(18B) = 38B doesn't fit. Split: adv_data gets Flags + CompleteLocalName (~20B), scan_data gets ServiceUuids128 (18B). BlueZ's `set_discovery_filter` with UUID only checks `adv_data` (primary advertising), not `scan_data`, so the service UUID MUST go in `adv_data`.
+
+6. **FIPS BLE scan loop can DoS discovery**: `scan_probe_loop()` processes scan results one-at-a-time with blocking L2CAP connect. One unreachable peer blocks all others. Fixed with RSSI-based priority sort (strongest signal first) on the FIPS side (branch `fix/ble-rssi-priority`).
+
+7. **L2CAP build must be last before flash**: All ESP32 variants (UART, BLE, L2CAP) output to the same binary path. Building a non-L2CAP variant after L2CAP overwrites the binary. Always build `--features l2cap` immediately before `espflash flash`.
+
+## Future Improvements
+
+1. **Add responder mode to microfips-protocol::Node**: Currently Node only supports initiator (sends MSG1 first). Adding a responder path would allow MCUs to accept inbound handshakes, enabling true peer-to-peer topologies without requiring one side to always initiate.
+
+2. **Parallel BLE scan and advertise on ESP32**: Currently the ESP32 advertises for 3s, then scans. Running both in parallel (peripheral accept + central scan simultaneously) would reduce connection latency and handle more topologies. Requires careful state machine design to avoid race conditions.
+
+3. **Supervision timeout tuning and BLE ping**: The ESP32's `ble_ping_en` is currently false. Enabling BLE link-layer keepalive could improve connection robustness for long-lived sessions. The supervision timeout (currently 20s) should be tuned relative to the FIPS heartbeat interval (10s).
+
+4. **Device name filtering in ESP32 scanner**: The ESP32 BLE scanner currently connects to any device advertising the FIPS service UUID. Adding device name filtering would avoid connecting to stale or unrelated devices that happen to advertise the same UUID.
+
+5. **FIPS BLE scan DoS fix upstream**: The RSSI-based priority sort is on a local branch (`fix/ble-rssi-priority`). This needs to be proposed upstream to the FIPS project.
+
 ## Open Issues
 
 | # | Title | Severity | Notes |
