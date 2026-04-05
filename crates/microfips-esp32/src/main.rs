@@ -182,6 +182,8 @@ static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static L2CAP_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 #[cfg(feature = "l2cap")]
 static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "l2cap")]
+static L2CAP_CONN_GEN: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(feature = "l2cap")]
 struct ScanResult {
@@ -711,7 +713,8 @@ async fn l2cap_host_task() {
                             Ok(channel) => {
                                 esp_println::println!("[l2cap] L2CAP channel created (central)");
                                 drain_l2cap_channels();
-                                L2CAP_LINK_UP.store(true, Ordering::Relaxed);
+                                L2CAP_CONN_GEN.fetch_add(1, Ordering::Release);
+                                L2CAP_LINK_UP.store(true, Ordering::Release);
                                 L2CAP_CONNECTED_SIG.signal(());
                                 let (mut writer, mut reader) = channel.split();
                                 let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
@@ -826,7 +829,8 @@ async fn l2cap_host_task() {
 
                 drain_l2cap_channels();
 
-                L2CAP_LINK_UP.store(true, Ordering::Relaxed);
+                L2CAP_CONN_GEN.fetch_add(1, Ordering::Release);
+                L2CAP_LINK_UP.store(true, Ordering::Release);
                 L2CAP_CONNECTED_SIG.signal(());
                 let (mut writer, mut reader) = channel.split();
                 let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
@@ -965,7 +969,24 @@ impl Transport for BleTransport {
 }
 
 #[cfg(feature = "l2cap")]
-struct L2capTransport;
+struct L2capTransport {
+    peer_pub: Option<[u8; 33]>,
+    last_conn_gen: u32,
+}
+
+#[cfg(feature = "l2cap")]
+impl L2capTransport {
+    fn new() -> Self {
+        Self {
+            peer_pub: None,
+            last_conn_gen: 0,
+        }
+    }
+
+    fn peer_pub(&self) -> [u8; 33] {
+        self.peer_pub.unwrap_or(DEFAULT_PEER_PUB)
+    }
+}
 
 #[cfg(feature = "l2cap")]
 #[derive(Debug, Clone, Copy)]
@@ -973,36 +994,6 @@ enum L2capError {
     Disconnected,
     FrameTooLarge,
     InitFailed,
-}
-
-#[cfg(feature = "l2cap")]
-async fn l2cap_pubkey_exchange(
-    transport: &mut L2capTransport,
-    secret: &[u8; 32],
-) -> Result<[u8; 33], L2capError> {
-    let local_pub = microfips_core::noise::ecdh_pubkey(secret).map_err(|_| L2capError::InitFailed)?;
-
-    let mut tx = [0u8; 33];
-    tx[0] = 0x00;
-    tx[1..].copy_from_slice(&local_pub[1..33]);
-    transport.send(&tx).await?;
-
-    let mut rx = [0u8; 33];
-    let n = embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(5),
-        transport.recv(&mut rx),
-    )
-    .await
-    .map_err(|_| L2capError::Disconnected)??;
-
-    if n != 33 || rx[0] != 0x00 {
-        return Err(L2capError::Disconnected);
-    }
-
-    let mut peer_pub = [0u8; 33];
-    peer_pub[0] = 0x02;
-    peer_pub[1..33].copy_from_slice(&rx[1..33]);
-    Ok(peer_pub)
 }
 
 #[cfg(feature = "l2cap")]
@@ -1015,15 +1006,55 @@ impl Transport for L2capTransport {
             spawner.spawn(l2cap_host_task()).map_err(|_| L2capError::InitFailed)?;
         }
 
-        if L2CAP_LINK_UP.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-
         loop {
-            L2CAP_CONNECTED_SIG.wait().await;
-            if L2CAP_LINK_UP.load(Ordering::Relaxed) {
+            let conn_gen = L2CAP_CONN_GEN.load(Ordering::Acquire);
+            if L2CAP_LINK_UP.load(Ordering::Acquire) {
+                if conn_gen != self.last_conn_gen {
+                    // New L2CAP connection — perform pubkey exchange
+                    esp_println::println!(
+                        "[l2cap] conn gen {}, doing pubkey exchange",
+                        conn_gen
+                    );
+                    let local_pub = microfips_core::noise::ecdh_pubkey(&ESP32_SECRET)
+                        .map_err(|_| L2capError::InitFailed)?;
+
+                    // Send [0x00][32B x-only pubkey]
+                    let mut tx = [0u8; 33];
+                    tx[0] = 0x00;
+                    tx[1..].copy_from_slice(&local_pub[1..33]);
+                    let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                    frame
+                        .extend_from_slice(&tx)
+                        .map_err(|_| L2capError::FrameTooLarge)?;
+                    L2CAP_TX_CH.send(frame).await;
+
+                    // Receive [0x00][32B x-only pubkey] from peer
+                    let resp = embassy_time::with_timeout(
+                        embassy_time::Duration::from_secs(15),
+                        L2CAP_RX_CH.receive(),
+                    )
+                    .await
+                    .map_err(|_| L2capError::Disconnected)?;
+
+                    if resp.len() != 33 || resp[0] != 0x00 {
+                        esp_println::println!(
+                            "[l2cap] pubkey exchange: bad response (len={}, prefix={:02x})",
+                            resp.len(),
+                            resp.first().copied().unwrap_or(0)
+                        );
+                        return Err(L2capError::Disconnected);
+                    }
+
+                    let mut peer_pub = [0u8; 33];
+                    peer_pub[0] = 0x02;
+                    peer_pub[1..33].copy_from_slice(&resp[1..33]);
+                    self.peer_pub = Some(peer_pub);
+                    self.last_conn_gen = conn_gen;
+                    esp_println::println!("[l2cap] pubkey exchange complete");
+                }
                 return Ok(());
             }
+            L2CAP_CONNECTED_SIG.wait().await;
         }
     }
 
@@ -1228,30 +1259,14 @@ async fn main(spawner: embassy_executor::Spawner) {
     #[cfg(feature = "l2cap")]
     {
         esp_println::println!("[microfips] L2CAP mode starting");
-        if !L2CAP_TASK_STARTED.swap(true, Ordering::Relaxed) {
-            if spawner.spawn(l2cap_host_task()).is_err() {
-                esp_println::println!("[microfips] ERROR: failed to spawn l2cap_host_task");
-                loop {
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
-                }
-            }
-        }
-        let mut transport = L2capTransport;
+        let mut transport = L2capTransport::new();
         if transport.wait_ready().await.is_err() {
-            esp_println::println!("[microfips] ERROR: L2CAP transport wait_ready failed");
+            esp_println::println!("[microfips] ERROR: L2CAP transport init failed");
             loop {
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
             }
         }
-        let peer_pub = match l2cap_pubkey_exchange(&mut transport, &ESP32_SECRET).await {
-            Ok(peer_pub) => peer_pub,
-            Err(_) => {
-                esp_println::println!("[microfips] ERROR: L2CAP pubkey exchange failed");
-                loop {
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
-                }
-            }
-        };
+        let peer_pub = transport.peer_pub();
         esp_println::println!("[microfips] pubkey exchange complete");
         let rng = EspRng(trng);
         let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
