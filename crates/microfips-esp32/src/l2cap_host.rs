@@ -388,7 +388,7 @@ pub async fn l2cap_host_task() {
                     let Ok(adv_len) = AdStructure::encode_slice(
                         &[
                             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                            AdStructure::CompleteLocalName(b"microfips-l2cap"),
+                            AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE),
                         ],
                         &mut adv_data,
                     ) else {
@@ -402,7 +402,7 @@ pub async fn l2cap_host_task() {
 
                     let mut scan_data = [0u8; 31];
                     let Ok(scan_len) = AdStructure::encode_slice(
-                        &[AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE)],
+                        &[AdStructure::CompleteLocalName(b"microfips-l2cap")],
                         &mut scan_data,
                     ) else {
                         esp_println::println!("[l2cap_task] scan_data encode failed");
