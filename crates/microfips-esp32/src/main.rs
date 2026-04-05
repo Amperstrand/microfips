@@ -3,31 +3,41 @@
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use core::panic::PanicInfo;
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 extern crate alloc;
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_futures::select::{Either, select};
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::channel::Channel;
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use embassy_sync::signal::Signal;
-#[cfg(feature = "ble")]
-use esp_radio::ble::{controller::BleConnector, have_hci_read_data};
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
+use esp_radio::ble::controller::BleConnector;
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use static_cell::StaticCell;
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 use bt_hci::{ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci};
 #[cfg(feature = "ble")]
 use trouble_host::prelude::*;
+#[cfg(feature = "l2cap")]
+use trouble_host::prelude::{
+    Address, AdStructure, Advertisement, DefaultPacketPool, EventHandler,
+    ExternalController, Host, HostResources, L2capChannel, L2capChannelConfig, PhySet,
+    RequestedConnParams, Scanner, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
+};
+#[cfg(feature = "l2cap")]
+use trouble_host::connection::{ConnectConfig, ScanConfig};
+#[cfg(feature = "l2cap")]
+use bt_hci::param::{AddrKind, BdAddr};
 
 use esp_hal::gpio::{Level, Output};
 use esp_hal::rng::{Trng, TrngSource};
@@ -111,12 +121,26 @@ const UART_BAUDRATE: u32 = 115200;
 const WAIT_READY_DELAY_MS: u64 = 500;
 const RECV_RETRY_DELAY_MS: u64 = 10;
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 #[allow(dead_code)]
 const BLE_DEVICE_NAME: &str = "microfips-esp32";
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
 const BLE_MAX_FRAME: usize = 252;
+#[cfg(feature = "l2cap")]
+const L2CAP_FRAME_CAP: usize = 512;
+#[cfg(feature = "l2cap")]
+const L2CAP_PSM: u16 = 0x0085;
+#[cfg(feature = "l2cap")]
+const L2CAP_FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
+    0x4c, 0x8f, 0x64, 0x40, 0xcc, 0xc9, 0x87, 0x9f, 0xc0, 0x42, 0xc5, 0x2c, 0x90, 0xb7, 0x90,
+    0x9c,
+]];
+#[cfg(feature = "l2cap")]
+const L2CAP_SCAN_DURATION_SECS: u64 = 3;
+/// BLE advertising data type: Complete List of 128-bit Service UUIDs
+#[cfg(feature = "l2cap")]
+const AD_TYPE_COMPLETE_UUID128: u8 = 0x07;
 
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
@@ -134,6 +158,8 @@ const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 
 #[cfg(feature = "ble")]
 static HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2>> = StaticCell::new();
+#[cfg(feature = "l2cap")]
+static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> = StaticCell::new();
 #[cfg(feature = "ble")]
 static BLE_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> = Channel::new();
 #[cfg(feature = "ble")]
@@ -144,8 +170,119 @@ static BLE_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static BLE_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "ble")]
 static BLE_LINK_UP: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "l2cap")]
+static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
+    Channel::new();
+#[cfg(feature = "l2cap")]
+static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
+    Channel::new();
+#[cfg(feature = "l2cap")]
+static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "l2cap")]
+static L2CAP_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+#[cfg(feature = "l2cap")]
+static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
 
-#[cfg(feature = "ble")]
+#[cfg(feature = "l2cap")]
+struct ScanResult {
+    found: AtomicBool,
+    addr_kind: AtomicU8,
+    addr: [AtomicU8; 6],
+}
+
+#[cfg(feature = "l2cap")]
+impl ScanResult {
+    const fn new() -> Self {
+        Self {
+            found: AtomicBool::new(false),
+            addr_kind: AtomicU8::new(0),
+            addr: [
+                AtomicU8::new(0),
+                AtomicU8::new(0),
+                AtomicU8::new(0),
+                AtomicU8::new(0),
+                AtomicU8::new(0),
+                AtomicU8::new(0),
+            ],
+        }
+    }
+
+    fn store(&self, addr_kind: AddrKind, bd_addr: &BdAddr) {
+        if self.found.load(Ordering::Relaxed) {
+            return;
+        }
+        self.found.store(true, Ordering::Relaxed);
+        let kind_raw: u8 = unsafe { core::mem::transmute(addr_kind) };
+        self.addr_kind.store(kind_raw, Ordering::Relaxed);
+        let raw = bd_addr.raw();
+        for i in 0..6 {
+            self.addr[i].store(raw[i], Ordering::Relaxed);
+        }
+    }
+
+    fn take(&self) -> Option<(AddrKind, BdAddr)> {
+        if !self.found.swap(false, Ordering::Relaxed) {
+            return None;
+        }
+        let kind_byte = self.addr_kind.load(Ordering::Relaxed);
+        let kind = if kind_byte == 1 { AddrKind::RANDOM } else { AddrKind::PUBLIC };
+        let mut raw = [0u8; 6];
+        for i in 0..6 {
+            raw[i] = self.addr[i].load(Ordering::Relaxed);
+        }
+        Some((kind, BdAddr::new(raw)))
+    }
+}
+
+#[cfg(feature = "l2cap")]
+static L2CAP_SCAN_RESULT: ScanResult = ScanResult::new();
+
+#[cfg(feature = "l2cap")]
+struct L2capEventHandler;
+
+#[cfg(feature = "l2cap")]
+impl EventHandler for L2capEventHandler {
+    fn on_adv_reports(&self, mut it: bt_hci::param::LeAdvReportsIter<'_>) {
+        while let Some(Ok(report)) = it.next() {
+            if adv_data_contains_fips_uuid(report.data) {
+                esp_println::println!("[l2cap] scan: FIPS peer found {:?}", report.addr);
+                L2CAP_SCAN_RESULT.store(report.addr_kind, &report.addr);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "l2cap")]
+fn adv_data_contains_fips_uuid(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 2 <= data.len() {
+        let len = data[i] as usize;
+        if len < 2 || i + len > data.len() {
+            break;
+        }
+        let ty = data[i + 1];
+        if ty == AD_TYPE_COMPLETE_UUID128 {
+            let uuid_start = i + 2;
+            let uuid_end = uuid_start + 16;
+            if uuid_end <= data.len() {
+                let uuid = &data[uuid_start..uuid_end];
+                if uuid == L2CAP_FIPS_SERVICE_UUID_LE[0] {
+                    return true;
+                }
+            }
+        }
+        i += len + 1;
+    }
+    false
+}
+
+#[cfg(feature = "l2cap")]
+fn drain_l2cap_channels() {
+    while L2CAP_TX_CH.try_receive().is_ok() {}
+    while L2CAP_RX_CH.try_receive().is_ok() {}
+}
+
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 #[allow(dead_code)]
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
@@ -219,14 +356,14 @@ enum BleError {
     InitFailed,
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 #[derive(Debug, Clone, Copy)]
 enum BleHciError {
     Io,
     Parse,
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl core::fmt::Display for BleHciError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -236,38 +373,34 @@ impl core::fmt::Display for BleHciError {
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl core::error::Error for BleHciError {}
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl embedded_io::Error for BleHciError {
     fn kind(&self) -> embedded_io::ErrorKind {
         embedded_io::ErrorKind::Other
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl From<FromHciBytesError> for BleHciError {
     fn from(_: FromHciBytesError) -> Self {
         Self::Parse
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 struct BleHciTransport<'d> {
-    // Safety: single-threaded Embassy executor — read() and write() are never called
-    // concurrently. Using UnsafeCell avoids holding a mutex lock across an .await point
-    // (which would deadlock when runner and advertiser share the same join()).
     connector: core::cell::UnsafeCell<BleConnector<'d>>,
 }
 
-// Safety: BleConnector is used only from one executor task at a time (single-threaded).
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 unsafe impl Sync for BleHciTransport<'_> {}
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 unsafe impl Send for BleHciTransport<'_> {}
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl<'d> BleHciTransport<'d> {
     fn new(connector: BleConnector<'d>) -> Self {
         Self {
@@ -276,26 +409,29 @@ impl<'d> BleHciTransport<'d> {
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl embedded_io::ErrorType for BleHciTransport<'_> {
     type Error = BleHciError;
 }
 
-#[cfg(feature = "ble")]
+#[cfg(any(feature = "ble", feature = "l2cap"))]
 impl bt_hci::transport::Transport for BleHciTransport<'_> {
     async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
+        let rx_ptr: *mut [u8] = rx;
         loop {
-            if !have_hci_read_data() {
-                embassy_futures::yield_now().await;
+            let connector = unsafe { &mut *self.connector.get() };
+            let len = unsafe { connector.next(&mut *rx_ptr) }.map_err(|_| BleHciError::Io)?;
+            if len == 0 {
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
                 continue;
             }
-            let connector = unsafe { &mut *self.connector.get() };
-            let len = connector.next(rx).map_err(|_| BleHciError::Io)?;
-            if len > 0 {
-                return ControllerToHostPacket::from_hci_bytes_complete(&rx[..len])
-                    .map_err(BleHciError::from);
+            match ControllerToHostPacket::from_hci_bytes_complete(&rx[..len]) {
+                Ok(pkt) => return Ok(pkt),
+                Err(_) => {
+                    esp_println::println!("[hci] parse error, dropping packet");
+                    continue;
+                }
             }
-            embassy_futures::yield_now().await;
         }
     }
 
@@ -345,8 +481,7 @@ async fn ble_host_task() {
 
     let controller: ExternalController<_, 20> = ExternalController::new(BleHciTransport::new(connector));
     let resources = HOST_RESOURCES.init(HostResources::new());
-    let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+    let stack = trouble_host::new(controller, resources);
 
     let Host {
         mut peripheral,
@@ -473,6 +608,260 @@ async fn ble_host_task() {
     .await;
 }
 
+#[cfg(feature = "l2cap")]
+#[embassy_executor::task]
+async fn l2cap_host_task() {
+    esp_println::println!("[l2cap_task] started");
+    init_heap();
+    esp_println::println!("[l2cap_task] heap initialized");
+
+    let Ok(radio) = esp_radio::init() else {
+        esp_println::println!("[l2cap_task] esp_radio::init failed");
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+        }
+    };
+    esp_println::println!("[l2cap_task] esp_radio initialized");
+
+    let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
+    let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
+        esp_println::println!("[l2cap_task] BleConnector::new failed");
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+        }
+    };
+    esp_println::println!("[l2cap_task] connector ready");
+
+    let controller: ExternalController<_, 20> = ExternalController::new(BleHciTransport::new(connector));
+    esp_println::println!("[l2cap_task] controller created");
+    let resources = L2CAP_HOST_RESOURCES.init(HostResources::new());
+    esp_println::println!("[l2cap_task] host resources initialized");
+    let stack = trouble_host::new(controller, resources)
+        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+    esp_println::println!("[l2cap_task] stack initialized");
+
+    let Host {
+        mut central,
+        mut peripheral,
+        mut runner,
+        ..
+    } = stack.build();
+    esp_println::println!("[l2cap_task] host built (central+peripheral)");
+
+    let _ = embassy_futures::join::join(async {
+        match runner.run_with_handler(&L2capEventHandler).await {
+            Ok(()) => esp_println::println!("[l2cap_task] runner exited ok"),
+            Err(e) => esp_println::println!("[l2cap_task] runner error: {:?}", e),
+        }
+    }, async {
+        loop {
+            esp_println::println!("[l2cap_task] scanning for FIPS peer...");
+
+            let scan_result = {
+                let mut scanner = Scanner::new(central);
+                let scan_config = ScanConfig {
+                    active: true,
+                    filter_accept_list: &[],
+                    phys: PhySet::M1,
+                    interval: embassy_time::Duration::from_millis(100),
+                    window: embassy_time::Duration::from_millis(100),
+                    timeout: embassy_time::Duration::from_secs(0),
+                };
+
+                let scan_err = match scanner.scan(&scan_config).await {
+                    Ok(_) => None,
+                    Err(e) => {
+                        esp_println::println!("[l2cap_task] scan start error: {:?}", e);
+                        Some(e)
+                    }
+                };
+
+                if scan_err.is_some() {
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+                } else {
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(L2CAP_SCAN_DURATION_SECS)).await;
+                }
+
+                central = scanner.into_inner();
+                scan_err
+            };
+
+            if scan_result.is_some() {
+                continue;
+            }
+
+            if let Some((addr_kind, bd_addr)) = L2CAP_SCAN_RESULT.take() {
+                esp_println::println!("[l2cap_task] FIPS peer found, connecting as central...");
+                let connect_config = ConnectConfig {
+                    scan_config: ScanConfig {
+                        filter_accept_list: &[(addr_kind, &bd_addr)],
+                        ..Default::default()
+                    },
+                    connect_params: RequestedConnParams::default(),
+                };
+
+                match central.connect(&connect_config).await {
+                    Ok(conn) => {
+                        esp_println::println!("[l2cap] central connected, creating L2CAP channel");
+                        let l2cap_config = L2capChannelConfig {
+                            mtu: Some(2048),
+                            ..Default::default()
+                        };
+                        match L2capChannel::create(&stack, &conn, L2CAP_PSM, &l2cap_config).await {
+                            Ok(channel) => {
+                                esp_println::println!("[l2cap] L2CAP channel created (central)");
+                                drain_l2cap_channels();
+                                L2CAP_LINK_UP.store(true, Ordering::Relaxed);
+                                L2CAP_CONNECTED_SIG.signal(());
+                                let (mut writer, mut reader) = channel.split();
+                                let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
+
+                                loop {
+                                    match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
+                                        Either::First(Ok(n)) => {
+                                            let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                                            if frame.extend_from_slice(&rx_buf[..n]).is_err() {
+                                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                                break;
+                                            }
+                                            L2CAP_RX_CH.send(frame).await;
+                                        }
+                                        Either::First(Err(_)) => {
+                                            L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                            break;
+                                        }
+                                        Either::Second(frame) => {
+                                            if writer.send(&stack, &frame).await.is_err() {
+                                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                drain_l2cap_channels();
+                                esp_println::println!("[l2cap] central channel disconnected");
+                            }
+                            Err(e) => {
+                                esp_println::println!("[l2cap] L2CAP create error: {:?}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        esp_println::println!("[l2cap] central connect error: {:?}", e);
+                    }
+                }
+            } else {
+                esp_println::println!("[l2cap_task] no FIPS peer found, advertising as peripheral");
+                let mut adv_data = [0u8; 31];
+                let Ok(adv_len) = AdStructure::encode_slice(
+                    &[
+                        AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                        AdStructure::CompleteLocalName(b"microfips-l2cap"),
+                    ],
+                    &mut adv_data,
+                ) else {
+                    esp_println::println!("[l2cap_task] adv_data encode failed");
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                    continue;
+                };
+
+                let mut scan_data = [0u8; 31];
+                let Ok(scan_len) = AdStructure::encode_slice(
+                    &[AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE)],
+                    &mut scan_data,
+                ) else {
+                    esp_println::println!("[l2cap_task] scan_data encode failed");
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                    continue;
+                };
+
+                let advertiser = match peripheral
+                    .advertise(
+                        &Default::default(),
+                        Advertisement::ConnectableScannableUndirected {
+                            adv_data: &adv_data[..adv_len],
+                            scan_data: &scan_data[..scan_len],
+                        },
+                    )
+                    .await
+                {
+                    Ok(a) => {
+                        esp_println::println!("[l2cap] BLE advertising started");
+                        a
+                    }
+                    Err(e) => {
+                        esp_println::println!("[l2cap_task] advertise() error: {:?}", e);
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                        continue;
+                    }
+                };
+
+                let conn = match advertiser.accept().await {
+                    Ok(c) => {
+                        esp_println::println!("[l2cap] BLE connection accepted");
+                        c
+                    }
+                    Err(_) => {
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                        continue;
+                    }
+                };
+
+                let l2cap_config = L2capChannelConfig {
+                    mtu: Some(2048),
+                    ..Default::default()
+                };
+
+                let channel = match L2capChannel::accept(&stack, &conn, &[L2CAP_PSM], &l2cap_config).await {
+                    Ok(ch) => {
+                        esp_println::println!("[l2cap] L2CAP channel accepted on PSM 0x0085");
+                        ch
+                    }
+                    Err(_) => {
+                        drain_l2cap_channels();
+                        continue;
+                    }
+                };
+
+                drain_l2cap_channels();
+
+                L2CAP_LINK_UP.store(true, Ordering::Relaxed);
+                L2CAP_CONNECTED_SIG.signal(());
+                let (mut writer, mut reader) = channel.split();
+                let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
+
+                loop {
+                    match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
+                        Either::First(Ok(n)) => {
+                            let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                            if frame.extend_from_slice(&rx_buf[..n]).is_err() {
+                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                break;
+                            }
+                            L2CAP_RX_CH.send(frame).await;
+                        }
+                        Either::First(Err(_)) => {
+                            L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                            break;
+                        }
+                        Either::Second(frame) => {
+                            if writer.send(&stack, &frame).await.is_err() {
+                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                drain_l2cap_channels();
+            }
+        }
+    })
+    .await;
+}
+
 #[cfg(feature = "ble")]
 #[allow(dead_code)]
 struct BleTransport {
@@ -560,6 +949,107 @@ impl Transport for BleTransport {
             }
             match select(
                 BLE_RX_CH.receive(),
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)),
+            )
+            .await
+            {
+                Either::First(frame) => {
+                    let n = frame.len().min(buf.len());
+                    buf[..n].copy_from_slice(&frame[..n]);
+                    return Ok(n);
+                }
+                Either::Second(()) => continue,
+            }
+        }
+    }
+}
+
+#[cfg(feature = "l2cap")]
+struct L2capTransport;
+
+#[cfg(feature = "l2cap")]
+#[derive(Debug, Clone, Copy)]
+enum L2capError {
+    Disconnected,
+    FrameTooLarge,
+    InitFailed,
+}
+
+#[cfg(feature = "l2cap")]
+async fn l2cap_pubkey_exchange(
+    transport: &mut L2capTransport,
+    secret: &[u8; 32],
+) -> Result<[u8; 33], L2capError> {
+    let local_pub = microfips_core::noise::ecdh_pubkey(secret).map_err(|_| L2capError::InitFailed)?;
+
+    let mut tx = [0u8; 33];
+    tx[0] = 0x00;
+    tx[1..].copy_from_slice(&local_pub[1..33]);
+    transport.send(&tx).await?;
+
+    let mut rx = [0u8; 33];
+    let n = embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(5),
+        transport.recv(&mut rx),
+    )
+    .await
+    .map_err(|_| L2capError::Disconnected)??;
+
+    if n != 33 || rx[0] != 0x00 {
+        return Err(L2capError::Disconnected);
+    }
+
+    let mut peer_pub = [0u8; 33];
+    peer_pub[0] = 0x02;
+    peer_pub[1..33].copy_from_slice(&rx[1..33]);
+    Ok(peer_pub)
+}
+
+#[cfg(feature = "l2cap")]
+impl Transport for L2capTransport {
+    type Error = L2capError;
+
+    async fn wait_ready(&mut self) -> Result<(), L2capError> {
+        if !L2CAP_TASK_STARTED.swap(true, Ordering::Relaxed) {
+            let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
+            spawner.spawn(l2cap_host_task()).map_err(|_| L2capError::InitFailed)?;
+        }
+
+        if L2CAP_LINK_UP.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        loop {
+            L2CAP_CONNECTED_SIG.wait().await;
+            if L2CAP_LINK_UP.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn send(&mut self, data: &[u8]) -> Result<(), L2capError> {
+        if !L2CAP_LINK_UP.load(Ordering::Relaxed) {
+            return Err(L2capError::Disconnected);
+        }
+        if data.len() > L2CAP_FRAME_CAP {
+            return Err(L2capError::FrameTooLarge);
+        }
+
+        let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+        frame
+            .extend_from_slice(data)
+            .map_err(|_| L2capError::FrameTooLarge)?;
+        L2CAP_TX_CH.send(frame).await;
+        Ok(())
+    }
+
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, L2capError> {
+        loop {
+            if !L2CAP_LINK_UP.load(Ordering::Relaxed) {
+                return Err(L2capError::Disconnected);
+            }
+            match select(
+                L2CAP_RX_CH.receive(),
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)),
             )
             .await
@@ -663,12 +1153,15 @@ impl NodeHandler for EspHandler<'_> {
 }
 
 #[esp_rtos::main]
-async fn main(_spawner: embassy_executor::Spawner) {
+async fn main(spawner: embassy_executor::Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     let _sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0);
+
+    #[cfg(any(feature = "ble", feature = "l2cap"))]
+    esp_println::println!("[microfips] main started");
 
     let mut led = Led(Output::new(
         peripherals.GPIO2,
@@ -678,13 +1171,15 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
     let mut trng = Trng::try_new().unwrap();
+    #[cfg(any(feature = "ble", feature = "l2cap"))]
+    esp_println::println!("[microfips] trng ready");
 
     let mut resp_eph = [0u8; 32];
     trng.fill_bytes(&mut resp_eph);
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
-    #[cfg(not(feature = "ble"))]
+    #[cfg(not(any(feature = "ble", feature = "l2cap")))]
     {
     let uart_config = Config::default()
         .with_rx(RxConfig::default().with_fifo_full_threshold(UART_FIFO_THRESHOLD))
@@ -727,6 +1222,43 @@ async fn main(_spawner: embassy_executor::Spawner) {
         let mut handler = EspHandler { led: &mut led, fsp };
 
         esp_println::println!("[microfips] Node running...");
+        node.run(&mut handler).await;
+    }
+
+    #[cfg(feature = "l2cap")]
+    {
+        esp_println::println!("[microfips] L2CAP mode starting");
+        if !L2CAP_TASK_STARTED.swap(true, Ordering::Relaxed) {
+            if spawner.spawn(l2cap_host_task()).is_err() {
+                esp_println::println!("[microfips] ERROR: failed to spawn l2cap_host_task");
+                loop {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                }
+            }
+        }
+        let mut transport = L2capTransport;
+        if transport.wait_ready().await.is_err() {
+            esp_println::println!("[microfips] ERROR: L2CAP transport wait_ready failed");
+            loop {
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+            }
+        }
+        let peer_pub = match l2cap_pubkey_exchange(&mut transport, &ESP32_SECRET).await {
+            Ok(peer_pub) => peer_pub,
+            Err(_) => {
+                esp_println::println!("[microfips] ERROR: L2CAP pubkey exchange failed");
+                loop {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
+                }
+            }
+        };
+        esp_println::println!("[microfips] pubkey exchange complete");
+        let rng = EspRng(trng);
+        let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
+        node.set_raw_framing(true);
+        let fsp = FspDualHandler::new_dual(ESP32_SECRET, resp_eph, init_eph, &STM32_PEER_PUB, STM32_NODE_ADDR);
+        let mut handler = EspHandler { led: &mut led, fsp };
+        esp_println::println!("[microfips] Node running (L2CAP)...");
         node.run(&mut handler).await;
     }
 }
