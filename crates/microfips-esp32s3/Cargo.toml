@@ -1,0 +1,21 @@
+[package]
+name = "microfips-esp32s3"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal FIPS leaf node on ESP32-S3 via WiFi"
+
+[dependencies]
+microfips-core = { path = "../microfips-core" }
+microfips-protocol = { path = "../microfips-protocol" }
+rand_core = { version = "0.6", default-features = false }
+esp-hal = { version = "1.0.0", features = ["esp32s3", "unstable"] }
+esp-rtos = { version = "0.2.0", features = ["esp32s3", "embassy", "esp-radio"] }
+esp-bootloader-esp-idf = { version = "0.4", features = ["esp32s3"] }
+esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi"] }
+esp-alloc = "0.9.0"
+embassy-net = { version = "0.9.0", features = ["dhcpv4", "udp"] }
+embassy-time = "0.5.1"
+embassy-futures = "0.1.2"
+embassy-executor = "0.9.1"
+static_cell = "2"
+esp-println = { version = "0.16.1", features = ["esp32s3"] }

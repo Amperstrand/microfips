@@ -1,3 +1,7 @@
 [target.xtensa-esp32-none-elf]
 runner = "espflash flash --monitor -p /dev/ttyUSB0 --chip esp32"
 rustflags = ["-C", "link-arg=-Tlinkall.x"]
+
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor -p /dev/ttyACM1 --chip esp32s3"
+rustflags = ["-C", "link-arg=-Tlinkall.x"]

@@ -2,9 +2,11 @@
 
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32-D0WD.
 
-A Rust embedded firmware that implements leaf-only FIPS nodes using Embassy for async
-HAL, Noise_IK/XK handshakes, FMP link framing, FSP session protocol, and a no_std
-FIPS protocol stack. Both MCUs connect to a FIPS VPS via host bridges (serial or BLE).
+A Rust embedded firmware that implements leaf FIPS nodes using Embassy for async HAL,
+Noise_IK/XK handshakes, FMP link framing, FSP session protocol, and a no_std FIPS
+protocol stack. Both MCUs use `microfips-protocol::Node`, can participate in dual FSP
+mode, and can expose application request/response traffic through the transport-neutral
+`microfips-service` layer. Both MCUs connect to a FIPS VPS via host bridges (serial or BLE).
 ESP32 also supports direct BLE L2CAP connection to a local FIPS daemon.
 
 ## Current Status
@@ -99,7 +101,7 @@ Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
   | Noise_IK       |<-->|                   |<-->   |
   | FMP + FSP      |    +-------------------+       |
   +----------------+                                  v
-                                              +------------------+
+                                               +------------------+
   ESP32-D0WD (L2CAP)                            | FIPS daemon      |
   +----------------+                            | port 2121        |
   | microfips-esp32|                            |                  |
@@ -124,6 +126,16 @@ Two transport options:
 - **ESP32 L2CAP direct**: ESP32 connects directly to local FIPS daemon via BLE L2CAP CoC.
   Feature-gated behind `--features l2cap`. No bridge needed. See AGENTS.md "ESP32 L2CAP Transport" section.
 - **Legacy 3-hop** (deprecated): serial → TCP proxy → SSH tunnel → VPS bridge → FIPS
+
+Each MCU runs the same FIPS stack (Noise_IK/XK, FMP, FSP) and connects through a
+single-hop bridge — no SSH tunnel or VPS-side bridge needed.
+ESP32 supports UART (`serial_udp_bridge`), BLE GATT (`ble_udp_bridge`, feature-gated),
+and direct BLE L2CAP to a local FIPS daemon (feature-gated).
+Host-side simulators connect via direct UDP with no bridge at all.
+
+Above the protocol/runtime crates, `microfips-service` provides a compact byte-oriented
+request/response boundary for downstream apps. HTTP stays optional in the separate
+`microfips-http-demo` crate.
 
 All serial data uses **length-prefixed frames**: `[2-byte LE length][payload]`.
 FIPS UDP transport uses **raw frames** (no length prefix).
@@ -262,8 +274,9 @@ kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
   target/xtensa-esp32-none-elf/release/microfips-esp32
 ```
 
-- **Note:** ESP32 uses hand-rolled protocol code (not `microfips-protocol::Node`). Can only
-  act as FSP initiator (no responder code for incoming SessionSetups).
+- **Note:** ESP32 now uses `microfips-protocol::Node` plus `FspDualHandler::new_dual()`,
+  matching STM32's protocol/runtime structure. Default builds use UART; `--features ble`
+  switches the transport to BLE while keeping the same service/FSP wiring.
 - **BLE variant:** Flash same way, build with `--features ble`. Uses `ble_udp_bridge.py` instead
   of serial bridge. UART0 repurposed for debug output. See AGENTS.md for full BLE instructions.
 - **L2CAP variant:** Build with `--features l2cap`. Connects directly to local FIPS daemon
@@ -317,7 +330,7 @@ GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
 - **Wire Format Tests** — 17 FMP format tests in `microfips-core`
 - **FSP Integration** — 6 FSP session tests in `microfips-core`
 - **FSP Edge Cases** — 13 FSP protocol edge cases in `microfips-core`
-- **Build Host Tools** — `microfips-link` + `microfips-sim` + `microfips-http-test` release binaries
+- **Build Host Tools** — `microfips-link` + `microfips-sim` + `microfips-http-test` + `microfips-http-demo` release binaries
 - **Lint & Format** — clippy + rustfmt on all host crates
 - **Sim Ping E2E** — SIM-B → FIPS → SIM-A FSP PING/PONG test (must pass)
 - **FIPS Handshake Integration** — local Noise IK handshake (must pass) + public VPS (best-effort)
@@ -353,8 +366,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 - **LED:** GPIO2 (blue onboard, active high)
 - **USB VID:PID:** `10c4:ea60` (Silicon Labs CP210x, detected as `/dev/ttyUSB*`)
 - **Flash:** `espflash flash -p /dev/ttyUSB0 --chip esp32` (NOT probe-rs)
-- **Note:** ESP32 uses hand-rolled protocol code (not `microfips-protocol::Node`). Can only
-  act as FSP initiator (no responder code for incoming SessionSetups).
+- **Note:** Runs the same FIPS protocol stack as STM32 (Noise_IK, FMP, FSP dual mode).
 
 ## Milestones
 
