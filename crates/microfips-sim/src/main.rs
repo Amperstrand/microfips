@@ -14,9 +14,13 @@ use rand::RngCore;
 
 use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
+use microfips_http_demo::DemoService;
 use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
 use microfips_protocol::transport::Transport;
+use microfips_service::{
+    decode_response, encode_request, FspServiceAdapter, ServiceMethod, ServiceStatus,
+};
 
 // ---------------------------------------------------------------------------
 // UdpTransport: raw FMP over UDP (no length-prefix framing)
@@ -106,7 +110,7 @@ impl Transport for UdpTransport {
 // ---------------------------------------------------------------------------
 
 struct SimHandler {
-    inner: FspDualHandler,
+    inner: FspDualHandler<FspServiceAdapter<DemoService>>,
     is_initiator: bool,
     test_http: bool,
     label: &'static str,
@@ -117,7 +121,11 @@ impl SimHandler {
         let mut eph = [0u8; 32];
         rand::rng().fill_bytes(&mut eph);
         Self {
-            inner: FspDualHandler::new_responder(secret, eph),
+            inner: FspDualHandler::new_responder(
+                secret,
+                eph,
+                FspServiceAdapter::new(DemoService::new()),
+            ),
             is_initiator: false,
             test_http: false,
             label,
@@ -136,8 +144,14 @@ impl SimHandler {
         rand::rng().fill_bytes(&mut resp_eph);
         let mut init_eph = [0u8; 32];
         rand::rng().fill_bytes(&mut init_eph);
-        let mut inner =
-            FspDualHandler::new_dual(secret, resp_eph, init_eph, target_pub, target_addr);
+        let mut inner = FspDualHandler::new_dual(
+            secret,
+            resp_eph,
+            init_eph,
+            target_pub,
+            target_addr,
+            FspServiceAdapter::new(DemoService::new()),
+        );
         inner.test_ping = test_ping && !test_http;
         Self {
             inner,
@@ -187,7 +201,9 @@ impl SimHandler {
         else {
             return false;
         };
-        inner_payload.starts_with(b"HTTP/1.1 200")
+        decode_response(inner_payload)
+            .map(|response| response.status == ServiceStatus::OK)
+            .unwrap_or(false)
     }
 }
 
@@ -229,10 +245,7 @@ impl NodeHandler for SimHandler {
             );
             std::process::exit(0);
         }
-        if self.test_http
-            && self.is_established()
-            && self.is_http_response(payload)
-        {
+        if self.test_http && self.is_established() && self.is_http_response(payload) {
             log::info!("[{}] *** test http success, exiting ***", self.label);
             std::process::exit(0);
         }
@@ -266,13 +279,18 @@ impl NodeHandler for SimHandler {
                 None => return HandleResult::None,
             };
             let send_ctr = fsp.next_send_counter();
-            let http = b"GET /healthz HTTP/1.1\r\nHost: fips\r\n\r\n";
+            let mut request = [0u8; 128];
+            let request_len = match encode_request(ServiceMethod::Get, "/health", b"", &mut request)
+            {
+                Ok(len) => len,
+                Err(_) => return HandleResult::None,
+            };
             let ts = 0u32;
             let mut fsp_packet = [0u8; 512];
             let fsp_total = match microfips_core::fsp::build_fsp_data_message(
                 send_ctr,
                 ts,
-                http,
+                &request[..request_len],
                 &k_send,
                 &mut fsp_packet,
             ) {
@@ -284,7 +302,7 @@ impl NodeHandler for SimHandler {
             resp[microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE..dg_len]
                 .copy_from_slice(&fsp_packet[..fsp_total]);
             self.inner.fsp_timer = Some(Instant::now() + Duration::from_secs(10));
-            log::info!("[{} → FIPS] TX HTTP GET {}B", self.label, dg_len);
+            log::info!("[{} → FIPS] TX service GET /health {}B", self.label, dg_len);
             return HandleResult::SendDatagram(dg_len);
         }
 

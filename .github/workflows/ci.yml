@@ -32,6 +32,22 @@ jobs:
       - run: cargo test -p microfips-core --features std -- --test-threads=1
 
       - run: cargo test -p microfips-protocol --features std -- --test-threads=1
+      - run: cargo test -p microfips-service
+      - run: cargo test -p microfips-http-demo --features http
+
+  golden-vectors:
+    name: Golden Vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test -p microfips-core --test golden_vectors
 
   noise-compliance:
     name: Noise Spec Compliance
@@ -119,6 +135,7 @@ jobs:
       - run: cargo build -p microfips-link --release
       - run: cargo build -p microfips-sim --release
       - run: cargo build -p microfips-http-test --release
+      - run: cargo build -p microfips-http-demo --features http --release
 
       - uses: actions/upload-artifact@v4
         with:
@@ -138,6 +155,12 @@ jobs:
           path: target/release/microfips-http-test
           retention-days: 7
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microfips-http-demo
+          path: target/release/microfips-http-demo
+          retention-days: 7
+
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
@@ -152,10 +175,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-link -p microfips-sim -p microfips-http-test -- --check
+        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-service -p microfips-http-demo -p microfips-link -p microfips-sim -p microfips-http-test -- --check
 
       - name: Run clippy
-        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-link -p microfips-sim -p microfips-http-test -- -D warnings
+        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-service -p microfips-http-demo --features microfips-http-demo/http -p microfips-link -p microfips-sim -p microfips-http-test -- -D warnings
 
   sim-smoke:
     name: Simulator Smoke Test
@@ -347,7 +370,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, build-host, lint, sim-smoke, sim-ping, build-firmware, fips-integration]
+    needs: [test, golden-vectors, build-host, lint, sim-smoke, sim-ping, build-firmware, fips-integration]
     if: always()
     steps:
       - run: |
@@ -356,6 +379,7 @@ jobs:
           echo "| Job | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-----|--------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Unit Tests | \`${{ needs.test.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Golden Vectors | \`${{ needs.golden-vectors.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build Host Tools | \`${{ needs.build-host.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Lint & Format | \`${{ needs.lint.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Simulator Smoke | \`${{ needs.sim-smoke.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
