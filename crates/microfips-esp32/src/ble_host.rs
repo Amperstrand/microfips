@@ -238,15 +238,25 @@ pub async fn ble_host_task() {
                     Either::First(GattConnectionEvent::Disconnected { .. }) => {
                         BLE_LINK_UP.store(false, Ordering::Relaxed);
                         STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                        while BLE_RX_CH.try_receive().is_ok() {}
+                        while BLE_TX_CH.try_receive().is_ok() {}
                         break;
                     }
                     Either::First(GattConnectionEvent::Gatt { event }) => match event {
                         GattEvent::Write(e) => {
                             if e.handle() == server.fips_service.rx_data.handle {
-                                let mut frame = heapless::Vec::<u8, BLE_MAX_FRAME>::new();
-                                if frame.extend_from_slice(e.data()).is_ok() {
-                                    BLE_RX_CH.send(frame).await;
-                                    STAT_BLE_RX.fetch_add(1, Ordering::Relaxed);
+                                if e.data().len() > BLE_MAX_FRAME {
+                                    esp_println::println!(
+                                        "[ble_task] RX write dropped: {}B > max {}B",
+                                        e.data().len(),
+                                        BLE_MAX_FRAME
+                                    );
+                                } else {
+                                    let mut frame = heapless::Vec::<u8, BLE_MAX_FRAME>::new();
+                                    if frame.extend_from_slice(e.data()).is_ok() {
+                                        BLE_RX_CH.send(frame).await;
+                                        STAT_BLE_RX.fetch_add(1, Ordering::Relaxed);
+                                    }
                                 }
                             }
                             if let Ok(reply) = e.accept() {
@@ -270,6 +280,8 @@ pub async fn ble_host_task() {
                         {
                             BLE_LINK_UP.store(false, Ordering::Relaxed);
                             STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                            while BLE_RX_CH.try_receive().is_ok() {}
+                            while BLE_TX_CH.try_receive().is_ok() {}
                             break;
                         }
                         STAT_BLE_TX.fetch_add(1, Ordering::Relaxed);

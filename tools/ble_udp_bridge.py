@@ -36,6 +36,7 @@ TX_UUID      = "6f696670-7300-4265-8003-000000000003"  # host subscribes here
 
 # ── Limits ────────────────────────────────────────────────────────────────────
 MAX_FRAME_LEN = 1500
+BLE_MAX_WRITE = 252      # firmware BLE_MAX_FRAME (250 payload + 2 header)
 RECONNECT_DELAY = 2.0   # seconds between reconnect attempts
 SCAN_TIMEOUT = 10.0     # seconds per scan attempt
 
@@ -196,6 +197,13 @@ class BleUdpBridge:
             hdr = struct.pack("<H", len(data))
             framed = hdr + data
             self.ble_tx_bytes += len(framed)
+
+            if len(framed) > 252:
+                print(
+                    f"{ts()} << UDP->BLE: frame too large ({len(framed)}B > 252B), dropped",
+                    file=sys.stderr,
+                )
+                continue
 
             try:
                 await client.write_gatt_char(RX_UUID, framed)
