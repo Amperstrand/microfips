@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use bt_hci::{ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci};
 use bt_hci::param::{AddrKind, BdAddr};
@@ -20,7 +20,7 @@ use trouble_host::prelude::{
 };
 
 use crate::config::{
-    AD_TYPE_COMPLETE_UUID128, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM,
+    AD_TYPE_COMPLETE_UUID128, ESP32_SECRET, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM,
     L2CAP_SCAN_DURATION_SECS, RECV_RETRY_DELAY_MS,
 };
 
@@ -33,7 +33,25 @@ static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRA
 static L2CAP_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
-static L2CAP_CONN_GEN: AtomicU32 = AtomicU32::new(0);
+static PEER_PUB: [AtomicU8; 33] = [const { AtomicU8::new(0) }; 33];
+
+fn store_peer_pub(pubkey: &[u8; 33]) {
+    for (slot, byte) in PEER_PUB.iter().zip(pubkey.iter()) {
+        slot.store(*byte, Ordering::Relaxed);
+    }
+}
+
+pub fn take_peer_pub() -> Option<[u8; 33]> {
+    if PEER_PUB[0].swap(0, Ordering::Acquire) == 0 {
+        return None;
+    }
+
+    let mut peer_pub = [0u8; 33];
+    for (byte, slot) in peer_pub.iter_mut().zip(PEER_PUB.iter()) {
+        *byte = slot.load(Ordering::Relaxed);
+    }
+    Some(peer_pub)
+}
 
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
@@ -332,11 +350,49 @@ pub async fn l2cap_host_task() {
                             match L2capChannel::create(&stack, &conn, L2CAP_PSM, &l2cap_config).await {
                                 Ok(channel) => {
                                     esp_println::println!("[l2cap] L2CAP channel created (central)");
+                                    let (mut writer, mut reader) = channel.split();
+
+                                    let mut peer_pub = [0u8; 33];
+                                    let exchange_ok = match microfips_core::noise::ecdh_pubkey(&ESP32_SECRET)
+                                    {
+                                        Ok(local_pub) => {
+                                            let mut tx = [0u8; 33];
+                                            tx[0] = 0x00;
+                                            tx[1..].copy_from_slice(&local_pub[1..33]);
+
+                                            if writer.send(&stack, &tx).await.is_err() {
+                                                false
+                                            } else {
+                                                let mut rx_buf = [0u8; 33];
+                                                let result = embassy_time::with_timeout(
+                                                    embassy_time::Duration::from_secs(5),
+                                                    reader.receive(&stack, &mut rx_buf),
+                                                )
+                                                .await;
+
+                                                match result {
+                                                    Ok(Ok(33)) if rx_buf[0] == 0x00 => {
+                                                        peer_pub[0] = 0x02;
+                                                        peer_pub[1..33].copy_from_slice(&rx_buf[1..33]);
+                                                        esp_println::println!("[l2cap] pubkey exchange OK");
+                                                        true
+                                                    }
+                                                    _ => false,
+                                                }
+                                            }
+                                        }
+                                        Err(_) => false,
+                                    };
+
+                                    if !exchange_ok {
+                                        esp_println::println!("[l2cap] pubkey exchange failed (central)");
+                                        continue;
+                                    }
+
+                                    store_peer_pub(&peer_pub);
                                     drain_l2cap_channels();
-                                    L2CAP_CONN_GEN.fetch_add(1, Ordering::Release);
                                     L2CAP_LINK_UP.store(true, Ordering::Release);
                                     L2CAP_CONNECTED_SIG.signal(());
-                                    let (mut writer, mut reader) = channel.split();
                                     let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
 
                                     loop {
@@ -470,12 +526,48 @@ pub async fn l2cap_host_task() {
                             }
                         };
 
-                    drain_l2cap_channels();
+                    let (mut writer, mut reader) = channel.split();
 
-                    L2CAP_CONN_GEN.fetch_add(1, Ordering::Release);
+                    let mut peer_pub = [0u8; 33];
+                    let exchange_ok = match microfips_core::noise::ecdh_pubkey(&ESP32_SECRET) {
+                        Ok(local_pub) => {
+                            let mut tx = [0u8; 33];
+                            tx[0] = 0x00;
+                            tx[1..].copy_from_slice(&local_pub[1..33]);
+
+                            if writer.send(&stack, &tx).await.is_err() {
+                                false
+                            } else {
+                                let mut rx_buf = [0u8; 33];
+                                let result = embassy_time::with_timeout(
+                                    embassy_time::Duration::from_secs(5),
+                                    reader.receive(&stack, &mut rx_buf),
+                                )
+                                .await;
+
+                                match result {
+                                    Ok(Ok(33)) if rx_buf[0] == 0x00 => {
+                                        peer_pub[0] = 0x02;
+                                        peer_pub[1..33].copy_from_slice(&rx_buf[1..33]);
+                                        esp_println::println!("[l2cap] pubkey exchange OK");
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            }
+                        }
+                        Err(_) => false,
+                    };
+
+                    if !exchange_ok {
+                        esp_println::println!("[l2cap] pubkey exchange failed (peripheral)");
+                        continue;
+                    }
+
+                    store_peer_pub(&peer_pub);
+                    drain_l2cap_channels();
                     L2CAP_LINK_UP.store(true, Ordering::Release);
                     L2CAP_CONNECTED_SIG.signal(());
-                    let (mut writer, mut reader) = channel.split();
                     let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
 
                     loop {
@@ -526,14 +618,6 @@ pub async fn wait_for_l2cap_link() {
             return;
         }
     }
-}
-
-pub fn l2cap_conn_gen() -> u32 {
-    L2CAP_CONN_GEN.load(Ordering::Acquire)
-}
-
-pub fn l2cap_drain_channels() {
-    drain_l2cap_channels();
 }
 
 pub async fn l2cap_send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) {

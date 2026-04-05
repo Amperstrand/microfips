@@ -129,7 +129,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     {
         esp_println::println!("[microfips] L2CAP mode starting");
 
-        let mut transport = l2cap_transport::L2capTransport::new();
+        let mut transport = l2cap_transport::L2capTransport;
         if transport.wait_ready().await.is_err() {
             esp_println::println!("[microfips] ERROR: L2CAP transport init failed");
             loop {
@@ -140,7 +140,18 @@ async fn main(_spawner: embassy_executor::Spawner) {
             }
         }
 
-        let peer_pub = transport.peer_pub();
+        let peer_pub = match crate::l2cap_host::take_peer_pub() {
+            Some(pk) => pk,
+            None => {
+                esp_println::println!("[microfips] ERROR: no peer pubkey from exchange");
+                loop {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                        RECV_RETRY_DELAY_MS,
+                    ))
+                    .await;
+                }
+            }
+        };
         esp_println::println!("[microfips] pubkey exchange complete");
 
         let rng = EspRng(trng);
