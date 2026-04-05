@@ -47,6 +47,26 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Check FIPS golden vectors drift
+        run: |
+          echo "Fetching latest golden_vectors.json from FIPS golden-vectors branch..."
+          curl -sL "https://raw.githubusercontent.com/Amperstrand/fips/golden-vectors/golden_vectors.json" -o /tmp/fips_vectors.json
+          
+          echo "Comparing local vectors with FIPS reference..."
+          LOCAL_HASH=$(sha256sum crates/microfips-core/tests/golden_vectors.json | cut -d' ' -f1)
+          FIPS_HASH=$(sha256sum /tmp/fips_vectors.json | cut -d' ' -f1)
+          
+          echo "Local hash: $LOCAL_HASH"
+          echo "FIPS hash:  $FIPS_HASH"
+          
+          if [ "$LOCAL_HASH" != "$FIPS_HASH" ]; then
+            echo "::error::Golden vectors drift detected! Local copy does not match FIPS reference."
+            echo "Run: curl -sL 'https://raw.githubusercontent.com/Amperstrand/fips/golden-vectors/golden_vectors.json' -o crates/microfips-core/tests/golden_vectors.json"
+            exit 1
+          fi
+          
+          echo "✓ Golden vectors are in sync with FIPS reference"
+
       - run: cargo test -p microfips-core --test golden_vectors
 
   noise-compliance:

@@ -185,6 +185,114 @@ pip install bleak
 - **Bridge can't open serial for debug:** BLE bridge uses D-Bus/BlueZ, not the serial port. They can coexist.
 - **Default UART build broken after BLE work:** Both builds are tested. Run `cargo clean` if Cargo feature cache causes issues.
 
+### ESP32 L2CAP Transport
+
+The ESP32 firmware can connect directly to a local FIPS daemon via BLE L2CAP
+Connection-Oriented Channels (CoC). No Python bridge, no UDP hop. Feature-gated
+behind `--features l2cap`. When active, UART0 is repurposed for `esp_println!`
+debug output instead of FIPS traffic.
+
+**BLE stack:** trouble-host v0.6.0 + esp-radio v0.17.0 (pure Rust, no_std, Embassy-native)
+Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
+
+**L2CAP constants:**
+
+| Item | Value |
+|------|-------|
+| PSM | `0x0085` (133 decimal) |
+| FIPS Service UUID | `9c90b790-2cc5-42c0-9f87-c9cc40648f4c` |
+| L2CAP MTU | 2048 bytes |
+| PacketPool MTU | 2054 bytes (configured via `.cargo/config.toml`) |
+| Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey]` (33 bytes, 5s timeout) |
+| Framing | Raw FMP (no length prefix — L2CAP SeqPacket preserves boundaries) |
+| BLE address | Random static (`FF:E4:05:1A:8F:FF`) |
+| Advertising name | `microfips-l2cap` |
+
+**Build L2CAP firmware:**
+```bash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
+```
+
+**Flash (same command as UART/BLE):**
+```bash
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+```
+
+**IMPORTANT:** L2CAP build MUST be the last build before flash. Building UART or BLE
+variants overwrites the binary. Always run the `--features l2cap` build immediately
+before `espflash flash`.
+
+**Test procedure (local FIPS daemon, no VPS needed):**
+
+1. Start local FIPS daemon with BLE:
+   ```bash
+   pkill -f "target/release/fips" 2>/dev/null; sleep 2
+   RUST_LOG=debug /home/ubuntu/src2/fips/target/release/fips --config /tmp/fips-local-ble.yaml > /tmp/fips-local.log 2>&1 &
+   ```
+
+2. FIPS config requires `disable_tiebreaker: true` for leaf peers:
+   ```yaml
+   transports:
+     ble:
+       adapter: hci0
+       disable_tiebreaker: true
+   ```
+
+3. Flash ESP32 (L2CAP variant must be last build):
+   ```bash
+   kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+   . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
+   . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+   ```
+
+4. Wait 15s for BLE scan + connection, then check FIPS logs:
+   ```bash
+   tail -30 /tmp/fips-local.log
+   ```
+
+**Expected in FIPS log:** `BLE scanner: FIPS peer found`, `BLE connection established`,
+`Sent msg2 response`, `Connection promoted to active peer`. No `bad prefix 0x01` errors.
+Sustained heartbeats continue indefinitely after promotion.
+
+**Connection modes:**
+
+The ESP32 supports both central (scan + outbound connect) and peripheral (advertise +
+accept) roles. Central role is attempted first (3s BLE scan for FIPS service UUID),
+then falls back to peripheral advertising if no FIPS peer is found.
+
+**UART debug output:**
+While L2CAP is active, UART0 outputs debug via `esp_println!`. Read with:
+```bash
+python3 -c "
+import serial, time
+s = serial.Serial('/dev/ttyUSB0', 115200, timeout=2)
+deadline = time.time() + 20
+while time.time() < deadline:
+    line = s.readline().decode(errors='replace').strip()
+    if line: print(line, flush=True)
+s.close()
+"
+```
+
+**Troubleshooting:**
+- **No FIPS connection:** Ensure `disable_tiebreaker: true` in FIPS config. Check BLE
+  adapter: `hciconfig hci0` (must show UP RUNNING). Restart FIPS daemon.
+- **`bad prefix 0x01` in FIPS logs:** Stale L2CAP channels from previous connection.
+  ESP32 drains channels on reconnect (fixed in commit `8ed21cb`).
+- **`BLE probe connect timeout`:** Check BLE address type — FIPS must use `LeRandom` for
+  ESP32's random static address (fixed in FIPS commit `9779672`).
+- **Wrong firmware flashed:** Build L2CAP variant last before flash. Building UART/BLE
+  after L2CAP overwrites the binary at the same output path.
+- **Tie-breaker deadlock:** Both sides try to be central simultaneously. Set
+  `disable_tiebreaker: true` in FIPS config (commit `adb63cf`).
+
+**Key differences from BLE GATT:**
+- No Python bridge needed — ESP32 talks to FIPS daemon directly over BLE L2CAP
+- No UDP hop — pure BLE L2CAP connection to local FIPS daemon
+- No GATT characteristics — uses L2CAP CoC channel on PSM 0x0085
+- No FMP length prefix — L2CAP SeqPacket preserves message boundaries
+
 ### ESP32 flash and monitor
 
 Do NOT use probe-rs with ESP32. Use `espflash` from the Espressif toolchain.
