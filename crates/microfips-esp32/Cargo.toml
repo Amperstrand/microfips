@@ -24,7 +24,7 @@ embedded-io-async = "0.7"
 heapless = "0.9"
 static_cell = "2"
 esp-radio = { version = "0.17.0", default-features = false, features = ["esp32", "ble", "unstable"], optional = true }
-trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255"], optional = true }
+trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "scan"], optional = true }
 esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }
