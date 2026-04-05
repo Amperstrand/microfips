@@ -8,7 +8,7 @@ use microfips_protocol::transport::Transport;
 use crate::config::{L2CAP_FRAME_CAP, RECV_RETRY_DELAY_MS};
 use crate::l2cap_host::{
     l2cap_host_task, l2cap_link_up, l2cap_recv_frame, l2cap_send_frame, l2cap_task_started,
-    wait_for_l2cap_link,
+    wait_for_l2cap_ready,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -18,7 +18,19 @@ pub enum L2capError {
     InitFailed,
 }
 
-pub struct L2capTransport;
+pub struct L2capTransport {
+    peer_pub: Option<[u8; 33]>,
+}
+
+impl L2capTransport {
+    pub fn new() -> Self {
+        Self { peer_pub: None }
+    }
+
+    pub fn take_peer_pub(&mut self) -> Option<[u8; 33]> {
+        self.peer_pub.take()
+    }
+}
 
 impl Transport for L2capTransport {
     type Error = L2capError;
@@ -36,7 +48,7 @@ impl Transport for L2capTransport {
         }
 
         loop {
-            wait_for_l2cap_link().await;
+            self.peer_pub = Some(wait_for_l2cap_ready().await);
             if l2cap_link_up() {
                 return Ok(());
             }

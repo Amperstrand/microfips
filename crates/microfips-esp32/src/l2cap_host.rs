@@ -30,28 +30,9 @@ static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRA
     Channel::new();
 static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
     Channel::new();
-static L2CAP_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static L2CAP_READY_SIG: Signal<CriticalSectionRawMutex, [u8; 33]> = Signal::new();
 static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
-static PEER_PUB: [AtomicU8; 33] = [const { AtomicU8::new(0) }; 33];
-
-fn store_peer_pub(pubkey: &[u8; 33]) {
-    for (slot, byte) in PEER_PUB.iter().zip(pubkey.iter()) {
-        slot.store(*byte, Ordering::Relaxed);
-    }
-}
-
-pub fn take_peer_pub() -> Option<[u8; 33]> {
-    if PEER_PUB[0].swap(0, Ordering::Acquire) == 0 {
-        return None;
-    }
-
-    let mut peer_pub = [0u8; 33];
-    for (byte, slot) in peer_pub.iter_mut().zip(PEER_PUB.iter()) {
-        *byte = slot.load(Ordering::Relaxed);
-    }
-    Some(peer_pub)
-}
 
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
@@ -242,6 +223,15 @@ fn drain_l2cap_channels() {
     while L2CAP_RX_CH.try_receive().is_ok() {}
 }
 
+fn mark_link_down() {
+    L2CAP_LINK_UP.store(false, Ordering::Release);
+}
+
+fn mark_link_ready(peer_pub: [u8; 33]) {
+    L2CAP_LINK_UP.store(true, Ordering::Release);
+    L2CAP_READY_SIG.signal(peer_pub);
+}
+
 #[embassy_executor::task]
 pub async fn l2cap_host_task() {
     esp_println::println!("[l2cap_task] started");
@@ -292,6 +282,189 @@ pub async fn l2cap_host_task() {
         },
         async {
             loop {
+                mark_link_down();
+                esp_println::println!(
+                    "[l2cap_task] advertising as peripheral before central fallback"
+                );
+                let mut adv_data = [0u8; 31];
+                let Ok(adv_len) = AdStructure::encode_slice(
+                    &[
+                        AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                        AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE),
+                    ],
+                    &mut adv_data,
+                ) else {
+                    esp_println::println!("[l2cap_task] adv_data encode failed");
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                        RECV_RETRY_DELAY_MS,
+                    ))
+                    .await;
+                    continue;
+                };
+
+                let mut scan_data = [0u8; 31];
+                let Ok(scan_len) = AdStructure::encode_slice(
+                    &[AdStructure::CompleteLocalName(b"microfips-l2cap")],
+                    &mut scan_data,
+                ) else {
+                    esp_println::println!("[l2cap_task] scan_data encode failed");
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                        RECV_RETRY_DELAY_MS,
+                    ))
+                    .await;
+                    continue;
+                };
+
+                let advertiser = match peripheral
+                    .advertise(
+                        &Default::default(),
+                        Advertisement::ConnectableScannableUndirected {
+                            adv_data: &adv_data[..adv_len],
+                            scan_data: &scan_data[..scan_len],
+                        },
+                    )
+                    .await
+                {
+                    Ok(a) => {
+                        esp_println::println!("[l2cap] BLE advertising started");
+                        a
+                    }
+                    Err(e) => {
+                        esp_println::println!("[l2cap_task] advertise() error: {:?}", e);
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                        continue;
+                    }
+                };
+
+                let conn = match embassy_time::with_timeout(
+                    embassy_time::Duration::from_secs(L2CAP_SCAN_DURATION_SECS),
+                    advertiser.accept(),
+                )
+                .await
+                {
+                    Ok(Ok(c)) => {
+                        esp_println::println!("[l2cap] BLE connection accepted");
+                        Some(c)
+                    }
+                    Ok(Err(e)) => {
+                        esp_println::println!(
+                            "[l2cap_task] peripheral accept error, falling back to scan: {:?}",
+                            e
+                        );
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                            RECV_RETRY_DELAY_MS,
+                        ))
+                        .await;
+                        None
+                    }
+                    Err(_) => {
+                        esp_println::println!(
+                            "[l2cap_task] peripheral accept timeout, falling back to scan"
+                        );
+                        None
+                    }
+                };
+
+                if let Some(conn) = conn {
+                    let l2cap_config = L2capChannelConfig {
+                        mtu: Some(2048),
+                        ..Default::default()
+                    };
+
+                    let channel =
+                        match L2capChannel::accept(&stack, &conn, &[L2CAP_PSM], &l2cap_config).await {
+                            Ok(ch) => {
+                                esp_println::println!(
+                                    "[l2cap] L2CAP channel accepted on PSM 0x0085"
+                                );
+                                ch
+                            }
+                            Err(e) => {
+                                esp_println::println!(
+                                    "[l2cap] L2CAP accept error on PSM 0x0085: {:?}",
+                                    e
+                                );
+                                drain_l2cap_channels();
+                                continue;
+                            }
+                        };
+
+                    let (mut writer, mut reader) = channel.split();
+
+                    let mut peer_pub = [0u8; 33];
+                    let exchange_ok = match microfips_core::noise::ecdh_pubkey(&ESP32_SECRET) {
+                        Ok(local_pub) => {
+                            let mut tx = [0u8; 33];
+                            tx[0] = 0x00;
+                            tx[1..].copy_from_slice(&local_pub[1..33]);
+
+                            if writer.send(&stack, &tx).await.is_err() {
+                                false
+                            } else {
+                                let mut rx_buf = [0u8; 33];
+                                let result = embassy_time::with_timeout(
+                                    embassy_time::Duration::from_secs(5),
+                                    reader.receive(&stack, &mut rx_buf),
+                                )
+                                .await;
+
+                                match result {
+                                    Ok(Ok(33)) if rx_buf[0] == 0x00 => {
+                                        peer_pub[0] = 0x02;
+                                        peer_pub[1..33].copy_from_slice(&rx_buf[1..33]);
+                                        esp_println::println!("[l2cap] pubkey exchange OK");
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            }
+                        }
+                        Err(_) => false,
+                    };
+
+                    if !exchange_ok {
+                        esp_println::println!("[l2cap] pubkey exchange failed (peripheral)");
+                        continue;
+                    }
+
+                    drain_l2cap_channels();
+                    mark_link_ready(peer_pub);
+                    let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
+
+                    loop {
+                        match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
+                            Either::First(Ok(n)) => {
+                                let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                                if frame.extend_from_slice(&rx_buf[..n]).is_err() {
+                                    mark_link_down();
+                                    break;
+                                }
+                                L2CAP_RX_CH.send(frame).await;
+                            }
+                            Either::First(Err(_)) => {
+                                esp_println::println!(
+                                    "[l2cap] peripheral receive loop disconnected"
+                                );
+                                mark_link_down();
+                                break;
+                            }
+                            Either::Second(frame) => {
+                                if writer.send(&stack, &frame).await.is_err() {
+                                    esp_println::println!(
+                                        "[l2cap] peripheral send loop disconnected"
+                                    );
+                                    mark_link_down();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    mark_link_down();
+                    drain_l2cap_channels();
+                    continue;
+                }
+
                 esp_println::println!("[l2cap_task] scanning for FIPS peer...");
 
                 let scan_result = {
@@ -337,7 +510,14 @@ pub async fn l2cap_host_task() {
                             filter_accept_list: &[(addr_kind, &bd_addr)],
                             ..Default::default()
                         },
-                        connect_params: RequestedConnParams::default(),
+                        connect_params: RequestedConnParams {
+                            min_connection_interval: embassy_time::Duration::from_millis(30),
+                            max_connection_interval: embassy_time::Duration::from_millis(50),
+                            max_latency: 0,
+                            supervision_timeout: embassy_time::Duration::from_secs(20),
+                            min_event_length: embassy_time::Duration::from_millis(0),
+                            max_event_length: embassy_time::Duration::from_millis(0),
+                        },
                     };
 
                     match central.connect(&connect_config).await {
@@ -389,10 +569,8 @@ pub async fn l2cap_host_task() {
                                         continue;
                                     }
 
-                                    store_peer_pub(&peer_pub);
                                     drain_l2cap_channels();
-                                    L2CAP_LINK_UP.store(true, Ordering::Release);
-                                    L2CAP_CONNECTED_SIG.signal(());
+                                    mark_link_ready(peer_pub);
                                     let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
 
                                     loop {
@@ -406,24 +584,30 @@ pub async fn l2cap_host_task() {
                                                 let mut frame =
                                                     heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
                                                 if frame.extend_from_slice(&rx_buf[..n]).is_err() {
-                                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                                    mark_link_down();
                                                     break;
                                                 }
                                                 L2CAP_RX_CH.send(frame).await;
                                             }
                                             Either::First(Err(_)) => {
-                                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                                esp_println::println!(
+                                                    "[l2cap] central receive loop disconnected"
+                                                );
+                                                mark_link_down();
                                                 break;
                                             }
                                             Either::Second(frame) => {
                                                 if writer.send(&stack, &frame).await.is_err() {
-                                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                                    esp_println::println!(
+                                                        "[l2cap] central send loop disconnected"
+                                                    );
+                                                    mark_link_down();
                                                     break;
                                                 }
                                             }
                                         }
                                     }
-                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                    mark_link_down();
                                     drain_l2cap_channels();
                                     esp_println::println!("[l2cap] central channel disconnected");
                                 }
@@ -436,166 +620,6 @@ pub async fn l2cap_host_task() {
                             esp_println::println!("[l2cap] central connect error: {:?}", e);
                         }
                     }
-                } else {
-                    esp_println::println!(
-                        "[l2cap_task] no FIPS peer found, advertising as peripheral"
-                    );
-                    let mut adv_data = [0u8; 31];
-                    let Ok(adv_len) = AdStructure::encode_slice(
-                        &[
-                            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                            AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE),
-                        ],
-                        &mut adv_data,
-                    ) else {
-                        esp_println::println!("[l2cap_task] adv_data encode failed");
-                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                            RECV_RETRY_DELAY_MS,
-                        ))
-                        .await;
-                        continue;
-                    };
-
-                    let mut scan_data = [0u8; 31];
-                    let Ok(scan_len) = AdStructure::encode_slice(
-                        &[AdStructure::CompleteLocalName(b"microfips-l2cap")],
-                        &mut scan_data,
-                    ) else {
-                        esp_println::println!("[l2cap_task] scan_data encode failed");
-                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                            RECV_RETRY_DELAY_MS,
-                        ))
-                        .await;
-                        continue;
-                    };
-
-                    let advertiser = match peripheral
-                        .advertise(
-                            &Default::default(),
-                            Advertisement::ConnectableScannableUndirected {
-                                adv_data: &adv_data[..adv_len],
-                                scan_data: &scan_data[..scan_len],
-                            },
-                        )
-                        .await
-                    {
-                        Ok(a) => {
-                            esp_println::println!("[l2cap] BLE advertising started");
-                            a
-                        }
-                        Err(e) => {
-                            esp_println::println!("[l2cap_task] advertise() error: {:?}", e);
-                            embassy_time::Timer::after(embassy_time::Duration::from_millis(500))
-                                .await;
-                            continue;
-                        }
-                    };
-
-                    let conn = match advertiser.accept().await {
-                        Ok(c) => {
-                            esp_println::println!("[l2cap] BLE connection accepted");
-                            c
-                        }
-                        Err(_) => {
-                            embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                                RECV_RETRY_DELAY_MS,
-                            ))
-                            .await;
-                            continue;
-                        }
-                    };
-
-                    let l2cap_config = L2capChannelConfig {
-                        mtu: Some(2048),
-                        ..Default::default()
-                    };
-
-                    let channel =
-                        match L2capChannel::accept(&stack, &conn, &[L2CAP_PSM], &l2cap_config)
-                            .await
-                        {
-                            Ok(ch) => {
-                                esp_println::println!(
-                                    "[l2cap] L2CAP channel accepted on PSM 0x0085"
-                                );
-                                ch
-                            }
-                            Err(_) => {
-                                drain_l2cap_channels();
-                                continue;
-                            }
-                        };
-
-                    let (mut writer, mut reader) = channel.split();
-
-                    let mut peer_pub = [0u8; 33];
-                    let exchange_ok = match microfips_core::noise::ecdh_pubkey(&ESP32_SECRET) {
-                        Ok(local_pub) => {
-                            let mut tx = [0u8; 33];
-                            tx[0] = 0x00;
-                            tx[1..].copy_from_slice(&local_pub[1..33]);
-
-                            if writer.send(&stack, &tx).await.is_err() {
-                                false
-                            } else {
-                                let mut rx_buf = [0u8; 33];
-                                let result = embassy_time::with_timeout(
-                                    embassy_time::Duration::from_secs(5),
-                                    reader.receive(&stack, &mut rx_buf),
-                                )
-                                .await;
-
-                                match result {
-                                    Ok(Ok(33)) if rx_buf[0] == 0x00 => {
-                                        peer_pub[0] = 0x02;
-                                        peer_pub[1..33].copy_from_slice(&rx_buf[1..33]);
-                                        esp_println::println!("[l2cap] pubkey exchange OK");
-                                        true
-                                    }
-                                    _ => false,
-                                }
-                            }
-                        }
-                        Err(_) => false,
-                    };
-
-                    if !exchange_ok {
-                        esp_println::println!("[l2cap] pubkey exchange failed (peripheral)");
-                        continue;
-                    }
-
-                    store_peer_pub(&peer_pub);
-                    drain_l2cap_channels();
-                    L2CAP_LINK_UP.store(true, Ordering::Release);
-                    L2CAP_CONNECTED_SIG.signal(());
-                    let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
-
-                    loop {
-                        match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await
-                        {
-                            Either::First(Ok(n)) => {
-                                let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-                                if frame.extend_from_slice(&rx_buf[..n]).is_err() {
-                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                    break;
-                                }
-                                L2CAP_RX_CH.send(frame).await;
-                            }
-                            Either::First(Err(_)) => {
-                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                break;
-                            }
-                            Either::Second(frame) => {
-                                if writer.send(&stack, &frame).await.is_err() {
-                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                    drain_l2cap_channels();
                 }
             }
         },
@@ -611,13 +635,8 @@ pub fn l2cap_link_up() -> bool {
     L2CAP_LINK_UP.load(Ordering::Relaxed)
 }
 
-pub async fn wait_for_l2cap_link() {
-    loop {
-        L2CAP_CONNECTED_SIG.wait().await;
-        if l2cap_link_up() {
-            return;
-        }
-    }
+pub async fn wait_for_l2cap_ready() -> [u8; 33] {
+    L2CAP_READY_SIG.wait().await
 }
 
 pub async fn l2cap_send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) {

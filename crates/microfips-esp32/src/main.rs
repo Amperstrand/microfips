@@ -129,7 +129,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     {
         esp_println::println!("[microfips] L2CAP mode starting");
 
-        let mut transport = l2cap_transport::L2capTransport;
+        let mut transport = l2cap_transport::L2capTransport::new();
         if transport.wait_ready().await.is_err() {
             esp_println::println!("[microfips] ERROR: L2CAP transport init failed");
             loop {
@@ -139,8 +139,9 @@ async fn main(_spawner: embassy_executor::Spawner) {
                 .await;
             }
         }
+        esp_println::println!("[microfips] L2CAP transport ready");
 
-        let peer_pub = match crate::l2cap_host::take_peer_pub() {
+        let peer_pub = match transport.take_peer_pub() {
             Some(pk) => pk,
             None => {
                 esp_println::println!("[microfips] ERROR: no peer pubkey from exchange");
@@ -152,7 +153,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                 }
             }
         };
-        esp_println::println!("[microfips] pubkey exchange complete");
+        esp_println::println!("[microfips] pubkey exchange complete; starting node");
 
         let rng = EspRng(trng);
         let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
