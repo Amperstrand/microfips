@@ -37,7 +37,7 @@ use crate::config::{ESP32_SECRET, PANIC_BLINK_CYCLES};
 use crate::config::{UART_BAUDRATE, UART_FIFO_THRESHOLD};
 use crate::handler::{build_demo_fsp, EspHandler};
 #[cfg(feature = "l2cap")]
-use crate::l2cap_transport::{l2cap_pubkey_exchange, L2capTransport};
+use crate::l2cap_transport::L2capTransport;
 use crate::led::Led;
 use crate::rng::EspRng;
 #[cfg(not(any(feature = "ble", feature = "l2cap")))]
@@ -124,10 +124,10 @@ async fn main(_spawner: embassy_executor::Spawner) {
             }
         }
 
-        let peer_pub = match l2cap_pubkey_exchange(&mut transport).await {
-            Ok(peer_pub) => peer_pub,
-            Err(_) => {
-                esp_println::println!("[microfips] ERROR: L2CAP pubkey exchange failed");
+        let peer_pub = match crate::l2cap_transport::take_peer_pub() {
+            Some(pk) => pk,
+            None => {
+                esp_println::println!("[microfips] ERROR: no peer pubkey from exchange");
                 loop {
                     embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
                 }

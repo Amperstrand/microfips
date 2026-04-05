@@ -19,8 +19,9 @@ use trouble_host::{
     connection::{ConnectConfig, ScanConfig},
     prelude::{
         Address, AdStructure, Advertisement, DefaultPacketPool, EventHandler, ExternalController,
-        Host, HostResources, L2capChannel, L2capChannelConfig, PhySet, RequestedConnParams,
-        Scanner, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
+        Host, HostResources, L2capChannel, L2capChannelConfig, L2capChannelReader,
+        L2capChannelWriter, PhySet, RequestedConnParams, Scanner, BR_EDR_NOT_SUPPORTED,
+        LE_GENERAL_DISCOVERABLE,
     },
 };
 
@@ -38,6 +39,28 @@ static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRA
 static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static L2CAP_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
+/// Peer pubkey from the most recent pubkey exchange (set by l2cap_host_task,
+/// read by main after wait_ready). `None` until exchange completes.
+static PEER_PUB: [core::sync::atomic::AtomicU8; 33] = [
+    const { core::sync::atomic::AtomicU8::new(0) }; 33
+];
+
+fn store_peer_pub(pubkey: &[u8; 33]) {
+    for (slot, byte) in PEER_PUB.iter().zip(pubkey.iter()) {
+        slot.store(*byte, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+pub fn take_peer_pub() -> Option<[u8; 33]> {
+    if PEER_PUB[0].swap(0, core::sync::atomic::Ordering::Acquire) == 0 {
+        return None;
+    }
+    let mut pk = [0u8; 33];
+    for (byte, slot) in pk.iter_mut().zip(PEER_PUB.iter()) {
+        *byte = slot.load(core::sync::atomic::Ordering::Relaxed);
+    }
+    Some(pk)
+}
 
 struct ScanResult {
     found: AtomicBool,
@@ -315,42 +338,80 @@ pub async fn l2cap_host_task() {
                             };
                             match L2capChannel::create(&stack, &conn, L2CAP_PSM, &l2cap_config).await {
                                 Ok(channel) => {
-                                    drain_channels();
-                                    L2CAP_LINK_UP.store(true, Ordering::Relaxed);
-                                    L2CAP_CONNECTED_SIG.signal(());
                                     let (mut writer, mut reader) = channel.split();
-                                    let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
 
-                                    loop {
-                                        match select(
-                                            reader.receive(&stack, &mut rx_buf),
-                                            L2CAP_TX_CH.receive(),
-                                        )
-                                        .await
-                                        {
-                                            Either::First(Ok(n)) => {
-                                                let mut frame =
-                                                    heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-                                                if frame.extend_from_slice(&rx_buf[..n]).is_err() {
-                                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                                    break;
-                                                }
-                                                L2CAP_RX_CH.send(frame).await;
-                                            }
-                                            Either::First(Err(_)) => {
-                                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                                break;
-                                            }
-                                            Either::Second(frame) => {
-                                                if writer.send(&stack, &frame).await.is_err() {
-                                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                                    break;
+                                    let mut peer_pub = [0u8; 33];
+                                    let exchange_ok = match microfips_core::noise::ecdh_pubkey(&ESP32_SECRET) {
+                                        Ok(local_pub) => {
+                                            let mut tx = [0u8; 33];
+                                            tx[0] = 0x00;
+                                            tx[1..].copy_from_slice(&local_pub[1..33]);
+
+                                            if writer.send(&stack, &tx).await.is_err() {
+                                                false
+                                            } else {
+                                                let mut rx_buf = [0u8; 33];
+                                                let result = embassy_time::with_timeout(
+                                                    embassy_time::Duration::from_secs(5),
+                                                    reader.receive(&stack, &mut rx_buf),
+                                                )
+                                                .await;
+
+                                                match result {
+                                                    Ok(Ok(33)) if rx_buf[0] == 0x00 => {
+                                                        peer_pub[0] = 0x02;
+                                                        peer_pub[1..]
+                                                            .copy_from_slice(&rx_buf[1..33]);
+                                                        esp_println::println!("[l2cap] pubkey exchange OK");
+                                                        true
+                                                    }
+                                                    _ => false,
                                                 }
                                             }
                                         }
+                                        Err(_) => false,
+                                    };
+
+                                    if exchange_ok {
+                                        store_peer_pub(&peer_pub);
+                                        drain_channels();
+                                        L2CAP_LINK_UP.store(true, Ordering::Relaxed);
+                                        L2CAP_CONNECTED_SIG.signal(());
+                                        let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
+
+                                        loop {
+                                            match select(
+                                                reader.receive(&stack, &mut rx_buf),
+                                                L2CAP_TX_CH.receive(),
+                                            )
+                                            .await
+                                            {
+                                                Either::First(Ok(n)) => {
+                                                    let mut frame =
+                                                        heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                                                    if frame.extend_from_slice(&rx_buf[..n]).is_err() {
+                                                        L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                                        break;
+                                                    }
+                                                    L2CAP_RX_CH.send(frame).await;
+                                                }
+                                                Either::First(Err(_)) => {
+                                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                                    break;
+                                                }
+                                                Either::Second(frame) => {
+                                                    if writer.send(&stack, &frame).await.is_err() {
+                                                        L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                        drain_channels();
+                                    } else {
+                                        esp_println::println!("[l2cap] pubkey exchange failed (central)");
                                     }
-                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                    drain_channels();
                                 }
                                 Err(e) => {
                                     esp_println::println!("[l2cap] L2CAP create error: {:?}", e);
@@ -431,38 +492,74 @@ pub async fn l2cap_host_task() {
                         }
                     };
 
-                    drain_channels();
-                    L2CAP_LINK_UP.store(true, Ordering::Relaxed);
-                    L2CAP_CONNECTED_SIG.signal(());
-
                     let (mut writer, mut reader) = channel.split();
-                    let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
 
-                    loop {
-                        match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
-                            Either::First(Ok(n)) => {
-                                let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-                                if frame.extend_from_slice(&rx_buf[..n]).is_err() {
-                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                    break;
-                                }
-                                L2CAP_RX_CH.send(frame).await;
-                            }
-                            Either::First(Err(_)) => {
-                                L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                break;
-                            }
-                            Either::Second(frame) => {
-                                if writer.send(&stack, &frame).await.is_err() {
-                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                                    break;
+                    let mut peer_pub = [0u8; 33];
+                    let exchange_ok = match microfips_core::noise::ecdh_pubkey(&ESP32_SECRET) {
+                        Ok(local_pub) => {
+                            let mut tx = [0u8; 33];
+                            tx[0] = 0x00;
+                            tx[1..].copy_from_slice(&local_pub[1..33]);
+
+                            if writer.send(&stack, &tx).await.is_err() {
+                                false
+                            } else {
+                                let mut rx_buf = [0u8; 33];
+                                let result = embassy_time::with_timeout(
+                                    embassy_time::Duration::from_secs(5),
+                                    reader.receive(&stack, &mut rx_buf),
+                                )
+                                .await;
+
+                                match result {
+                                    Ok(Ok(33)) if rx_buf[0] == 0x00 => {
+                                        peer_pub[0] = 0x02;
+                                        peer_pub[1..].copy_from_slice(&rx_buf[1..33]);
+                                        esp_println::println!("[l2cap] pubkey exchange OK");
+                                        true
+                                    }
+                                    _ => false,
                                 }
                             }
                         }
-                    }
+                        Err(_) => false,
+                    };
 
-                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
-                    drain_channels();
+                    if exchange_ok {
+                        store_peer_pub(&peer_pub);
+                        drain_channels();
+                        L2CAP_LINK_UP.store(true, Ordering::Relaxed);
+                        L2CAP_CONNECTED_SIG.signal(());
+                        let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
+
+                        loop {
+                            match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
+                                Either::First(Ok(n)) => {
+                                    let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                                    if frame.extend_from_slice(&rx_buf[..n]).is_err() {
+                                        L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                        break;
+                                    }
+                                    L2CAP_RX_CH.send(frame).await;
+                                }
+                                Either::First(Err(_)) => {
+                                    L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                    break;
+                                }
+                                Either::Second(frame) => {
+                                    if writer.send(&stack, &frame).await.is_err() {
+                                        L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        L2CAP_LINK_UP.store(false, Ordering::Relaxed);
+                        drain_channels();
+                    } else {
+                        esp_println::println!("[l2cap] pubkey exchange failed (peripheral)");
+                    }
                 }
             }
         },
@@ -541,31 +638,4 @@ impl Transport for L2capTransport {
             }
         }
     }
-}
-
-pub async fn l2cap_pubkey_exchange(transport: &mut L2capTransport) -> Result<[u8; 33], L2capError> {
-    let local_pub =
-        microfips_core::noise::ecdh_pubkey(&ESP32_SECRET).map_err(|_| L2capError::InitFailed)?;
-
-    let mut tx = [0u8; 33];
-    tx[0] = 0x00;
-    tx[1..].copy_from_slice(&local_pub[1..33]);
-    transport.send(&tx).await?;
-
-    let mut rx = [0u8; 33];
-    let n = embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(5),
-        transport.recv(&mut rx),
-    )
-    .await
-    .map_err(|_| L2capError::Disconnected)??;
-
-    if n != 33 || rx[0] != 0x00 {
-        return Err(L2capError::Disconnected);
-    }
-
-    let mut peer_pub = [0u8; 33];
-    peer_pub[0] = 0x02;
-    peer_pub[1..].copy_from_slice(&rx[1..33]);
-    Ok(peer_pub)
 }
