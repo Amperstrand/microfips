@@ -1,104 +1,41 @@
 #![cfg(feature = "l2cap")]
 
-use core::sync::atomic::Ordering;
+use microfips_esp_transport::l2cap_transport::{L2capHostAdapter, SharedL2capTransport};
 
-use embassy_futures::select::{select, Either};
-use microfips_protocol::transport::Transport;
-
-use crate::config::{L2CAP_FRAME_CAP, RECV_RETRY_DELAY_MS};
 use crate::l2cap_host::{
     l2cap_host_task, l2cap_link_up, l2cap_recv_frame, l2cap_send_frame, l2cap_task_started,
     wait_for_l2cap_ready,
 };
 
-#[derive(Debug, Clone, Copy)]
-pub enum L2capError {
-    Disconnected,
-    FrameTooLarge,
-    InitFailed,
-}
+pub use microfips_esp_transport::l2cap_transport::L2capError;
 
-pub struct L2capTransport {
-    peer_pub: Option<[u8; 33]>,
-}
+pub struct Esp32L2capHost;
 
-impl L2capTransport {
-    pub fn new() -> Self {
-        Self { peer_pub: None }
+impl L2capHostAdapter for Esp32L2capHost {
+    fn task_started() -> &'static core::sync::atomic::AtomicBool {
+        l2cap_task_started()
     }
 
-    pub fn take_peer_pub(&mut self) -> Option<[u8; 33]> {
-        self.peer_pub.take()
-    }
-}
-
-impl Transport for L2capTransport {
-    type Error = L2capError;
-
-    async fn wait_ready(&mut self) -> Result<(), L2capError> {
-        if !l2cap_task_started().swap(true, Ordering::Relaxed) {
-            let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
-            spawner
-                .spawn(l2cap_host_task())
-                .map_err(|_| L2capError::InitFailed)?;
-        }
-
-        if l2cap_link_up() {
-            return Ok(());
-        }
-
-        loop {
-            self.peer_pub = Some(wait_for_l2cap_ready().await);
-            if l2cap_link_up() {
-                return Ok(());
-            }
-        }
+    fn link_up() -> bool {
+        l2cap_link_up()
     }
 
-    async fn send(&mut self, data: &[u8]) -> Result<(), L2capError> {
-        if !l2cap_link_up() {
-            return Err(L2capError::Disconnected);
-        }
-        if data.len() > L2CAP_FRAME_CAP {
-            return Err(L2capError::FrameTooLarge);
-        }
+    async fn spawn_host_task() -> Result<(), ()> {
+        let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
+        spawner.spawn(l2cap_host_task()).map_err(|_| ())
+    }
 
-        let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-        frame
-            .extend_from_slice(data)
-            .map_err(|_| L2capError::FrameTooLarge)?;
+    async fn wait_for_l2cap_ready() -> [u8; 33] {
+        wait_for_l2cap_ready().await
+    }
+
+    async fn send_frame(frame: heapless::Vec<u8, 512>) {
         l2cap_send_frame(frame).await;
-        Ok(())
     }
 
-    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, L2capError> {
-        loop {
-            if !l2cap_link_up() {
-                return Err(L2capError::Disconnected);
-            }
-            match select(
-                l2cap_recv_frame(),
-                embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                    RECV_RETRY_DELAY_MS,
-                )),
-            )
-            .await
-            {
-                Either::First(frame) => {
-                    debug_assert!(
-                        buf.len() >= L2CAP_FRAME_CAP,
-                        "L2CAP frame truncated: buf is {}B but L2CAP_FRAME_CAP is {}B. \
-                         RECV_BUF_SIZE in node.rs must be >= L2CAP_FRAME_CAP. \
-                         See PR #57 Codex review.",
-                        buf.len(),
-                        L2CAP_FRAME_CAP,
-                    );
-                    let n = frame.len().min(buf.len());
-                    buf[..n].copy_from_slice(&frame[..n]);
-                    return Ok(n);
-                }
-                Either::Second(()) => continue,
-            }
-        }
+    async fn recv_frame() -> heapless::Vec<u8, 512> {
+        l2cap_recv_frame().await
     }
 }
+
+pub type L2capTransport = SharedL2capTransport<Esp32L2capHost>;

@@ -9,9 +9,9 @@ name = "microfips_esp32s3"
 
 [features]
 default = ["wifi"]
-ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
-l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
-wifi = ["dep:esp-radio", "dep:esp-alloc", "dep:embassy-net", "dep:esp-println", "dep:log"]
+ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
+l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
+wifi = ["dep:esp-radio", "dep:esp-alloc", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
 
 [[bin]]
 name = "microfips-esp32s3-uart"
@@ -35,6 +35,7 @@ required-features = ["wifi"]
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }
 microfips-esp-common = { path = "../microfips-esp-common" }
+microfips-esp-transport = { path = "../microfips-esp-transport", features = ["esp32s3"] }
 microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
@@ -49,7 +50,6 @@ embassy-sync = "0.7.2"
 embedded-io-async = "0.7"
 heapless = "0.9"
 static_cell = "2"
-embassy-net = { version = "0.9.0", features = ["dhcpv4", "udp"], optional = true }
 esp-radio = { version = "0.17.0", default-features = false, features = ["esp32s3", "ble", "wifi", "unstable"], optional = true }
 trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "scan"], optional = true }
 esp-alloc = { version = "0.9", optional = true }

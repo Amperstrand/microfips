@@ -2,17 +2,15 @@
 
 pub mod config;
 pub mod handler;
-pub mod led;
 pub mod node_info;
-pub mod rng;
-pub mod stats;
-pub mod uart_transport;
+
+pub use microfips_esp_transport::{led, rng, stats, uart_transport};
 
 #[cfg(feature = "wifi")]
 pub mod wifi_transport;
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
-pub mod logger;
+pub use microfips_esp_transport::logger;
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 pub mod control;
 
