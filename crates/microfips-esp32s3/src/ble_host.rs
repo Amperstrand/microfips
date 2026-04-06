@@ -16,7 +16,8 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::config::{
-    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, FIPS_SERVICE_UUID_LE, RECV_RETRY_DELAY_MS,
+    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, ESP32S3_SECRET, FIPS_SERVICE_UUID_LE,
+    RECV_RETRY_DELAY_MS,
 };
 use crate::stats::{STAT_BLE_CONNECT, STAT_BLE_DISCONNECT, STAT_BLE_RX, STAT_BLE_TX};
 
@@ -28,6 +29,8 @@ static BLE_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRA
 static BLE_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static BLE_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static BLE_LINK_UP: AtomicBool = AtomicBool::new(false);
+/// Set to true once the GATT client has enabled notifications (CCCD write).
+/// Until then, notify() failures are expected and must not trigger a disconnect.
 static BLE_NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn init_heap() {
@@ -157,7 +160,14 @@ pub async fn ble_host_task() {
         ExternalController::new(BleHciTransport::new(connector));
     let resources = HOST_RESOURCES.init(HostResources::new());
     let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+        .set_random_address(Address::random([
+            0xff,
+            ESP32S3_SECRET[27],
+            ESP32S3_SECRET[28],
+            ESP32S3_SECRET[29],
+            ESP32S3_SECRET[30],
+            ESP32S3_SECRET[31],
+        ]));
 
     let Host {
         mut peripheral,
