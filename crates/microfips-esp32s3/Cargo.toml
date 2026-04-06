@@ -18,6 +18,10 @@ name = "microfips-esp32s3-uart"
 path = "src/bin/uart.rs"
 
 [[bin]]
+name = "microfips-esp32s3-usb"
+path = "src/bin/usb.rs"
+
+[[bin]]
 name = "microfips-esp32s3-ble"
 path = "src/bin/ble.rs"
 required-features = ["ble"]

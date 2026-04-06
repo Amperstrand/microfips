@@ -12,6 +12,7 @@ pub mod node_info;
 pub mod rng;
 pub mod stats;
 pub mod uart_transport;
+pub mod usb_transport;
 
 #[cfg(feature = "wifi")]
 pub mod wifi_transport;
