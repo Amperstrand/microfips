@@ -81,6 +81,8 @@ class SerialUdpBridge:
                 break
         if is_esp32:
             self._reset_esp32()
+        else:
+            self._wait_for_boot()
 
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -137,6 +139,24 @@ class SerialUdpBridge:
             print(f"{ts()} ESP32 reset, drained {len(junk)}B", file=sys.stderr)
         else:
             print(f"{ts()} ESP32 reset", file=sys.stderr)
+
+    def _wait_for_boot(self):
+        ser = self.ser
+        if ser is None:
+            return
+        junk = b""
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            n = ser.in_waiting
+            if n > 0:
+                junk += ser.read(n)
+                deadline = time.time() + 1.5
+            else:
+                time.sleep(0.05)
+        if junk:
+            print(f"{ts()} Boot output {len(junk)}B (data lost, node will resend)", file=sys.stderr)
+        else:
+            print(f"{ts()} No boot output", file=sys.stderr)
 
     def _reconnect_serial(self):
         with self.reconnect_lock:
