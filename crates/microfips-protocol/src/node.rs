@@ -9,6 +9,7 @@ pub const HB_SECS: u64 = 10;
 pub const RECV_TIMEOUT_MS: u64 = 30_000;
 pub const RETRY_SECS: u64 = 3;
 pub const CONNECT_DELAY_MS: u64 = 500;
+pub const MAX_COMPETING_MSG1: u32 = 3;
 
 /// Transport recv buffer size. Must be >= the maximum frame size of any transport.
 /// L2CAP SeqPacket delivers complete messages — if a frame exceeds this buffer,
@@ -82,7 +83,7 @@ impl NodeHandler for NoopHandler {
 
 pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     transport: T,
-    _rng: core::marker::PhantomData<R>,
+    rng: R,
     secret: [u8; 32],
     peer_pub: [u8; 33],
     rbuf: [u8; 2048],
@@ -102,7 +103,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         rng.fill_bytes(&mut eph);
         Self {
             transport,
-            _rng: core::marker::PhantomData,
+            rng,
             secret,
             peer_pub,
             rbuf: [0u8; 2048],
@@ -128,6 +129,18 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
     pub fn transport_mut(&mut self) -> &mut T {
         &mut self.transport
+    }
+
+    fn generate_valid_eph(&mut self) -> [u8; 32] {
+        use microfips_core::noise;
+
+        loop {
+            let mut eph = [0u8; 32];
+            self.rng.fill_bytes(&mut eph);
+            if noise::ecdh_pubkey(&eph).is_ok() {
+                return eph;
+            }
+        }
     }
 
     pub async fn run<H: NodeHandler>(&mut self, handler: &mut H) -> ! {
@@ -168,9 +181,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         handler: &mut H,
     ) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
         use microfips_core::fmp;
+        use microfips_core::identity::NodeAddr;
         use microfips_core::noise;
 
         let my_pub = noise::ecdh_pubkey(&self.secret).unwrap();
+        let my_x_only: [u8; 32] = my_pub[1..33].try_into().unwrap();
+        let my_addr = NodeAddr::from_pubkey_x(&my_x_only);
+        let peer_x_only: [u8; 32] = self.peer_pub[1..33].try_into().unwrap();
+        let peer_addr = NodeAddr::from_pubkey_x(&peer_x_only);
 
         let (mut noise_st, _e_pub) =
             noise::NoiseIkInitiator::new(&self.eph, &self.secret, &self.peer_pub).expect("noise init");
@@ -190,6 +208,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         handler.on_event(NodeEvent::Msg1Sent).await;
 
         let mut mb = [0u8; 2048];
+        let mut competing_msg1_count: u32 = 0;
         loop {
             let ml = self.recv_frame(&mut mb, RECV_TIMEOUT_MS as u32).await?;
             let m = fmp::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
@@ -203,6 +222,64 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     st.read_message2(noise_payload)?;
                     let (ks, kr) = st.finalize();
                     return Ok((ks, kr, sender_idx));
+                }
+                fmp::FmpMessage::Msg1 {
+                    sender_idx: peer_sender_idx,
+                    noise_payload,
+                } => {
+                    if my_addr.as_bytes() == peer_addr.as_bytes() {
+                        return Err(ProtocolError::InvalidMessage);
+                    }
+
+                    if my_addr.as_bytes() < peer_addr.as_bytes() {
+                        competing_msg1_count += 1;
+                        if competing_msg1_count > MAX_COMPETING_MSG1 {
+                            return Err(ProtocolError::Timeout);
+                        }
+                        continue;
+                    }
+
+                    if noise_payload.len() < noise::PUBKEY_SIZE {
+                        return Err(ProtocolError::InvalidMessage);
+                    }
+
+                    let peer_e_pub: [u8; noise::PUBKEY_SIZE] = noise_payload[..noise::PUBKEY_SIZE]
+                        .try_into()
+                        .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                    let mut responder = noise::NoiseIkResponder::new(&self.secret, &peer_e_pub)
+                        .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                    let (initiator_static_pub, epoch) = responder
+                        .read_message1(&noise_payload[noise::PUBKEY_SIZE..])
+                        .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                    if initiator_static_pub != self.peer_pub {
+                        return Err(ProtocolError::InvalidMessage);
+                    }
+
+                    let mut resp_eph = self.generate_valid_eph();
+                    while resp_eph == self.eph {
+                        resp_eph = self.generate_valid_eph();
+                    }
+
+                    let mut msg2_noise = [0u8; 128];
+                    let msg2_noise_len = responder
+                        .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                        .map_err(|_| ProtocolError::DecryptFailed)?;
+
+                    let mut msg2_buf = [0u8; 256];
+                    let msg2_len = fmp::build_msg2(
+                        0,
+                        peer_sender_idx,
+                        &msg2_noise[..msg2_noise_len],
+                        &mut msg2_buf,
+                    )
+                    .ok_or(ProtocolError::InvalidMessage)?;
+                    self.send_frame(&msg2_buf[..msg2_len]).await?;
+
+                    let (k1, k2) = responder.finalize();
+                    return Ok((k2, k1, peer_sender_idx));
                 }
                 _ => continue,
             }
@@ -663,7 +740,7 @@ fn extract_raw_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize
 mod tests {
     use super::*;
     use crate::test_helpers::block_on;
-    use std::sync::LazyLock;
+    use std::boxed::Box;
     use std::vec;
 
     struct TestRng {
@@ -715,27 +792,20 @@ mod tests {
 
     impl rand_core::CryptoRng for TestRng {}
 
-    fn inner() -> &'static crate::transport::mock::MockTransportInner {
-        static INNER: LazyLock<crate::transport::mock::MockTransportInner> =
-            LazyLock::new(crate::transport::mock::MockTransportInner::new);
-        &INNER
-    }
-
     fn fresh_inner() -> &'static crate::transport::mock::MockTransportInner {
-        let r = inner();
-        r.reset();
-        r
+        Box::leak(Box::new(crate::transport::mock::MockTransportInner::new()))
     }
 
     #[test]
     fn test_send_frame_works() {
-        let transport = crate::transport::mock::MockTransport::new(fresh_inner());
+        let inner = fresh_inner();
+        let transport = crate::transport::mock::MockTransport::new(inner);
 
         block_on(async {
             let mut node = Node::new(transport, TestRng::new(&[0u8; 32]), [0u8; 32], [0u8; 33]);
             node.send_frame(b"hello").await.unwrap();
 
-            let tx = inner().tx.lock().unwrap();
+            let tx = inner.tx.lock().unwrap();
             let expected: std::vec::Vec<u8> = {
                 let mut v = (5u16).to_le_bytes().to_vec();
                 v.extend_from_slice(b"hello");
@@ -747,8 +817,8 @@ mod tests {
 
     #[test]
     fn test_recv_frame_from_buffer() {
-        fresh_inner();
-        let transport = crate::transport::mock::MockTransport::new(inner());
+        let inner = fresh_inner();
+        let transport = crate::transport::mock::MockTransport::new(inner);
 
         block_on(async {
             let mut node = Node::new(transport, TestRng::new(&[0u8; 32]), [0u8; 32], [0u8; 33]);
@@ -758,7 +828,7 @@ mod tests {
                 v.extend_from_slice(b"abc");
                 v
             };
-            inner().rx.lock().unwrap().extend_from_slice(&frame);
+            inner.rx.lock().unwrap().extend_from_slice(&frame);
 
             let mut out = [0u8; 256];
             let n = node.recv_frame(&mut out, 1000).await.unwrap();
@@ -917,6 +987,81 @@ mod tests {
                 return key;
             }
         }
+    }
+
+    fn node_addr_from_secret(secret: &[u8; 32]) -> microfips_core::identity::NodeAddr {
+        let pubkey = microfips_core::noise::ecdh_pubkey(secret).unwrap();
+        let x_only: [u8; 32] = pubkey[1..33].try_into().unwrap();
+        microfips_core::identity::NodeAddr::from_pubkey_x(&x_only)
+    }
+
+    fn distinct_secret_pair() -> ([u8; 32], [u8; 32]) {
+        loop {
+            let a = random_secret();
+            let b = random_secret();
+            if node_addr_from_secret(&a).as_bytes() != node_addr_from_secret(&b).as_bytes() {
+                return (a, b);
+            }
+        }
+    }
+
+    async fn recv_test_frame(
+        transport: &mut crate::transport::channel::ChannelTransport,
+    ) -> std::vec::Vec<u8> {
+        let mut hdr = [0u8; 2];
+        let mut total = 0;
+        while total < 2 {
+            total += transport.recv(&mut hdr[total..]).await.unwrap();
+        }
+
+        let frame_len = u16::from_le_bytes(hdr) as usize;
+        let mut frame = vec![0u8; frame_len];
+        total = 0;
+        while total < frame_len {
+            total += transport.recv(&mut frame[total..]).await.unwrap();
+        }
+        frame
+    }
+
+    async fn send_test_frame(
+        transport: &mut crate::transport::channel::ChannelTransport,
+        frame: &[u8],
+    ) {
+        transport
+            .send(&(frame.len() as u16).to_le_bytes())
+            .await
+            .unwrap();
+        transport.send(frame).await.unwrap();
+    }
+
+    fn build_msg1_frame(
+        initiator_secret: &[u8; 32],
+        responder_pub: &[u8; 33],
+        eph: &[u8; 32],
+        sender_idx: u32,
+        epoch: u64,
+    ) -> (
+        std::vec::Vec<u8>,
+        microfips_core::noise::NoiseIkInitiator,
+    ) {
+        use microfips_core::fmp;
+        use microfips_core::noise::{self, NoiseIkInitiator};
+
+        let initiator_pub = noise::ecdh_pubkey(initiator_secret).unwrap();
+        let (mut initiator, _e_pub) =
+            NoiseIkInitiator::new(eph, initiator_secret, responder_pub).unwrap();
+        let mut epoch_bytes = [0u8; noise::EPOCH_SIZE];
+        epoch_bytes[..8].copy_from_slice(&epoch.to_le_bytes());
+
+        let mut msg1_noise = [0u8; 256];
+        let msg1_noise_len = initiator
+            .write_message1(&initiator_pub, &epoch_bytes, &mut msg1_noise)
+            .unwrap();
+
+        let mut msg1_buf = [0u8; 256];
+        let msg1_len =
+            fmp::build_msg1(sender_idx, &msg1_noise[..msg1_noise_len], &mut msg1_buf).unwrap();
+        (msg1_buf[..msg1_len].to_vec(), initiator)
     }
 
     #[test]
@@ -1165,6 +1310,233 @@ mod tests {
             };
 
             join(responder, initiator).await;
+        });
+    }
+
+    #[test]
+    fn test_tiebreaker_simultaneous_handshake() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let (secret_a, secret_b) = distinct_secret_pair();
+        let pub_a = ecdh_pubkey(&secret_a).unwrap();
+        let pub_b = ecdh_pubkey(&secret_b).unwrap();
+        let addr_a = node_addr_from_secret(&secret_a);
+        let addr_b = node_addr_from_secret(&secret_b);
+
+        let (transport_a, transport_b) = channel_pair();
+
+        block_on(async move {
+            let node_a = async move {
+                let mut node = Node::new(transport_a, TestRng::from_os_rng(), secret_a, pub_b);
+                let mut handler = NoopTestHandler;
+                node.handshake(&mut handler).await.unwrap()
+            };
+
+            let node_b = async move {
+                let mut node = Node::new(transport_b, TestRng::from_os_rng(), secret_b, pub_a);
+                let mut handler = NoopTestHandler;
+                node.handshake(&mut handler).await.unwrap()
+            };
+
+            let (result_a, result_b) = join(node_a, node_b).await;
+            assert_eq!(result_a.0, result_b.1);
+            assert_eq!(result_a.1, result_b.0);
+
+            let (winner, loser) = if addr_a.as_bytes() < addr_b.as_bytes() {
+                (result_a, result_b)
+            } else {
+                (result_b, result_a)
+            };
+            assert_eq!(winner.0, loser.1);
+            assert_eq!(winner.1, loser.0);
+        });
+    }
+
+    #[test]
+    fn test_tiebreaker_winner_ignores_msg1() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::fmp;
+        use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
+
+        let (a, b) = distinct_secret_pair();
+        let (local_secret, remote_secret) = if node_addr_from_secret(&a).as_bytes()
+            < node_addr_from_secret(&b).as_bytes()
+        {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let local_pub = ecdh_pubkey(&local_secret).unwrap();
+        let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
+
+        let (local_transport, mut remote_transport) = channel_pair();
+
+        block_on(async move {
+            let remote = async move {
+                let competing_eph = random_secret();
+                let (competing_msg1, _) =
+                    build_msg1_frame(&remote_secret, &local_pub, &competing_eph, 7, 1);
+                send_test_frame(&mut remote_transport, &competing_msg1).await;
+
+                let local_msg1 = recv_test_frame(&mut remote_transport).await;
+                let msg = fmp::parse_message(&local_msg1).unwrap();
+                let (local_sender_idx, noise_payload) = match msg {
+                    fmp::FmpMessage::Msg1 {
+                        sender_idx,
+                        noise_payload,
+                    } => (sender_idx, noise_payload),
+                    _ => panic!("expected Msg1"),
+                };
+
+                let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
+                let mut responder = NoiseIkResponder::new(&remote_secret, &ei_pub).unwrap();
+                let (_initiator_pub, epoch) =
+                    responder.read_message1(&noise_payload[PUBKEY_SIZE..]).unwrap();
+
+                let mut msg2_noise = [0u8; 128];
+                let msg2_noise_len = responder
+                    .write_message2(&random_secret(), &epoch, &mut msg2_noise)
+                    .unwrap();
+
+                let mut msg2_buf = [0u8; 256];
+                let msg2_len =
+                    fmp::build_msg2(11, local_sender_idx, &msg2_noise[..msg2_noise_len], &mut msg2_buf)
+                        .unwrap();
+                send_test_frame(&mut remote_transport, &msg2_buf[..msg2_len]).await;
+            };
+
+            let local = async move {
+                let mut node = Node::new(
+                    local_transport,
+                    TestRng::from_os_rng(),
+                    local_secret,
+                    remote_pub,
+                );
+                let mut handler = NoopTestHandler;
+                let result = node.handshake(&mut handler).await.unwrap();
+                assert_eq!(result.2, 11);
+            };
+
+            join(remote, local).await;
+        });
+    }
+
+    #[test]
+    fn test_tiebreaker_loser_becomes_responder() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::fmp;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let (a, b) = distinct_secret_pair();
+        let (remote_secret, local_secret) = if node_addr_from_secret(&a).as_bytes()
+            < node_addr_from_secret(&b).as_bytes()
+        {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let local_pub = ecdh_pubkey(&local_secret).unwrap();
+        let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
+
+        let (local_transport, mut remote_transport) = channel_pair();
+
+        block_on(async move {
+            let remote = async move {
+                let remote_sender_idx = 7;
+                let remote_eph = random_secret();
+                let (msg1_frame, mut initiator) =
+                    build_msg1_frame(&remote_secret, &local_pub, &remote_eph, remote_sender_idx, 1);
+                send_test_frame(&mut remote_transport, &msg1_frame).await;
+
+                loop {
+                    let frame = recv_test_frame(&mut remote_transport).await;
+                    let msg = fmp::parse_message(&frame).unwrap();
+                    match msg {
+                        fmp::FmpMessage::Msg1 { .. } => continue,
+                        fmp::FmpMessage::Msg2 {
+                            sender_idx,
+                            receiver_idx,
+                            noise_payload,
+                        } => {
+                            assert_eq!(sender_idx, 0);
+                            assert_eq!(receiver_idx, remote_sender_idx);
+                            initiator.read_message2(noise_payload).unwrap();
+                            return initiator.finalize();
+                        }
+                        _ => panic!("expected Msg2"),
+                    }
+                }
+            };
+
+            let local = async move {
+                let mut node = Node::new(
+                    local_transport,
+                    TestRng::from_os_rng(),
+                    local_secret,
+                    remote_pub,
+                );
+                let mut handler = NoopTestHandler;
+                node.handshake(&mut handler).await.unwrap()
+            };
+
+            let ((remote_ks, remote_kr), local_result) = join(remote, local).await;
+            assert_eq!(local_result.2, 7);
+            assert_eq!(local_result.0, remote_kr);
+            assert_eq!(local_result.1, remote_ks);
+        });
+    }
+
+    #[test]
+    fn test_tiebreaker_counter_abort() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let (a, b) = distinct_secret_pair();
+        let (local_secret, remote_secret) = if node_addr_from_secret(&a).as_bytes()
+            < node_addr_from_secret(&b).as_bytes()
+        {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let local_pub = ecdh_pubkey(&local_secret).unwrap();
+        let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
+
+        let (local_transport, mut remote_transport) = channel_pair();
+
+        block_on(async move {
+            let remote = async move {
+                for sender_idx in 0..=MAX_COMPETING_MSG1 {
+                    let competing_eph = random_secret();
+                    let (msg1_frame, _) = build_msg1_frame(
+                        &remote_secret,
+                        &local_pub,
+                        &competing_eph,
+                        sender_idx,
+                        1,
+                    );
+                    send_test_frame(&mut remote_transport, &msg1_frame).await;
+                }
+            };
+
+            let local = async move {
+                let mut node = Node::new(
+                    local_transport,
+                    TestRng::from_os_rng(),
+                    local_secret,
+                    remote_pub,
+                );
+                let mut handler = NoopTestHandler;
+                let result = node.handshake(&mut handler).await;
+                assert_eq!(result, Err(ProtocolError::Timeout));
+            };
+
+            join(remote, local).await;
         });
     }
 
