@@ -15,7 +15,7 @@ pub const CONNECT_DELAY_MS: u64 = 500;
 /// the excess bytes are permanently lost (SeqPacket has no tail-byte buffering).
 /// FSP application payloads can exceed 256 bytes, so 512 matches L2CAP_FRAME_CAP.
 /// See Codex review: github.com/Amperstrand/microfips/pull/57#discussion_r1973271205
-pub const RECV_BUF_SIZE: usize = 512;
+pub const RECV_BUF_SIZE: usize = 1500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Protocol state events emitted to the handler.
@@ -82,7 +82,7 @@ impl NodeHandler for NoopHandler {
 
 pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     transport: T,
-    rng: R,
+    _rng: core::marker::PhantomData<R>,
     secret: [u8; 32],
     peer_pub: [u8; 33],
     rbuf: [u8; 2048],
@@ -90,13 +90,19 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     rlen: usize,
     resp_buf: [u8; 256],
     raw_framing: bool,
+    epoch: u64,
+    /// Ephemeral key for Noise IK handshake. Generated once at startup and
+    /// reused across retries so FIPS can decrypt resent MSG2 responses.
+    eph: [u8; 32],
 }
 
 impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
-    pub fn new(transport: T, rng: R, secret: [u8; 32], peer_pub: [u8; 33]) -> Self {
+    pub fn new(transport: T, mut rng: R, secret: [u8; 32], peer_pub: [u8; 33]) -> Self {
+        let mut eph = [0u8; 32];
+        rng.fill_bytes(&mut eph);
         Self {
             transport,
-            rng,
+            _rng: core::marker::PhantomData,
             secret,
             peer_pub,
             rbuf: [0u8; 2048],
@@ -104,6 +110,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             rlen: 0,
             resp_buf: [0u8; 256],
             raw_framing: false,
+            epoch: 0,
+            eph,
         }
     }
 
@@ -134,6 +142,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             .wait_ready()
             .await
             .map_err(|_| ProtocolError::Disconnected)?;
+        self.epoch += 1;
         Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
         handler.on_event(NodeEvent::Connected).await;
 
@@ -163,12 +172,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         let my_pub = noise::ecdh_pubkey(&self.secret).unwrap();
 
-        let mut eph = [0u8; 32];
-        self.rng.fill_bytes(&mut eph);
         let (mut noise_st, _e_pub) =
-            noise::NoiseIkInitiator::new(&eph, &self.secret, &self.peer_pub).expect("noise init");
+            noise::NoiseIkInitiator::new(&self.eph, &self.secret, &self.peer_pub).expect("noise init");
 
-        let epoch: [u8; noise::EPOCH_SIZE] = [0x01, 0, 0, 0, 0, 0, 0, 0];
+        let mut epoch = [0u8; noise::EPOCH_SIZE];
+        epoch[..8].copy_from_slice(&self.epoch.to_le_bytes());
 
         let mut n1 = [0u8; 256];
         let n1len = noise_st
