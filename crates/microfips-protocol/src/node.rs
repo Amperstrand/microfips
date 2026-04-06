@@ -8,6 +8,8 @@ use crate::transport::{CryptoRng, RngCore, Transport};
 pub const HB_SECS: u64 = 10;
 pub const RECV_TIMEOUT_MS: u64 = 30_000;
 pub const RETRY_SECS: u64 = 3;
+pub const MSG1_RESEND_SECS: u64 = 3;
+pub const MSG1_RESEND_MAX: u32 = 10;
 pub const CONNECT_DELAY_MS: u64 = 500;
 pub const MAX_COMPETING_MSG1: u32 = 3;
 
@@ -209,79 +211,94 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         let mut mb = [0u8; 2048];
         let mut competing_msg1_count: u32 = 0;
+        let mut resend_count: u32 = 0;
         loop {
-            let ml = self.recv_frame(&mut mb, RECV_TIMEOUT_MS as u32).await?;
-            let m = fmp::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
-            match m {
-                fmp::FmpMessage::Msg2 {
-                    sender_idx,
-                    noise_payload,
-                    ..
-                } => {
-                    let mut st = noise_st.clone();
-                    st.read_message2(noise_payload)?;
-                    let (ks, kr) = st.finalize();
-                    return Ok((ks, kr, sender_idx));
-                }
-                fmp::FmpMessage::Msg1 {
-                    sender_idx: peer_sender_idx,
-                    noise_payload,
-                } => {
-                    if my_addr.as_bytes() == peer_addr.as_bytes() {
-                        return Err(ProtocolError::InvalidMessage);
-                    }
-
-                    if my_addr.as_bytes() < peer_addr.as_bytes() {
-                        competing_msg1_count += 1;
-                        if competing_msg1_count > MAX_COMPETING_MSG1 {
-                            return Err(ProtocolError::Timeout);
+            match self.recv_frame(&mut mb, MSG1_RESEND_SECS as u32 * 1000).await {
+                Ok(ml) => {
+                    resend_count = 0;
+                    let m = fmp::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
+                    match m {
+                        fmp::FmpMessage::Msg2 {
+                            sender_idx,
+                            noise_payload,
+                            ..
+                        } => {
+                            let mut st = noise_st.clone();
+                            st.read_message2(noise_payload)?;
+                            let (ks, kr) = st.finalize();
+                            return Ok((ks, kr, sender_idx));
                         }
-                        continue;
+                        fmp::FmpMessage::Msg1 {
+                            sender_idx: peer_sender_idx,
+                            noise_payload,
+                        } => {
+                            if my_addr.as_bytes() == peer_addr.as_bytes() {
+                                return Err(ProtocolError::InvalidMessage);
+                            }
+
+                            if my_addr.as_bytes() < peer_addr.as_bytes() {
+                                competing_msg1_count += 1;
+                                if competing_msg1_count > MAX_COMPETING_MSG1 {
+                                    return Err(ProtocolError::Timeout);
+                                }
+                                continue;
+                            }
+
+                            if noise_payload.len() < noise::PUBKEY_SIZE {
+                                return Err(ProtocolError::InvalidMessage);
+                            }
+
+                            let peer_e_pub: [u8; noise::PUBKEY_SIZE] =
+                                noise_payload[..noise::PUBKEY_SIZE]
+                                    .try_into()
+                                    .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                            let mut responder =
+                                noise::NoiseIkResponder::new(&self.secret, &peer_e_pub)
+                                    .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                            let (initiator_static_pub, epoch) = responder
+                                .read_message1(&noise_payload[noise::PUBKEY_SIZE..])
+                                .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                            if initiator_static_pub != self.peer_pub {
+                                return Err(ProtocolError::InvalidMessage);
+                            }
+
+                            let mut resp_eph = self.generate_valid_eph();
+                            while resp_eph == self.eph {
+                                resp_eph = self.generate_valid_eph();
+                            }
+
+                            let mut msg2_noise = [0u8; 128];
+                            let msg2_noise_len = responder
+                                .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                                .map_err(|_| ProtocolError::DecryptFailed)?;
+
+                            let mut msg2_buf = [0u8; 256];
+                            let msg2_len = fmp::build_msg2(
+                                0,
+                                peer_sender_idx,
+                                &msg2_noise[..msg2_noise_len],
+                                &mut msg2_buf,
+                            )
+                            .ok_or(ProtocolError::InvalidMessage)?;
+                            self.send_frame(&msg2_buf[..msg2_len]).await?;
+
+                            let (k1, k2) = responder.finalize();
+                            return Ok((k2, k1, peer_sender_idx));
+                        }
+                        _ => continue,
                     }
-
-                    if noise_payload.len() < noise::PUBKEY_SIZE {
-                        return Err(ProtocolError::InvalidMessage);
-                    }
-
-                    let peer_e_pub: [u8; noise::PUBKEY_SIZE] = noise_payload[..noise::PUBKEY_SIZE]
-                        .try_into()
-                        .map_err(|_| ProtocolError::InvalidMessage)?;
-
-                    let mut responder = noise::NoiseIkResponder::new(&self.secret, &peer_e_pub)
-                        .map_err(|_| ProtocolError::InvalidMessage)?;
-
-                    let (initiator_static_pub, epoch) = responder
-                        .read_message1(&noise_payload[noise::PUBKEY_SIZE..])
-                        .map_err(|_| ProtocolError::InvalidMessage)?;
-
-                    if initiator_static_pub != self.peer_pub {
-                        return Err(ProtocolError::InvalidMessage);
-                    }
-
-                    let mut resp_eph = self.generate_valid_eph();
-                    while resp_eph == self.eph {
-                        resp_eph = self.generate_valid_eph();
-                    }
-
-                    let mut msg2_noise = [0u8; 128];
-                    let msg2_noise_len = responder
-                        .write_message2(&resp_eph, &epoch, &mut msg2_noise)
-                        .map_err(|_| ProtocolError::DecryptFailed)?;
-
-                    let mut msg2_buf = [0u8; 256];
-                    let msg2_len = fmp::build_msg2(
-                        0,
-                        peer_sender_idx,
-                        &msg2_noise[..msg2_noise_len],
-                        &mut msg2_buf,
-                    )
-                    .ok_or(ProtocolError::InvalidMessage)?;
-                    self.send_frame(&msg2_buf[..msg2_len]).await?;
-
-                    let (k1, k2) = responder.finalize();
-                    return Ok((k2, k1, peer_sender_idx));
                 }
-                _ => continue,
+                Err(ProtocolError::Timeout) => {
+                    resend_count += 1;
+                    if resend_count > MSG1_RESEND_MAX {
+                        return Err(ProtocolError::Timeout);
+                    }
+                    self.send_frame(&f1[..f1len]).await?;
+                }
+                Err(e) => return Err(e),
             }
         }
     }
