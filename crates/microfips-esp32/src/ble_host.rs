@@ -16,7 +16,8 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::config::{
-    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, FIPS_SERVICE_UUID_LE, RECV_RETRY_DELAY_MS,
+    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, ESP32_SECRET, FIPS_SERVICE_UUID_LE,
+    RECV_RETRY_DELAY_MS,
 };
 use crate::stats::{STAT_BLE_CONNECT, STAT_BLE_DISCONNECT, STAT_BLE_RX, STAT_BLE_TX};
 
@@ -159,7 +160,14 @@ pub async fn ble_host_task() {
         ExternalController::new(BleHciTransport::new(connector));
     let resources = HOST_RESOURCES.init(HostResources::new());
     let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+        .set_random_address(Address::random([
+            0xff,
+            ESP32_SECRET[27],
+            ESP32_SECRET[28],
+            ESP32_SECRET[29],
+            ESP32_SECRET[30],
+            ESP32_SECRET[31],
+        ]));
 
     let Host {
         mut peripheral,

@@ -261,8 +261,16 @@ pub async fn l2cap_host_task() {
     log::info!("controller created");
     let resources = L2CAP_HOST_RESOURCES.init(HostResources::new());
     log::info!("host resources initialized");
+    let ble_addr: [u8; 6] = [
+        0xff,
+        ESP32_SECRET[27],
+        ESP32_SECRET[28],
+        ESP32_SECRET[29],
+        ESP32_SECRET[30],
+        ESP32_SECRET[31],
+    ];
     let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+        .set_random_address(Address::random(ble_addr));
     log::info!("stack initialized");
 
     let Host {
