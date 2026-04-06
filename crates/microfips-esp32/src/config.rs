@@ -52,10 +52,6 @@ pub const L2CAP_PSM: u16 = 133;
 pub const L2CAP_FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
     0x4c, 0x8f, 0x64, 0x40, 0xcc, 0xc9, 0x87, 0x9f, 0xc0, 0x42, 0xc5, 0x2c, 0x90, 0xb7, 0x90, 0x9c,
 ]];
-#[cfg(feature = "l2cap")]
-pub const L2CAP_SCAN_DURATION_SECS: u64 = 3;
-#[cfg(feature = "l2cap")]
-pub const AD_TYPE_COMPLETE_UUID128: u8 = 0x07;
 
 #[cfg(feature = "wifi")]
 pub const WIFI_SSID: &str = env!("WIFI_SSID");
