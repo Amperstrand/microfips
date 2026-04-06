@@ -202,6 +202,12 @@ Capture FIPS traffic with tcpdump:
 
 A reference capture from a sim-to-sim test is at `tools/reference.pcap`.
 
+### ESP32 Structured Logging (BLE/L2CAP variants)
+
+BLE and L2CAP firmware variants use the `log` crate with FIPS-compatible format on UART0:
+`[LEVEL module_path] message`. Log output is interleaved with control interface responses.
+Use `tools/test_control.py` for automated control interface testing.
+
 ### Sim-to-sim FSP ping through FIPS (no hardware)
 
 Requires both sims to connect to the live FIPS VPS. SIM-A acts as FSP responder,
@@ -281,6 +287,11 @@ kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
   of serial bridge. UART0 repurposed for debug output. See AGENTS.md for full BLE instructions.
 - **L2CAP variant:** Build with `--features l2cap`. Connects directly to local FIPS daemon
   via BLE L2CAP CoC. No bridge needed. See AGENTS.md for full L2CAP instructions.
+- **Control interface:** BLE and L2CAP variants expose a FIPS-compatible control interface
+  over UART0. Send `show_status`, `show_peers`, `show_stats` commands for runtime
+  inspection. See `tools/test_control.py` and AGENTS.md for details.
+- **Structured logging:** BLE and L2CAP variants use `log` crate macros (`info!`, `warn!`,
+  `error!`) with FIPS-compatible format `[LEVEL module_path] message` on UART0.
 
 ## Build
 

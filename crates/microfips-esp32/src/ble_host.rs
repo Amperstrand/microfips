@@ -175,7 +175,7 @@ pub async fn ble_host_task() {
     };
 
     let _ = embassy_futures::join::join(runner.run(), async {
-        esp_println::println!("[ble_task] starting advertising loop");
+        log::info!("starting advertising loop");
         loop {
             let mut adv_data = [0u8; 31];
             let Ok(adv_len) = AdStructure::encode_slice(
@@ -185,7 +185,7 @@ pub async fn ble_host_task() {
                 ],
                 &mut adv_data,
             ) else {
-                esp_println::println!("[ble_task] adv_data encode failed");
+                log::error!("adv_data encode failed");
                 continue;
             };
 
@@ -194,7 +194,7 @@ pub async fn ble_host_task() {
                 &[AdStructure::ServiceUuids128(&FIPS_SERVICE_UUID_LE)],
                 &mut scan_data,
             ) else {
-                esp_println::println!("[ble_task] scan_data encode failed");
+                log::error!("scan_data encode failed");
                 continue;
             };
 
@@ -210,7 +210,7 @@ pub async fn ble_host_task() {
             {
                 Ok(a) => a,
                 Err(e) => {
-                    esp_println::println!("[ble_task] advertise() error: {:?}", e);
+                    log::error!("advertise() error: {:?}", e);
                     continue;
                 }
             };
@@ -219,12 +219,12 @@ pub async fn ble_host_task() {
                 Ok(c) => match c.with_attribute_server(&server) {
                     Ok(conn) => conn,
                     Err(e) => {
-                        esp_println::println!("[ble_task] with_attribute_server error: {:?}", e);
+                        log::error!("with_attribute_server error: {:?}", e);
                         continue;
                     }
                 },
                 Err(e) => {
-                    esp_println::println!("[ble_task] accept() error: {:?}", e);
+                    log::error!("accept() error: {:?}", e);
                     continue;
                 }
             };
@@ -246,8 +246,8 @@ pub async fn ble_host_task() {
                         GattEvent::Write(e) => {
                             if e.handle() == server.fips_service.rx_data.handle {
                                 if e.data().len() > BLE_MAX_FRAME {
-                                    esp_println::println!(
-                                        "[ble_task] RX write dropped: {}B > max {}B",
+                                    log::warn!(
+                                        "RX write dropped: {}B > max {}B",
                                         e.data().len(),
                                         BLE_MAX_FRAME
                                     );

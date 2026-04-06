@@ -9,6 +9,7 @@ use crate::config::{ESP32_SECRET, LED_OFF, LED_ON, STM32_NODE_ADDR, STM32_PEER_P
 use crate::led::Led;
 use crate::stats::{
     STAT_DATA_RX, STAT_DATA_TX, STAT_HB_RX, STAT_HB_TX, STAT_MSG1_TX, STAT_MSG2_RX,
+    STAT_STATE,
 };
 
 pub type EspFspHandler = FspDualHandler<FspServiceAdapter<DemoService>>;
@@ -36,23 +37,32 @@ impl NodeHandler for EspHandler<'_> {
     async fn on_event(&mut self, event: NodeEvent) {
         match event {
             NodeEvent::Connected => {
+                STAT_STATE.store(1, Ordering::Relaxed);
                 self.led.set_state(LED_ON);
             }
             NodeEvent::Msg1Sent => {
+                STAT_STATE.store(2, Ordering::Relaxed);
                 STAT_MSG1_TX.fetch_add(1, Ordering::Relaxed);
                 self.led.set_state(LED_ON);
             }
             NodeEvent::HandshakeOk => {
+                STAT_STATE.store(3, Ordering::Relaxed);
                 STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
                 self.led.set_state(LED_ON);
             }
             NodeEvent::HeartbeatSent => {
+                STAT_STATE.store(4, Ordering::Relaxed);
                 STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
             }
             NodeEvent::HeartbeatRecv => {
                 STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
             }
-            NodeEvent::Disconnected | NodeEvent::Error => {
+            NodeEvent::Disconnected => {
+                STAT_STATE.store(5, Ordering::Relaxed);
+                self.led.set_state(LED_OFF);
+            }
+            NodeEvent::Error => {
+                STAT_STATE.store(6, Ordering::Relaxed);
                 self.led.set_state(LED_OFF);
             }
         }

@@ -63,7 +63,7 @@ Same toolchain. Feature flag `ble` enables BLE transport instead of UART:
 ```
 
 Default build (no `--features ble`) produces UART transport firmware. The BLE variant uses
-UART0 for debug output via `esp_println!` instead of FIPS traffic.
+UART0 for structured logging (`log` crate) and control interface instead of FIPS traffic.
 
 Each variant outputs to its own binary — no build order dependency between variants.
 
@@ -191,8 +191,8 @@ pip install bleak
 
 The ESP32 firmware can connect directly to a local FIPS daemon via BLE L2CAP
 Connection-Oriented Channels (CoC). No Python bridge, no UDP hop. Feature-gated
-behind `--features l2cap`. When active, UART0 is repurposed for `esp_println!`
-debug output instead of FIPS traffic.
+behind `--features l2cap`. When active, UART0 is repurposed for structured logging
+(`log` crate) and control interface instead of FIPS traffic.
 
 **BLE stack:** trouble-host v0.6.0 + esp-radio v0.17.0 (pure Rust, no_std, Embassy-native)
 Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
@@ -259,9 +259,13 @@ The ESP32 supports both central (scan + outbound connect) and peripheral (advert
 accept) roles. Central role is attempted first (3s BLE scan for FIPS service UUID),
 then falls back to peripheral advertising if no FIPS peer is found.
 
-**UART debug output:**
-While L2CAP is active, UART0 outputs debug via `esp_println!`. Read with:
+**UART debug output + control interface:**
+While L2CAP or BLE is active, UART0 outputs structured logs via the `log` crate
+(format: `[LEVEL module_path] message`, matching FIPS style). UART0 also accepts
+line-delimited control commands. Read logs and send commands with:
+
 ```bash
+# Read structured log output
 python3 -c "
 import serial, time
 s = serial.Serial('/dev/ttyUSB0', 115200, timeout=2)
@@ -271,7 +275,23 @@ while time.time() < deadline:
     if line: print(line, flush=True)
 s.close()
 "
+
+# Send control commands (JSON responses)
+python3 tools/test_control.py
 ```
+
+**Control commands:**
+
+| Command | Response | Description |
+|---------|----------|-------------|
+| `show_status` | JSON with node_addr, npub, state, uptime_secs, transport_type | Node overview |
+| `show_peers` | JSON with peer's node_addr and pubkey | Peer info (error if no peer) |
+| `show_stats` | JSON with msg1_tx, msg2_rx, hb_tx, hb_rx, data_tx, data_rx | Protocol counters |
+| `help` | Plain text list of commands | Command reference |
+| `version` | `microfips-esp32 <version>` | Firmware version |
+
+Response format matches FIPS control protocol: `{"status":"ok","data":{...}}` or
+`{"status":"error","message":"..."}`.
 
 **Troubleshooting:**
 - **No FIPS connection:** Ensure `disable_tiebreaker: true` in FIPS config. Check BLE

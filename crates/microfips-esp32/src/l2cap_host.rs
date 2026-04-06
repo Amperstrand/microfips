@@ -107,7 +107,7 @@ impl bt_hci::transport::Transport for BleHciTransport<'_> {
             match ControllerToHostPacket::from_hci_bytes_complete(&rx[..len]) {
                 Ok(pkt) => return Ok(pkt),
                 Err(_) => {
-                    esp_println::println!("[hci] parse error, dropping packet");
+                    log::warn!("parse error, dropping packet");
                     continue;
                 }
             }
@@ -188,7 +188,7 @@ impl EventHandler for L2capEventHandler {
     fn on_adv_reports(&self, mut it: bt_hci::param::LeAdvReportsIter<'_>) {
         while let Some(Ok(report)) = it.next() {
             if adv_data_contains_fips_uuid(report.data) {
-                esp_println::println!("[l2cap] scan: FIPS peer found {:?}", report.addr);
+                log::info!("scan: FIPS peer found {:?}", report.addr);
                 L2CAP_SCAN_RESULT.store(report.addr_kind, &report.addr);
             }
         }
@@ -234,36 +234,36 @@ fn mark_link_ready(peer_pub: [u8; 33]) {
 
 #[embassy_executor::task]
 pub async fn l2cap_host_task() {
-    esp_println::println!("[l2cap_task] started");
+    log::info!("started");
     init_heap();
-    esp_println::println!("[l2cap_task] heap initialized");
+    log::info!("heap initialized");
 
     let Ok(radio) = esp_radio::init() else {
-        esp_println::println!("[l2cap_task] esp_radio::init failed");
+        log::error!("esp_radio::init failed");
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
                 .await;
         }
     };
-    esp_println::println!("[l2cap_task] esp_radio initialized");
+    log::info!("esp_radio initialized");
 
     let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
     let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
-        esp_println::println!("[l2cap_task] BleConnector::new failed");
+        log::error!("BleConnector::new failed");
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
                 .await;
         }
     };
-    esp_println::println!("[l2cap_task] connector ready");
+    log::info!("connector ready");
 
     let controller: ExternalController<_, 20> = ExternalController::new(BleHciTransport::new(connector));
-    esp_println::println!("[l2cap_task] controller created");
+    log::info!("controller created");
     let resources = L2CAP_HOST_RESOURCES.init(HostResources::new());
-    esp_println::println!("[l2cap_task] host resources initialized");
+    log::info!("host resources initialized");
     let stack = trouble_host::new(controller, resources)
         .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
-    esp_println::println!("[l2cap_task] stack initialized");
+    log::info!("stack initialized");
 
     let Host {
         mut central,
@@ -271,21 +271,19 @@ pub async fn l2cap_host_task() {
         mut runner,
         ..
     } = stack.build();
-    esp_println::println!("[l2cap_task] host built (central+peripheral)");
+    log::info!("host built (central+peripheral)");
 
     let _ = embassy_futures::join::join(
         async {
             match runner.run_with_handler(&L2capEventHandler).await {
-                Ok(()) => esp_println::println!("[l2cap_task] runner exited ok"),
-                Err(e) => esp_println::println!("[l2cap_task] runner error: {:?}", e),
+                Ok(()) => log::info!("runner exited ok"),
+                Err(e) => log::error!("runner error: {:?}", e),
             }
         },
         async {
             loop {
                 mark_link_down();
-                esp_println::println!(
-                    "[l2cap_task] advertising as peripheral before central fallback"
-                );
+                log::info!("advertising as peripheral before central fallback");
                 let mut adv_data = [0u8; 31];
                 let Ok(adv_len) = AdStructure::encode_slice(
                     &[
@@ -294,7 +292,7 @@ pub async fn l2cap_host_task() {
                     ],
                     &mut adv_data,
                 ) else {
-                    esp_println::println!("[l2cap_task] adv_data encode failed");
+                    log::error!("adv_data encode failed");
                     embassy_time::Timer::after(embassy_time::Duration::from_millis(
                         RECV_RETRY_DELAY_MS,
                     ))
@@ -307,7 +305,7 @@ pub async fn l2cap_host_task() {
                     &[AdStructure::CompleteLocalName(b"microfips-l2cap")],
                     &mut scan_data,
                 ) else {
-                    esp_println::println!("[l2cap_task] scan_data encode failed");
+                    log::error!("scan_data encode failed");
                     embassy_time::Timer::after(embassy_time::Duration::from_millis(
                         RECV_RETRY_DELAY_MS,
                     ))
@@ -326,11 +324,11 @@ pub async fn l2cap_host_task() {
                     .await
                 {
                     Ok(a) => {
-                        esp_println::println!("[l2cap] BLE advertising started");
+                        log::info!("BLE advertising started");
                         a
                     }
                     Err(e) => {
-                        esp_println::println!("[l2cap_task] advertise() error: {:?}", e);
+                        log::error!("advertise() error: {:?}", e);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
                         continue;
                     }
@@ -343,14 +341,11 @@ pub async fn l2cap_host_task() {
                 .await
                 {
                     Ok(Ok(c)) => {
-                        esp_println::println!("[l2cap] BLE connection accepted");
+                        log::info!("BLE connection accepted");
                         Some(c)
                     }
                     Ok(Err(e)) => {
-                        esp_println::println!(
-                            "[l2cap_task] peripheral accept error, falling back to scan: {:?}",
-                            e
-                        );
+                        log::warn!("peripheral accept error, falling back to scan: {:?}", e);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             RECV_RETRY_DELAY_MS,
                         ))
@@ -358,9 +353,7 @@ pub async fn l2cap_host_task() {
                         None
                     }
                     Err(_) => {
-                        esp_println::println!(
-                            "[l2cap_task] peripheral accept timeout, falling back to scan"
-                        );
+                        log::warn!("peripheral accept timeout, falling back to scan");
                         None
                     }
                 };
@@ -374,16 +367,11 @@ pub async fn l2cap_host_task() {
                     let channel =
                         match L2capChannel::accept(&stack, &conn, &[L2CAP_PSM], &l2cap_config).await {
                             Ok(ch) => {
-                                esp_println::println!(
-                                    "[l2cap] L2CAP channel accepted on PSM 0x0085"
-                                );
+                                log::info!("L2CAP channel accepted on PSM 0x0085");
                                 ch
                             }
                             Err(e) => {
-                                esp_println::println!(
-                                    "[l2cap] L2CAP accept error on PSM 0x0085: {:?}",
-                                    e
-                                );
+                                log::error!("L2CAP accept error on PSM 0x0085: {:?}", e);
                                 drain_l2cap_channels();
                                 continue;
                             }
@@ -412,7 +400,7 @@ pub async fn l2cap_host_task() {
                                     Ok(Ok(33)) if rx_buf[0] == 0x00 => {
                                         peer_pub[0] = 0x02;
                                         peer_pub[1..33].copy_from_slice(&rx_buf[1..33]);
-                                        esp_println::println!("[l2cap] pubkey exchange OK");
+                                        log::info!("pubkey exchange OK");
                                         true
                                     }
                                     _ => false,
@@ -423,7 +411,7 @@ pub async fn l2cap_host_task() {
                     };
 
                     if !exchange_ok {
-                        esp_println::println!("[l2cap] pubkey exchange failed (peripheral)");
+                        log::error!("pubkey exchange failed (peripheral)");
                         continue;
                     }
 
@@ -442,17 +430,13 @@ pub async fn l2cap_host_task() {
                                 L2CAP_RX_CH.send(frame).await;
                             }
                             Either::First(Err(_)) => {
-                                esp_println::println!(
-                                    "[l2cap] peripheral receive loop disconnected"
-                                );
+                                log::warn!("peripheral receive loop disconnected");
                                 mark_link_down();
                                 break;
                             }
                             Either::Second(frame) => {
                                 if writer.send(&stack, &frame).await.is_err() {
-                                    esp_println::println!(
-                                        "[l2cap] peripheral send loop disconnected"
-                                    );
+                                    log::warn!("peripheral send loop disconnected");
                                     mark_link_down();
                                     break;
                                 }
@@ -465,7 +449,7 @@ pub async fn l2cap_host_task() {
                     continue;
                 }
 
-                esp_println::println!("[l2cap_task] scanning for FIPS peer...");
+                log::info!("scanning for FIPS peer...");
 
                 let scan_result = {
                     let mut scanner = Scanner::new(central);
@@ -481,7 +465,7 @@ pub async fn l2cap_host_task() {
                     let scan_err = match scanner.scan(&scan_config).await {
                         Ok(_) => None,
                         Err(e) => {
-                            esp_println::println!("[l2cap_task] scan start error: {:?}", e);
+                            log::error!("scan start error: {:?}", e);
                             Some(e)
                         }
                     };
@@ -504,7 +488,7 @@ pub async fn l2cap_host_task() {
                 }
 
                 if let Some((addr_kind, bd_addr)) = L2CAP_SCAN_RESULT.take() {
-                    esp_println::println!("[l2cap_task] FIPS peer found, connecting as central...");
+                    log::info!("FIPS peer found, connecting as central...");
                     let connect_config = ConnectConfig {
                         scan_config: ScanConfig {
                             filter_accept_list: &[(addr_kind, &bd_addr)],
@@ -522,14 +506,14 @@ pub async fn l2cap_host_task() {
 
                     match central.connect(&connect_config).await {
                         Ok(conn) => {
-                            esp_println::println!("[l2cap] central connected, creating L2CAP channel");
+                            log::info!("central connected, creating L2CAP channel");
                             let l2cap_config = L2capChannelConfig {
                                 mtu: Some(2048),
                                 ..Default::default()
                             };
                             match L2capChannel::create(&stack, &conn, L2CAP_PSM, &l2cap_config).await {
                                 Ok(channel) => {
-                                    esp_println::println!("[l2cap] L2CAP channel created (central)");
+                                    log::info!("L2CAP channel created (central)");
                                     let (mut writer, mut reader) = channel.split();
 
                                     let mut peer_pub = [0u8; 33];
@@ -554,7 +538,7 @@ pub async fn l2cap_host_task() {
                                                     Ok(Ok(33)) if rx_buf[0] == 0x00 => {
                                                         peer_pub[0] = 0x02;
                                                         peer_pub[1..33].copy_from_slice(&rx_buf[1..33]);
-                                                        esp_println::println!("[l2cap] pubkey exchange OK");
+                                                        log::info!("pubkey exchange OK");
                                                         true
                                                     }
                                                     _ => false,
@@ -565,7 +549,7 @@ pub async fn l2cap_host_task() {
                                     };
 
                                     if !exchange_ok {
-                                        esp_println::println!("[l2cap] pubkey exchange failed (central)");
+                                        log::error!("pubkey exchange failed (central)");
                                         continue;
                                     }
 
@@ -590,17 +574,13 @@ pub async fn l2cap_host_task() {
                                                 L2CAP_RX_CH.send(frame).await;
                                             }
                                             Either::First(Err(_)) => {
-                                                esp_println::println!(
-                                                    "[l2cap] central receive loop disconnected"
-                                                );
+                                                log::warn!("central receive loop disconnected");
                                                 mark_link_down();
                                                 break;
                                             }
                                             Either::Second(frame) => {
                                                 if writer.send(&stack, &frame).await.is_err() {
-                                                    esp_println::println!(
-                                                        "[l2cap] central send loop disconnected"
-                                                    );
+                                                    log::warn!("central send loop disconnected");
                                                     mark_link_down();
                                                     break;
                                                 }
@@ -609,15 +589,15 @@ pub async fn l2cap_host_task() {
                                     }
                                     mark_link_down();
                                     drain_l2cap_channels();
-                                    esp_println::println!("[l2cap] central channel disconnected");
+                                    log::info!("central channel disconnected");
                                 }
                                 Err(e) => {
-                                    esp_println::println!("[l2cap] L2CAP create error: {:?}", e);
+                                    log::error!("L2CAP create error: {:?}", e);
                                 }
                             }
                         }
                         Err(e) => {
-                            esp_println::println!("[l2cap] central connect error: {:?}", e);
+                            log::error!("central connect error: {:?}", e);
                         }
                     }
                 }

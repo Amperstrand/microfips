@@ -9,8 +9,8 @@ name = "microfips_esp32"
 
 [features]
 default = []
-ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
-l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
+ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
+l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
 
 [[bin]]
 name = "microfips-esp32"
@@ -27,9 +27,9 @@ path = "src/bin/l2cap.rs"
 required-features = ["l2cap"]
 
 [dependencies]
-microfips-core = { path = "../microfips-core" }
+microfips-core = { path = "../microfips-core", features = ["log"] }
 microfips-http-demo = { path = "../microfips-http-demo" }
-microfips-protocol = { path = "../microfips-protocol" }
+microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
 rand_core = { version = "0.6", default-features = false }
 esp-hal = { version = "1.0.0", features = ["esp32", "unstable"] }
@@ -48,3 +48,4 @@ esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }
 esp-println = { version = "0.16.1", features = ["esp32"], optional = true }
+log = { version = "0.4", optional = true }
