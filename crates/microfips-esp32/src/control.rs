@@ -2,7 +2,7 @@
 //! Reads line-delimited commands from UART0 RX, responds with JSON on UART0 TX.
 //! UART0 TX is shared with esp_println (both write to the same FIFO, no conflict).
 
-#![cfg(any(feature = "ble", feature = "l2cap"))]
+#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 
 use core::ptr::{null_mut, read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};

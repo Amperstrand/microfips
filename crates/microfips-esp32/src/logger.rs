@@ -1,7 +1,7 @@
 //! Structured logging backend for ESP32 BLE/L2CAP firmware.
 //! Uses esp_println for UART0 TX output. Init before any log macros are used.
 
-#![cfg(any(feature = "ble", feature = "l2cap"))]
+#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 

@@ -11,7 +11,7 @@ name = "microfips_esp32"
 default = []
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
-wifi = ["dep:esp-radio", "dep:esp-alloc", "dep:embassy-net", "dep:esp-println"]
+wifi = ["dep:esp-radio", "dep:esp-alloc", "dep:embassy-net", "dep:esp-println", "dep:log"]
 
 [[bin]]
 name = "microfips-esp32"
@@ -34,6 +34,7 @@ required-features = ["wifi"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }
+microfips-esp-common = { path = "../microfips-esp-common" }
 microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }

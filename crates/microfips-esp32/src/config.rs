@@ -62,14 +62,6 @@ pub const WIFI_SSID: &str = env!("WIFI_SSID");
 #[cfg(feature = "wifi")]
 pub const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
 #[cfg(feature = "wifi")]
-pub const VPS_HOST: &str = "orangeclaw.dns4sats.xyz";
-#[cfg(feature = "wifi")]
-pub const VPS_PORT: u16 = 2121;
-#[cfg(feature = "wifi")]
-pub const WIFI_DHCP_TIMEOUT_SECS: u64 = 30;
-#[cfg(feature = "wifi")]
-pub const DNS_TIMEOUT_SECS: u64 = 5;
-#[cfg(feature = "wifi")]
-pub const DNS_PORT: u16 = 53;
-#[cfg(feature = "wifi")]
-pub const DNS_QUERY_ID: u16 = 0x4D46;
+pub use microfips_esp_common::config::{
+    DNS_PORT, DNS_QUERY_ID, DNS_TIMEOUT_SECS, VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS,
+};

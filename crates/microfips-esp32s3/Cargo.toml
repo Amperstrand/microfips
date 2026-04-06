@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "Minimal FIPS leaf node on ESP32-S3 via WiFi"
 
+[[bin]]
+name = "microfips-esp32s3"
+path = "src/bin/wifi.rs"
+
 [dependencies]
 microfips-core = { path = "../microfips-core" }
+microfips-esp-common = { path = "../microfips-esp-common" }
 microfips-protocol = { path = "../microfips-protocol" }
 rand_core = { version = "0.6", default-features = false }
 esp-hal = { version = "1.0.0", features = ["esp32s3", "unstable"] }

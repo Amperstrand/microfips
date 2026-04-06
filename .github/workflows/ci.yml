@@ -328,6 +328,57 @@ jobs:
           path: target/thumbv7em-none-eabi/release/microfips
           retention-days: 7
 
+  build-esp32:
+    name: Build ESP32 Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ESP toolchain
+        run: |
+          cargo install espup --locked
+          espup install
+          echo "$HOME/.esp-rs/esptool" >> "$GITHUB_PATH"
+          source "$HOME/export-esp.sh"
+          echo "ESPUP_HOME=$HOME/.esp-rs" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$HOME/.rustup/toolchains/esp/xtensa-esp32-elf-clang/esp-clang/lib" >> "$GITHUB_ENV"
+          echo "PATH=$HOME/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/bin:$PATH" >> "$GITHUB_ENV"
+          rustup toolchain list
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: esp
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: esp32
+
+      - name: Build ESP32 UART
+        run: |
+          source "$HOME/export-esp.sh"
+          RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
+
+      - name: Build ESP32 BLE
+        run: |
+          source "$HOME/export-esp.sh"
+          RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
+
+      - name: Build ESP32 L2CAP
+        run: |
+          source "$HOME/export-esp.sh"
+          RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
+
+      - name: Build ESP32 WiFi
+        run: |
+          source "$HOME/export-esp.sh"
+          RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
+
+      - name: Build ESP32-S3 WiFi
+        run: |
+          source "$HOME/export-esp.sh"
+          RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+
   sim-ping:
     name: Sim-to-Sim Ping via FIPS
     runs-on: ubuntu-latest
@@ -390,7 +441,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, golden-vectors, build-host, lint, sim-smoke, sim-ping, build-firmware, fips-integration]
+    needs: [test, golden-vectors, build-host, lint, sim-smoke, sim-ping, build-firmware, build-esp32, fips-integration]
     if: always()
     steps:
       - run: |
@@ -405,6 +456,7 @@ jobs:
           echo "| Simulator Smoke | \`${{ needs.sim-smoke.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Sim-to-Sim Ping | \`${{ needs.sim-ping.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build Firmware | \`${{ needs.build-firmware.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build ESP32 | \`${{ needs.build-esp32.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"

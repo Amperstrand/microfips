@@ -5,7 +5,7 @@
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
 Both MCUs use length-prefixed framing → host bridge → UDP → VPS running stock FIPS.
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py
-- **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires WiFi-capable variant)
+- **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
 
 ## Workspace architecture
 
@@ -69,18 +69,23 @@ Each variant outputs to its own binary — no build order dependency between var
 
 ### ESP32 (WiFi variant)
 
-Requires a WiFi-capable ESP32 variant (e.g. ESP32-S3, ESP32-WROOM-32). Feature flag `wifi`
+Requires an ESP32 variant with WiFi hardware and an external antenna (e.g. ESP32-S3,
+ESP32-WROOM-32, ESP32-D0WD). Feature flag `wifi`
 enables WiFi transport instead of UART:
 
 ```bash
-WIFI_SSID=MyNetwork WIFI_PASSWORD=MyPass \
-  . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
+# Set credentials in .env (gitignored, never committed):
+#   WIFI_SSID=MyNetwork
+#   WIFI_PASSWORD=MyPass
+export $(grep -v '^#' .env | xargs) \
+  && . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
 # Output: target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
 ```
 
-Note: The ESP32-D0WD does NOT have WiFi hardware. This variant requires an ESP32-S3 or
-other WiFi-capable board. Credentials are set via `WIFI_SSID` and `WIFI_PASSWORD` env
-vars at build time. No secrets in source.
+The ESP32-D0WD has WiFi hardware (802.11 b/g/n). However, WiFi requires an
+external antenna — most D0WD dev boards include one, but verify before use. Credentials
+are set via `WIFI_SSID` and `WIFI_PASSWORD` env vars at build time (from `.env`).
+No secrets in source.
 
 ## Flash and Run
 
@@ -334,14 +339,17 @@ Feature-gated behind `--features wifi`, outputs `microfips-esp32-wifi` binary.
 
 **Build:**
 ```bash
-WIFI_SSID=MyNetwork WIFI_PASSWORD=MyPass \
-  . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+# Set credentials in .env (gitignored, never committed):
+#   WIFI_SSID=MyNetwork
+#   WIFI_PASSWORD=MyPass
+export $(grep -v '^#' .env | xargs) \
+  && . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
   cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf \
   -Zbuild-std=core,alloc --features wifi
 ```
 
 Credentials are set via `WIFI_SSID` and `WIFI_PASSWORD` environment variables at build
-time. No secrets in source.
+time (from `.env`, which is gitignored). No secrets in source.
 
 **Flash:**
 ```bash
@@ -349,8 +357,8 @@ esptool --chip esp32s3 --port /dev/ttyACM2 --before default-reset --after hard-r
   write_flash 0x0 target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
 ```
 
-Note: The ESP32-D0WD does NOT have WiFi hardware. WiFi only works on ESP32 variants
-with WiFi support (ESP32-S3, ESP32-WROOM-32, etc.).
+The ESP32-D0WD has WiFi hardware (802.11 b/g/n) but requires an external antenna.
+Most dev boards include one. WiFi works on all standard ESP32 variants.
 
 **Features:**
 - WiFi STA via DHCP with 30s timeout (panic on failure)
@@ -368,8 +376,8 @@ with WiFi support (ESP32-S3, ESP32-WROOM-32, etc.).
 **Test:**
 ```bash
 # Build
-WIFI_SSID=MyNetwork WIFI_PASSWORD=MyPass \
-  . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+export $(grep -v '^#' .env | xargs) \
+  && . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
   cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf \
   -Zbuild-std=core,alloc --features wifi
 

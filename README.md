@@ -241,9 +241,10 @@ Requires Espressif Rust toolchain (installed via `espup`, activated with `RUSTUP
 # UART variant (default) -> microfips-esp32
 # BLE variant (--features ble) -> microfips-esp32-ble
 # L2CAP variant (--features l2cap) -> microfips-esp32-l2cap
+# WiFi variant (--features wifi) -> microfips-esp32-wifi
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
   cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
-# Add --features ble or --features l2cap for alternate transports
+# Add --features ble, --features l2cap, or --features wifi for alternate transports
 ```
 
 Each variant outputs to its own binary. No build order dependency between variants.
@@ -289,6 +290,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 ### ESP32-D0WD
 - **MCU:** ESP32-D0WD (Xtensa LX6, 240 MHz, 4 MB Flash)
 - **UART:** GPIO1 (TX), GPIO3 (RX) -- CP210x USB-serial
+- **WiFi:** 802.11 b/g/n 2.4 GHz (requires external antenna)
 - **BLE:** Internal esp-radio BLE controller (antenna on-board)
 - **LED:** GPIO2 (blue onboard, active high)
 - **USB VID:PID:** `10c4:ea60` (Silicon Labs CP210x, detected as `/dev/ttyUSB*`)

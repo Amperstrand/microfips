@@ -12,9 +12,12 @@ use microfips_core::identity::DEFAULT_PEER_PUB;
 use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
+use microfips_esp32::control;
 use microfips_esp32::config::{ESP32_SECRET, PANIC_BLINK_CYCLES};
 use microfips_esp32::handler::{build_demo_fsp, EspHandler};
 use microfips_esp32::led::Led;
+use microfips_esp32::logger;
+use microfips_esp32::node_info::NodeIdentity;
 use microfips_esp32::rng::EspRng;
 use microfips_esp32::wifi_transport::build_wifi_transport;
 
@@ -52,12 +55,15 @@ async fn main(spawner: embassy_executor::Spawner) {
     let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
     let mut trng = Trng::try_new().unwrap();
 
+    let identity = NodeIdentity::compute();
+    logger::init();
+    log::info!("WiFi mode starting");
+
     let mut resp_eph = [0u8; 32];
     trng.fill_bytes(&mut resp_eph);
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
-    esp_println::println!("[microfips] WiFi mode starting");
     let transport = build_wifi_transport(spawner, peripherals.WIFI, &mut trng).await;
 
     let rng = EspRng(trng);
@@ -67,6 +73,9 @@ async fn main(spawner: embassy_executor::Spawner) {
     let fsp = build_demo_fsp(resp_eph, init_eph);
     let mut handler = EspHandler { led: &mut led, fsp };
 
-    esp_println::println!("[microfips] Node running over WiFi...");
+    control::init_control(&identity, "wifi");
+    spawner.spawn(control::control_task()).ok();
+
+    log::info!("Node running over WiFi...");
     node.run(&mut handler).await;
 }
