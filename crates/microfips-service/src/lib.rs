@@ -311,6 +311,9 @@ pub fn dispatch_request<H: ServiceHandler>(
     response_bytes: &mut [u8],
 ) -> Result<usize, ServiceError> {
     let request = decode_request(request_bytes)?;
+    if response_bytes.len() < SERVICE_RESPONSE_HEADER_LEN {
+        return Err(ServiceError::BufferTooSmall);
+    }
     let (header_buf, body_buf) = response_bytes.split_at_mut(SERVICE_RESPONSE_HEADER_LEN);
     match handler.handle(request, body_buf) {
         Ok(reply) => {
@@ -368,7 +371,6 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
                 msg_type: FSP_MSG_DATA,
                 len,
             },
-            Err(ServiceError::BufferTooSmall) => FspAppResult::Disconnect,
             Err(err) => match encode_response(
                 err.status(),
                 ContentType::Text,
