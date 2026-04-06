@@ -21,7 +21,7 @@ BLE L2CAP, WiFi, and host-side UDP simulators.
 |-----------|-----------|----------|-------------------|
 | UART | ✅ | ✅ | STM32 UART verified |
 | BLE GATT | ✅ | ✅ | D0WD BLE bridge verified |
-| BLE L2CAP | ✅ | ✅ | S3→FIPS verified |
+| BLE L2CAP | ✅ | ✅ | Both→FIPS verified |
 | WiFi | ✅ | ✅ | Both verified |
 
 Capabilities:
@@ -33,14 +33,14 @@ Capabilities:
 - **ESP32 WiFi transport** (direct UDP to FIPS, feature-gated behind `--features wifi`)
 - **Bridge auto-reconnect** on serial port failure for both STM32 (USB CDC) and ESP32 (CP210x)
 - **ESP32 control interface** over UART0 (BLE/L2CAP/WiFi variants) with `show_status`, `show_peers`, `show_stats`, `help`, `version`, `reset`
-- **Shared ESP32 crate** (`microfips-esp-common`) eliminates code duplication between D0WD and S3
+- **Shared ESP32 crates** (`microfips-esp-common` + `microfips-esp-transport`) eliminate code duplication between D0WD and S3
+- **Both ESP32s hardware-verified** over L2CAP to local FIPS daemon (D0WD via peripheral, S3 via central)
 - **CI pipeline** with unit tests, lint, firmware cross-build, sim-to-sim ping E2E, FIPS integration, and ESP32 builds
 
 ### Known Issues
-- ESP32-D0WD L2CAP scan does not find Linux FIPS daemon — S3 works, D0WD does not (investigating)
+- ESP32-D0WD L2CAP scan does not find Linux FIPS daemon (connects via peripheral path instead — FIPS scans and connects to D0WD)
 - ESP32-S3 WiFi steady state: connects but heartbeat cycle fails (link-dead after 30s)
-- ESP32 BLE/L2CAP modules duplicated between D0WD and S3 crates (needs DRY refactor into esp-common)
-- ESP32 control register addresses hardcoded per-chip in control.rs (needs cfg/parametrization)
+- Embassy task files (ble_host, l2cap_host, control) still duplicated between chip crates (~2400 lines remaining)
 
 ## Architecture
 
@@ -72,7 +72,7 @@ Capabilities:
   | microfips-esp32|                            |                  |
   | FIPS protocol  |BLE                         +------------------+
   | Noise_IK       |L2CAP  FIPS daemon (local)
-  | FMP + FSP      |<----> PSM 0x0085
+  | FMP + FSP      |<----> PSM 133
   +----------------+
 
   ESP32-D0WD / ESP32-S3 (WiFi)
@@ -373,12 +373,15 @@ microfips/
       build.rs                  # Linker flags: --nmagic, -Tlink.x
       .cargo/config.toml        # probe-rs runner config (local debug only)
       src/main.rs               # FIPS leaf node firmware (4-LED state machine, uses Node)
-    microfips-esp32/            # ESP32 firmware (package name: microfips-esp32)
-      src/main.rs               # FIPS leaf node (1-LED, UART + BLE + L2CAP transport)
-      src/lib.rs                # Shared ESP32 modules
-      src/{uart,ble,l2cap}_{transport,host}.rs  # Transport implementations
-      src/{control,logger,node_info,stats,handler,led,config,rng}.rs  # Support modules
+    microfips-esp32/            # ESP32-D0WD firmware (package name: microfips-esp32)
+      src/lib.rs                # Re-exports from esp-transport + chip-specific config/tasks
+      src/config.rs             # D0WD secret, register addresses, BLE/L2CAP constants
+      src/{ble,l2cap}_host.rs   # Embassy tasks (chip-specific statics + secret refs)
+      src/control.rs            # UART control interface (chip-specific register addresses)
+      src/bin/{uart,ble,l2cap,wifi}.rs  # Binary entry points (chip-specific GPIO/pins)
     microfips-esp32s3/          # ESP32-S3 variant (package name: microfips-esp32s3)
+    microfips-esp-transport/    # Shared ESP32 transport code (led, rng, stats, handlers, etc.)
+    microfips-esp-common/       # Chip-agnostic ESP32 code (DNS, config, UDP transport)
     microfips-core/             # no_std FIPS protocol: Noise IK/XK, FMP, FSP, identity
     microfips-protocol/         # no_std FIPS protocol state machine: Transport trait, framing, Node
     microfips-service/          # Transport-neutral request/response layer
