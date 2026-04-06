@@ -1,3 +1,5 @@
+#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
 struct UartLogger;

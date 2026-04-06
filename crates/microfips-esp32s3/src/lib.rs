@@ -1,6 +1,27 @@
 #![no_std]
 
 pub mod config;
-pub mod logger;
+pub mod handler;
+pub mod led;
+pub mod node_info;
 pub mod rng;
+pub mod stats;
+pub mod uart_transport;
+
+#[cfg(feature = "wifi")]
 pub mod wifi_transport;
+
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+pub mod logger;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+pub mod control;
+
+#[cfg(feature = "ble")]
+pub mod ble_host;
+#[cfg(feature = "ble")]
+pub mod ble_transport;
+
+#[cfg(feature = "l2cap")]
+pub mod l2cap_host;
+#[cfg(feature = "l2cap")]
+pub mod l2cap_transport;

@@ -1,3 +1,5 @@
+#![cfg(feature = "wifi")]
+
 extern crate alloc;
 
 use embassy_net::udp::{PacketMetadata, UdpSocket};
