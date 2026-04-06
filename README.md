@@ -13,19 +13,34 @@ ESP32 also supports direct BLE L2CAP connection to a local FIPS daemon.
 
 All core milestones (M0 through M9, M11) are complete. The project has proven end-to-end
 encrypted communication across every supported transport: USB CDC serial, BLE GATT,
-BLE L2CAP, and host-side UDP simulators.
+BLE L2CAP, WiFi, and host-side UDP simulators.
+
+### Build Matrix (all compile-tested)
+
+| Transport | ESP32-D0WD | ESP32-S3 | Hardware verified |
+|-----------|-----------|----------|-------------------|
+| UART | ✅ | ✅ | STM32 UART verified |
+| BLE GATT | ✅ | ✅ | D0WD BLE bridge verified |
+| BLE L2CAP | ✅ | ✅ | S3→FIPS verified |
+| WiFi | ✅ | ✅ | Both verified |
 
 Capabilities:
 - **Noise_IK/XK handshakes** with live FIPS VPS on both STM32 and ESP32
 - **FSP session protocol** with encrypted PING/PONG between any two peers (sim-to-sim, sim-to-MCU, MCU-to-MCU)
 - **Dual FSP mode** on both MCUs (initiator + responder targeting each other)
 - **ESP32 BLE GATT transport** (Python bridge, feature-gated behind `--features ble`)
-- **ESP32 BLE L2CAP transport** (direct to local FIPS daemon, no bridge, feature-gated behind `--features l2cap`)
-- **ESP32 WiFi transport** (direct UDP to FIPS, feature-gated behind `--features wifi`) — confirmed on both D0WD and S3
+- **ESP32 BLE L2CAP transport** (direct to local FIPS daemon, PSM 133, feature-gated behind `--features l2cap`)
+- **ESP32 WiFi transport** (direct UDP to FIPS, feature-gated behind `--features wifi`)
 - **Bridge auto-reconnect** on serial port failure for both STM32 (USB CDC) and ESP32 (CP210x)
 - **ESP32 control interface** over UART0 (BLE/L2CAP/WiFi variants) with `show_status`, `show_peers`, `show_stats`, `help`, `version`, `reset`
 - **Shared ESP32 crate** (`microfips-esp-common`) eliminates code duplication between D0WD and S3
 - **CI pipeline** with unit tests, lint, firmware cross-build, sim-to-sim ping E2E, FIPS integration, and ESP32 builds
+
+### Known Issues
+- ESP32-D0WD L2CAP scan does not find Linux FIPS daemon — S3 works, D0WD does not (investigating)
+- ESP32-S3 WiFi steady state: connects but heartbeat cycle fails (link-dead after 30s)
+- ESP32 BLE/L2CAP modules duplicated between D0WD and S3 crates (needs DRY refactor into esp-common)
+- ESP32 control register addresses hardcoded per-chip in control.rs (needs cfg/parametrization)
 
 ## Architecture
 
