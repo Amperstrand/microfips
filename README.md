@@ -21,9 +21,11 @@ Capabilities:
 - **Dual FSP mode** on both MCUs (initiator + responder targeting each other)
 - **ESP32 BLE GATT transport** (Python bridge, feature-gated behind `--features ble`)
 - **ESP32 BLE L2CAP transport** (direct to local FIPS daemon, no bridge, feature-gated behind `--features l2cap`)
+- **ESP32 WiFi transport** (direct UDP to FIPS, feature-gated behind `--features wifi`) — confirmed on both D0WD and S3
 - **Bridge auto-reconnect** on serial port failure for both STM32 (USB CDC) and ESP32 (CP210x)
-- **ESP32 control interface** over UART0 with `show_status`, `show_peers`, `show_stats`, `help`, `version`, `reset` commands
-- **CI pipeline** with unit tests, lint, firmware cross-build, sim-to-sim ping E2E, and FIPS integration
+- **ESP32 control interface** over UART0 (BLE/L2CAP/WiFi variants) with `show_status`, `show_peers`, `show_stats`, `help`, `version`, `reset`
+- **Shared ESP32 crate** (`microfips-esp-common`) eliminates code duplication between D0WD and S3
+- **CI pipeline** with unit tests, lint, firmware cross-build, sim-to-sim ping E2E, FIPS integration, and ESP32 builds
 
 ## Architecture
 
@@ -49,13 +51,21 @@ Capabilities:
   | Noise_IK       |<-->|                   |<-->   |
   | FMP + FSP      |    +-------------------+       |
   +----------------+                                  v
-                                               +------------------+
+                                                +------------------+
   ESP32-D0WD (L2CAP)                            | FIPS daemon      |
   +----------------+                            | port 2121        |
   | microfips-esp32|                            |                  |
   | FIPS protocol  |BLE                         +------------------+
   | Noise_IK       |L2CAP  FIPS daemon (local)
   | FMP + FSP      |<----> PSM 0x0085
+  +----------------+
+
+  ESP32-D0WD / ESP32-S3 (WiFi)
+  +----------------+
+  | microfips-esp32|     WiFi STA ----+
+  | FIPS protocol  |     DHCP + DNS   |
+  | Noise_IK       |<------------------ UDP ---> FIPS VPS (port 2121)
+  | FMP + FSP      |
   +----------------+
 
   Simulator (host)                             | FIPS daemon      |
@@ -69,6 +79,8 @@ Capabilities:
 Transport options:
 - **Serial bridge** (recommended): `serial_udp_bridge.py` sends UDP directly to FIPS
   from the host. No SSH tunnel or VPS-side bridge needed.
+- **ESP32 WiFi** (direct): ESP32 connects directly to FIPS VPS via WiFi + UDP. Feature-gated
+  behind `--features wifi`. Requires external antenna on D0WD. See AGENTS.md for full WiFi instructions.
 - **ESP32 BLE bridge**: `ble_udp_bridge.py` bridges ESP32 BLE GATT to UDP. Feature-gated
   behind `--features ble`. See AGENTS.md for full BLE instructions.
 - **ESP32 L2CAP direct**: ESP32 connects directly to local FIPS daemon via BLE L2CAP CoC.
@@ -76,8 +88,8 @@ Transport options:
 - **Legacy 3-hop** (deprecated): serial -> TCP proxy -> SSH tunnel -> VPS bridge -> FIPS
 
 Each MCU runs the same FIPS stack (Noise_IK/XK, FMP, FSP) and connects through a
-single-hop bridge. ESP32 additionally supports BLE GATT (`ble_udp_bridge`, feature-gated)
-and direct BLE L2CAP to a local FIPS daemon (feature-gated).
+single-hop bridge. ESP32 additionally supports BLE GATT (`ble_udp_bridge`), BLE L2CAP
+direct, and WiFi (direct UDP) transports.
 Host-side simulators connect via direct UDP with no bridge at all.
 
 Above the protocol/runtime crates, `microfips-service` provides a compact byte-oriented
@@ -296,6 +308,26 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 - **USB VID:PID:** `10c4:ea60` (Silicon Labs CP210x, detected as `/dev/ttyUSB*`)
 - **Flash:** `espflash flash -p /dev/ttyUSB0 --chip esp32` (NOT probe-rs)
 - Runs the same FIPS protocol stack as STM32 (Noise_IK, FMP, FSP dual mode).
+
+### ESP32-S3 (TiLDAGON)
+- **MCU:** ESP32-S3, 8 MB Flash
+- **WiFi:** 802.11 b/g/n 2.4 GHz (requires external antenna)
+- **Serial:** USB Serial JTAG (VID:PID `303a:1001`, detected as `/dev/ttyACM*`)
+- **Flash:** `espflash flash -p /dev/ttyACM<N> --chip esp32s3` (NOT esptool --no-stub)
+- Uses `microfips-esp32` crate with shared `microfips-esp-common` (DNS, config, stats)
+- Separate node identity from D0WD (secret `0x05` vs `0x02`)
+
+### Shared ESP32 code
+- **`microfips-esp-common`** — chip-agnostic shared crate: DNS resolver, config constants,
+  stats counters, node info (no esp-hal dependency)
+- Both `microfips-esp32` (D0WD) and `microfips-esp32s3` (S3) depend on it
+
+## Known Issues
+
+| Issue | Description | Status |
+|-------|-------------|--------|
+| ESP32-S3 steady state | WiFi connects and DNS resolves, but `HandshakeOk` → `Disconnected` cycle. S3 never sends heartbeats back to FIPS. FIPS drops link after 30s. Under investigation — likely a timing or transport issue in the steady-state loop. | Open |
+| WiFi control interface | Control interface (`show_status` etc.) not responding on WiFi variant. Logger and control share UART0 TX — RX path may need separate initialization. | Open |
 
 ## Milestones
 
