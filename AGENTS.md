@@ -5,7 +5,7 @@
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
 Both MCUs use length-prefixed framing → host bridge → UDP → VPS running stock FIPS.
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py
-- **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated)
+- **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires WiFi-capable variant)
 
 ## Workspace architecture
 
@@ -66,6 +66,21 @@ Default build (no `--features ble`) produces UART transport firmware. The BLE va
 UART0 for structured logging (`log` crate) and control interface instead of FIPS traffic.
 
 Each variant outputs to its own binary — no build order dependency between variants.
+
+### ESP32 (WiFi variant)
+
+Requires a WiFi-capable ESP32 variant (e.g. ESP32-S3, ESP32-WROOM-32). Feature flag `wifi`
+enables WiFi transport instead of UART:
+
+```bash
+WIFI_SSID=MyNetwork WIFI_PASSWORD=MyPass \
+  . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
+# Output: target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
+```
+
+Note: The ESP32-D0WD does NOT have WiFi hardware. This variant requires an ESP32-S3 or
+other WiFi-capable board. Credentials are set via `WIFI_SSID` and `WIFI_PASSWORD` env
+vars at build time. No secrets in source.
 
 ## Flash and Run
 
@@ -311,6 +326,83 @@ Response format matches FIPS control protocol: `{"status":"ok","data":{...}}` or
 - No UDP hop — pure BLE L2CAP connection to local FIPS daemon
 - No GATT characteristics — uses L2CAP CoC channel on PSM 0x0085
 - No FMP length prefix — L2CAP SeqPacket preserves message boundaries
+
+### ESP32 WiFi Transport
+
+WiFi transport for ESP32 variants with WiFi hardware (e.g. ESP32-S3, ESP32-WROOM-32).
+Feature-gated behind `--features wifi`, outputs `microfips-esp32-wifi` binary.
+
+**Build:**
+```bash
+WIFI_SSID=MyNetwork WIFI_PASSWORD=MyPass \
+  . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf \
+  -Zbuild-std=core,alloc --features wifi
+```
+
+Credentials are set via `WIFI_SSID` and `WIFI_PASSWORD` environment variables at build
+time. No secrets in source.
+
+**Flash:**
+```bash
+esptool --chip esp32s3 --port /dev/ttyACM2 --before default-reset --after hard-reset \
+  write_flash 0x0 target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
+```
+
+Note: The ESP32-D0WD does NOT have WiFi hardware. WiFi only works on ESP32 variants
+with WiFi support (ESP32-S3, ESP32-WROOM-32, etc.).
+
+**Features:**
+- WiFi STA via DHCP with 30s timeout (panic on failure)
+- DNS A-record resolution for VPS hostname (manual UDP DNS query, no new deps)
+- Raw framing mode for direct UDP to FIPS (`set_raw_framing(true)`)
+- Mutually exclusive with `ble` and `l2cap` features
+- Separate binary: `microfips-esp32-wifi` (UART/BLE/L2CAP use `microfips-esp32`)
+
+**Architecture:**
+- `wifi_transport.rs` — Transport trait impl over embassy-net UDP socket
+- `bin/wifi.rs` — WiFi composition-root binary
+- Config: `WIFI_SSID`, `WIFI_PASSWORD` (env vars), `VPS_HOST`, `VPS_PORT`
+- Retains `WifiController` for transport lifetime (prevents WiFi disconnect)
+
+**Test:**
+```bash
+# Build
+WIFI_SSID=MyNetwork WIFI_PASSWORD=MyPass \
+  . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf \
+  -Zbuild-std=core,alloc --features wifi
+
+# Flash to TiLDAGON
+esptool --chip esp32s3 --port /dev/ttyACM2 --before default-reset --after hard-reset \
+  write_flash 0x0 target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
+
+# Monitor serial output
+python3 -c "
+import serial, time
+s = serial.Serial('/dev/ttyACM2', 115200, timeout=2)
+deadline = time.time() + 45
+while time.time() < deadline:
+    line = s.readline().decode(errors='replace').strip()
+    if line: print(line, flush=True)
+s.close()
+"
+```
+
+**Expected:** WiFi connects, DNS resolves VPS hostname, FIPS handshake (MSG1 sent,
+MSG2 received), sustained heartbeats.
+
+**Troubleshooting:**
+- **WiFi doesn't connect:** Verify `WIFI_SSID` and `WIFI_PASSWORD` are correct at build time.
+  The firmware panics after 30s DHCP timeout. Check that the target board has WiFi hardware
+  (ESP32-D0WD does not).
+- **DNS resolution fails:** The firmware uses manual UDP DNS queries (port 53). Ensure the
+  WiFi network allows DNS to external resolvers. The VPS hostname must have an A record.
+- **Handshake fails:** Verify VPS FIPS is running and reachable from the WiFi network. Check
+  `VPS_HOST` and `VPS_PORT` config values.
+- **Wrong firmware flashed:** Each variant has its own binary: `microfips-esp32` (UART),
+  `microfips-esp32-ble` (BLE), `microfips-esp32-l2cap` (L2CAP), `microfips-esp32-wifi` (WiFi).
+  No build order dependency.
 
 ### ESP32 flash and monitor
 
@@ -619,7 +711,7 @@ probe-rs read --chip STM32F469NIHx --connect-under-reset b32 <STAT_STATE_addr> 1
 ### ESP32 LED State Machine
 
 The ESP32 has a single user LED on GPIO2 (blue onboard LED). State visibility is
-more limited than STM32's 4-LED display. Behavior is identical for both UART and BLE transports.
+more limited than STM32's 4-LED display. Behavior is identical for UART, BLE, L2CAP, and WiFi transports.
 
 | State | GPIO2 (Blue) | Meaning |
 |-------|:------------:|---------|
@@ -884,7 +976,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 - **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
 - **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
 - **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
-- **build-firmware**: STM32 `cargo build -p microfips --release --target thumbv7em-none-eabi` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` (UART default) + ESP32 BLE `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble` using upstream crates.io embassy v0.6.0
+- **build-firmware**: STM32 `cargo build -p microfips --release --target thumbv7em-none-eabi` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` (UART default) + ESP32 BLE `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble` + ESP32 WiFi `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi` using upstream crates.io embassy v0.6.0
 - **fips-integration**: local keygen + Noise IK handshake test (must pass), public VPS handshake (continue-on-error)
 - **summary**: aggregate status table
 
@@ -908,7 +1000,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 
 6. **FIPS BLE scan loop can DoS discovery**: `scan_probe_loop()` processes scan results one-at-a-time with blocking L2CAP connect. One unreachable peer blocks all others. Fixed with RSSI-based priority sort (strongest signal first) on the FIPS side (branch `fix/ble-rssi-priority`).
 
-7. ~~**L2CAP build must be last before flash**: All ESP32 variants (UART, BLE, L2CAP) output to the same binary path.~~ **RESOLVED**: Each variant now has its own binary target (`microfips-esp32`, `microfips-esp32-ble`, `microfips-esp32-l2cap`). No build order dependency.
+7. ~~**L2CAP build must be last before flash**: All ESP32 variants (UART, BLE, L2CAP) output to the same binary path.~~ **RESOLVED**: Each variant now has its own binary target (`microfips-esp32`, `microfips-esp32-ble`, `microfips-esp32-l2cap`, `microfips-esp32-wifi`). No build order dependency.
 
 ## Future Improvements
 
