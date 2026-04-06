@@ -28,6 +28,9 @@ static BLE_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRA
 static BLE_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static BLE_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static BLE_LINK_UP: AtomicBool = AtomicBool::new(false);
+/// Set to true once the GATT client has enabled notifications (CCCD write).
+/// Until then, notify() failures are expected and must not trigger a disconnect.
+static BLE_NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
@@ -230,6 +233,7 @@ pub async fn ble_host_task() {
             };
 
             BLE_LINK_UP.store(true, Ordering::Relaxed);
+            BLE_NOTIFICATIONS_ENABLED.store(false, Ordering::Relaxed);
             STAT_BLE_CONNECT.fetch_add(1, Ordering::Relaxed);
             BLE_CONNECTED_SIG.signal(());
 
@@ -278,7 +282,16 @@ pub async fn ble_host_task() {
                             .await
                             .is_err()
                         {
+                            if !BLE_NOTIFICATIONS_ENABLED.load(Ordering::Relaxed) {
+                                BLE_TX_CH.send(frame).await;
+                                embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                                    RECV_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
                             BLE_LINK_UP.store(false, Ordering::Relaxed);
+                            BLE_NOTIFICATIONS_ENABLED.store(false, Ordering::Relaxed);
                             STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
                             while BLE_RX_CH.try_receive().is_ok() {}
                             while BLE_TX_CH.try_receive().is_ok() {}

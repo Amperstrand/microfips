@@ -30,7 +30,7 @@ pub const STM32_NODE_ADDR: [u8; 16] = [
 #[cfg(feature = "ble")]
 pub const BLE_DEVICE_NAME: &str = "microfips-esp32";
 #[cfg(feature = "ble")]
-pub const BLE_MAX_FRAME: usize = 252;
+pub const BLE_MAX_FRAME: usize = 256;
 
 #[cfg(feature = "ble")]
 pub mod ble_uuids {
