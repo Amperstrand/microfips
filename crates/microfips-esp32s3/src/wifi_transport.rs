@@ -1,5 +1,3 @@
-#![cfg(feature = "wifi")]
-
 extern crate alloc;
 
 use embassy_net::udp::{PacketMetadata, UdpSocket};
@@ -93,7 +91,8 @@ pub async fn build_wifi_transport(
     {
         Ok(config) => config,
         Err(_) => {
-            panic!("WiFi DHCP timed out after {}s", WIFI_DHCP_TIMEOUT_SECS);
+            log::error!("WiFi DHCP timed out after {}s", WIFI_DHCP_TIMEOUT_SECS);
+            panic!("dhcp timeout");
         }
     };
     log::info!("IP: {} (target: {})", config_v4.address, VPS_HOST);

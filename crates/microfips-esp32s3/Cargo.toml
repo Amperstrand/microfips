@@ -24,3 +24,4 @@ embassy-futures = "0.1.2"
 embassy-executor = "0.9.1"
 static_cell = "2"
 esp-println = { version = "0.16.1", features = ["esp32s3"] }
+log = "0.4"

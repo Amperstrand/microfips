@@ -353,8 +353,9 @@ time (from `.env`, which is gitignored). No secrets in source.
 
 **Flash:**
 ```bash
-esptool --chip esp32s3 --port /dev/ttyACM2 --before default-reset --after hard-reset \
-  write_flash 0x0 target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 \
+  target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
 ```
 
 The ESP32-D0WD has WiFi hardware (802.11 b/g/n) but requires an external antenna.
@@ -368,10 +369,11 @@ Most dev boards include one. WiFi works on all standard ESP32 variants.
 - Separate binary: `microfips-esp32-wifi` (UART/BLE/L2CAP use `microfips-esp32`)
 
 **Architecture:**
-- `wifi_transport.rs` — Transport trait impl over embassy-net UDP socket
+- `wifi_transport.rs` — Transport trait impl over embassy-net UDP socket (shared via `microfips-esp-common`)
 - `bin/wifi.rs` — WiFi composition-root binary
 - Config: `WIFI_SSID`, `WIFI_PASSWORD` (env vars), `VPS_HOST`, `VPS_PORT`
 - Retains `WifiController` for transport lifetime (prevents WiFi disconnect)
+- Both D0WD and S3 use `WifiTransport` from `microfips-esp-common`
 
 **Test:**
 ```bash
@@ -381,14 +383,15 @@ export $(grep -v '^#' .env | xargs) \
   cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf \
   -Zbuild-std=core,alloc --features wifi
 
-# Flash to TiLDAGON
-esptool --chip esp32s3 --port /dev/ttyACM2 --before default-reset --after hard-reset \
-  write_flash 0x0 target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
+# Flash (D0WD via CP210x)
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 \
+  target/xtensa-esp32-none-elf/release/microfips-esp32-wifi
 
 # Monitor serial output
 python3 -c "
 import serial, time
-s = serial.Serial('/dev/ttyACM2', 115200, timeout=2)
+s = serial.Serial('/dev/ttyUSB0', 115200, timeout=2)
 deadline = time.time() + 45
 while time.time() < deadline:
     line = s.readline().decode(errors='replace').strip()
@@ -402,8 +405,8 @@ MSG2 received), sustained heartbeats.
 
 **Troubleshooting:**
 - **WiFi doesn't connect:** Verify `WIFI_SSID` and `WIFI_PASSWORD` are correct at build time.
-  The firmware panics after 30s DHCP timeout. Check that the target board has WiFi hardware
-  (ESP32-D0WD does not).
+  The firmware panics after 30s DHCP timeout. Verify the target board has an external
+  antenna connected.
 - **DNS resolution fails:** The firmware uses manual UDP DNS queries (port 53). Ensure the
   WiFi network allows DNS to external resolvers. The VPS hostname must have an A record.
 - **Handshake fails:** Verify VPS FIPS is running and reachable from the WiFi network. Check
@@ -411,6 +414,38 @@ MSG2 received), sustained heartbeats.
 - **Wrong firmware flashed:** Each variant has its own binary: `microfips-esp32` (UART),
   `microfips-esp32-ble` (BLE), `microfips-esp32-l2cap` (L2CAP), `microfips-esp32-wifi` (WiFi).
   No build order dependency.
+
+### ESP32-S3 (TiLDAGON)
+
+The ESP32-S3 TiLDAGON uses WiFi transport via `microfips-esp32s3` crate with shared
+`microfips-esp-common` for DNS, config, and stats.
+
+**Build:**
+```bash
+export $(grep -v '^#' .env | xargs) \
+  && . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc
+# Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
+```
+
+**Flash:**
+```bash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyACM<N> --chip esp32s3 \
+  target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
+```
+
+**Serial port:** USB Serial JTAG (VID:PID `303a:1001`, `/dev/ttyACM*`), NOT CP210x.
+Auto-reset works via DTR/RTS, no button pressing needed.
+
+**CRITICAL: Do NOT use `esptool --no-stub`** — it overwrites the partition table and bricks
+the board. Always use `espflash`.
+
+**Recovery from bricked state:**
+1. Hold boop (back button) while plugging USB
+2. Hold for 3 seconds, then release
+3. `espflash erase-flash --chip esp32s3`
+4. `espflash flash --chip esp32s3` with the firmware binary
 
 ### ESP32 flash and monitor
 
@@ -733,22 +768,6 @@ counters are updated. This is because ESP32's steady-state loop runs in a single
 `select()` branch (UART recv always wins over timer), and changing the LED in the
 recv hot path adds latency with no visual benefit (the LED is already on from state 3).
 
-## Embassy Fork Status
-
-**CRITICAL FINDING (2026-03-28):** The `Amperstrand/embassy` fork commit `c0289d7a8` breaks USB
-enumeration on STM32F469. Only `embassy-usb-synopsys-otg/src/lib.rs` was modified (4 patches).
-Switching all embassy deps to upstream crates.io v0.6.0 fixed enumeration immediately.
-
-**Current firmware uses upstream crates.io embassy** — NOT the fork. See `crates/microfips/Cargo.toml`.
-
-The 4 fork patches were:
-1. Remove SNAK from `configure_endpoints()` IN path — cosmetic
-2. Add AHBIDL wait before FIFO flush (STM32F4 errata ES0321 §2.16.1) — safe
-3. Add EPENA recovery in `write()` — **RISKY**, can abort in-flight transfers
-4. Add proper disable sequence in `endpoint_set_enabled()` IN path — safe
-
-See GitHub issue #6 for investigation details.
-
 ## Debugging Best Practices
 
 1. **Never read hardware registers while probe-rs has the CPU halted.** The state is
@@ -882,90 +901,6 @@ done
 
 Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` with `toolchain: nightly`.
 
-## Known Bugs
-
-### RESOLVED: MCU silently drops MSG2 (#6, closed)
-
-**Root cause was THREE bugs, not one:**
-
-1. **recv_frame infinite loop (critical):** The framing "fix" (7f4d093) introduced an infinite
-   loop where `continue` skipped `read_packet` on incomplete multi-packet frames. MSG2 (71B)
-   arrives as 64B+7B USB packets. The incomplete-frame case did `compact + continue` which
-   looped back without ever calling `read_packet`. The MCU spun forever, 30s timeout never
-   fired. **Fix (bb97936):** restructure to always fall through to `read_packet` when more
-   data is needed. No code path loops back without either returning or awaiting I/O.
-
-2. **Handshake loop discarded non-Msg2 (7f4d093):** Stale FIPS data (heartbeat retransmits
-   from previous sessions) arriving before MSG2 caused immediate `Err(Invalid)` return.
-   **Fix:** loop `recv_frame` until Msg2 received, skip other message types.
-
-3. **steady() inline framing had same pattern (7f4d093):** Used `continue` in a `while` loop
-   instead of `break`. Fixed with `break`.
-
-### RESOLVED: Bridge stops forwarding CDC->UDP (#11, closed)
-
-**Root cause:** Two bugs in the Python bridge.
-
-1. **Thread race on reconnect:** When one thread died, the bridge started new threads while
-   the old surviving thread was still running. Two `serial_to_udp` threads reading from the
-   same TCP socket split data between them, corrupting frames. **Fix (a76156e):** set
-   `state['stop']=True` and join BOTH threads with generous timeouts before reconnecting.
-
-2. **CPU spinning:** `serial_to_udp` looped with no sleep when idle, starving `udp_to_serial`
-   under Python GIL contention. **Fix:** `time.sleep(0.001)` in the idle path.
-
-### Proxy serial port open is slow (#8, open)
-
-`serial.Serial()` takes 5-10 seconds to open `/dev/ttyACM*`. The MCU sends MSG1 ~0.5s
-after enumeration. If the proxy isn't open yet, MSG1 is lost. The MCU's retry loop (500ms
-CONNECT_DELAY + 30s RECV_TIMEOUT + 3s RETRY_SECS = ~33.5s per cycle) handles this, but
-the first attempt always misses. Fix: add reconnection logic to proxy or use a control
-byte to trigger handshake start.
-
-### RESOLVED: serial bridge reconnection on USB disconnect (#8)
-
-Both `serial_udp_bridge.py` and `serial_tcp_proxy.py` now reconnect automatically when
-the serial port fails. On serial error, both threads are stopped, the bridge polls for
-device re-enumeration by VID/PID every 0.5s (up to 120s), and resumes data forwarding.
-
-**ESP32 (CP210x) behavior during software reset:** The CP210x USB-serial chip stays
-enumerated when the ESP32 CPU resets — it is a separate IC, not part of the ESP32.
-The bridge never sees a serial error and never triggers reconnect. Boot messages are
-read as serial data and logged as `invalid frame length NNNNN, skipping 2B` (the bridge
-tries to parse them as FMP frames). The bridge survives the reset transparently and
-continues forwarding once the ESP32 finishes booting. Verified on hardware with the
-`reset` control command (commit `e87148d`).
-
-**STM32 (USB CDC) behavior during reset:** USB CDC is implemented in the MCU itself.
-When the STM32 resets, the USB device disappears from the bus (`/dev/ttyACM*` gone).
-The bridge detects ENODEV, triggers `_reconnect_serial()`, and reconnects when the
-STM32 re-enumerates. This path cannot be tested without physical access to the STM32.
-
-### RESOLVED: Noise finalize bug on ESP32
-
-`noise_st.finalize()` was called on the pre-read_message2 state instead of the clone
-after `read_message2()`. The handshake appeared to succeed but transport keys were wrong.
-**Fix:** use `st.finalize()` (the state after `read_message2()`), not `noise_st.finalize()`.
-
-### RESOLVED: UART recv error handling on ESP32
-
-`transport.recv()` returning `Err` in the steady-state loop caused immediate session failure.
-Any transient UART glitch killed the entire session. **Fix:** `continue` with 100ms delay
-on recv errors instead of returning `Err`.
-
-### RESOLVED: Timer starvation on ESP32
-
-ESP32 UART delivers data continuously, causing `select()` to always pick the recv branch
-and starving the heartbeat timer. The heartbeat check inside the recv branch
-(`if Instant::now() >= next_hb`) handles this, matching the STM32's approach.
-
-### RESOLVED: BLE advertising data overflow
-
-BLE advertising data (adv_data) is limited to 31 bytes. The original BLE firmware tried to
-fit Flags(3B) + CompleteLocalName(17B) + ServiceUuids128(18B) = 38B into 31B, causing
-`AdStructure encode failed` and a tight loop on device. **Fix:** split into adv_data
-(Flags + CompleteLocalName = ~20B) and scan_data (ServiceUuids128 = 18B).
-
 ## Actual MCU Keys (verified 2026-03-30)
 
 | MCU | Source | Pubkey (x-only, hex) | npub |
@@ -984,7 +919,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 - **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
 - **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
 - **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
-- **build-firmware**: STM32 `cargo build -p microfips --release --target thumbv7em-none-eabi` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` (UART default) + ESP32 BLE `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble` + ESP32 WiFi `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi` using upstream crates.io embassy v0.6.0
+- **build-firmware**: STM32 `cargo build -p microfips --release --target thumbv7em-none-eabi` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` (UART default) + ESP32 BLE `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble` + ESP32 WiFi `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi` + ESP32-S3 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc` using upstream crates.io embassy v0.6.0
 - **fips-integration**: local keygen + Noise IK handshake test (must pass), public VPS handshake (continue-on-error)
 - **summary**: aggregate status table
 
@@ -994,39 +929,9 @@ All host tools accept `FIPS_SECRET` (64 hex chars) to override the identity secr
 `FIPS_PEER_PUB` (66 hex chars) overrides the peer's public key (used by `fips-handshake` and `microfips-sim`).
 When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubkey).
 
-## BLE L2CAP Lessons Learned
-
-1. **microfips-protocol::Node is initiator-only**: `Node::handshake()` always creates `NoiseIkInitiator` and sends MSG1 first. There is no responder path. The ESP32 must always be the Noise initiator. FIPS's `handle_msg1()` drops inbound MSG1 unless `transport.accept_connections()` is true. The correct host BLE config for an ESP32 peer is: `scan: true`, `auto_connect: false`, `accept_connections: true`.
-
-2. **BLE role arbitration requires asymmetry**: Both sides scanning simultaneously causes cross-connection instability. ESP32 advertises as peripheral for 3s (bounded window), then falls back to scan+connect as central. Host runs scan+probe but with `auto_connect: false` so it doesn't race the Noise handshake. `disable_tiebreaker: true` on the host prevents both sides from trying to be central.
-
-3. **Readiness must be gated on channel+pubkey, not just link existence**: The old code fired a signal on bare BLE link existence and used a separate global atomic for the peer pubkey. This created a race where the protocol layer could start before the pubkey was available. The fix: a single signal (`L2CAP_READY_SIG`) that carries the peer pubkey and only fires after L2CAP channel accept/create + pubkey exchange are both complete. `L2capTransport` holds the peer pubkey as instance state.
-
-4. **L2CAP SeqPacket preserves message boundaries**: Unlike GATT characteristics (which require length-prefixed framing), L2CAP CoC channels with SeqPacket semantics preserve message boundaries. Raw FMP frames can be sent without the 2-byte LE length prefix used by serial transports.
-
-5. **BLE advertising data is limited to 31 bytes**: Flags(3B) + CompleteLocalName(17B) + ServiceUuids128(18B) = 38B doesn't fit. Split: adv_data gets Flags + CompleteLocalName (~20B), scan_data gets ServiceUuids128 (18B). BlueZ's `set_discovery_filter` with UUID only checks `adv_data` (primary advertising), not `scan_data`, so the service UUID MUST go in `adv_data`.
-
-6. **FIPS BLE scan loop can DoS discovery**: `scan_probe_loop()` processes scan results one-at-a-time with blocking L2CAP connect. One unreachable peer blocks all others. Fixed with RSSI-based priority sort (strongest signal first) on the FIPS side (branch `fix/ble-rssi-priority`).
-
-7. ~~**L2CAP build must be last before flash**: All ESP32 variants (UART, BLE, L2CAP) output to the same binary path.~~ **RESOLVED**: Each variant now has its own binary target (`microfips-esp32`, `microfips-esp32-ble`, `microfips-esp32-l2cap`, `microfips-esp32-wifi`). No build order dependency.
-
-## Future Improvements
-
-1. **Add responder mode to microfips-protocol::Node**: Currently Node only supports initiator (sends MSG1 first). Adding a responder path would allow MCUs to accept inbound handshakes, enabling true peer-to-peer topologies without requiring one side to always initiate.
-
-2. **Parallel BLE scan and advertise on ESP32**: Currently the ESP32 advertises for 3s, then scans. Running both in parallel (peripheral accept + central scan simultaneously) would reduce connection latency and handle more topologies. Requires careful state machine design to avoid race conditions.
-
-3. **Supervision timeout tuning and BLE ping**: The ESP32's `ble_ping_en` is currently false. Enabling BLE link-layer keepalive could improve connection robustness for long-lived sessions. The supervision timeout (currently 20s) should be tuned relative to the FIPS heartbeat interval (10s).
-
-4. **Device name filtering in ESP32 scanner**: The ESP32 BLE scanner currently connects to any device advertising the FIPS service UUID. Adding device name filtering would avoid connecting to stale or unrelated devices that happen to advertise the same UUID.
-
-5. **FIPS BLE scan DoS fix upstream**: The RSSI-based priority sort is on a local branch (`fix/ble-rssi-priority`). This needs to be proposed upstream to the FIPS project.
-
 ## Open Issues
 
 | # | Title | Severity | Notes |
 |---|-------|----------|-------|
-| #8 | serial bridge reconnection | resolved | Reconnect logic added; ESP32 CP210x stays enumerated on reset (no reconnect needed); STM32 USB CDC triggers reconnect (untested without hardware) |
 | #12 | M7: HTTP status page over FIPS | feature | Firmware has HTTP handler; needs E2E test |
-| #13 | Noise crate audit: snow not viable | resolved | Hand-rolled Noise is working, tested (113 tests) |
 | #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
