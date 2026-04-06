@@ -2,12 +2,29 @@
 name = "microfips-esp32"
 version = "0.1.0"
 edition = "2021"
-description = "Minimal FIPS leaf node on ESP32 via UART"
+description = "Minimal FIPS leaf node on ESP32"
+
+[lib]
+name = "microfips_esp32"
 
 [features]
 default = []
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
+
+[[bin]]
+name = "microfips-esp32"
+path = "src/bin/uart.rs"
+
+[[bin]]
+name = "microfips-esp32-ble"
+path = "src/bin/ble.rs"
+required-features = ["ble"]
+
+[[bin]]
+name = "microfips-esp32-l2cap"
+path = "src/bin/l2cap.rs"
+required-features = ["l2cap"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }

@@ -59,11 +59,13 @@ Same toolchain. Feature flag `ble` enables BLE transport instead of UART:
 
 ```bash
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
-# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
+# Output: target/xtensa-esp32-none-elf/release/microfips-esp32-ble
 ```
 
 Default build (no `--features ble`) produces UART transport firmware. The BLE variant uses
 UART0 for debug output via `esp_println!` instead of FIPS traffic.
+
+Each variant outputs to its own binary — no build order dependency between variants.
 
 ## Flash and Run
 
@@ -130,10 +132,10 @@ of FIPS traffic.
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
 ```
 
-**Flash (same command as UART):**
+**Flash:**
 ```bash
 kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
-. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32-ble
 ```
 
 **Verify BLE advertising:**
@@ -213,15 +215,11 @@ Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
 ```
 
-**Flash (same command as UART/BLE):**
+**Flash:**
 ```bash
 kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
-. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32-l2cap
 ```
-
-**IMPORTANT:** L2CAP build MUST be the last build before flash. Building UART or BLE
-variants overwrites the binary. Always run the `--features l2cap` build immediately
-before `espflash flash`.
 
 **Test procedure (local FIPS daemon, no VPS needed):**
 
@@ -239,11 +237,11 @@ before `espflash flash`.
        disable_tiebreaker: true
    ```
 
-3. Flash ESP32 (L2CAP variant must be last build):
+3. Flash ESP32:
    ```bash
    kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
    . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
-   . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+   . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32-l2cap
    ```
 
 4. Wait 15s for BLE scan + connection, then check FIPS logs:
@@ -282,8 +280,8 @@ s.close()
   ESP32 drains channels on reconnect (fixed in commit `8ed21cb`).
 - **`BLE probe connect timeout`:** Check BLE address type — FIPS must use `LeRandom` for
   ESP32's random static address (fixed in FIPS commit `9779672`).
-- **Wrong firmware flashed:** Build L2CAP variant last before flash. Building UART/BLE
-  after L2CAP overwrites the binary at the same output path.
+- **Wrong firmware flashed:** Each variant has its own binary: `microfips-esp32` (UART),
+  `microfips-esp32-ble` (BLE), `microfips-esp32-l2cap` (L2CAP). No build order dependency.
 - **Tie-breaker deadlock:** Both sides try to be central simultaneously. Set
   `disable_tiebreaker: true` in FIPS config (commit `adb63cf`).
 
@@ -462,7 +460,7 @@ Requires BLE firmware flashed and `bleak` installed (`pip install bleak`).
 ```bash
 # 1. Flash BLE firmware (if not already)
 kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
-. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32-ble
 
 # 2. Verify BLE advertising (wait 8s after flash for boot)
 sleep 8
@@ -875,7 +873,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 
 6. **FIPS BLE scan loop can DoS discovery**: `scan_probe_loop()` processes scan results one-at-a-time with blocking L2CAP connect. One unreachable peer blocks all others. Fixed with RSSI-based priority sort (strongest signal first) on the FIPS side (branch `fix/ble-rssi-priority`).
 
-7. **L2CAP build must be last before flash**: All ESP32 variants (UART, BLE, L2CAP) output to the same binary path. Building a non-L2CAP variant after L2CAP overwrites the binary. Always build `--features l2cap` immediately before `espflash flash`.
+7. ~~**L2CAP build must be last before flash**: All ESP32 variants (UART, BLE, L2CAP) output to the same binary path.~~ **RESOLVED**: Each variant now has its own binary target (`microfips-esp32`, `microfips-esp32-ble`, `microfips-esp32-l2cap`). No build order dependency.
 
 ## Future Improvements
 
