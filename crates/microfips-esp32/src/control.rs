@@ -14,7 +14,7 @@ use crate::node_info::{NodeIdentity, PeerInfo};
 use crate::stats::StatsSnapshot;
 
 const UART0_BASE: usize = 0x3FF4_0000;
-const UART_FIFO_REG: *const u32 = (UART0_BASE + 0x00) as *const u32;
+const UART_FIFO_REG: *mut u32 = (UART0_BASE + 0x00) as *mut u32;
 const UART_STATUS_REG: *const u32 = (UART0_BASE + 0x1C) as *const u32;
 
 const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
@@ -167,11 +167,35 @@ fn handle_show_stats() {
 }
 
 fn handle_help() {
-    esp_println::println!("show_status show_peers show_stats help version");
+    esp_println::println!("show_status show_peers show_stats help version reset");
 }
 
 fn handle_version() {
     esp_println::println!("microfips-esp32 {}", env!("CARGO_PKG_VERSION"));
+}
+
+fn handle_reset() {
+    const RESP: &[u8] = br#"{"status":"ok","data":{"message":"resetting"}}"#;
+    unsafe {
+        for &b in RESP {
+            write_volatile(UART_FIFO_REG, b as u32);
+        }
+        write_volatile(UART_FIFO_REG, b'\n' as u32);
+        for _ in 0..1_000_000 {
+            if read_volatile(UART_STATUS_REG) & (1 << 14) != 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    }
+    // RTC_CNTL_OPTIONS0_REG (0x3FF48000) bit 31: SW_SYS_RST triggers full system reset.
+    // See ESP32 TRM §18.5 and soc/rtc_cntl_reg.h RTC_CNTL_SW_SYS_RST.
+    unsafe {
+        core::ptr::write_volatile(0x3FF4_8000 as *mut u32, 1 << 31);
+    }
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 fn handle_command(line: &[u8]) {
@@ -191,6 +215,7 @@ fn handle_command(line: &[u8]) {
         "show_stats" => handle_show_stats(),
         "help" => handle_help(),
         "version" => handle_version(),
+        "reset" => handle_reset(),
         _ => respond_error("unknown command"),
     }
 }

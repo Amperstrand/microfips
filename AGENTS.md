@@ -289,6 +289,7 @@ python3 tools/test_control.py
 | `show_stats` | JSON with msg1_tx, msg2_rx, hb_tx, hb_rx, data_tx, data_rx | Protocol counters |
 | `help` | Plain text list of commands | Command reference |
 | `version` | `microfips-esp32 <version>` | Firmware version |
+| `reset` | JSON `{"status":"ok"}`, then reboot | Software reset via RTC_CNTL SW_SYS_RST |
 
 Response format matches FIPS control protocol: `{"status":"ok","data":{...}}` or
 `{"status":"error","message":"..."}`.

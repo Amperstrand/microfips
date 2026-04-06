@@ -111,6 +111,40 @@ def test_unknown_command(ser: Serial):
     print(f"  OK: {resp.get('message')}")
 
 
+def test_reset(ser: Serial):
+    """Send reset command, verify ESP32 reboots and responds afterward."""
+    print("[test] reset")
+    port = ser.port
+    ser.write(b"reset\n")
+    ser.flush()
+    ser.close()
+    print("  Waiting for reboot (rst:0x3 expected)...")
+    time.sleep(3)
+    booted = False
+    for attempt in range(20):
+        try:
+            new_ser = Serial(port, 115200, timeout=2)
+            time.sleep(0.3)
+            while new_ser.in_waiting:
+                new_ser.readline()
+            new_ser.write(b"version\n")
+            new_ser.flush()
+            time.sleep(0.5)
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                line = new_ser.readline().decode(errors="replace").strip()
+                if line and "microfips-esp32" in line:
+                    print(f"  OK: Rebooted after {attempt + 1}s: {line}")
+                    new_ser.close()
+                    return new_ser
+            new_ser.close()
+        except (Exception, OSError):
+            pass
+        time.sleep(1)
+    print("  FAIL: ESP32 did not reboot within 20s")
+    return None
+
+
 def drain_lines(ser: Serial, count: int = 20, timeout: float = 0.5):
     """Read and discard startup log lines."""
     deadline = time.time() + timeout
@@ -172,6 +206,17 @@ def main():
     try:
         test_unknown_command(ser)
         passed += 1
+    except Exception as e:
+        print(f"  FAIL: {e}")
+        failed += 1
+
+    try:
+        new_ser = test_reset(ser)
+        if new_ser is not None:
+            passed += 1
+            ser = new_ser
+        else:
+            failed += 1
     except Exception as e:
         print(f"  FAIL: {e}")
         failed += 1
