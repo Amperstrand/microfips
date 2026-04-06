@@ -822,10 +822,24 @@ CONNECT_DELAY + 30s RECV_TIMEOUT + 3s RETRY_SECS = ~33.5s per cycle) handles thi
 the first attempt always misses. Fix: add reconnection logic to proxy or use a control
 byte to trigger handshake start.
 
-### Proxy cannot survive USB device reset (#8, open)
+### RESOLVED: serial bridge reconnection on USB disconnect (#8)
 
-When the MCU resets (SWD or power), the USB device disappears. The proxy gets ENODEV on
-serial write and the serial reader thread dies. The proxy needs reconnection logic.
+Both `serial_udp_bridge.py` and `serial_tcp_proxy.py` now reconnect automatically when
+the serial port fails. On serial error, both threads are stopped, the bridge polls for
+device re-enumeration by VID/PID every 0.5s (up to 120s), and resumes data forwarding.
+
+**ESP32 (CP210x) behavior during software reset:** The CP210x USB-serial chip stays
+enumerated when the ESP32 CPU resets — it is a separate IC, not part of the ESP32.
+The bridge never sees a serial error and never triggers reconnect. Boot messages are
+read as serial data and logged as `invalid frame length NNNNN, skipping 2B` (the bridge
+tries to parse them as FMP frames). The bridge survives the reset transparently and
+continues forwarding once the ESP32 finishes booting. Verified on hardware with the
+`reset` control command (commit `e87148d`).
+
+**STM32 (USB CDC) behavior during reset:** USB CDC is implemented in the MCU itself.
+When the STM32 resets, the USB device disappears from the bus (`/dev/ttyACM*` gone).
+The bridge detects ENODEV, triggers `_reconnect_serial()`, and reconnects when the
+STM32 re-enumerates. This path cannot be tested without physical access to the STM32.
 
 ### RESOLVED: Noise finalize bug on ESP32
 
@@ -912,7 +926,7 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 
 | # | Title | Severity | Notes |
 |---|-------|----------|-------|
-| #8 | serial_tcp_proxy: slow open + no reconnection on USB reset | infrastructure | MCU retry loop compensates |
+| #8 | serial bridge reconnection | resolved | Reconnect logic added; ESP32 CP210x stays enumerated on reset (no reconnect needed); STM32 USB CDC triggers reconnect (untested without hardware) |
 | #12 | M7: HTTP status page over FIPS | feature | Firmware has HTTP handler; needs E2E test |
 | #13 | Noise crate audit: snow not viable | resolved | Hand-rolled Noise is working, tested (113 tests) |
 | #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
