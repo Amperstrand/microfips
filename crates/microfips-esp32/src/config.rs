@@ -47,7 +47,7 @@ pub const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 #[cfg(feature = "l2cap")]
 pub const L2CAP_FRAME_CAP: usize = 512;
 #[cfg(feature = "l2cap")]
-pub const L2CAP_PSM: u16 = 0x0085;
+pub const L2CAP_PSM: u16 = 133;
 #[cfg(feature = "l2cap")]
 pub const L2CAP_FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
     0x4c, 0x8f, 0x64, 0x40, 0xcc, 0xc9, 0x87, 0x9f, 0xc0, 0x42, 0xc5, 0x2c, 0x90, 0xb7, 0x90, 0x9c,
