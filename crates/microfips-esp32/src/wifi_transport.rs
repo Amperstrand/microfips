@@ -7,7 +7,7 @@ use embassy_net::{Config, IpAddress, IpEndpoint, Ipv4Address, Runner, StackResou
 use embassy_time::{Duration, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Trng;
-use esp_radio::wifi::{ClientConfig, ModeConfig, WifiDevice};
+use esp_radio::wifi::{ClientConfig, ModeConfig, WifiController, WifiDevice};
 use microfips_protocol::transport::Transport;
 use static_cell::StaticCell;
 
@@ -20,6 +20,7 @@ pub enum WifiError {
 }
 
 pub struct WifiTransport {
+    _wifi_controller: WifiController<'static>,
     socket: UdpSocket<'static>,
     peer: IpEndpoint,
 }
@@ -118,5 +119,9 @@ pub async fn build_wifi_transport(
         WIFI_FIPS_PORT,
     );
 
-    WifiTransport { socket, peer }
+    WifiTransport {
+        _wifi_controller: wifi_controller,
+        socket,
+        peer,
+    }
 }
