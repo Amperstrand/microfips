@@ -1,8 +1,5 @@
 #![no_std]
 
-extern crate alloc;
-
-use alloc::format;
 use microfips_service::{
     route_suffix, ContentType, Route, RouteMatch, Router, ServiceError, ServiceHandler,
     ServiceMethod, ServiceReply, ServiceRequest, ServiceStatus,
@@ -223,15 +220,24 @@ fn mint_quote_get(
     // NUT-04: mint quote request/response
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
     let quote_id = route_suffix(request.route, "/v1/mint/quote/bolt11/").unwrap_or("unknown");
-    let body = format!(
-        r#"{{"quote":"{quote_id}","paid":false,"request":"lnbc1demo","expiry":1735689600}}"#
-    );
-    copy_response(
-        response,
-        body.as_bytes(),
-        ServiceStatus::OK,
-        ContentType::Json,
-    )
+    let pre = br#"{"quote":""#;
+    let suf = br#"","paid":false,"request":"lnbc1demo","expiry":1735689600}"#;
+    let total = pre.len() + quote_id.len() + suf.len();
+    if response.len() < total {
+        return Err(ServiceError::BufferTooSmall);
+    }
+    let mut pos = 0;
+    response[pos..pos + pre.len()].copy_from_slice(pre);
+    pos += pre.len();
+    response[pos..pos + quote_id.len()].copy_from_slice(quote_id.as_bytes());
+    pos += quote_id.len();
+    response[pos..pos + suf.len()].copy_from_slice(suf);
+    pos += suf.len();
+    Ok(ServiceReply {
+        status: ServiceStatus::OK,
+        content_type: ContentType::Json,
+        body_len: pos,
+    })
 }
 
 fn mint_tokens(
@@ -269,13 +275,24 @@ fn melt_quote_get(
     // NUT-05: melt quote request/response
     // Demo note: transported over FIPS + HTTP demo adapter, not a production public mint.
     let quote_id = route_suffix(request.route, "/v1/melt/quote/bolt11/").unwrap_or("unknown");
-    let body = format!(r#"{{"quote":"{quote_id}","paid":false,"fee_reserve":1,"amount":21}}"#);
-    copy_response(
-        response,
-        body.as_bytes(),
-        ServiceStatus::OK,
-        ContentType::Json,
-    )
+    let pre = br#"{"quote":""#;
+    let suf = br#"","paid":false,"fee_reserve":1,"amount":21}"#;
+    let total = pre.len() + quote_id.len() + suf.len();
+    if response.len() < total {
+        return Err(ServiceError::BufferTooSmall);
+    }
+    let mut pos = 0;
+    response[pos..pos + pre.len()].copy_from_slice(pre);
+    pos += pre.len();
+    response[pos..pos + quote_id.len()].copy_from_slice(quote_id.as_bytes());
+    pos += quote_id.len();
+    response[pos..pos + suf.len()].copy_from_slice(suf);
+    pos += suf.len();
+    Ok(ServiceReply {
+        status: ServiceStatus::OK,
+        content_type: ContentType::Json,
+        body_len: pos,
+    })
 }
 
 fn melt_tokens(

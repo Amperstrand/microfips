@@ -85,6 +85,14 @@ impl Transport for L2capTransport {
             .await
             {
                 Either::First(frame) => {
+                    debug_assert!(
+                        buf.len() >= L2CAP_FRAME_CAP,
+                        "L2CAP frame truncated: buf is {}B but L2CAP_FRAME_CAP is {}B. \
+                         RECV_BUF_SIZE in node.rs must be >= L2CAP_FRAME_CAP. \
+                         See PR #57 Codex review.",
+                        buf.len(),
+                        L2CAP_FRAME_CAP,
+                    );
                     let n = frame.len().min(buf.len());
                     buf[..n].copy_from_slice(&frame[..n]);
                     return Ok(n);

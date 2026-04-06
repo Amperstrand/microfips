@@ -10,6 +10,13 @@ pub const RECV_TIMEOUT_MS: u64 = 30_000;
 pub const RETRY_SECS: u64 = 3;
 pub const CONNECT_DELAY_MS: u64 = 500;
 
+/// Transport recv buffer size. Must be >= the maximum frame size of any transport.
+/// L2CAP SeqPacket delivers complete messages — if a frame exceeds this buffer,
+/// the excess bytes are permanently lost (SeqPacket has no tail-byte buffering).
+/// FSP application payloads can exceed 256 bytes, so 512 matches L2CAP_FRAME_CAP.
+/// See Codex review: github.com/Amperstrand/microfips/pull/57#discussion_r1973271205
+pub const RECV_BUF_SIZE: usize = 512;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Protocol state events emitted to the handler.
 pub enum NodeEvent {
@@ -205,7 +212,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut send_ctr: u64 = 0;
 
         loop {
-            let mut rx = [0u8; 256];
+            let mut rx = [0u8; RECV_BUF_SIZE];
             let rx_fut = self.transport.recv(&mut rx);
             let tick = handler.poll_at();
             let deadline = tick.unwrap_or(next_hb).min(next_hb);
@@ -394,7 +401,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             }
 
             framing::compact(&mut self.rbuf, &mut self.rpos, &mut self.rlen);
-            let mut rx = [0u8; 256];
+            let mut rx = [0u8; RECV_BUF_SIZE];
             match select(
                 self.transport.recv(&mut rx),
                 Timer::after(Duration::from_millis(timeout_ms as u64)),
@@ -436,7 +443,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             }
 
             framing::compact(&mut self.rbuf, &mut self.rpos, &mut self.rlen);
-            let mut rx = [0u8; 256];
+            let mut rx = [0u8; RECV_BUF_SIZE];
             match select(
                 self.transport.recv(&mut rx),
                 Timer::after(Duration::from_millis(timeout_ms as u64)),

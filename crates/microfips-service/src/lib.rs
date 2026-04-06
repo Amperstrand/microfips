@@ -1,7 +1,5 @@
 #![no_std]
 
-extern crate alloc;
-
 use core::str;
 
 use microfips_core::fsp::FSP_MSG_DATA;
