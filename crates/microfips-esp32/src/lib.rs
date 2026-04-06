@@ -8,6 +8,9 @@ pub mod rng;
 pub mod stats;
 pub mod uart_transport;
 
+#[cfg(feature = "wifi")]
+pub mod wifi_transport;
+
 #[cfg(any(feature = "ble", feature = "l2cap"))]
 pub mod logger;
 #[cfg(any(feature = "ble", feature = "l2cap"))]
