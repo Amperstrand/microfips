@@ -28,11 +28,9 @@ impl Transport for UdpTransport<'_> {
     }
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let (n, _) = self
-            .socket
-            .recv_from(buf)
-            .await
-            .map_err(|_| UdpTransportError::Recv)?;
-        Ok(n)
+        match self.socket.recv_from(buf).await {
+            Ok((n, _ep)) => Ok(n),
+            Err(_) => Err(UdpTransportError::Recv),
+        }
     }
 }
