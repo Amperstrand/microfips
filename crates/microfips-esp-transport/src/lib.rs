@@ -12,6 +12,8 @@ pub mod node_info;
 pub mod rng;
 pub mod stats;
 pub mod uart_transport;
+
+#[cfg(feature = "esp32s3")]
 pub mod usb_transport;
 
 #[cfg(feature = "wifi")]

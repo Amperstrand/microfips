@@ -48,6 +48,23 @@ pub const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 pub const L2CAP_FRAME_CAP: usize = 512;
 #[cfg(feature = "l2cap")]
 pub const L2CAP_PSM: u16 = 133;
+
+/// BLE capability flags (issue #63).
+/// Included in scan response data so FIPS scanners can prefer routing nodes.
+#[cfg(feature = "l2cap")]
+pub mod ble_caps {
+    /// Node should not be preferred as routing parent.
+    pub const LEAF_ONLY: u8 = 0x01;
+    /// Node can route IP traffic (TUN interface active).
+    pub const HAS_TUN: u8 = 0x02;
+    /// Node provides gateway/internet access.
+    pub const HAS_INTERNET: u8 = 0x04;
+}
+
+/// 16-bit UUID for FIPS capability service data.
+/// Decodable by any BLE scanner as "this node's capabilities".
+#[cfg(feature = "l2cap")]
+pub const FIPS_CAPS_SERVICE_UUID: [u8; 2] = [0x46, 0x49]; // "FI"
 #[cfg(feature = "l2cap")]
 pub const L2CAP_FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
     0x4c, 0x8f, 0x64, 0x40, 0xcc, 0xc9, 0x87, 0x9f, 0xc0, 0x42, 0xc5, 0x2c, 0x90, 0xb7, 0x90, 0x9c,

@@ -251,8 +251,15 @@ pub async fn l2cap_host_task() {
                 };
 
                 let mut scan_data = [0u8; 31];
+                let caps = crate::config::ble_caps::LEAF_ONLY;
                 let Ok(scan_len) = AdStructure::encode_slice(
-                    &[AdStructure::CompleteLocalName(b"microfips-l2cap")],
+                    &[
+                        AdStructure::CompleteLocalName(b"microfips-l2cap"),
+                        AdStructure::ServiceData16 {
+                            uuid: crate::config::FIPS_CAPS_SERVICE_UUID,
+                            data: &[caps],
+                        },
+                    ],
                     &mut scan_data,
                 ) else {
                     log::error!("scan_data encode failed");
