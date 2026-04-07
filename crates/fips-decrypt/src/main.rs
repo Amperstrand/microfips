@@ -20,18 +20,14 @@ struct UdpDatagram<'a> {
     payload: &'a [u8],
 }
 
-const DEV_STM32_SECRET: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-];
-const DEV_ESP32_SECRET: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
-];
-const DEV_SIM_A_SECRET: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
-];
-const DEV_SIM_B_SECRET: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
-];
+const DEV_STM32_SECRET: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_stm32"));
+const DEV_ESP32_SECRET: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_esp32"));
+const DEV_SIM_A_SECRET: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_sim-a"));
+const DEV_SIM_B_SECRET: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_sim-b"));
 
 #[derive(Debug, Clone)]
 struct KeyPair {

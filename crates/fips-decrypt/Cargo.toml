@@ -9,3 +9,6 @@ hex = "0.4"
 log = "0.4"
 microfips-core = { path = "../microfips-core", features = ["std"] }
 pcap-file = "2"
+
+[build-dependencies]
+microfips-build = { path = "../microfips-build" }
