@@ -334,7 +334,45 @@ pub async fn l2cap_host_task() {
                     };
 
                 drain_l2cap_channels();
+
+                // FIPS probe does pubkey exchange then disconnects without sending
+                // protocol frames.  Wait for the first real FMP frame (MSG1, 114B)
+                // to confirm this is a promoted connection, not a discarded probe.
+                // Only then signal readiness so Node::run() starts.
+                let mut first_buf = [0u8; L2CAP_FRAME_CAP];
+                let first_result = embassy_time::with_timeout(
+                    embassy_time::Duration::from_secs(5),
+                    reader.receive(&stack, &mut first_buf),
+                )
+                .await;
+
+                let first_frame = match first_result {
+                    Ok(Ok(n)) if n >= 4 => {
+                        let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                        if frame.extend_from_slice(&first_buf[..n]).is_err() {
+                            log::warn!("first frame too large ({}B), re-advertising", n);
+                            continue;
+                        }
+                        log::info!("first frame received ({}B), connection confirmed", n);
+                        frame
+                    }
+                    Ok(Ok(n)) => {
+                        log::warn!("first frame too small ({}B), re-advertising", n);
+                        continue;
+                    }
+                    Ok(Err(_)) => {
+                        log::warn!("connection closed before first frame, re-advertising");
+                        continue;
+                    }
+                    Err(_) => {
+                        log::warn!("timeout waiting for first frame, re-advertising");
+                        continue;
+                    }
+                };
+
                 mark_link_ready(peer_pub);
+                L2CAP_RX_CH.send(first_frame).await;
+
                 let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
 
                 loop {
