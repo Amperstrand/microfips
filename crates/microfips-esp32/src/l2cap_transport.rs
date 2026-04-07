@@ -25,7 +25,7 @@ impl L2capHostAdapter for Esp32L2capHost {
         spawner.spawn(l2cap_host_task()).map_err(|_| ())
     }
 
-    async fn wait_for_l2cap_ready() -> ([u8; 33], u8) {
+    async fn wait_for_l2cap_ready() -> [u8; 33] {
         wait_for_l2cap_ready().await
     }
 
