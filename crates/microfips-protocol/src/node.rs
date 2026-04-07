@@ -94,6 +94,7 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     resp_buf: [u8; 256],
     raw_framing: bool,
     epoch: u64,
+    peer_sent_first: bool,
 }
 
 impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
@@ -109,6 +110,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             resp_buf: [0u8; 256],
             raw_framing: false,
             epoch: 0,
+            peer_sent_first: false,
         }
     }
 
@@ -121,6 +123,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     /// bridge or proxy.
     pub fn set_raw_framing(&mut self, raw: bool) {
         self.raw_framing = raw;
+    }
+
+    /// Hint that the peer already sent MSG1 as the first frame (e.g. FIPS probe
+    /// auto-connect sends MSG1 immediately after pubkey exchange on BLE L2CAP).
+    /// When set, handshake() skips sending its own MSG1 and enters the responder
+    /// path directly, avoiding cross-connection deadlock.
+    pub fn set_peer_sent_first(&mut self, sent: bool) {
+        self.peer_sent_first = sent;
     }
 
     pub fn transport_mut(&mut self) -> &mut T {
@@ -209,8 +219,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut f1 = [0u8; 256];
         let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1).unwrap();
 
-        self.send_frame(&f1[..f1len]).await?;
-        handler.on_event(NodeEvent::Msg1Sent).await;
+        if !self.peer_sent_first {
+            self.send_frame(&f1[..f1len]).await?;
+            handler.on_event(NodeEvent::Msg1Sent).await;
+        } else {
+            log::info!("peer sent MSG1 first, entering responder path");
+        }
 
         let mut mb = [0u8; 2048];
         let mut competing_msg1_count: u32 = 0;
@@ -261,7 +275,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
                             let from_configured_peer = initiator_static_pub == self.peer_pub;
 
-                            if from_configured_peer && my_addr.as_bytes() < peer_addr.as_bytes() {
+                            if from_configured_peer && !self.peer_sent_first && my_addr.as_bytes() < peer_addr.as_bytes() {
                                 #[cfg(feature = "std")]
                                 log::warn!(
                                     "discarding MSG1 from configured peer (waiting for MSG2)"

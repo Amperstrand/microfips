@@ -12,7 +12,7 @@ pub trait L2capHostAdapter {
     fn task_started() -> &'static core::sync::atomic::AtomicBool;
     fn link_up() -> bool;
     async fn spawn_host_task() -> Result<(), ()>;
-    async fn wait_for_l2cap_ready() -> [u8; 33];
+    async fn wait_for_l2cap_ready() -> ([u8; 33], u8);
     async fn send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>);
     async fn recv_frame() -> heapless::Vec<u8, L2CAP_FRAME_CAP>;
 }
@@ -26,6 +26,7 @@ pub enum L2capError {
 
 pub struct SharedL2capTransport<H> {
     peer_pub: Option<[u8; 33]>,
+    first_frame_phase: Option<u8>,
     _host: PhantomData<H>,
 }
 
@@ -33,12 +34,17 @@ impl<H> SharedL2capTransport<H> {
     pub fn new() -> Self {
         Self {
             peer_pub: None,
+            first_frame_phase: None,
             _host: PhantomData,
         }
     }
 
     pub fn take_peer_pub(&mut self) -> Option<[u8; 33]> {
         self.peer_pub.take()
+    }
+
+    pub fn take_first_frame_phase(&mut self) -> Option<u8> {
+        self.first_frame_phase.take()
     }
 }
 
@@ -57,7 +63,9 @@ impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
         }
 
         loop {
-            self.peer_pub = Some(H::wait_for_l2cap_ready().await);
+            let (pk, phase) = H::wait_for_l2cap_ready().await;
+            self.peer_pub = Some(pk);
+            self.first_frame_phase = Some(phase);
             if H::link_up() {
                 return Ok(());
             }

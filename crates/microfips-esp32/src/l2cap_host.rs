@@ -28,7 +28,7 @@ static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRA
     Channel::new();
 static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
     Channel::new();
-static L2CAP_READY_SIG: Signal<CriticalSectionRawMutex, [u8; 33]> = Signal::new();
+static L2CAP_READY_SIG: Signal<CriticalSectionRawMutex, ([u8; 33], u8)> = Signal::new();
 static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
 
@@ -134,9 +134,9 @@ fn mark_link_down() {
     L2CAP_LINK_UP.store(false, Ordering::Release);
 }
 
-fn mark_link_ready(peer_pub: [u8; 33]) {
+fn mark_link_ready(peer_pub: [u8; 33], first_frame_phase: u8) {
     L2CAP_LINK_UP.store(true, Ordering::Release);
-    L2CAP_READY_SIG.signal(peer_pub);
+    L2CAP_READY_SIG.signal((peer_pub, first_frame_phase));
 }
 
 async fn exchange_pubkeys<T, P>(
@@ -358,7 +358,12 @@ pub async fn l2cap_host_task() {
                             log::warn!("first frame too large ({}B), re-advertising", n);
                             continue;
                         }
-                        log::info!("first frame received ({}B), connection confirmed", n);
+                        let phase = first_buf[0];
+                        log::info!(
+                            "first frame received ({}B, phase=0x{:02x}), connection confirmed",
+                            n,
+                            phase
+                        );
                         frame
                     }
                     Ok(Ok(n)) => {
@@ -375,7 +380,12 @@ pub async fn l2cap_host_task() {
                     }
                 };
 
-                mark_link_ready(peer_pub);
+                // Extract phase from the FMP common prefix (byte 0: version<<4 | phase).
+                // FIPS sends MSG1 (phase 0x01) as the first frame after pubkey exchange.
+                // If we see MSG1, Node should enter responder path instead of sending
+                // its own MSG1, avoiding cross-connection deadlock.
+                let first_frame_phase = first_frame[0] & 0x0F;
+                mark_link_ready(peer_pub, first_frame_phase);
                 L2CAP_RX_CH.send(first_frame).await;
 
                 let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
@@ -422,7 +432,7 @@ pub fn l2cap_link_up() -> bool {
     L2CAP_LINK_UP.load(Ordering::Relaxed)
 }
 
-pub async fn wait_for_l2cap_ready() -> [u8; 33] {
+pub async fn wait_for_l2cap_ready() -> ([u8; 33], u8) {
     L2CAP_READY_SIG.wait().await
 }
 
