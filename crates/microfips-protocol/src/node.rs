@@ -18,7 +18,7 @@ pub const MAX_COMPETING_MSG1: u32 = 3;
 /// the excess bytes are permanently lost (SeqPacket has no tail-byte buffering).
 /// FSP application payloads can exceed 256 bytes, so 512 matches L2CAP_FRAME_CAP.
 /// See Codex review: github.com/Amperstrand/microfips/pull/57#discussion_r1973271205
-pub const RECV_BUF_SIZE: usize = 1500;
+pub const RECV_BUF_SIZE: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Protocol state events emitted to the handler.

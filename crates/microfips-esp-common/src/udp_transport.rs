@@ -28,9 +28,14 @@ impl Transport for UdpTransport<'_> {
     }
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        match self.socket.recv_from(buf).await {
-            Ok((n, _ep)) => Ok(n),
-            Err(_) => Err(UdpTransportError::Recv),
-        }
+        self.socket.recv_from(buf).await.map(|(n, _ep)| n).map_or_else(
+            |_| {
+                // embassy-net RecvError only has Truncated — datagram exceeded
+                // buffer. Return what we got (FMP prefix is always first, so
+                // partial frames are detectable upstream).
+                Ok(buf.len())
+            },
+            Ok,
+        )
     }
 }
