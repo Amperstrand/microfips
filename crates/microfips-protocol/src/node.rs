@@ -141,7 +141,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
     fn advance_epoch(&mut self) -> [u8; microfips_core::noise::EPOCH_SIZE] {
         self.epoch = self.epoch.wrapping_add(1);
-        self.epoch.to_le_bytes()
+        let mut epoch = [0u8; microfips_core::noise::EPOCH_SIZE];
+        let epoch_le = self.epoch.to_le_bytes();
+        let copy_len = epoch.len().min(epoch_le.len());
+        epoch[..copy_len].copy_from_slice(&epoch_le[..copy_len]);
+        epoch
     }
 
     pub async fn run<H: NodeHandler>(&mut self, handler: &mut H) -> ! {
@@ -1087,8 +1091,10 @@ mod tests {
         let mut node = Node::new(transport, TestRng::new(&[]), [0u8; 32], [0u8; 33]);
 
         assert_eq!(node.advance_epoch(), 1u64.to_le_bytes());
+        assert_eq!(node.epoch, 1);
         node.epoch = 0x0102_0304_0506_0707;
         assert_eq!(node.advance_epoch(), 0x0102_0304_0506_0708u64.to_le_bytes());
+        assert_eq!(node.epoch, 0x0102_0304_0506_0708);
     }
 
     #[test]
@@ -1099,6 +1105,7 @@ mod tests {
 
         node.epoch = u64::MAX;
         assert_eq!(node.advance_epoch(), 0u64.to_le_bytes());
+        assert_eq!(node.epoch, 0);
     }
 
     #[test]
