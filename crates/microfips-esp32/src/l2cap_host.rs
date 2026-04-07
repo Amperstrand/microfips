@@ -232,8 +232,13 @@ pub async fn l2cap_host_task() {
             }
         },
         async {
+            let mut had_connection = false;
             loop {
                 mark_link_down();
+                if had_connection {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                }
+                had_connection = true;
                 let mut adv_data = [0u8; 31];
                 let Ok(adv_len) = AdStructure::encode_slice(
                     &[
