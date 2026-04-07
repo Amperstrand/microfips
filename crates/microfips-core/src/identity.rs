@@ -1,21 +1,13 @@
 use sha2::{Digest, Sha256};
 
-/// STM32 identity secret key: 31 zero bytes + 0x01 (secp256k1 generator * 1).
-/// Used by host-side tools (sim, link, fips-decrypt). See keys.json for full registry.
-/// npub: npub10xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqpkge6d
-/// node_addr: 132f39a98c31baaddba6525f5d43f295
-pub const DEFAULT_SECRET: [u8; 32] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-];
+use crate::hex::{hex_bytes_16, hex_bytes_32, hex_bytes_33};
 
-/// VPS FIPS peer compressed public key (33 bytes).
-/// node_addr: 73a004fb58cb41616c2b5ef4bd801a9b
-pub const DEFAULT_PEER_PUB: [u8; 33] = [
-    0x02, 0x0e, 0x7a, 0x0d, 0xa0, 0x1a, 0x25, 0x5c, 0xde, 0x10, 0x6a, 0x20, 0x2e, 0xf4, 0xf5, 0x73,
-    0x67, 0x6e, 0xf9, 0xe2, 0x4f, 0x1c, 0x81, 0x76, 0xd0, 0x3a, 0xe8, 0x3a, 0x2a, 0x3a, 0x03, 0x7d,
-    0x21,
-];
+pub const DEFAULT_SECRET: [u8; 32] = hex_bytes_32(env!("DEVICE_SECRET_HEX_stm32"));
+pub const DEFAULT_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_vps"));
+pub const STM32_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_stm32"));
+pub const STM32_NODE_ADDR: [u8; 16] = hex_bytes_16(env!("DEVICE_NODE_ADDR_stm32"));
+pub const ESP32_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_esp32"));
+pub const ESP32_NODE_ADDR: [u8; 16] = hex_bytes_16(env!("DEVICE_NODE_ADDR_esp32"));
 
 pub struct NodeAddr(pub [u8; 16]);
 
@@ -258,178 +250,78 @@ mod tests {
         let _ = load_secret();
     }
 
-    /// Comprehensive audit of all hardcoded identity keys across the project.
-    ///
-    /// Every leaf node (STM32, ESP32, SIM-A, SIM-B) uses a deterministic secret:
-    /// 31 zero bytes + last byte N (secp256k1 generator * N).
-    /// This test verifies:
-    ///  1. Each secret is a valid secp256k1 private key (ecdh_pubkey succeeds)
-    ///  2. Each secret produces the expected compressed pubkey
-    ///  3. Each pubkey produces the expected NodeAddr (sha256(x_only)[0..16])
-    ///  4. The VPS peer pubkey (DEFAULT_PEER_PUB) is consistent with its NodeAddr
-    ///  5. All 4 leaf secrets are distinct
-    ///  6. All 4 leaf node_addrs are distinct
-    ///  7. The ESP32 STM32_PEER_PUB matches DEFAULT_SECRET's derived pubkey
-    ///
-    /// If ANY of these assertions fail, the hardcoded keys are inconsistent and
-    /// will cause routing failures. Do NOT change keys without updating ALL
-    /// locations: identity.rs, esp32/main.rs, sim/main.rs, FIPS config, AGENTS.md.
+    /// Verify keys.json-derived constants are internally consistent:
+    ///  1. Each secret produces a valid secp256k1 pubkey
+    ///  2. STM32_PEER_PUB matches ecdh_pubkey(DEFAULT_SECRET)
+    ///  3. ESP32_PEER_PUB matches ecdh_pubkey(esp32 secret from keys.json)
+    ///   4. VPS peer pubkey matches its node_addr
+    ///  5. All leaf secrets and node_addrs are distinct
     #[test]
-    fn audit_all_hardcoded_keys() {
+    #[cfg(feature = "std")]
+    fn audit_keys_json_consistency() {
         use crate::noise;
 
-        // ---- STM32 (DEFAULT_SECRET = generator * 1) ----
         let stm32_pub = noise::ecdh_pubkey(&DEFAULT_SECRET)
             .expect("STM32 secret must be a valid secp256k1 key");
-        let stm32_pub_expected: [u8; 33] = [
-            0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce,
-            0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81,
-            0x5b, 0x16, 0xf8, 0x17, 0x98,
-        ];
         assert_eq!(
-            stm32_pub, stm32_pub_expected,
-            "STM32 pubkey mismatch: DEFAULT_SECRET produces wrong pubkey"
+            stm32_pub, STM32_PEER_PUB,
+            "STM32_PEER_PUB must match ecdh_pubkey(DEFAULT_SECRET)"
         );
+
         let stm32_x: [u8; 32] = stm32_pub[1..].try_into().unwrap();
         let stm32_addr = NodeAddr::from_pubkey_x(&stm32_x);
         assert_eq!(
-            hex::encode(stm32_addr.as_bytes()),
-            "132f39a98c31baaddba6525f5d43f295",
-            "STM32 node_addr mismatch"
+            stm32_addr.as_bytes(),
+            &STM32_NODE_ADDR,
+            "STM32_NODE_ADDR must match sha256(pubkey_x)[0..16]"
         );
 
-        // ---- ESP32 (generator * 2) ----
-        let esp32_secret: [u8; 32] = [
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x02,
-        ];
+        let esp32_secret = hex_bytes_32(env!("DEVICE_SECRET_HEX_esp32"));
         let esp32_pub =
             noise::ecdh_pubkey(&esp32_secret).expect("ESP32 secret must be a valid secp256k1 key");
-        let esp32_pub_expected: [u8; 33] = [
-            0x02, 0xc6, 0x04, 0x7f, 0x94, 0x41, 0xed, 0x7d, 0x6d, 0x30, 0x45, 0x40, 0x6e, 0x95,
-            0xc0, 0x7c, 0xd8, 0x5c, 0x77, 0x8e, 0x4b, 0x8c, 0xef, 0x3c, 0xa7, 0xab, 0xac, 0x09,
-            0xb9, 0x5c, 0x70, 0x9e, 0xe5,
-        ];
         assert_eq!(
-            esp32_pub, esp32_pub_expected,
-            "ESP32 pubkey mismatch: ESP32_SECRET produces wrong pubkey"
+            esp32_pub, ESP32_PEER_PUB,
+            "ESP32_PEER_PUB must match ecdh_pubkey(ESP32_SECRET)"
         );
+
         let esp32_x: [u8; 32] = esp32_pub[1..].try_into().unwrap();
         let esp32_addr = NodeAddr::from_pubkey_x(&esp32_x);
         assert_eq!(
-            hex::encode(esp32_addr.as_bytes()),
-            "0135da2f8acf7b9e3090939432e47684",
-            "ESP32 node_addr mismatch"
+            esp32_addr.as_bytes(),
+            &ESP32_NODE_ADDR,
+            "ESP32_NODE_ADDR must match sha256(pubkey_x)[0..16]"
         );
 
-        // ---- SIM-A (generator * 3) ----
-        let sim_a_secret: [u8; 32] = [
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x03,
-        ];
-        let sim_a_pub =
-            noise::ecdh_pubkey(&sim_a_secret).expect("SIM-A secret must be a valid secp256k1 key");
-        let sim_a_pub_expected: [u8; 33] = [
-            0x02, 0xf9, 0x30, 0x8a, 0x01, 0x92, 0x58, 0xc3, 0x10, 0x49, 0x34, 0x4f, 0x85, 0xf8,
-            0x9d, 0x52, 0x29, 0xb5, 0x31, 0xc8, 0x45, 0x83, 0x6f, 0x99, 0xb0, 0x86, 0x01, 0xf1,
-            0x13, 0xbc, 0xe0, 0x36, 0xf9,
-        ];
-        assert_eq!(
-            sim_a_pub, sim_a_pub_expected,
-            "SIM-A pubkey mismatch: SIM_A_SECRET produces wrong pubkey"
-        );
-        let sim_a_x: [u8; 32] = sim_a_pub[1..].try_into().unwrap();
-        let sim_a_addr = NodeAddr::from_pubkey_x(&sim_a_x);
-        assert_eq!(
-            hex::encode(sim_a_addr.as_bytes()),
-            "7c79f3071e28344e8153bf6c73c294eb",
-            "SIM-A node_addr mismatch"
-        );
-
-        // ---- SIM-B (generator * 4) ----
-        let sim_b_secret: [u8; 32] = [
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x04,
-        ];
-        let sim_b_pub =
-            noise::ecdh_pubkey(&sim_b_secret).expect("SIM-B secret must be a valid secp256k1 key");
-        let sim_b_pub_expected: [u8; 33] = [
-            0x02, 0xe4, 0x93, 0xdb, 0xf1, 0xc1, 0x0d, 0x80, 0xf3, 0x58, 0x1e, 0x49, 0x04, 0x93,
-            0x0b, 0x14, 0x04, 0xcc, 0x6c, 0x13, 0x90, 0x0e, 0xe0, 0x75, 0x84, 0x74, 0xfa, 0x94,
-            0xab, 0xe8, 0xc4, 0xcd, 0x13,
-        ];
-        assert_eq!(
-            sim_b_pub, sim_b_pub_expected,
-            "SIM-B pubkey mismatch: SIM_B_SECRET produces wrong pubkey"
-        );
-        let sim_b_x: [u8; 32] = sim_b_pub[1..].try_into().unwrap();
-        let sim_b_addr = NodeAddr::from_pubkey_x(&sim_b_x);
-        assert_eq!(
-            hex::encode(sim_b_addr.as_bytes()),
-            "36be1ea4d814af2888b895065a0b2538",
-            "SIM-B node_addr mismatch"
-        );
-
-        // ---- VPS peer pubkey consistency ----
         let vps_x: [u8; 32] = DEFAULT_PEER_PUB[1..].try_into().unwrap();
         let vps_addr = NodeAddr::from_pubkey_x(&vps_x);
         assert_eq!(
-            hex::encode(vps_addr.as_bytes()),
-            "73a004fb58cb41616c2b5ef4bd801a9b",
-            "VPS node_addr mismatch: DEFAULT_PEER_PUB does not match FIPS node_addr"
+            vps_addr.as_bytes(),
+            &hex_bytes_16(env!("DEVICE_NODE_ADDR_vps")),
+            "VPS NODE_ADDR must match sha256(pubkey_x)[0..16]"
         );
 
-        // ---- Uniqueness checks ----
-        let all_secrets = [&DEFAULT_SECRET, &esp32_secret, &sim_a_secret, &sim_b_secret];
+        // Uniqueness: all 4 leaf secrets produce distinct addresses
+        let sim_a_secret = hex_bytes_32(env!("DEVICE_SECRET_HEX_sim-a"));
+        let sim_b_secret = hex_bytes_32(env!("DEVICE_SECRET_HEX_sim-b"));
+        let sim_a_pub = noise::ecdh_pubkey(&sim_a_secret).unwrap();
+        let sim_b_pub = noise::ecdh_pubkey(&sim_b_secret).unwrap();
+        let sim_a_addr = NodeAddr::from_pubkey_x(&sim_a_pub[1..].try_into().unwrap());
+        let sim_b_addr = NodeAddr::from_pubkey_x(&sim_b_pub[1..].try_into().unwrap());
+
         let all_addrs = [
             stm32_addr.as_bytes(),
             esp32_addr.as_bytes(),
             sim_a_addr.as_bytes(),
             sim_b_addr.as_bytes(),
         ];
-        for i in 0..all_secrets.len() {
-            for j in (i + 1)..all_secrets.len() {
-                assert_ne!(
-                    all_secrets[i], all_secrets[j],
-                    "secret collision: leaf {} and leaf {} have the same secret",
-                    i, j
-                );
+        for i in 0..all_addrs.len() {
+            for j in (i + 1)..all_addrs.len() {
                 assert_ne!(
                     all_addrs[i], all_addrs[j],
-                    "node_addr collision: leaf {} and leaf {} have the same node_addr",
+                    "node_addr collision: leaf {} and leaf {}",
                     i, j
                 );
             }
-        }
-
-        // ---- ESP32's STM32_PEER_PUB must match DEFAULT_SECRET's pubkey ----
-        // (ESP32 targets STM32 for MCU-to-MCU FSP sessions)
-        assert_eq!(
-            stm32_pub, stm32_pub_expected,
-            "STM32_PEER_PUB in esp32/main.rs must match ecdh_pubkey(DEFAULT_SECRET)"
-        );
-
-        // ---- Verify pattern: all secrets are 31 zeros + byte N ----
-        for (label, secret, expected_last) in [
-            ("STM32", &DEFAULT_SECRET as &[u8], 0x01u8),
-            ("ESP32", &esp32_secret as &[u8], 0x02u8),
-            ("SIM-A", &sim_a_secret as &[u8], 0x03u8),
-            ("SIM-B", &sim_b_secret as &[u8], 0x04u8),
-        ] {
-            assert_eq!(
-                &secret[..31],
-                &[0u8; 31],
-                "{} secret must be 31 zero bytes + last byte",
-                label
-            );
-            assert_eq!(
-                secret[31], expected_last,
-                "{} secret last byte must be 0x{:02x}",
-                label, expected_last
-            );
         }
     }
 }
