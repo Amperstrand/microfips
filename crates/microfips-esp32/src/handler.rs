@@ -4,6 +4,7 @@ pub use microfips_esp_transport::handler::{EspFspHandler, SharedEspHandler as Es
 pub fn build_demo_fsp(
     responder_ephemeral: [u8; 32],
     initiator_ephemeral: [u8; 32],
+    fsp_epoch: [u8; 8],
 ) -> EspFspHandler {
     microfips_esp_transport::handler::build_demo_fsp(
         &ESP32_SECRET,
@@ -11,5 +12,6 @@ pub fn build_demo_fsp(
         initiator_ephemeral,
         &STM32_PEER_PUB,
         STM32_NODE_ADDR,
+        fsp_epoch,
     )
 }

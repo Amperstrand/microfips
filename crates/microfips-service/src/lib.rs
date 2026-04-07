@@ -504,6 +504,7 @@ mod tests {
         let mut responder: FspDualHandler<_, 256> = FspDualHandler::new_responder(
             resp_secret,
             [0x33; 32],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
             FspServiceAdapter::new(Router::new(&routes)),
         );
         let mut initiator = FspInitiatorSession::new(&init_secret, &[0x44; 32], &resp_pub).unwrap();
@@ -535,7 +536,7 @@ mod tests {
 
         let mut msg3 = [0u8; 512];
         let msg3_len = initiator
-            .build_msg3(&[0x02, 0, 0, 0, 0, 0, 0, 0], &mut msg3)
+            .build_msg3(&responder.fsp_epoch, &mut msg3)
             .unwrap();
         let mut msg3_payload = [0u8; 512];
         msg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(

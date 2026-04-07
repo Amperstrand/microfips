@@ -79,7 +79,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let rng = EspRng(trng);
     let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
 
-    let fsp = build_demo_fsp(resp_eph, init_eph);
+    let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
     let mut handler = EspHandler { led: &mut led, fsp };
 
     log::info!("Node running...");

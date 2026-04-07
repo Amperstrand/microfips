@@ -135,6 +135,7 @@ async fn main(_spawner: Spawner) {
             init_eph,
             &ESP32_PEER_PUB,
             ESP32_NODE_ADDR,
+            1u64.to_le_bytes(),
             FspServiceAdapter::new(DemoService::new()),
         ),
     };
