@@ -94,15 +94,10 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     resp_buf: [u8; 256],
     raw_framing: bool,
     epoch: u64,
-    /// Ephemeral key for Noise IK handshake. Generated once at startup and
-    /// reused across retries so FIPS can decrypt resent MSG2 responses.
-    eph: [u8; 32],
 }
 
 impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
-    pub fn new(transport: T, mut rng: R, secret: [u8; 32], peer_pub: [u8; 33]) -> Self {
-        let mut eph = [0u8; 32];
-        rng.fill_bytes(&mut eph);
+    pub fn new(transport: T, rng: R, secret: [u8; 32], peer_pub: [u8; 33]) -> Self {
         Self {
             transport,
             rng,
@@ -114,7 +109,6 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             resp_buf: [0u8; 256],
             raw_framing: false,
             epoch: 0,
-            eph,
         }
     }
 
@@ -145,6 +139,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
     }
 
+    fn advance_epoch(&mut self) -> [u8; microfips_core::noise::EPOCH_SIZE] {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.epoch.to_le_bytes()
+    }
+
     pub async fn run<H: NodeHandler>(&mut self, handler: &mut H) -> ! {
         loop {
             let _ = self.session(handler).await;
@@ -157,14 +156,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             .wait_ready()
             .await
             .map_err(|_| ProtocolError::Disconnected)?;
-        self.epoch += 1;
+        let epoch = self.advance_epoch();
         Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
         handler.on_event(NodeEvent::Connected).await;
 
         self.rpos = 0;
         self.rlen = 0;
 
-        match self.handshake(handler).await {
+        match self.handshake(epoch, handler).await {
             Ok((ks, kr, them)) => {
                 handler.on_event(NodeEvent::HandshakeOk).await;
                 let result = self.steady(&ks, &kr, them, handler).await;
@@ -180,6 +179,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
     async fn handshake<H: NodeHandler>(
         &mut self,
+        epoch: [u8; microfips_core::noise::EPOCH_SIZE],
         handler: &mut H,
     ) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
         use microfips_core::fmp;
@@ -192,11 +192,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let peer_x_only: [u8; 32] = self.peer_pub[1..33].try_into().unwrap();
         let peer_addr = NodeAddr::from_pubkey_x(&peer_x_only);
 
+        let initiator_eph = self.generate_valid_eph();
         let (mut noise_st, _e_pub) =
-            noise::NoiseIkInitiator::new(&self.eph, &self.secret, &self.peer_pub).expect("noise init");
-
-        let mut epoch = [0u8; noise::EPOCH_SIZE];
-        epoch[..8].copy_from_slice(&self.epoch.to_le_bytes());
+            noise::NoiseIkInitiator::new(&initiator_eph, &self.secret, &self.peer_pub)
+                .expect("noise init");
 
         let mut n1 = [0u8; 256];
         let n1len = noise_st
@@ -266,7 +265,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             }
 
                             let mut resp_eph = self.generate_valid_eph();
-                            while resp_eph == self.eph {
+                            while resp_eph == initiator_eph {
                                 resp_eph = self.generate_valid_eph();
                             }
 
@@ -1082,6 +1081,27 @@ mod tests {
     }
 
     #[test]
+    fn test_advance_epoch_starts_at_one_and_uses_little_endian() {
+        let inner = fresh_inner();
+        let transport = crate::transport::mock::MockTransport::new(inner);
+        let mut node = Node::new(transport, TestRng::new(&[]), [0u8; 32], [0u8; 33]);
+
+        assert_eq!(node.advance_epoch(), 1u64.to_le_bytes());
+        node.epoch = 0x0102_0304_0506_0707;
+        assert_eq!(node.advance_epoch(), 0x0102_0304_0506_0708u64.to_le_bytes());
+    }
+
+    #[test]
+    fn test_advance_epoch_wraps() {
+        let inner = fresh_inner();
+        let transport = crate::transport::mock::MockTransport::new(inner);
+        let mut node = Node::new(transport, TestRng::new(&[]), [0u8; 32], [0u8; 33]);
+
+        node.epoch = u64::MAX;
+        assert_eq!(node.advance_epoch(), 0u64.to_le_bytes());
+    }
+
+    #[test]
     fn test_handshake_with_responder() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
@@ -1145,7 +1165,8 @@ mod tests {
                     responder_pub,
                 );
                 let mut handler = NoopTestHandler;
-                let result = node.handshake(&mut handler).await;
+                let epoch = node.advance_epoch();
+                let result = node.handshake(epoch, &mut handler).await;
                 assert!(result.is_ok(), "handshake should succeed");
                 let (ks, kr, them) = result.unwrap();
                 assert_eq!(them, 1, "responder sender_idx should be 1");
@@ -1210,7 +1231,8 @@ mod tests {
                     responder_pub,
                 );
                 let mut handler = NoopTestHandler;
-                let _ = node.handshake(&mut handler).await;
+                let epoch = node.advance_epoch();
+                let _ = node.handshake(epoch, &mut handler).await;
             };
 
             join(responder, initiator).await;
@@ -1227,7 +1249,8 @@ mod tests {
             let secret = random_secret();
             let mut node = Node::new(init_transport, TestRng::from_os_rng(), secret, [0x02; 33]);
             let mut handler = NoopTestHandler;
-            let result = node.handshake(&mut handler).await;
+            let epoch = node.advance_epoch();
+            let result = node.handshake(epoch, &mut handler).await;
             assert_eq!(result, Err(ProtocolError::Timeout));
         });
     }
@@ -1287,6 +1310,7 @@ mod tests {
                 let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
                 let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub).unwrap();
                 let (_init_pub, epoch) = resp.read_message1(&noise_payload[PUBKEY_SIZE..]).unwrap();
+                assert_eq!(epoch, 1u64.to_le_bytes());
 
                 let resp_eph = random_secret();
                 let mut msg2_noise = [0u8; 128];
@@ -1348,13 +1372,15 @@ mod tests {
             let node_a = async move {
                 let mut node = Node::new(transport_a, TestRng::from_os_rng(), secret_a, pub_b);
                 let mut handler = NoopTestHandler;
-                node.handshake(&mut handler).await.unwrap()
+                let epoch = node.advance_epoch();
+                node.handshake(epoch, &mut handler).await.unwrap()
             };
 
             let node_b = async move {
                 let mut node = Node::new(transport_b, TestRng::from_os_rng(), secret_b, pub_a);
                 let mut handler = NoopTestHandler;
-                node.handshake(&mut handler).await.unwrap()
+                let epoch = node.advance_epoch();
+                node.handshake(epoch, &mut handler).await.unwrap()
             };
 
             let (result_a, result_b) = join(node_a, node_b).await;
@@ -1433,7 +1459,8 @@ mod tests {
                     remote_pub,
                 );
                 let mut handler = NoopTestHandler;
-                let result = node.handshake(&mut handler).await.unwrap();
+                let epoch = node.advance_epoch();
+                let result = node.handshake(epoch, &mut handler).await.unwrap();
                 assert_eq!(result.2, 11);
             };
 
@@ -1497,7 +1524,8 @@ mod tests {
                     remote_pub,
                 );
                 let mut handler = NoopTestHandler;
-                node.handshake(&mut handler).await.unwrap()
+                let epoch = node.advance_epoch();
+                node.handshake(epoch, &mut handler).await.unwrap()
             };
 
             let ((remote_ks, remote_kr), local_result) = join(remote, local).await;
@@ -1549,7 +1577,8 @@ mod tests {
                     remote_pub,
                 );
                 let mut handler = NoopTestHandler;
-                let result = node.handshake(&mut handler).await;
+                let epoch = node.advance_epoch();
+                let result = node.handshake(epoch, &mut handler).await;
                 assert_eq!(result, Err(ProtocolError::Timeout));
             };
 
