@@ -96,11 +96,21 @@ async fn main(spawner: embassy_executor::Spawner) {
         }
     };
     control::set_peer_pub(peer_pub);
-    log::info!("pubkey exchange complete; starting node");
+
+    use microfips_core::fmp;
+    let peer_sent_first = transport
+        .take_first_frame_phase()
+        .is_some_and(|phase| phase == fmp::PHASE_MSG1);
+
+    log::info!(
+        "pubkey exchange complete; starting node (peer_sent_first={})",
+        peer_sent_first
+    );
 
     let rng = EspRng(trng);
     let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
     node.set_raw_framing(true);
+    node.set_peer_sent_first(peer_sent_first);
 
     let fsp = build_demo_fsp(resp_eph, init_eph);
     let mut handler = EspHandler { led: &mut led, fsp };
