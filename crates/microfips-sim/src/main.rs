@@ -124,6 +124,7 @@ impl SimHandler {
             inner: FspDualHandler::new_responder(
                 secret,
                 eph,
+                1u64.to_le_bytes(),
                 FspServiceAdapter::new(DemoService::new()),
             ),
             is_initiator: false,
@@ -150,6 +151,7 @@ impl SimHandler {
             init_eph,
             target_pub,
             target_addr,
+            1u64.to_le_bytes(),
             FspServiceAdapter::new(DemoService::new()),
         );
         inner.test_ping = test_ping && !test_http;

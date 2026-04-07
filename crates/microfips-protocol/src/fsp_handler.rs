@@ -41,6 +41,10 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     pub secret: [u8; 32],
     pub fsp_session: FspSession,
     pub fsp_ephemeral: [u8; 32],
+    /// FSP session-layer epoch. Aligned with upstream FIPS which reuses its
+    /// `startup_epoch` for both IK (link-layer) and FSP (session-layer) handshakes.
+    /// Microfips passes the link-layer epoch from `Node::advance_epoch()` so that
+    /// each session attempt uses a unique epoch, enabling upstream restart detection.
     pub fsp_epoch: [u8; 8],
     pub initiator: Option<FspInitiatorSession>,
     pub target_addr: Option<[u8; 16]>,
@@ -51,12 +55,12 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
 }
 
 impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
-    pub fn new_responder(secret: [u8; 32], ephemeral: [u8; 32], app: A) -> Self {
+    pub fn new_responder(secret: [u8; 32], ephemeral: [u8; 32], fsp_epoch: [u8; 8], app: A) -> Self {
         Self {
             secret,
             fsp_session: FspSession::new(),
             fsp_ephemeral: ephemeral,
-            fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
+            fsp_epoch,
             initiator: None,
             target_addr: None,
             fsp_timer: None,
@@ -78,6 +82,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
         initiator_ephemeral: [u8; 32],
         target_pub: &[u8; 33],
         target_addr: [u8; 16],
+        fsp_epoch: [u8; 8],
         app: A,
     ) -> Self {
         let initiator = FspInitiatorSession::new(&secret, &initiator_ephemeral, target_pub).ok();
@@ -85,7 +90,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             secret,
             fsp_session: FspSession::new(),
             fsp_ephemeral: responder_ephemeral,
-            fsp_epoch: [0x01, 0, 0, 0, 0, 0, 0, 0],
+            fsp_epoch,
             initiator,
             target_addr: Some(target_addr),
             fsp_timer: None,
@@ -101,7 +106,6 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             NodeEvent::Msg1Sent => {}
             NodeEvent::HandshakeOk => {
                 self.fsp_session.reset();
-                self.fsp_epoch = [0x01, 0, 0, 0, 0, 0, 0, 0];
                 if self.initiator.is_some() {
                     self.fsp_timer =
                         Some(Instant::now() + Duration::from_secs(FSP_START_DELAY_SECS));
@@ -293,9 +297,8 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             FspInitiatorState::AwaitingAck => {
                 if fsp_phase == 0x02 {
                     if let Ok(()) = fsp.handle_ack(fsp_data) {
-                        let fsp_epoch = [0x02, 0, 0, 0, 0, 0, 0, 0];
                         let mut msg3_buf = [0u8; 512];
-                        if let Ok(msg3_len) = fsp.build_msg3(&fsp_epoch, &mut msg3_buf) {
+                        if let Ok(msg3_len) = fsp.build_msg3(&self.fsp_epoch, &mut msg3_buf) {
                             let dg_body = microfips_core::fsp::build_session_datagram_body(
                                 &my_addr,
                                 &target_addr,
@@ -473,6 +476,7 @@ mod tests {
             [0x22; 32],
             &test_target_pub(),
             [0x33; 16],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
             NoopFspApp,
         );
         assert_eq!(handler.fsp_timer, None);
@@ -483,7 +487,7 @@ mod tests {
     #[test]
     fn responder_handler_does_not_start_timer_after_handshake() {
         let mut handler: FspDualHandler<_, 1024> =
-            FspDualHandler::new_responder(DEFAULT_SECRET, [0x11; 32], NoopFspApp);
+            FspDualHandler::new_responder(DEFAULT_SECRET, [0x11; 32], [0x01, 0, 0, 0, 0, 0, 0, 0], NoopFspApp);
         handler.on_event_default(NodeEvent::HandshakeOk);
         assert_eq!(handler.fsp_timer, None);
     }
@@ -496,6 +500,7 @@ mod tests {
             [0x22; 32],
             &test_target_pub(),
             [0x33; 16],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
             NoopFspApp,
         );
         let mut resp = [0u8; 512];

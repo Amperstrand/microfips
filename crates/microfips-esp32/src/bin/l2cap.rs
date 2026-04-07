@@ -112,7 +112,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     node.set_raw_framing(true);
     node.set_peer_sent_first(peer_sent_first);
 
-    let fsp = build_demo_fsp(resp_eph, init_eph);
+    let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
     let mut handler = EspHandler { led: &mut led, fsp };
 
     log::info!("Node running (L2CAP)...");

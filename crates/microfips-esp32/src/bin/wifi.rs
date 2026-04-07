@@ -70,7 +70,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
     node.set_raw_framing(true);
 
-    let fsp = build_demo_fsp(resp_eph, init_eph);
+    let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
     let mut handler = EspHandler { led: &mut led, fsp };
 
     control::init_control(&identity, "wifi");

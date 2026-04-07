@@ -19,6 +19,7 @@ pub fn build_demo_fsp(
     initiator_ephemeral: [u8; 32],
     peer_pub: &[u8; 33],
     peer_addr: [u8; 16],
+    fsp_epoch: [u8; 8],
 ) -> EspFspHandler {
     FspDualHandler::new_dual(
         *secret,
@@ -26,6 +27,7 @@ pub fn build_demo_fsp(
         initiator_ephemeral,
         peer_pub,
         peer_addr,
+        fsp_epoch,
         FspServiceAdapter::new(DemoService::new()),
     )
 }
