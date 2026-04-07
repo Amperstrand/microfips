@@ -1,6 +1,7 @@
 use sha2::{Digest, Sha256};
 
 /// STM32 identity secret key: 31 zero bytes + 0x01 (secp256k1 generator * 1).
+/// Used by host-side tools (sim, link, fips-decrypt). See keys.json for full registry.
 /// npub: npub10xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqpkge6d
 /// node_addr: 132f39a98c31baaddba6525f5d43f295
 pub const DEFAULT_SECRET: [u8; 32] = [
@@ -100,6 +101,20 @@ pub fn load_peer_pub() -> [u8; 33] {
         }
         Err(_) => DEFAULT_PEER_PUB,
     }
+}
+
+pub fn hex_encode(input: &[u8], output: &mut [u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (i, &b) in input.iter().enumerate() {
+        output[i * 2] = HEX[(b >> 4) as usize];
+        output[i * 2 + 1] = HEX[(b & 0x0f) as usize];
+    }
+}
+
+pub fn encode_nsec(secret: &[u8; 32]) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    hex_encode(secret, &mut out);
+    out
 }
 
 #[cfg(test)]
