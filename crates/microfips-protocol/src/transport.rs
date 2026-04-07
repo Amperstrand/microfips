@@ -377,24 +377,17 @@ mod tests {
     use crate::test_helpers::block_on;
     use crate::transport::channel::{pair as channel_pair, ChannelTransport};
     use crate::transport::mock::{MockTransport, MockTransportInner};
-    use std::sync::LazyLock;
-
-    fn inner() -> &'static MockTransportInner {
-        static INNER: LazyLock<MockTransportInner> = LazyLock::new(MockTransportInner::new);
-        &INNER
-    }
+    use std::boxed::Box;
 
     fn fresh_inner() -> &'static MockTransportInner {
-        let r = inner();
-        r.reset();
-        r
+        Box::leak(Box::new(MockTransportInner::new()))
     }
 
     #[test]
     fn test_send_recv_frame_roundtrip() {
-        fresh_inner();
-        let writer = MockTransport::new(inner());
-        let reader = MockTransport::new(inner());
+        let i = fresh_inner();
+        let writer = MockTransport::new(i);
+        let reader = MockTransport::new(i);
 
         block_on(async {
             let mut fw = FrameWriter::new(writer);
@@ -412,9 +405,9 @@ mod tests {
 
     #[test]
     fn test_frame_71_bytes() {
-        fresh_inner();
-        let writer = MockTransport::new(inner());
-        let reader = MockTransport::new(inner());
+        let i = fresh_inner();
+        let writer = MockTransport::new(i);
+        let reader = MockTransport::new(i);
 
         block_on(async {
             let mut fw = FrameWriter::new(writer);
@@ -432,9 +425,9 @@ mod tests {
 
     #[test]
     fn test_frame_128_bytes() {
-        fresh_inner();
-        let writer = MockTransport::new(inner());
-        let reader = MockTransport::new(inner());
+        let i = fresh_inner();
+        let writer = MockTransport::new(i);
+        let reader = MockTransport::new(i);
 
         block_on(async {
             let mut fw = FrameWriter::new(writer);
@@ -452,9 +445,9 @@ mod tests {
 
     #[test]
     fn test_multiple_frames_sequential() {
-        fresh_inner();
-        let writer = MockTransport::new(inner());
-        let reader = MockTransport::new(inner());
+        let i = fresh_inner();
+        let writer = MockTransport::new(i);
+        let reader = MockTransport::new(i);
 
         block_on(async {
             let mut fw = FrameWriter::new(writer);
@@ -476,8 +469,8 @@ mod tests {
 
     #[test]
     fn test_recv_timeout() {
-        fresh_inner();
-        let reader = MockTransport::new(inner());
+        let i = fresh_inner();
+        let reader = MockTransport::new(i);
 
         block_on(async {
             let mut fr = FrameReader::new(reader);
@@ -489,9 +482,9 @@ mod tests {
 
     #[test]
     fn test_large_frame_near_max() {
-        fresh_inner();
-        let writer = MockTransport::new(inner());
-        let reader = MockTransport::new(inner());
+        let i = fresh_inner();
+        let writer = MockTransport::new(i);
+        let reader = MockTransport::new(i);
 
         block_on(async {
             let mut fw = FrameWriter::new(writer);
