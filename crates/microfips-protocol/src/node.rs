@@ -212,7 +212,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut competing_msg1_count: u32 = 0;
         let mut resend_count: u32 = 0;
         loop {
-            match self.recv_frame(&mut mb, MSG1_RESEND_SECS as u32 * 1000).await {
+            match self
+                .recv_frame(&mut mb, MSG1_RESEND_SECS as u32 * 1000)
+                .await
+            {
                 Ok(ml) => {
                     resend_count = 0;
                     let m = fmp::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
@@ -247,10 +250,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 return Err(ProtocolError::InvalidMessage);
                             }
 
-                            let peer_e_pub: [u8; noise::PUBKEY_SIZE] =
-                                noise_payload[..noise::PUBKEY_SIZE]
-                                    .try_into()
-                                    .map_err(|_| ProtocolError::InvalidMessage)?;
+                            let peer_e_pub: [u8; noise::PUBKEY_SIZE] = noise_payload
+                                [..noise::PUBKEY_SIZE]
+                                .try_into()
+                                .map_err(|_| ProtocolError::InvalidMessage)?;
 
                             let mut responder =
                                 noise::NoiseIkResponder::new(&self.secret, &peer_e_pub)
@@ -1056,10 +1059,7 @@ mod tests {
         eph: &[u8; 32],
         sender_idx: u32,
         epoch: u64,
-    ) -> (
-        std::vec::Vec<u8>,
-        microfips_core::noise::NoiseIkInitiator,
-    ) {
+    ) -> (std::vec::Vec<u8>, microfips_core::noise::NoiseIkInitiator) {
         use microfips_core::fmp;
         use microfips_core::noise::{self, NoiseIkInitiator};
 
@@ -1405,13 +1405,12 @@ mod tests {
         use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
 
         let (a, b) = distinct_secret_pair();
-        let (local_secret, remote_secret) = if node_addr_from_secret(&a).as_bytes()
-            < node_addr_from_secret(&b).as_bytes()
-        {
-            (a, b)
-        } else {
-            (b, a)
-        };
+        let (local_secret, remote_secret) =
+            if node_addr_from_secret(&a).as_bytes() < node_addr_from_secret(&b).as_bytes() {
+                (a, b)
+            } else {
+                (b, a)
+            };
         let local_pub = ecdh_pubkey(&local_secret).unwrap();
         let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
 
@@ -1436,8 +1435,9 @@ mod tests {
 
                 let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
                 let mut responder = NoiseIkResponder::new(&remote_secret, &ei_pub).unwrap();
-                let (_initiator_pub, epoch) =
-                    responder.read_message1(&noise_payload[PUBKEY_SIZE..]).unwrap();
+                let (_initiator_pub, epoch) = responder
+                    .read_message1(&noise_payload[PUBKEY_SIZE..])
+                    .unwrap();
 
                 let mut msg2_noise = [0u8; 128];
                 let msg2_noise_len = responder
@@ -1445,9 +1445,13 @@ mod tests {
                     .unwrap();
 
                 let mut msg2_buf = [0u8; 256];
-                let msg2_len =
-                    fmp::build_msg2(11, local_sender_idx, &msg2_noise[..msg2_noise_len], &mut msg2_buf)
-                        .unwrap();
+                let msg2_len = fmp::build_msg2(
+                    11,
+                    local_sender_idx,
+                    &msg2_noise[..msg2_noise_len],
+                    &mut msg2_buf,
+                )
+                .unwrap();
                 send_test_frame(&mut remote_transport, &msg2_buf[..msg2_len]).await;
             };
 
@@ -1476,13 +1480,12 @@ mod tests {
         use microfips_core::noise::ecdh_pubkey;
 
         let (a, b) = distinct_secret_pair();
-        let (remote_secret, local_secret) = if node_addr_from_secret(&a).as_bytes()
-            < node_addr_from_secret(&b).as_bytes()
-        {
-            (a, b)
-        } else {
-            (b, a)
-        };
+        let (remote_secret, local_secret) =
+            if node_addr_from_secret(&a).as_bytes() < node_addr_from_secret(&b).as_bytes() {
+                (a, b)
+            } else {
+                (b, a)
+            };
         let local_pub = ecdh_pubkey(&local_secret).unwrap();
         let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
 
@@ -1492,8 +1495,13 @@ mod tests {
             let remote = async move {
                 let remote_sender_idx = 7;
                 let remote_eph = random_secret();
-                let (msg1_frame, mut initiator) =
-                    build_msg1_frame(&remote_secret, &local_pub, &remote_eph, remote_sender_idx, 1);
+                let (msg1_frame, mut initiator) = build_msg1_frame(
+                    &remote_secret,
+                    &local_pub,
+                    &remote_eph,
+                    remote_sender_idx,
+                    1,
+                );
                 send_test_frame(&mut remote_transport, &msg1_frame).await;
 
                 loop {
@@ -1542,13 +1550,12 @@ mod tests {
         use microfips_core::noise::ecdh_pubkey;
 
         let (a, b) = distinct_secret_pair();
-        let (local_secret, remote_secret) = if node_addr_from_secret(&a).as_bytes()
-            < node_addr_from_secret(&b).as_bytes()
-        {
-            (a, b)
-        } else {
-            (b, a)
-        };
+        let (local_secret, remote_secret) =
+            if node_addr_from_secret(&a).as_bytes() < node_addr_from_secret(&b).as_bytes() {
+                (a, b)
+            } else {
+                (b, a)
+            };
         let local_pub = ecdh_pubkey(&local_secret).unwrap();
         let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
 
@@ -1558,13 +1565,8 @@ mod tests {
             let remote = async move {
                 for sender_idx in 0..=MAX_COMPETING_MSG1 {
                     let competing_eph = random_secret();
-                    let (msg1_frame, _) = build_msg1_frame(
-                        &remote_secret,
-                        &local_pub,
-                        &competing_eph,
-                        sender_idx,
-                        1,
-                    );
+                    let (msg1_frame, _) =
+                        build_msg1_frame(&remote_secret, &local_pub, &competing_eph, sender_idx, 1);
                     send_test_frame(&mut remote_transport, &msg1_frame).await;
                 }
             };
