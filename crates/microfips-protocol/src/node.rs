@@ -242,14 +242,6 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 return Err(ProtocolError::InvalidMessage);
                             }
 
-                            if my_addr.as_bytes() < peer_addr.as_bytes() {
-                                competing_msg1_count += 1;
-                                if competing_msg1_count > MAX_COMPETING_MSG1 {
-                                    return Err(ProtocolError::Timeout);
-                                }
-                                continue;
-                            }
-
                             if noise_payload.len() < noise::PUBKEY_SIZE {
                                 return Err(ProtocolError::InvalidMessage);
                             }
@@ -267,8 +259,22 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 .read_message1(&noise_payload[noise::PUBKEY_SIZE..])
                                 .map_err(|_| ProtocolError::InvalidMessage)?;
 
-                            if initiator_static_pub != self.peer_pub {
-                                return Err(ProtocolError::InvalidMessage);
+                            let from_configured_peer = initiator_static_pub == self.peer_pub;
+
+                            if from_configured_peer && my_addr.as_bytes() < peer_addr.as_bytes() {
+                                #[cfg(feature = "std")]
+                                log::warn!(
+                                    "discarding MSG1 from configured peer (waiting for MSG2)"
+                                );
+                                continue;
+                            }
+
+                            if !from_configured_peer {
+                                competing_msg1_count += 1;
+                                if competing_msg1_count > MAX_COMPETING_MSG1 {
+                                    return Err(ProtocolError::Timeout);
+                                }
+                                continue;
                             }
 
                             let mut resp_eph = self.generate_valid_eph();
@@ -642,7 +648,16 @@ fn handle_frame_inner<H: NodeHandler>(
                 }
             }
         }
-        _ => FrameAction::Continue,
+        _ => {
+            #[cfg(feature = "std")]
+            if matches!(
+                m,
+                fmp::FmpMessage::Msg1 { .. } | fmp::FmpMessage::Msg2 { .. }
+            ) {
+                log::warn!("discarding handshake frame in established state");
+            }
+            FrameAction::Continue
+        }
     }
 }
 
