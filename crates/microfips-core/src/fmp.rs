@@ -7,7 +7,7 @@
 //!
 //! | ID | Field | microfips | FIPS | Impact |
 //! |----|-------|-----------|------|--------|
-//! | N1 | `payload_len` in established phase | `4+8+inner_len+16` (total post-prefix wire size) | `inner_len` (plaintext size before encryption) | Field is `#[allow(dead_code)]` in FIPS and never validated. No functional impact. |
+//! | ~~N1~~ | `payload_len` in established phase | ~~was `4+8+inner_len+16`~~ → now `inner_len` | `inner_len` (plaintext size before encryption) | **Fixed**: was benign on UDP but broke BLE L2CAP (FIPS `calculate_frame_len` depends on this field for frame splitting). |
 //! | N2 | `path_mtu` default | hardcoded 1400 | `u16::MAX` | FIPS caps during forwarding. No functional impact. |
 //! | N3 | `session_flags` | initiator sends 0x03 | defaults to 0x00 | FIPS doesn't validate flags. No functional impact. |
 
@@ -151,8 +151,8 @@ pub fn build_established(
 ) -> Option<usize> {
     let inner_len = INNER_HEADER_SIZE + inner_payload.len();
     let encrypted_len = inner_len + crate::noise::TAG_SIZE;
-    let payload_len = IDX_SIZE + 8 + encrypted_len;
-    let total = COMMON_PREFIX_SIZE + payload_len;
+    let payload_len = inner_len as u16;
+    let total = ESTABLISHED_HEADER_SIZE + encrypted_len;
 
     #[cfg(feature = "std")]
     log::debug!(
@@ -625,5 +625,38 @@ mod tests {
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 10];
         assert!(build_msg1(0, &noise_payload, &mut out).is_none());
+    }
+
+    #[test]
+    fn payload_len_satisfies_fips_calculate_frame_len_contract() {
+        let key = [0x42u8; 32];
+        let mut out = [0u8; 512];
+
+        for (msg_type, payload) in [
+            (MSG_HEARTBEAT, &[][..]),
+            (MSG_SESSION_DATAGRAM, &b"hello"[..]),
+            (MSG_SESSION_DATAGRAM, &[0u8; 200][..]),
+            (MSG_DISCONNECT, &[][..]),
+        ] {
+            let len = build_established(0, 1, msg_type, 99999, payload, &key, &mut out).unwrap();
+            let payload_len = u16::from_le_bytes([out[2], out[3]]) as usize;
+            let fips_frame_len = ESTABLISHED_HEADER_SIZE + payload_len + crate::noise::TAG_SIZE;
+            assert_eq!(
+                fips_frame_len,
+                len,
+                "payload_len={} (msg_type=0x{:02x}, payload_len={}) must satisfy \
+                 FIPS BLE calculate_frame_len contract: \
+                 ESTABLISHED_HEADER_SIZE({}) + payload_len({}) + TAG_SIZE({}) = {} \
+                 but actual frame is {} bytes",
+                payload_len,
+                msg_type,
+                payload_len,
+                ESTABLISHED_HEADER_SIZE,
+                payload_len,
+                crate::noise::TAG_SIZE,
+                fips_frame_len,
+                len,
+            );
+        }
     }
 }
