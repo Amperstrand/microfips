@@ -28,7 +28,7 @@ static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRA
     Channel::new();
 static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
     Channel::new();
-static L2CAP_READY_SIG: Signal<CriticalSectionRawMutex, ([u8; 33], u8)> = Signal::new();
+static L2CAP_READY_SIG: Signal<CriticalSectionRawMutex, [u8; 33]> = Signal::new();
 static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
 
@@ -134,9 +134,9 @@ fn mark_link_down() {
     L2CAP_LINK_UP.store(false, Ordering::Release);
 }
 
-fn mark_link_ready(peer_pub: [u8; 33], first_frame_phase: u8) {
+fn mark_link_ready(peer_pub: [u8; 33]) {
     L2CAP_LINK_UP.store(true, Ordering::Release);
-    L2CAP_READY_SIG.signal((peer_pub, first_frame_phase));
+    L2CAP_READY_SIG.signal(peer_pub);
 }
 
 async fn exchange_pubkeys<T, P>(
@@ -340,53 +340,8 @@ pub async fn l2cap_host_task() {
 
                 drain_l2cap_channels();
 
-                // FIPS probe does pubkey exchange then disconnects without sending
-                // protocol frames.  Wait for the first real FMP frame (MSG1, 114B)
-                // to confirm this is a promoted connection, not a discarded probe.
-                // Only then signal readiness so Node::run() starts.
-                let mut first_buf = [0u8; L2CAP_FRAME_CAP];
-                let first_result = embassy_time::with_timeout(
-                    embassy_time::Duration::from_secs(5),
-                    reader.receive(&stack, &mut first_buf),
-                )
-                .await;
-
-                let first_frame = match first_result {
-                    Ok(Ok(n)) if n >= 4 => {
-                        let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-                        if frame.extend_from_slice(&first_buf[..n]).is_err() {
-                            log::warn!("first frame too large ({}B), re-advertising", n);
-                            continue;
-                        }
-                        let phase = first_buf[0];
-                        log::info!(
-                            "first frame received ({}B, phase=0x{:02x}), connection confirmed",
-                            n,
-                            phase
-                        );
-                        frame
-                    }
-                    Ok(Ok(n)) => {
-                        log::warn!("first frame too small ({}B), re-advertising", n);
-                        continue;
-                    }
-                    Ok(Err(_)) => {
-                        log::warn!("connection closed before first frame, re-advertising");
-                        continue;
-                    }
-                    Err(_) => {
-                        log::warn!("timeout waiting for first frame, re-advertising");
-                        continue;
-                    }
-                };
-
-                // Extract phase from the FMP common prefix (byte 0: version<<4 | phase).
-                // FIPS sends MSG1 (phase 0x01) as the first frame after pubkey exchange.
-                // If we see MSG1, Node should enter responder path instead of sending
-                // its own MSG1, avoiding cross-connection deadlock.
-                let first_frame_phase = first_frame[0] & 0x0F;
-                mark_link_ready(peer_pub, first_frame_phase);
-                L2CAP_RX_CH.send(first_frame).await;
+                mark_link_ready(peer_pub);
+                log::info!("pubkey exchange complete, link ready");
 
                 let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
 
@@ -432,7 +387,7 @@ pub fn l2cap_link_up() -> bool {
     L2CAP_LINK_UP.load(Ordering::Relaxed)
 }
 
-pub async fn wait_for_l2cap_ready() -> ([u8; 33], u8) {
+pub async fn wait_for_l2cap_ready() -> [u8; 33] {
     L2CAP_READY_SIG.wait().await
 }
 
