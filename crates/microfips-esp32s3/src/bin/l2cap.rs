@@ -9,7 +9,6 @@ use esp_hal::gpio::Level;
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
 use microfips_protocol::node::Node;
-use microfips_protocol::transport::Transport;
 use rand_core::RngCore;
 
 use microfips_esp32s3::config::{ESP32S3_SECRET, PANIC_BLINK_CYCLES, RECV_RETRY_DELAY_MS};
@@ -70,20 +69,9 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let mut transport = L2capTransport::new();
     spawner.spawn(control::control_task()).unwrap();
-    if transport.wait_ready().await.is_err() {
-        log::error!("ERROR: L2CAP transport init failed");
-        loop {
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                RECV_RETRY_DELAY_MS,
-            ))
-            .await;
-        }
-    }
-    log::info!("L2CAP transport ready");
-
-    let peer_pub = match transport.take_peer_pub() {
-        Some(pk) => pk,
-        None => {
+    let peer_pub = match transport.wait_for_peer_pub().await {
+        Ok(pk) => pk,
+        Err(_) => {
             log::error!("ERROR: no peer pubkey from exchange");
             loop {
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(
@@ -93,6 +81,7 @@ async fn main(spawner: embassy_executor::Spawner) {
             }
         }
     };
+    log::info!("L2CAP transport ready");
     control::set_peer_pub(peer_pub);
     log::info!("pubkey exchange complete; starting node");
 

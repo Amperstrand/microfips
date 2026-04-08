@@ -42,6 +42,13 @@ impl<H> SharedL2capTransport<H> {
     }
 }
 
+impl<H: L2capHostAdapter> SharedL2capTransport<H> {
+    pub async fn wait_for_peer_pub(&mut self) -> Result<[u8; 33], L2capError> {
+        self.wait_ready().await?;
+        self.take_peer_pub().ok_or(L2capError::InitFailed)
+    }
+}
+
 impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
     type Error = L2capError;
 

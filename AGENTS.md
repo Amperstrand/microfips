@@ -905,7 +905,7 @@ Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` wit
 
 | MCU | Source | Pubkey (x-only, hex) | npub |
 |-----|--------|----------------------|------|
-| STM32 | `DEFAULT_SECRET` | `635696dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842` | `npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf` |
+| STM32 | `STM32_SECRET` | `635696dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842` | `npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf` |
 | ESP32 | running firmware | TBD (differs from `ESP32_SECRET` in code) | `npub1nqppng4kga6luldsu3s95hyayh8vl5gpvvvje0h8z422l6zegflqd8942y` |
 | VPS | — | `020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d` | `npub1peaqmgq6y4wduyr2yqh0fatnvah0ncj0rjqhd5p6aqaz5wsr05ssu0cnha` |
 

@@ -420,8 +420,8 @@ fn print_usage() {
     );
     eprintln!();
     eprintln!("Environment variables:");
-    eprintln!("  FIPS_SECRET   64 hex chars (identity secret key, fallback)");
-    eprintln!("  FIPS_PEER_PUB  66 hex chars (peer's compressed pubkey, fallback)");
+    eprintln!("  FIPS_SECRET   64 hex chars (identity secret key, required unless using --sim-a/--sim-b)");
+    eprintln!("  FIPS_PEER_PUB  66 hex chars (peer's compressed pubkey, always required)");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --udp <addr>    Connect directly to FIPS via UDP (no bridge needed)");

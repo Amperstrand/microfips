@@ -10,7 +10,7 @@
       "pubkey_hex": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
       "node_addr": "132f39a98c31baaddba6525f5d43f295",
       "comment": "secp256k1 generator * 1",
-      "source": "crates/microfips-core/src/identity.rs DEFAULT_SECRET"
+      "source": "crates/microfips-core/src/identity.rs STM32_SECRET"
     },
     "esp32": {
       "label": "ESP32-D0WD",
@@ -55,7 +55,7 @@
       "pubkey_hex": "020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21",
       "node_addr": "73a004fb58cb41616c2b5ef4bd801a9b",
       "comment": "Persistent key on VPS",
-      "source": "/etc/fips/fips.key on VPS, pubkey in crates/microfips-core/src/identity.rs DEFAULT_PEER_PUB"
+      "source": "/etc/fips/fips.key on VPS, pubkey in crates/microfips-core/src/identity.rs VPS_PEER_PUB"
     },
     "linux": {
       "label": "Linux FIPS (dev workstation)",

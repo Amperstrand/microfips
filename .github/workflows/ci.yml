@@ -258,7 +258,7 @@ jobs:
       - name: Start FIPS responder
         run: |
           echo "Starting responder with node key..."
-          FIPS_SECRET="$NODE_SECRET" ./bin/microfips-http-test 127.0.0.1:31338 &
+          FIPS_SECRET="$NODE_SECRET" FIPS_PEER_PUB="$LEAF_PUB" ./bin/microfips-http-test 127.0.0.1:31338 &
           echo $! > /tmp/responder.pid
           sleep 1
           echo "Responder running (pid $(cat /tmp/responder.pid))"
@@ -278,13 +278,27 @@ jobs:
             kill "$(cat /tmp/responder.pid)" 2>/dev/null || true
           fi
 
-      - name: "Test 2: Leaf → public FIPS node (default keys)"
+      - name: "Test 2: Leaf → public FIPS node (explicit keys)"
         timeout-minutes: 1
         continue-on-error: true
         run: |
+          STM32_SECRET=$(python3 - <<'PY'
+          import json
+          with open('keys.json') as f:
+              keys = json.load(f)
+          print(keys['devices']['stm32']['secret_hex'])
+          PY
+          )
+          VPS_PUB=$(python3 - <<'PY'
+          import json
+          with open('keys.json') as f:
+              keys = json.load(f)
+          print(keys['devices']['vps']['pubkey_hex'])
+          PY
+          )
           echo "=== Leaf → public FIPS node ==="
-          echo "Using default MCU identity and VPS peer pubkey"
-          ./bin/fips-handshake "$FIPS_ADDR" 2>&1 || true
+          echo "Using explicit STM32 identity and VPS peer pubkey from keys.json"
+          FIPS_SECRET="$STM32_SECRET" FIPS_PEER_PUB="$VPS_PUB" ./bin/fips-handshake "$FIPS_ADDR" 2>&1 || true
           echo "=== (continue-on-error: VPS may be unreachable from CI) ==="
 
   build-firmware:
@@ -401,7 +415,15 @@ jobs:
         run: |
           set -e
 
-          ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
+          VPS_PUB=$(python3 - <<'PY'
+          import json
+          with open('keys.json') as f:
+              keys = json.load(f)
+          print(keys['devices']['vps']['pubkey_hex'])
+          PY
+          )
+
+          FIPS_PEER_PUB="$VPS_PUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
           SIMA_PID=$!
           sleep 8
 
@@ -412,7 +434,7 @@ jobs:
           fi
           echo "SIM-A connected"
 
-          timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
+          FIPS_PEER_PUB="$VPS_PUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
           SIMB_PID=$!
 
           wait $SIMB_PID 2>/dev/null
