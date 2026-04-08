@@ -8,6 +8,11 @@ pub struct NodeIdentity {
 }
 
 impl NodeIdentity {
+    /// Convenience: compute identity from `crate::config::DEVICE_SECRET`.
+    pub fn compute() -> Self {
+        Self::from_secret(&crate::config::DEVICE_SECRET)
+    }
+
     pub fn from_secret(secret: &[u8; 32]) -> Self {
         let pub_key = noise::ecdh_pubkey(secret).expect("ecdh_pubkey");
         let normalized = noise::parity_normalize(&pub_key);

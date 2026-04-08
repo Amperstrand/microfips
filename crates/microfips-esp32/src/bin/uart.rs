@@ -14,7 +14,7 @@ use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
 use microfips_esp32::config::{ESP32_SECRET, PANIC_BLINK_CYCLES, UART_BAUDRATE, UART_FIFO_THRESHOLD};
-use microfips_esp32::handler::{build_demo_fsp, EspHandler};
+use microfips_esp32::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32::led::Led;
 use microfips_esp32::rng::EspRng;
 use microfips_esp32::uart_transport::UartTransport;
