@@ -19,7 +19,7 @@ use trouble_host::prelude::{
 };
 
 use crate::config::{
-    ESP32S3_SECRET, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS,
+    DEVICE_SECRET, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS,
 };
 
 static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> =
@@ -207,11 +207,11 @@ pub async fn l2cap_host_task() {
     log::info!("host resources initialized");
     let ble_addr: [u8; 6] = [
         0xff,
-        ESP32S3_SECRET[27],
-        ESP32S3_SECRET[28],
-        ESP32S3_SECRET[29],
-        ESP32S3_SECRET[30],
-        ESP32S3_SECRET[31],
+        DEVICE_SECRET[27],
+        DEVICE_SECRET[28],
+        DEVICE_SECRET[29],
+        DEVICE_SECRET[30],
+        DEVICE_SECRET[31],
     ];
     let stack = trouble_host::new(controller, resources)
         .set_random_address(Address::random(ble_addr));
@@ -332,7 +332,7 @@ pub async fn l2cap_host_task() {
 
                 let (mut writer, mut reader) = channel.split();
 
-                let Some(peer_pub) = exchange_pubkeys(&ESP32S3_SECRET, &mut writer, &mut reader, &stack)
+                let Some(peer_pub) = exchange_pubkeys(&DEVICE_SECRET, &mut writer, &mut reader, &stack)
                     .await
                     else {
                         log::error!("pubkey exchange failed");
