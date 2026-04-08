@@ -227,7 +227,7 @@ Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
 | PacketPool MTU | 2054 bytes (configured via `.cargo/config.toml`) |
 | Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey]` (33 bytes, 5s timeout) |
 | Framing | Raw FMP (no length prefix — L2CAP SeqPacket preserves boundaries) |
-| BLE address | Random static (`FF:E4:05:1A:8F:FF`) |
+| BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_SECRET[27..32]` + `0xFF` prefix, MSB-first |
 | Advertising name | `microfips-l2cap` |
 
 **Build L2CAP firmware:**
