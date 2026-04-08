@@ -15,9 +15,7 @@ pub use microfips_esp_transport::logger;
 pub use microfips_esp_transport::control;
 
 #[cfg(feature = "ble")]
-pub mod ble_host;
-#[cfg(feature = "ble")]
-pub mod ble_transport;
+pub use microfips_esp_transport::ble_transport;
 
 #[cfg(feature = "l2cap")]
 pub mod l2cap_host;
