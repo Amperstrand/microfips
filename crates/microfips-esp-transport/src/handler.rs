@@ -12,6 +12,7 @@ use crate::stats::{
 };
 
 pub type EspFspHandler = FspDualHandler<FspServiceAdapter<DemoService>>;
+pub type EspHandler<'a> = SharedEspHandler<'a>;
 
 pub fn build_demo_fsp(
     secret: &[u8; 32],
@@ -29,6 +30,23 @@ pub fn build_demo_fsp(
         peer_addr,
         fsp_epoch,
         FspServiceAdapter::new(DemoService::new()),
+    )
+}
+
+/// Convenience wrapper that uses `crate::config::DEVICE_SECRET` and STM32 peer defaults.
+pub fn build_demo_fsp_default(
+    responder_ephemeral: [u8; 32],
+    initiator_ephemeral: [u8; 32],
+    fsp_epoch: [u8; 8],
+) -> EspFspHandler {
+    use microfips_core::identity::{STM32_NODE_ADDR, STM32_PEER_PUB};
+    build_demo_fsp(
+        &crate::config::DEVICE_SECRET,
+        responder_ephemeral,
+        initiator_ephemeral,
+        &STM32_PEER_PUB,
+        STM32_NODE_ADDR,
+        fsp_epoch,
     )
 }
 

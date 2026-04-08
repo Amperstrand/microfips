@@ -15,7 +15,7 @@ use rand_core::RngCore;
 use microfips_esp32s3::ble_transport::BleTransport;
 use microfips_esp32s3::config::{BLE_DEVICE_NAME, ESP32S3_SECRET, PANIC_BLINK_CYCLES};
 use microfips_esp32s3::control;
-use microfips_esp32s3::handler::{build_demo_fsp, EspHandler};
+use microfips_esp32s3::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32s3::led::Led;
 use microfips_esp32s3::logger;
 use microfips_esp_transport::node_info::NodeIdentity;
@@ -48,7 +48,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     logger::init();
     BOOT_TICK_MS.store(embassy_time::Instant::now().as_millis() as u32, core::sync::atomic::Ordering::Relaxed);
 
-    let identity = NodeIdentity::from_secret(&ESP32S3_SECRET);
+    let identity = NodeIdentity::compute();
     control::init_control(&identity, "ble_gatt");
     control::set_peer_pub(VPS_PEER_PUB);
 
