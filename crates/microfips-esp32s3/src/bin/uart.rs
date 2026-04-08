@@ -13,7 +13,8 @@ use microfips_core::identity::VPS_PEER_PUB;
 use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
-use microfips_esp32s3::config::{ESP32S3_SECRET, PANIC_BLINK_CYCLES, UART_BAUDRATE, UART_FIFO_THRESHOLD};
+use microfips_esp32s3::config::ESP32S3_SECRET;
+use microfips_esp_transport::config::{PANIC_BLINK_CYCLES, UART_BAUDRATE, UART_FIFO_THRESHOLD};
 use microfips_esp32s3::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32s3::led::Led;
 use microfips_esp32s3::rng::EspRng;
