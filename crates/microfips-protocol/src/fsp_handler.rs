@@ -461,7 +461,7 @@ impl<A: FspAppHandler, const APP_BUF: usize> NodeHandler for FspDualHandler<A, A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microfips_core::identity::DEFAULT_SECRET;
+    use microfips_core::identity::STM32_SECRET;
     use microfips_core::noise::ecdh_pubkey;
 
     fn test_target_pub() -> [u8; 33] {
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn dual_handler_starts_timer_after_handshake() {
         let mut handler: FspDualHandler<_, 1024> = FspDualHandler::new_dual(
-            DEFAULT_SECRET,
+            STM32_SECRET,
             [0x11; 32],
             [0x22; 32],
             &test_target_pub(),
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn responder_handler_does_not_start_timer_after_handshake() {
         let mut handler: FspDualHandler<_, 1024> =
-            FspDualHandler::new_responder(DEFAULT_SECRET, [0x11; 32], [0x01, 0, 0, 0, 0, 0, 0, 0], NoopFspApp);
+            FspDualHandler::new_responder(STM32_SECRET, [0x11; 32], [0x01, 0, 0, 0, 0, 0, 0, 0], NoopFspApp);
         handler.on_event_default(NodeEvent::HandshakeOk);
         assert_eq!(handler.fsp_timer, None);
     }
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn on_tick_from_idle_builds_session_setup() {
         let mut handler: FspDualHandler<_, 1024> = FspDualHandler::new_dual(
-            DEFAULT_SECRET,
+            STM32_SECRET,
             [0x11; 32],
             [0x22; 32],
             &test_target_pub(),

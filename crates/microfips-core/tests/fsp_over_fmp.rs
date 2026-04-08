@@ -4,14 +4,14 @@ use microfips_core::fsp::{
     build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack,
     FspInitiatorSession, FspSession, FSP_HEADER_SIZE, FSP_MSG_DATA, SESSION_DATAGRAM_BODY_SIZE,
 };
-use microfips_core::identity::{NodeAddr, DEFAULT_SECRET};
+use microfips_core::identity::{NodeAddr, STM32_SECRET};
 use microfips_core::noise::{
     aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseIkInitiator, NoiseIkResponder,
     NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE,
 };
 use rand::RngCore;
 
-const INIT_SECRET: [u8; 32] = DEFAULT_SECRET;
+const INIT_SECRET: [u8; 32] = STM32_SECRET;
 const RESP_SECRET: [u8; 32] = [0x22; 32];
 
 fn gen_key() -> [u8; 32] {

@@ -8,11 +8,10 @@ use core::panic::PanicInfo;
 use esp_hal::gpio::Level;
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
-use microfips_core::identity::DEFAULT_PEER_PUB;
 use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
-use microfips_esp32::config::{ESP32_SECRET, PANIC_BLINK_CYCLES};
+use microfips_esp32::config::{ESP32_SECRET, PANIC_BLINK_CYCLES, RECV_RETRY_DELAY_MS};
 use microfips_esp32::control;
 use microfips_esp32::handler::{build_demo_fsp, EspHandler};
 use microfips_esp32::led::Led;
@@ -74,12 +73,27 @@ async fn main(spawner: embassy_executor::Spawner) {
     trng.fill_bytes(&mut init_eph);
 
     let rng = EspRng(trng);
-    let transport = L2capTransport::new();
+    let mut transport = L2capTransport::new();
 
     spawner.spawn(control::control_task()).unwrap();
-    control::set_peer_pub(DEFAULT_PEER_PUB);
 
-    let mut node = Node::new(transport, rng, ESP32_SECRET, DEFAULT_PEER_PUB);
+    let peer_pub = match transport.wait_for_peer_pub().await {
+        Ok(pk) => pk,
+        Err(_) => {
+            log::error!("ERROR: L2CAP transport init failed");
+            loop {
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                    RECV_RETRY_DELAY_MS,
+                ))
+                .await;
+            }
+        }
+    };
+    log::info!("L2CAP transport ready");
+    control::set_peer_pub(peer_pub);
+    log::info!("pubkey exchange complete; starting node");
+
+    let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
     node.set_raw_framing(true);
 
     let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());

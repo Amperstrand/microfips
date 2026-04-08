@@ -2,8 +2,8 @@ use sha2::{Digest, Sha256};
 
 use crate::hex::{hex_bytes_16, hex_bytes_32, hex_bytes_33};
 
-pub const DEFAULT_SECRET: [u8; 32] = hex_bytes_32(env!("DEVICE_SECRET_HEX_stm32"));
-pub const DEFAULT_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_vps"));
+pub const STM32_SECRET: [u8; 32] = hex_bytes_32(env!("DEVICE_SECRET_HEX_stm32"));
+pub const VPS_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_vps"));
 pub const STM32_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_stm32"));
 pub const STM32_NODE_ADDR: [u8; 16] = hex_bytes_16(env!("DEVICE_NODE_ADDR_stm32"));
 pub const ESP32_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_esp32"));
@@ -55,44 +55,44 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
     result
 }
 
-/// Load the FIPS secret key from the `FIPS_SECRET` env var (64 hex chars),
-/// falling back to `DEFAULT_SECRET` if not set.
+/// Load the FIPS secret key from the `FIPS_SECRET` env var (64 hex chars).
 ///
-/// Panics on invalid hex or wrong length — acceptable for host-side tools.
+/// Panics if the env var is missing, invalid, or the wrong length.
+/// Host-side tools must now choose their identity explicitly instead of
+/// implicitly impersonating a firmware default. Secure on-device key
+/// provisioning is tracked in microfips issue #64.
 // FIPS: bd08505 identity/node_addr.rs:NodeAddr::from_pubkey()
 #[cfg(feature = "std")]
 pub fn load_secret() -> [u8; 32] {
-    match std::env::var("FIPS_SECRET") {
-        Ok(h) => {
-            let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
-            assert!(
-                b.len() == 32,
-                "FIPS_SECRET: must be 32 bytes (64 hex chars)"
-            );
-            b.try_into().unwrap()
-        }
-        Err(_) => DEFAULT_SECRET,
-    }
+    let h = std::env::var("FIPS_SECRET").expect(
+        "FIPS_SECRET is required; no default device identity is allowed anymore. See microfips issue #64 for secure on-device key provisioning.",
+    );
+    let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
+    assert!(
+        b.len() == 32,
+        "FIPS_SECRET: must be 32 bytes (64 hex chars)"
+    );
+    b.try_into().unwrap()
 }
 
-/// Load the FIPS peer public key from the `FIPS_PEER_PUB` env var (66 hex chars),
-/// falling back to `DEFAULT_PEER_PUB` if not set.
+/// Load the FIPS peer public key from the `FIPS_PEER_PUB` env var (66 hex chars).
 ///
-/// Panics on invalid hex or wrong length — acceptable for host-side tools.
+/// Panics if the env var is missing, invalid, or the wrong length.
+/// Host-side tools must now choose the remote peer explicitly instead of
+/// inheriting a built-in VPS pubkey. Secure on-device key provisioning is
+/// tracked in microfips issue #64.
 // FIPS: bd08505 identity/node_addr.rs:NodeAddr::from_pubkey()
 #[cfg(feature = "std")]
 pub fn load_peer_pub() -> [u8; 33] {
-    match std::env::var("FIPS_PEER_PUB") {
-        Ok(h) => {
-            let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
-            assert!(
-                b.len() == 33,
-                "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
-            );
-            b.try_into().unwrap()
-        }
-        Err(_) => DEFAULT_PEER_PUB,
-    }
+    let h = std::env::var("FIPS_PEER_PUB").expect(
+        "FIPS_PEER_PUB is required; no default peer identity is allowed anymore. See microfips issue #64 for secure on-device key provisioning.",
+    );
+    let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
+    assert!(
+        b.len() == 33,
+        "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
+    );
+    b.try_into().unwrap()
 }
 
 pub fn hex_encode(input: &[u8], output: &mut [u8]) {
@@ -201,18 +201,18 @@ mod tests {
 
     #[test]
     #[cfg(feature = "std")]
-    fn load_secret_returns_default_when_env_not_set() {
+    #[should_panic(expected = "FIPS_SECRET is required")]
+    fn load_secret_panics_when_env_not_set() {
         let _g = EnvGuard::remove("FIPS_SECRET");
-        let secret = load_secret();
-        assert_eq!(secret, DEFAULT_SECRET);
+        let _ = load_secret();
     }
 
     #[test]
     #[cfg(feature = "std")]
-    fn load_peer_pub_returns_default_when_env_not_set() {
+    #[should_panic(expected = "FIPS_PEER_PUB is required")]
+    fn load_peer_pub_panics_when_env_not_set() {
         let _g = EnvGuard::remove("FIPS_PEER_PUB");
-        let peer = load_peer_pub();
-        assert_eq!(peer, DEFAULT_PEER_PUB);
+        let _ = load_peer_pub();
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
 
     /// Verify keys.json-derived constants are internally consistent:
     ///  1. Each secret produces a valid secp256k1 pubkey
-    ///  2. STM32_PEER_PUB matches ecdh_pubkey(DEFAULT_SECRET)
+    ///  2. STM32_PEER_PUB matches ecdh_pubkey(STM32_SECRET)
     ///  3. ESP32_PEER_PUB matches ecdh_pubkey(esp32 secret from keys.json)
     ///   4. VPS peer pubkey matches its node_addr
     ///  5. All leaf secrets and node_addrs are distinct
@@ -261,11 +261,11 @@ mod tests {
     fn audit_keys_json_consistency() {
         use crate::noise;
 
-        let stm32_pub = noise::ecdh_pubkey(&DEFAULT_SECRET)
-            .expect("STM32 secret must be a valid secp256k1 key");
+        let stm32_pub =
+            noise::ecdh_pubkey(&STM32_SECRET).expect("STM32 secret must be a valid secp256k1 key");
         assert_eq!(
             stm32_pub, STM32_PEER_PUB,
-            "STM32_PEER_PUB must match ecdh_pubkey(DEFAULT_SECRET)"
+            "STM32_PEER_PUB must match ecdh_pubkey(STM32_SECRET)"
         );
 
         let stm32_x: [u8; 32] = stm32_pub[1..].try_into().unwrap();
@@ -292,7 +292,7 @@ mod tests {
             "ESP32_NODE_ADDR must match sha256(pubkey_x)[0..16]"
         );
 
-        let vps_x: [u8; 32] = DEFAULT_PEER_PUB[1..].try_into().unwrap();
+        let vps_x: [u8; 32] = VPS_PEER_PUB[1..].try_into().unwrap();
         let vps_addr = NodeAddr::from_pubkey_x(&vps_x);
         assert_eq!(
             vps_addr.as_bytes(),

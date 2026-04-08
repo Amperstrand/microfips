@@ -150,7 +150,7 @@ cargo test -p microfips-http-demo --features http  # HTTP demo tests
 
 ```sh
 cargo run -p microfips-link -- --keygen              # generate keys
-cargo run -p microfips-link                           # MSG1 to VPS via UDP (default keys)
+FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-link
 FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-link -- 127.0.0.1:2121
 # Exit 0 = success, 1 = timeout, 2 = error
 ```
@@ -300,7 +300,7 @@ All host tools accept key overrides via environment variables:
 | `FIPS_SECRET` | 64 hex chars (32B secret) | fips-handshake, microfips-sim, microfips-http-test | Override identity secret key |
 | `FIPS_PEER_PUB` | 66 hex chars (33B compressed pubkey) | fips-handshake, microfips-sim | Override peer's public key |
 
-When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubkey).
+Host tools do not fall back to hardcoded identities anymore. Set both variables explicitly.
 
 ## Hardware
 
