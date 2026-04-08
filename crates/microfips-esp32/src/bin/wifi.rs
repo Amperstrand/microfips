@@ -13,10 +13,11 @@ use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
 use microfips_esp32::control;
-use microfips_esp32::config::{ESP32_SECRET, PANIC_BLINK_CYCLES};
+use microfips_esp32::config::ESP32_SECRET;
 use microfips_esp32::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32::led::Led;
 use microfips_esp32::logger;
+use microfips_esp_transport::config::PANIC_BLINK_CYCLES;
 use microfips_esp_transport::node_info::NodeIdentity;
 use microfips_esp32::rng::EspRng;
 use microfips_esp32::wifi_transport::build_wifi_transport;

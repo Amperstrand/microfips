@@ -3,6 +3,9 @@ pub const LED_ON: u32 = 2;
 
 pub const WAIT_READY_DELAY_MS: u64 = 500;
 pub const RECV_RETRY_DELAY_MS: u64 = 10;
+pub const PANIC_BLINK_CYCLES: u32 = 5_000_000;
+pub const UART_FIFO_THRESHOLD: u16 = 64;
+pub const UART_BAUDRATE: u32 = 115200;
 
 #[cfg(feature = "ble")]
 pub const BLE_MAX_FRAME: usize = 256;

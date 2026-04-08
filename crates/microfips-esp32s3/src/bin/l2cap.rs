@@ -11,12 +11,13 @@ use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerG
 use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
-use microfips_esp32s3::config::{ESP32S3_SECRET, PANIC_BLINK_CYCLES, RECV_RETRY_DELAY_MS};
+use microfips_esp32s3::config::ESP32S3_SECRET;
 use microfips_esp32s3::control;
 use microfips_esp32s3::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32s3::l2cap_transport::L2capTransport;
 use microfips_esp32s3::led::Led;
 use microfips_esp32s3::logger;
+use microfips_esp_transport::config::{PANIC_BLINK_CYCLES, RECV_RETRY_DELAY_MS};
 use microfips_esp_transport::node_info::NodeIdentity;
 use microfips_esp32s3::rng::EspRng;
 use microfips_esp32s3::stats::BOOT_TICK_MS;
