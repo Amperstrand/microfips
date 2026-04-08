@@ -17,7 +17,7 @@ use microfips_esp32s3::control;
 use microfips_esp32s3::handler::{build_demo_fsp, EspHandler};
 use microfips_esp32s3::led::Led;
 use microfips_esp32s3::logger;
-use microfips_esp32s3::node_info::NodeIdentity;
+use microfips_esp_transport::node_info::NodeIdentity;
 use microfips_esp32s3::rng::EspRng;
 use microfips_esp32s3::wifi_transport::build_wifi_transport;
 
@@ -53,7 +53,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let _trng_source = TrngSource::new(peripherals.RNG, peripherals.ADC1);
     let mut trng = Trng::try_new().unwrap();
 
-    let identity = NodeIdentity::compute();
+    let identity = NodeIdentity::from_secret(&ESP32S3_SECRET);
     logger::init();
     log::info!("WiFi mode starting");
 

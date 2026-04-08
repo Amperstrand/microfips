@@ -20,6 +20,8 @@ pub mod usb_transport;
 pub mod wifi_transport;
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+pub mod control;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 pub mod logger;
 
 #[cfg(feature = "ble")]
