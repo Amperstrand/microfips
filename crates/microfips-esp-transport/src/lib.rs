@@ -25,6 +25,8 @@ pub mod control;
 pub mod logger;
 
 #[cfg(feature = "ble")]
+pub mod ble_host;
+#[cfg(feature = "ble")]
 pub mod ble_transport;
 
 #[cfg(feature = "l2cap")]

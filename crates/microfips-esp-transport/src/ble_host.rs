@@ -16,7 +16,7 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::config::{
-    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, ESP32S3_SECRET, FIPS_SERVICE_UUID_LE,
+    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, DEVICE_SECRET, FIPS_SERVICE_UUID_LE,
     RECV_RETRY_DELAY_MS,
 };
 use crate::stats::{STAT_BLE_CONNECT, STAT_BLE_DISCONNECT, STAT_BLE_RX, STAT_BLE_TX};
@@ -162,11 +162,11 @@ pub async fn ble_host_task() {
     let stack = trouble_host::new(controller, resources)
         .set_random_address(Address::random([
             0xff,
-            ESP32S3_SECRET[27],
-            ESP32S3_SECRET[28],
-            ESP32S3_SECRET[29],
-            ESP32S3_SECRET[30],
-            ESP32S3_SECRET[31],
+            DEVICE_SECRET[27],
+            DEVICE_SECRET[28],
+            DEVICE_SECRET[29],
+            DEVICE_SECRET[30],
+            DEVICE_SECRET[31],
         ]));
 
     let Host {
@@ -283,7 +283,13 @@ pub async fn ble_host_task() {
                     },
                     Either::First(_) => {}
                     Either::Second(frame) => {
-                        if server.fips_service.tx_data.notify(&conn, &frame).await.is_err() {
+                        if server
+                            .fips_service
+                            .tx_data
+                            .notify(&conn, &frame)
+                            .await
+                            .is_err()
+                        {
                             if !BLE_NOTIFICATIONS_ENABLED.load(Ordering::Relaxed) {
                                 BLE_TX_CH.send(frame).await;
                                 embassy_time::Timer::after(embassy_time::Duration::from_millis(
