@@ -223,6 +223,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             self.send_frame(&f1[..f1len]).await?;
             handler.on_event(NodeEvent::Msg1Sent).await;
         } else {
+            #[cfg(feature = "log")]
             log::info!("peer sent MSG1 first, entering responder path");
         }
 
