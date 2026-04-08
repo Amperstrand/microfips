@@ -18,6 +18,4 @@ pub use microfips_esp_transport::control;
 pub use microfips_esp_transport::ble_transport;
 
 #[cfg(feature = "l2cap")]
-pub mod l2cap_host;
-#[cfg(feature = "l2cap")]
-pub mod l2cap_transport;
+pub use microfips_esp_transport::l2cap_transport;

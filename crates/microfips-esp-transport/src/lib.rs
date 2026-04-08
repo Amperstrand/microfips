@@ -30,4 +30,6 @@ pub mod ble_host;
 pub mod ble_transport;
 
 #[cfg(feature = "l2cap")]
+pub mod l2cap_host;
+#[cfg(feature = "l2cap")]
 pub mod l2cap_transport;
