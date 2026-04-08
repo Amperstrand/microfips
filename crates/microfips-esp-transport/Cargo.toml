@@ -9,8 +9,8 @@ name = "microfips_esp_transport"
 
 [features]
 default = []
-esp32 = ["esp-hal/esp32", "esp-radio/esp32", "esp-println/esp32"]
-esp32s3 = ["esp-hal/esp32s3", "esp-radio/esp32s3", "esp-println/esp32s3"]
+esp32 = ["esp-hal/esp32", "esp-radio/esp32", "esp-println/esp32", "esp-println/auto"]
+esp32s3 = ["esp-hal/esp32s3", "esp-radio/esp32s3", "esp-println/esp32s3", "esp-println/jtag-serial"]
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
 wifi = ["dep:esp-radio", "dep:esp-alloc", "dep:embassy-net", "dep:esp-println", "dep:log"]
@@ -39,5 +39,5 @@ trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "
 esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }
-esp-println = { version = "0.16.1", optional = true }
+esp-println = { version = "0.16.1", default-features = false, optional = true }
 log = { version = "0.4", optional = true }
