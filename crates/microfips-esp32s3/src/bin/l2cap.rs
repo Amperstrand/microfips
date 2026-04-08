@@ -17,7 +17,7 @@ use microfips_esp32s3::handler::{build_demo_fsp, EspHandler};
 use microfips_esp32s3::l2cap_transport::L2capTransport;
 use microfips_esp32s3::led::Led;
 use microfips_esp32s3::logger;
-use microfips_esp32s3::node_info::NodeIdentity;
+use microfips_esp_transport::node_info::NodeIdentity;
 use microfips_esp32s3::rng::EspRng;
 use microfips_esp32s3::stats::BOOT_TICK_MS;
 
@@ -47,7 +47,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     logger::init();
     BOOT_TICK_MS.store(embassy_time::Instant::now().as_millis() as u32, core::sync::atomic::Ordering::Relaxed);
 
-    let identity = NodeIdentity::compute();
+    let identity = NodeIdentity::from_secret(&ESP32S3_SECRET);
     control::init_control(&identity, "ble_l2cap");
 
     log::info!("L2CAP mode starting");

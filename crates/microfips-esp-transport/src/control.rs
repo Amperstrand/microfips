@@ -1,4 +1,4 @@
-//! FIPS-compatible control interface over UART0 for ESP32 BLE/L2CAP firmware.
+//! FIPS-compatible control interface over UART0 for ESP32 BLE/L2CAP/WiFi firmware.
 //! Reads line-delimited commands from UART0 RX, responds with JSON on UART0 TX.
 //! UART0 TX is shared with esp_println (both write to the same FIFO, no conflict).
 
@@ -10,23 +10,21 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
+use crate::config::{GPIO_FUNC_IN_SEL_BASE, RESET_REGISTER, UART0_BASE, UART_RX_GPIO_NUM};
 use crate::node_info::{NodeIdentity, PeerInfo};
 use crate::stats::StatsSnapshot;
 
-const UART0_BASE: usize = 0x3FF4_0000;
 const UART_FIFO_REG: *mut u32 = (UART0_BASE + 0x00) as *mut u32;
 const UART_STATUS_REG: *const u32 = (UART0_BASE + 0x1C) as *const u32;
 
-const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
 const U0RXD_SIG_IN_IDX: usize = 44;
-const GPIO3_NUM: u32 = 3;
 const RXFIFO_CNT_MASK: u32 = 0xFF;
 const LINE_BUF_SIZE: usize = 128;
 
 fn uart0_init_rx() {
     unsafe {
-        let gpio3_in_sel = (GPIO_FUNC_IN_SEL_BASE + 4 * U0RXD_SIG_IN_IDX) as *mut u32;
-        write_volatile(gpio3_in_sel, GPIO3_NUM | (1 << 7));
+        let gpio_in_sel = (GPIO_FUNC_IN_SEL_BASE + 4 * U0RXD_SIG_IN_IDX) as *mut u32;
+        write_volatile(gpio_in_sel, UART_RX_GPIO_NUM | (1 << 7));
     }
 }
 
@@ -171,7 +169,7 @@ fn handle_help() {
 }
 
 fn handle_version() {
-    esp_println::println!("microfips-esp32 {}", env!("CARGO_PKG_VERSION"));
+    esp_println::println!("{} {}", crate::config::DEVICE_NAME, env!("CARGO_PKG_VERSION"));
 }
 
 fn handle_reset() {
@@ -188,10 +186,10 @@ fn handle_reset() {
             core::hint::spin_loop();
         }
     }
-    // RTC_CNTL_OPTIONS0_REG (0x3FF48000) bit 31: SW_SYS_RST triggers full system reset.
+    // RTC_CNTL_OPTIONS0_REG bit 31: SW_SYS_RST triggers full system reset.
     // See ESP32 TRM §18.5 and soc/rtc_cntl_reg.h RTC_CNTL_SW_SYS_RST.
     unsafe {
-        core::ptr::write_volatile(0x3FF4_8000 as *mut u32, 1 << 31);
+        core::ptr::write_volatile(RESET_REGISTER as *mut u32, 1 << 31);
     }
     loop {
         core::hint::spin_loop();
