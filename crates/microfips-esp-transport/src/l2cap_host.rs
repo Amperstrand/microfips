@@ -22,6 +22,8 @@ use crate::config::{
     DEVICE_SECRET, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS,
 };
 
+const L2CAP_SDU_CAP: usize = L2CAP_FRAME_CAP + 2;
+
 static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> =
     StaticCell::new();
 static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
@@ -151,13 +153,15 @@ where
 {
     let local_pub = microfips_core::noise::ecdh_pubkey(secret).ok()?;
 
-    let mut tx = [0u8; 33];
+    let mut tx = [0u8; 35];
     tx[0] = 0x00;
-    tx[1..].copy_from_slice(&local_pub[1..33]);
+    tx[1] = 0x21;
+    tx[2] = 0x00;
+    tx[3..].copy_from_slice(&local_pub[1..33]);
 
     writer.send(stack, &tx).await.ok()?;
 
-    let mut rx_buf = [0u8; 33];
+    let mut rx_buf = [0u8; L2CAP_SDU_CAP];
     let result = embassy_time::with_timeout(
         embassy_time::Duration::from_secs(5),
         reader.receive(stack, &mut rx_buf),
@@ -165,10 +169,10 @@ where
     .await;
 
     match result {
-        Ok(Ok(33)) if rx_buf[0] == 0x00 => {
+        Ok(Ok(n)) if n >= 35 && rx_buf[0] == 0x00 && rx_buf[1] == 0x21 && rx_buf[2] == 0x00 => {
             let mut peer_pub = [0u8; 33];
             peer_pub[0] = 0x02;
-            peer_pub[1..33].copy_from_slice(&rx_buf[1..33]);
+            peer_pub[1..33].copy_from_slice(&rx_buf[3..35]);
             log::info!("pubkey exchange OK");
             Some(peer_pub)
         }
@@ -346,13 +350,26 @@ pub async fn l2cap_host_task() {
 
                 drain_l2cap_channels();
                 mark_link_ready(peer_pub);
-                let mut rx_buf = [0u8; L2CAP_FRAME_CAP];
+                let mut rx_buf = [0u8; L2CAP_SDU_CAP];
 
                 loop {
                     match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
                         Either::First(Ok(n)) => {
+                            if n < 2 {
+                                mark_link_down();
+                                break;
+                            }
+                            let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
+                            if n < 2 + payload_len || payload_len > L2CAP_FRAME_CAP {
+                                log::warn!("bad length prefix: {}B in {}B SDU", payload_len, n);
+                                mark_link_down();
+                                break;
+                            }
                             let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-                            if frame.extend_from_slice(&rx_buf[..n]).is_err() {
+                            if frame
+                                .extend_from_slice(&rx_buf[2..2 + payload_len])
+                                .is_err()
+                            {
                                 mark_link_down();
                                 break;
                             }
@@ -364,7 +381,16 @@ pub async fn l2cap_host_task() {
                             break;
                         }
                         Either::Second(frame) => {
-                            if writer.send(&stack, &frame).await.is_err() {
+                            let len = frame.len() as u16;
+                            let mut sdu = heapless::Vec::<u8, L2CAP_SDU_CAP>::new();
+                            if sdu.extend_from_slice(&len.to_be_bytes()).is_err()
+                                || sdu.extend_from_slice(&frame).is_err()
+                            {
+                                log::warn!("frame too large for SDU");
+                                mark_link_down();
+                                break;
+                            }
+                            if writer.send(&stack, &sdu).await.is_err() {
                                 log::warn!("peripheral send loop disconnected");
                                 mark_link_down();
                                 break;
