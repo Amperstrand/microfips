@@ -39,3 +39,50 @@ pub const FIPS_CAPS_SERVICE_UUID: [u8; 2] = [0x46, 0x49];
 pub const L2CAP_FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
     0x4c, 0x8f, 0x64, 0x40, 0xcc, 0xc9, 0x87, 0x9f, 0xc0, 0x42, 0xc5, 0x2c, 0x90, 0xb7, 0x90, 0x9c,
 ]];
+
+// Device identity secret key (populated from env var at compile time)
+#[cfg(feature = "esp32")]
+pub const DEVICE_SECRET: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_esp32"));
+#[cfg(feature = "esp32s3")]
+pub const DEVICE_SECRET: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_esp32s3"));
+
+#[cfg(all(feature = "esp32", feature = "ble"))]
+pub const BLE_DEVICE_NAME: &str = "microfips-esp32";
+#[cfg(all(feature = "esp32s3", feature = "ble"))]
+pub const BLE_DEVICE_NAME: &str = "microfips-esp32s3";
+
+#[cfg(feature = "esp32")]
+pub const DEVICE_NAME: &str = "microfips-esp32";
+#[cfg(feature = "esp32s3")]
+pub const DEVICE_NAME: &str = "microfips-esp32s3";
+
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32")]
+pub const UART0_BASE: usize = 0x3FF4_0000;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32s3")]
+pub const UART0_BASE: usize = 0x6000_0000;
+
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32")]
+pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32s3")]
+pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_9000;
+
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32")]
+pub const UART_RX_GPIO_NUM: u32 = 3;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32s3")]
+pub const UART_RX_GPIO_NUM: u32 = 44;
+
+// Reset register address (RTC_CNTL_OPTIONS0_REG)
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32")]
+pub const RESET_REGISTER: usize = 0x3FF4_8000;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32s3")]
+pub const RESET_REGISTER: usize = 0x6000_8000;
