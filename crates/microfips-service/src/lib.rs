@@ -364,6 +364,14 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
             return FspAppResult::None;
         }
 
+        if payload == b"PING" && response.len() >= 4 {
+            response[..4].copy_from_slice(b"PONG");
+            return FspAppResult::Reply {
+                msg_type: FSP_MSG_DATA,
+                len: 4,
+            };
+        }
+
         match dispatch_request(&mut self.inner, payload, response) {
             Ok(len) => FspAppResult::Reply {
                 msg_type: FSP_MSG_DATA,
