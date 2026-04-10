@@ -20,8 +20,8 @@ use trouble_host::prelude::{
 };
 
 use crate::config::{
-    DEVICE_SECRET, FIPS_BLE_ADDR, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM,
-    RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
+    DEVICE_SECRET, FIPS_BLE_ADDR, FIPS_EXPECTED_PUBKEY, L2CAP_FIPS_SERVICE_UUID_LE,
+    L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
 };
 
 const L2CAP_SDU_CAP: usize = L2CAP_FRAME_CAP + 2;
@@ -194,6 +194,12 @@ where
             peer_pub[0] = 0x02;
             peer_pub[1..33].copy_from_slice(&rx_buf[3..35]);
 
+            {
+                let mut hex = [0u8; 64];
+                microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+                log::info!("peer x-only pubkey: {}", core::str::from_utf8(&hex).unwrap_or("?"));
+            }
+
             if payload_len == 34 && n == 36 {
                 let flags = rx_buf[35];
                 log::info!("pubkey exchange OK (got {}B, flags: 0x{:02X})", n, flags);
@@ -211,6 +217,10 @@ where
             None
         }
     }
+}
+
+fn peer_is_fips(peer_pub: &[u8; 33]) -> bool {
+    peer_pub[1..33] == FIPS_EXPECTED_PUBKEY
 }
 
 async fn relay_l2cap_frames<T, P>(
@@ -259,10 +269,13 @@ where
                     mark_link_down();
                     break;
                 }
-                if writer.send(stack, &sdu).await.is_err() {
-                    log::warn!("{}", send_disconnect_log);
-                    mark_link_down();
-                    break;
+                match writer.send(stack, &sdu).await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        log::warn!("{}: {:?}", send_disconnect_log, e);
+                        mark_link_down();
+                        break;
+                    }
                 }
             }
         }
@@ -332,83 +345,92 @@ pub async fn l2cap_host_task() {
         async {
             loop {
                 let fips_addr = BdAddr::new(FIPS_BLE_ADDR);
-                let connect_config = ConnectConfig {
-                    scan_config: TroubleScanConfig {
-                        active: true,
-                        filter_accept_list: &[(AddrKind::PUBLIC, &fips_addr)],
-                        phys: PhySet::M1,
-                        interval: embassy_time::Duration::from_millis(100),
-                        window: embassy_time::Duration::from_millis(50),
-                        timeout: embassy_time::Duration::from_secs(5),
-                    },
-                    connect_params: RequestedConnParams::default(),
-                };
 
-                log::info!("attempting central connect to FIPS");
-                let central_session = match central.connect_ext(&connect_config).await {
-                    Ok(conn) => {
-                        log::info!("BLE central connected, handle {:?}", conn.handle());
+                let mut central_session = None;
+                for attempt in 0..3u8 {
+                    let connect_config = ConnectConfig {
+                        scan_config: TroubleScanConfig {
+                            active: false,
+                            filter_accept_list: &[(AddrKind::PUBLIC, &fips_addr)],
+                            phys: PhySet::M1,
+                            interval: embassy_time::Duration::from_millis(100),
+                            window: embassy_time::Duration::from_millis(100),
+                            timeout: embassy_time::Duration::from_secs(10),
+                        },
+                        connect_params: RequestedConnParams::default(),
+                    };
 
-                        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                    log::info!("attempting central connect to FIPS (attempt {}/3)", attempt + 1);
+                    match central.connect(&connect_config).await {
+                        Ok(conn) => {
+                            log::info!("BLE central connected, handle {:?}", conn.handle());
 
-                        let l2cap_config = L2capChannelConfig {
-                            mtu: Some(2048),
-                            ..Default::default()
-                        };
+                            embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
 
-                        log::info!("creating L2CAP channel on PSM {}...", L2CAP_PSM);
-                        let channel = match L2capChannel::create(&stack, &conn, L2CAP_PSM, &l2cap_config).await {
-                            Ok(channel) => {
-                                log::info!("L2CAP channel created on PSM {}", L2CAP_PSM);
-                                Some(channel)
-                            }
-                            Err(e) => {
-                                log::warn!("L2CAP create error on PSM {}: {:?}", L2CAP_PSM, e);
-                                drain_l2cap_channels();
-                                embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                                    RECV_RETRY_DELAY_MS,
-                                ))
-                                .await;
-                                mark_link_down();
-                                log::info!("central connect failed, falling back to peripheral");
-                                None
-                            }
-                        };
+                            let l2cap_config = L2capChannelConfig {
+                                mtu: Some(2048),
+                                ..Default::default()
+                            };
 
-                        match channel {
-                            Some(channel) => {
-                                let (mut writer, mut reader) = channel.split();
-                                match exchange_pubkeys(
-                                    &DEVICE_SECRET,
-                                    &mut writer,
-                                    &mut reader,
-                                    &stack,
-                                )
-                                .await
-                                {
-                                    Some(peer_pub) => Some((conn, writer, reader, peer_pub)),
-                                    None => {
-                                        log::warn!("central pubkey exchange failed");
-                                        drain_l2cap_channels();
-                                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                                            RECV_RETRY_DELAY_MS,
-                                        ))
-                                        .await;
-                                        mark_link_down();
-                                        log::info!("central connect failed, falling back to peripheral");
-                                        None
+                            log::info!("creating L2CAP channel on PSM {}...", L2CAP_PSM);
+                            match L2capChannel::create(&stack, &conn, L2CAP_PSM, &l2cap_config).await {
+                                Ok(channel) => {
+                                    log::info!("L2CAP channel created on PSM {}", L2CAP_PSM);
+                                    let (mut writer, mut reader) = channel.split();
+                                    match exchange_pubkeys(
+                                        &DEVICE_SECRET,
+                                        &mut writer,
+                                        &mut reader,
+                                        &stack,
+                                    )
+                                    .await
+                                    {
+                                        Some(peer_pub) => {
+                                            if !peer_is_fips(&peer_pub) {
+                                                let mut hex = [0u8; 64];
+                                                microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+                                                log::warn!(
+                                                    "rejecting central peer (not FIPS): {}",
+                                                    core::str::from_utf8(&hex).unwrap_or("?")
+                                                );
+                                                drain_l2cap_channels();
+                                                embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                                                    RECV_RETRY_DELAY_MS,
+                                                ))
+                                                .await;
+                                                mark_link_down();
+                                            } else {
+                                                central_session = Some((conn, writer, reader, peer_pub));
+                                                break;
+                                            }
+                                        }
+                                        None => {
+                                            log::warn!("central pubkey exchange failed");
+                                            drain_l2cap_channels();
+                                            embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                                                RECV_RETRY_DELAY_MS,
+                                            ))
+                                            .await;
+                                            mark_link_down();
+                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    log::warn!("L2CAP create error on PSM {}: {:?}", L2CAP_PSM, e);
+                                    drain_l2cap_channels();
+                                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                                        RECV_RETRY_DELAY_MS,
+                                    ))
+                                    .await;
+                                    mark_link_down();
+                                }
                             }
-                            None => None,
+                        }
+                        Err(e) => {
+                            log::warn!("central connect attempt {} failed: {:?}", attempt + 1, e);
                         }
                     }
-                    Err(e) => {
-                        log::warn!("central connect failed: {:?}", e);
-                        log::info!("central connect failed, falling back to peripheral");
-                        None
-                    }
-                };
+                }
 
                 if let Some((conn, mut writer, mut reader, peer_pub)) = central_session {
                     log::info!("central connection ready");
@@ -539,6 +561,21 @@ pub async fn l2cap_host_task() {
                         .await;
                         continue;
                     };
+
+                if !peer_is_fips(&peer_pub) {
+                    let mut hex = [0u8; 64];
+                    microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+                    log::warn!(
+                        "rejecting peripheral peer (not FIPS): {}",
+                        core::str::from_utf8(&hex).unwrap_or("?")
+                    );
+                    drain_l2cap_channels();
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                        RECV_RETRY_DELAY_MS,
+                    ))
+                    .await;
+                    continue;
+                }
 
                 drain_l2cap_channels();
                 mark_link_ready(peer_pub);
