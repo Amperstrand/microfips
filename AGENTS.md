@@ -249,13 +249,14 @@ kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
    RUST_LOG=debug /home/ubuntu/src2/fips/target/release/fips --config /tmp/fips-local-ble.yaml > /tmp/fips-local.log 2>&1 &
    ```
 
-2. FIPS config requires `disable_tiebreaker: true` for leaf peers:
+2. FIPS config for BLE transport:
    ```yaml
    transports:
      ble:
        adapter: hci0
-       disable_tiebreaker: true
    ```
+   Role negotiation is handled via capability flags in the BLE pubkey exchange
+   (FIPS commit `8c388cf`). No manual tiebreaker configuration needed.
 
 3. Flash ESP32:
    ```bash
@@ -315,16 +316,16 @@ Response format matches FIPS control protocol: `{"status":"ok","data":{...}}` or
 `{"status":"error","message":"..."}`.
 
 **Troubleshooting:**
-- **No FIPS connection:** Ensure `disable_tiebreaker: true` in FIPS config. Check BLE
-  adapter: `hciconfig hci0` (must show UP RUNNING). Restart FIPS daemon.
+- **No FIPS connection:** Check BLE adapter: `hciconfig hci0` (must show UP RUNNING).
+  Restart FIPS daemon. Role negotiation is automatic via capability flags.
 - **`bad prefix 0x01` in FIPS logs:** Stale L2CAP channels from previous connection.
   ESP32 drains channels on reconnect (fixed in commit `8ed21cb`).
 - **`BLE probe connect timeout`:** Check BLE address type — FIPS must use `LeRandom` for
   ESP32's random static address (fixed in FIPS commit `9779672`).
 - **Wrong firmware flashed:** Each variant has its own binary: `microfips-esp32` (UART),
   `microfips-esp32-ble` (BLE), `microfips-esp32-l2cap` (L2CAP). No build order dependency.
-- **Tie-breaker deadlock:** Both sides try to be central simultaneously. Set
-  `disable_tiebreaker: true` in FIPS config (commit `adb63cf`).
+- **Tie-breaker deadlock:** Both sides try to be central simultaneously. Resolved via
+  capability-based role negotiation (FIPS commit `8c388cf`). No manual config needed.
 
 **Key differences from BLE GATT:**
 - No Python bridge needed — ESP32 talks to FIPS daemon directly over BLE L2CAP
@@ -417,10 +418,10 @@ MSG2 received), sustained heartbeats.
 
 ### ESP32-S3 (TiLDAGON)
 
-The ESP32-S3 TiLDAGON uses WiFi transport via `microfips-esp32s3` crate with shared
-`microfips-esp-common` for DNS, config, and stats.
+The ESP32-S3 TiLDAGON supports WiFi and BLE L2CAP transports via `microfips-esp32s3` crate
+with shared `microfips-esp-common` for DNS, config, and stats.
 
-**Build:**
+**Build (WiFi):**
 ```bash
 export $(grep -v '^#' .env | xargs) \
   && . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
@@ -428,6 +429,17 @@ export $(grep -v '^#' .env | xargs) \
   -Zbuild-std=core,alloc
 # Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
 ```
+
+**Build (BLE L2CAP):**
+```bash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc --features l2cap
+# Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-l2cap
+```
+
+**IMPORTANT:** After any change to `keys.json` or identity code, MUST run
+`cargo clean -p microfips-esp32s3` before rebuild to avoid stale compiled-in keys.
 
 **Flash:**
 ```bash
@@ -906,11 +918,13 @@ Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` wit
 | MCU | Source | Pubkey (x-only, hex) | npub |
 |-----|--------|----------------------|------|
 | STM32 | `STM32_SECRET` | `635696dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842` | `npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf` |
-| ESP32 | running firmware | TBD (differs from `ESP32_SECRET` in code) | `npub1nqppng4kga6luldsu3s95hyayh8vl5gpvvvje0h8z422l6zegflqd8942y` |
+| ESP32-D0WD | running firmware | TBD (differs from `ESP32_SECRET` in code) | `npub1nqppng4kga6luldsu3s95hyayh8vl5gpvvvje0h8z422l6zegflqd8942y` |
+| ESP32-S3 | `keys.json` sim-a | `b3989043c68d9c2d3c8f949d73e61cae27997993432c3dbbd8498117d92d95bb` | `npub1979azcrp...` |
 | VPS | — | `020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d` | `npub1peaqmgq6y4wduyr2yqh0fatnvah0ncj0rjqhd5p6aqaz5wsr05ssu0cnha` |
 
 STM32 pubkey verified via `cargo run -p microfips-link --release` output.
-ESP32 pubkey derived from FIPS peer authentication log.
+ESP32-D0WD pubkey derived from FIPS peer authentication log.
+ESP32-S3 pubkey from `keys.json` (verified 2026-04-10, NodeAddr `6bef476b391177c1d587c40344ddcab1`).
 
 ## CI Pipeline
 
