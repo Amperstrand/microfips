@@ -13,13 +13,15 @@ use esp_radio::ble::controller::BleConnector;
 use static_cell::StaticCell;
 use trouble_host::l2cap::{L2capChannelReader, L2capChannelWriter};
 use trouble_host::prelude::{
-    Address, AdStructure, Advertisement, DefaultPacketPool, ExternalController, Host,
+    AddrKind, Address, AdStructure, Advertisement, BdAddr, DefaultPacketPool, ExternalController, Host,
     HostResources, L2capChannel, L2capChannelConfig, PacketPool, Stack, BR_EDR_NOT_SUPPORTED,
+    ConnectConfig, PhySet, RequestedConnParams, ScanConfig as TroubleScanConfig,
     LE_GENERAL_DISCOVERABLE,
 };
 
 use crate::config::{
-    DEVICE_SECRET, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS,
+    DEVICE_SECRET, FIPS_BLE_ADDR, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM,
+    RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
 };
 
 const L2CAP_SDU_CAP: usize = L2CAP_FRAME_CAP + 2;
@@ -153,12 +155,15 @@ where
 {
     let local_pub = microfips_core::noise::ecdh_pubkey(secret).ok()?;
 
-    let mut tx = [0u8; 35];
-    tx[0] = 0x00;
-    tx[1] = 0x21;
+    // FIPS macos-ble commit 8c388cf: wire format [len:2BE][0x00][pubkey:32][flags:1]
+    let payload_len: u16 = 34;
+    let mut tx = [0u8; 36];
+    tx[0..2].copy_from_slice(&payload_len.to_be_bytes());
     tx[2] = 0x00;
-    tx[3..].copy_from_slice(&local_pub[1..33]);
+    tx[3..35].copy_from_slice(&local_pub[1..33]);
+    tx[35] = 0x00;
 
+    log::info!("sending pubkey exchange ({}B payload, {}B wire)", payload_len, tx.len());
     writer.send(stack, &tx).await.ok()?;
 
     let mut rx_buf = [0u8; L2CAP_SDU_CAP];
@@ -169,14 +174,98 @@ where
     .await;
 
     match result {
-        Ok(Ok(n)) if n >= 35 && rx_buf[0] == 0x00 && rx_buf[1] == 0x21 && rx_buf[2] == 0x00 => {
+        Ok(Ok(n)) => {
+            // Old: [0x0021][0x00][pubkey:32] = 35B, New: [0x0022][0x00][pubkey:32][flags:1] = 36B
+            if n < 35 {
+                log::warn!("pubkey exchange recv too short: {}B", n);
+                return None;
+            }
+            let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
+            if !(payload_len == 33 || payload_len == 34) {
+                log::warn!("pubkey exchange bad payload len: {}", payload_len);
+                return None;
+            }
+            if rx_buf[2] != 0x00 {
+                log::warn!("pubkey exchange bad prefix: 0x{:02X}", rx_buf[2]);
+                return None;
+            }
+
             let mut peer_pub = [0u8; 33];
             peer_pub[0] = 0x02;
             peer_pub[1..33].copy_from_slice(&rx_buf[3..35]);
-            log::info!("pubkey exchange OK");
+
+            if payload_len == 34 && n == 36 {
+                let flags = rx_buf[35];
+                log::info!("pubkey exchange OK (got {}B, flags: 0x{:02X})", n, flags);
+            } else {
+                log::info!("pubkey exchange OK (got {}B, old format)", n);
+            }
             Some(peer_pub)
         }
-        _ => None,
+        Ok(Err(e)) => {
+            log::warn!("pubkey exchange recv error: {:?}", e);
+            None
+        }
+        Err(_) => {
+            log::warn!("pubkey exchange timeout");
+            None
+        }
+    }
+}
+
+async fn relay_l2cap_frames<T, P>(
+    stack: &Stack<'_, T, P>,
+    writer: &mut L2capChannelWriter<'_, P>,
+    reader: &mut L2capChannelReader<'_, P>,
+    recv_disconnect_log: &'static str,
+    send_disconnect_log: &'static str,
+)
+where
+    T: trouble_host::prelude::Controller,
+    P: PacketPool,
+{
+    let mut rx_buf = [0u8; L2CAP_SDU_CAP];
+
+    loop {
+        match select(reader.receive(stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
+            Either::First(Ok(n)) => {
+                if n < 2 {
+                    mark_link_down();
+                    break;
+                }
+                let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
+                if n < 2 + payload_len || payload_len > L2CAP_FRAME_CAP {
+                    log::warn!("bad length prefix: {}B in {}B SDU", payload_len, n);
+                    mark_link_down();
+                    break;
+                }
+                let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
+                if frame.extend_from_slice(&rx_buf[2..2 + payload_len]).is_err() {
+                    mark_link_down();
+                    break;
+                }
+                L2CAP_RX_CH.send(frame).await;
+            }
+            Either::First(Err(_)) => {
+                log::warn!("{}", recv_disconnect_log);
+                mark_link_down();
+                break;
+            }
+            Either::Second(frame) => {
+                let len = frame.len() as u16;
+                let mut sdu = heapless::Vec::<u8, L2CAP_SDU_CAP>::new();
+                if sdu.extend_from_slice(&len.to_be_bytes()).is_err() || sdu.extend_from_slice(&frame).is_err() {
+                    log::warn!("frame too large for SDU");
+                    mark_link_down();
+                    break;
+                }
+                if writer.send(stack, &sdu).await.is_err() {
+                    log::warn!("{}", send_disconnect_log);
+                    mark_link_down();
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -209,24 +298,29 @@ pub async fn l2cap_host_task() {
     log::info!("controller created");
     let resources = L2CAP_HOST_RESOURCES.init(HostResources::new());
     log::info!("host resources initialized");
-    let ble_addr: [u8; 6] = [
-        0xff,
-        DEVICE_SECRET[27],
-        DEVICE_SECRET[28],
-        DEVICE_SECRET[29],
-        DEVICE_SECRET[30],
-        DEVICE_SECRET[31],
-    ];
-    let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random(ble_addr));
+    let stack = trouble_host::new(controller, resources);
+    let stack = if USE_PUBLIC_BLE_ADDRESS {
+        stack
+    } else {
+        let ble_addr: [u8; 6] = [
+            0xff,
+            DEVICE_SECRET[27],
+            DEVICE_SECRET[28],
+            DEVICE_SECRET[29],
+            DEVICE_SECRET[30],
+            DEVICE_SECRET[31],
+        ];
+        stack.set_random_address(Address::random(ble_addr))
+    };
     log::info!("stack initialized");
 
     let Host {
+        mut central,
         mut peripheral,
         mut runner,
         ..
     } = stack.build();
-    log::info!("host built (peripheral only)");
+    log::info!("host built (central + peripheral)");
 
     let _ = embassy_futures::join::join(
         async {
@@ -237,6 +331,104 @@ pub async fn l2cap_host_task() {
         },
         async {
             loop {
+                let fips_addr = BdAddr::new(FIPS_BLE_ADDR);
+                let connect_config = ConnectConfig {
+                    scan_config: TroubleScanConfig {
+                        active: true,
+                        filter_accept_list: &[(AddrKind::PUBLIC, &fips_addr)],
+                        phys: PhySet::M1,
+                        interval: embassy_time::Duration::from_millis(100),
+                        window: embassy_time::Duration::from_millis(50),
+                        timeout: embassy_time::Duration::from_secs(5),
+                    },
+                    connect_params: RequestedConnParams::default(),
+                };
+
+                log::info!("attempting central connect to FIPS");
+                let central_session = match central.connect_ext(&connect_config).await {
+                    Ok(conn) => {
+                        log::info!("BLE central connected, handle {:?}", conn.handle());
+
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+
+                        let l2cap_config = L2capChannelConfig {
+                            mtu: Some(2048),
+                            ..Default::default()
+                        };
+
+                        log::info!("creating L2CAP channel on PSM {}...", L2CAP_PSM);
+                        let channel = match L2capChannel::create(&stack, &conn, L2CAP_PSM, &l2cap_config).await {
+                            Ok(channel) => {
+                                log::info!("L2CAP channel created on PSM {}", L2CAP_PSM);
+                                Some(channel)
+                            }
+                            Err(e) => {
+                                log::warn!("L2CAP create error on PSM {}: {:?}", L2CAP_PSM, e);
+                                drain_l2cap_channels();
+                                embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                                    RECV_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                                mark_link_down();
+                                log::info!("central connect failed, falling back to peripheral");
+                                None
+                            }
+                        };
+
+                        match channel {
+                            Some(channel) => {
+                                let (mut writer, mut reader) = channel.split();
+                                match exchange_pubkeys(
+                                    &DEVICE_SECRET,
+                                    &mut writer,
+                                    &mut reader,
+                                    &stack,
+                                )
+                                .await
+                                {
+                                    Some(peer_pub) => Some((conn, writer, reader, peer_pub)),
+                                    None => {
+                                        log::warn!("central pubkey exchange failed");
+                                        drain_l2cap_channels();
+                                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                                            RECV_RETRY_DELAY_MS,
+                                        ))
+                                        .await;
+                                        mark_link_down();
+                                        log::info!("central connect failed, falling back to peripheral");
+                                        None
+                                    }
+                                }
+                            }
+                            None => None,
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("central connect failed: {:?}", e);
+                        log::info!("central connect failed, falling back to peripheral");
+                        None
+                    }
+                };
+
+                if let Some((conn, mut writer, mut reader, peer_pub)) = central_session {
+                    log::info!("central connection ready");
+                    drain_l2cap_channels();
+                    mark_link_ready(peer_pub);
+                    relay_l2cap_frames(
+                        &stack,
+                        &mut writer,
+                        &mut reader,
+                        "central receive loop disconnected",
+                        "central send loop disconnected",
+                    )
+                    .await;
+                    drop(conn);
+                    mark_link_down();
+                    drain_l2cap_channels();
+                    log::info!("central disconnected, retrying");
+                    continue;
+                }
+
                 mark_link_down();
                 log::info!("advertising as peripheral");
 
@@ -350,54 +542,14 @@ pub async fn l2cap_host_task() {
 
                 drain_l2cap_channels();
                 mark_link_ready(peer_pub);
-                let mut rx_buf = [0u8; L2CAP_SDU_CAP];
-
-                loop {
-                    match select(reader.receive(&stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
-                        Either::First(Ok(n)) => {
-                            if n < 2 {
-                                mark_link_down();
-                                break;
-                            }
-                            let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
-                            if n < 2 + payload_len || payload_len > L2CAP_FRAME_CAP {
-                                log::warn!("bad length prefix: {}B in {}B SDU", payload_len, n);
-                                mark_link_down();
-                                break;
-                            }
-                            let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-                            if frame
-                                .extend_from_slice(&rx_buf[2..2 + payload_len])
-                                .is_err()
-                            {
-                                mark_link_down();
-                                break;
-                            }
-                            L2CAP_RX_CH.send(frame).await;
-                        }
-                        Either::First(Err(_)) => {
-                            log::warn!("peripheral receive loop disconnected");
-                            mark_link_down();
-                            break;
-                        }
-                        Either::Second(frame) => {
-                            let len = frame.len() as u16;
-                            let mut sdu = heapless::Vec::<u8, L2CAP_SDU_CAP>::new();
-                            if sdu.extend_from_slice(&len.to_be_bytes()).is_err()
-                                || sdu.extend_from_slice(&frame).is_err()
-                            {
-                                log::warn!("frame too large for SDU");
-                                mark_link_down();
-                                break;
-                            }
-                            if writer.send(&stack, &sdu).await.is_err() {
-                                log::warn!("peripheral send loop disconnected");
-                                mark_link_down();
-                                break;
-                            }
-                        }
-                    }
-                }
+                relay_l2cap_frames(
+                    &stack,
+                    &mut writer,
+                    &mut reader,
+                    "peripheral receive loop disconnected",
+                    "peripheral send loop disconnected",
+                )
+                .await;
 
                 mark_link_down();
                 drain_l2cap_channels();

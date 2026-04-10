@@ -53,19 +53,19 @@ impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
     type Error = L2capError;
 
     async fn wait_ready(&mut self) -> Result<(), L2capError> {
+        log::debug!("wait_ready: link_up={}", H::link_up());
         if !H::task_started().swap(true, Ordering::Relaxed) {
             H::spawn_host_task()
                 .await
                 .map_err(|_| L2capError::InitFailed)?;
         }
 
-        if self.peer_pub.is_some() && H::link_up() {
+        if H::link_up() {
+            log::debug!("wait_ready: link already up");
             return Ok(());
         }
 
-        if !H::link_up() {
-            self.peer_pub = None;
-        }
+        self.peer_pub = None;
 
         loop {
             let pk = H::wait_for_l2cap_ready().await;

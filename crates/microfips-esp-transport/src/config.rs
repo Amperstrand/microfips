@@ -22,11 +22,20 @@ pub const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0x65, 0x42, 0x00, 0x73, 0x70, 0x66, 0x69, 0x6f,
 ]];
 
+/// When true, the ESP32 uses its factory IEEE public BLE address (matches FIPS 3621e4b
+/// LePublic connect). When false, a random static address is derived from DEVICE_SECRET.
+/// Set to false when upstream FIPS switches to LeRandom for L2CAP connections.
+#[cfg(feature = "l2cap")]
+pub const USE_PUBLIC_BLE_ADDRESS: bool = true;
+
 #[cfg(feature = "l2cap")]
 pub const L2CAP_FRAME_CAP: usize = 512;
 
 #[cfg(feature = "l2cap")]
 pub const L2CAP_PSM: u16 = 133;
+
+#[cfg(feature = "l2cap")]
+pub const FIPS_BLE_ADDR: [u8; 6] = [0x24, 0xC2, 0x49, 0xFC, 0x5A, 0x14];
 
 #[cfg(feature = "l2cap")]
 pub mod ble_caps {
