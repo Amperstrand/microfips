@@ -380,10 +380,13 @@ const SIM_B_SECRET: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_SE
 const SIM_A_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_PUBKEY_HEX_sim-a"));
 const STM32_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_PUBKEY_HEX_stm32"));
 const ESP32_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_PUBKEY_HEX_esp32"));
+const ESP32S3_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_PUBKEY_HEX_esp32s3"));
 const SIM_A_TARGET: [u8; 16] = microfips_core::hex::hex_bytes_16(env!("DEVICE_NODE_ADDR_sim-a"));
 
 #[allow(dead_code)]
 const ESP32_TARGET: [u8; 16] = microfips_core::hex::hex_bytes_16(env!("DEVICE_NODE_ADDR_esp32"));
+#[allow(dead_code)]
+const ESP32S3_TARGET: [u8; 16] = microfips_core::hex::hex_bytes_16(env!("DEVICE_NODE_ADDR_esp32s3"));
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -525,6 +528,7 @@ fn main() {
             Ok(ref bytes) if *bytes == SIM_A_TARGET => SIM_A_PUBKEY,
             Ok(ref bytes) if *bytes == stm32_target => STM32_PUBKEY,
             Ok(ref bytes) if *bytes == ESP32_TARGET => ESP32_PUBKEY,
+            Ok(ref bytes) if *bytes == ESP32S3_TARGET => ESP32S3_PUBKEY,
             _ => {
                 log::warn!(
                     "[{}] unknown target NodeAddr, FSP will fail (no pubkey mapping)",
