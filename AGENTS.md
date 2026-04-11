@@ -226,7 +226,7 @@ Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
 | L2CAP MTU | 2048 bytes |
 | PacketPool MTU | 2054 bytes (configured via `.cargo/config.toml`) |
 | Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey]` (33 bytes, 5s timeout) |
-| Framing | Raw FMP (no length prefix — L2CAP SeqPacket preserves boundaries) |
+| Framing | 2-byte BE length prefix on all frames (matches FIPS `BluerStream` on `linux-ble-stability-v2`) |
 | BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_SECRET[27..32]` + `0xFF` prefix, MSB-first |
 | Advertising name | `microfips-l2cap` |
 
@@ -331,7 +331,7 @@ Response format matches FIPS control protocol: `{"status":"ok","data":{...}}` or
 - No Python bridge needed — ESP32 talks to FIPS daemon directly over BLE L2CAP
 - No UDP hop — pure BLE L2CAP connection to local FIPS daemon
 - No GATT characteristics — uses L2CAP CoC channel on PSM 0x0085
-- No FMP length prefix — L2CAP SeqPacket preserves message boundaries
+- 2-byte BE length prefix on all L2CAP frames (matches FIPS `BluerStream` on `linux-ble-stability-v2`)
 
 ### ESP32 WiFi Transport
 
