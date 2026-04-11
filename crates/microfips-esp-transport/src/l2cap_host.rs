@@ -223,6 +223,16 @@ fn peer_is_fips(peer_pub: &[u8; 33]) -> bool {
     peer_pub[1..33] == FIPS_EXPECTED_PUBKEY
 }
 
+/// Relay frames between L2CAP channel and internal channels.
+///
+/// Wire format (matches FIPS `BluerStream` on `linux-ble-stability-v2`):
+///   TX: `[2B BE len][FMP frame]` → L2CAP SDU
+///   RX: L2CAP SDU → `[2B BE len][FMP frame]` → strip prefix → internal channel
+///
+/// Framing NOTE: The 2-byte BE length prefix is NOT upstream FIPS behavior.
+/// It was added in commit `42d9adb` for macOS CoreBluetooth byte-stream
+/// coalescing. On Linux SeqPacket it's redundant but harmless. Both sides
+/// must match. See FIPS `src/transport/ble/mod.rs` framing comment.
 async fn relay_l2cap_frames<T, P>(
     stack: &Stack<'_, T, P>,
     writer: &mut L2capChannelWriter<'_, P>,
@@ -236,16 +246,23 @@ where
 {
     let mut rx_buf = [0u8; L2CAP_SDU_CAP];
 
+    let mut tx_count: u32 = 0;
+    let mut rx_count: u32 = 0;
+
     loop {
         match select(reader.receive(stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
             Either::First(Ok(n)) => {
                 if n < 2 {
+                    log::warn!("RX: SDU too short ({}B), disconnecting", n);
                     mark_link_down();
                     break;
                 }
                 let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
                 if n < 2 + payload_len || payload_len > L2CAP_FRAME_CAP {
-                    log::warn!("bad length prefix: {}B in {}B SDU", payload_len, n);
+                    log::warn!(
+                        "RX: bad length prefix ({}B payload in {}B SDU), disconnecting",
+                        payload_len, n
+                    );
                     mark_link_down();
                     break;
                 }
@@ -254,16 +271,32 @@ where
                     mark_link_down();
                     break;
                 }
-                // Use try_send to avoid blocking the relay when L2CAP_RX_CH is
-                // full.  FIPS may send heartbeats/control frames before the
-                // Node starts reading; blocking here would starve the TX path
-                // (L2CAP_TX_CH → L2CAP writer) and deadlock the link.
+
+                rx_count += 1;
+                let phase = frame.first().copied().unwrap_or(0xFF);
+
+                if rx_count <= 5 || rx_count % 20 == 0 {
+                    let hex_len = payload_len.min(32);
+                    let mut hex = [0u8; 64];
+                    microfips_esp_common::node_info::hex_encode(
+                        &frame[..hex_len],
+                        &mut hex[..hex_len * 2],
+                    );
+                    log::info!(
+                        "RX #{}: {}B phase={:#04x} first32={}",
+                        rx_count,
+                        payload_len,
+                        phase,
+                        core::str::from_utf8(&hex[..hex_len * 2]).unwrap_or("?")
+                    );
+                }
+
                 if L2CAP_RX_CH.try_send(frame).is_err() {
-                    log::debug!("L2CAP_RX_CH full, dropping {}B frame", payload_len);
+                    log::warn!("RX: L2CAP_RX_CH full, dropping {}B frame #{}", payload_len, rx_count);
                 }
             }
             Either::First(Err(_)) => {
-                log::warn!("{}", recv_disconnect_log);
+                log::warn!("{} (after {} RX, {} TX frames)", recv_disconnect_log, rx_count, tx_count);
                 mark_link_down();
                 break;
             }
@@ -271,14 +304,40 @@ where
                 let len = frame.len() as u16;
                 let mut sdu = heapless::Vec::<u8, L2CAP_SDU_CAP>::new();
                 if sdu.extend_from_slice(&len.to_be_bytes()).is_err() || sdu.extend_from_slice(&frame).is_err() {
-                    log::warn!("frame too large for SDU");
+                    log::warn!("TX: frame too large for SDU ({}B)", len);
                     mark_link_down();
                     break;
                 }
+
+                tx_count += 1;
+                let phase = frame.first().copied().unwrap_or(0xFF);
+
+                if tx_count <= 5 || tx_count % 20 == 0 {
+                    let hex_len = (len as usize).min(32);
+                    let mut hex = [0u8; 64];
+                    microfips_esp_common::node_info::hex_encode(
+                        &frame[..hex_len],
+                        &mut hex[..hex_len * 2],
+                    );
+                    log::info!(
+                        "TX #{}: {}B phase={:#04x} first32={}",
+                        tx_count,
+                        len,
+                        phase,
+                        core::str::from_utf8(&hex[..hex_len * 2]).unwrap_or("?")
+                    );
+                }
+
                 match writer.send(stack, &sdu).await {
                     Ok(()) => {}
                     Err(e) => {
-                        log::warn!("{}: {:?}", send_disconnect_log, e);
+                        log::warn!(
+                            "{}: {:?} (after {} RX, {} TX frames)",
+                            send_disconnect_log,
+                            e,
+                            rx_count,
+                            tx_count
+                        );
                         mark_link_down();
                         break;
                     }
