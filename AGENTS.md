@@ -949,3 +949,45 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 |---|-------|----------|-------|
 | #12 | M7: HTTP status page over FIPS | feature | Firmware has HTTP handler; needs E2E test |
 | #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
+
+## Upstream FIPS Compatibility
+
+### Current State (as of 2026-04-11)
+
+- **FIPS master** has merged macOS BLE (bluest crate) and Windows ports
+- **`linux-ble-stability-v2`** branch (our test branch) has diverged from master — contains leaf-proxy and BLE framing fixes not yet in master
+- **`next` branch** (0.4.0-dev, jmcorgan/next) contains breaking changes: Noise IK/XK → XX, FMP v0 → v1, version negotiation, profile negotiation
+- microfips needs to **rebase off latest master** before next development cycle
+
+### Noise Protocol Design Choices
+
+FIPS implements Noise directly (not via a spec-compliant Noise library), following only the
+cryptographic primitives and ordering from the Noise spec. Custom payloads (startup epoch,
+capability flags, negotiation) are attached to handshake messages. Same approach as Lightning Network.
+
+Confirmed by FIPS maintainer (2026-04-11): these are deliberate design choices, not bugs.
+
+| # | Choice | Description | Rationale |
+|---|--------|-------------|-----------|
+| D1 | Empty AAD during handshake | `AEAD_ENCRYPT(k, n, b"", plaintext)` instead of passing `h` as AAD | Custom Noise implementation with own payloads; transport keys bind via `ck` |
+| D2 | IK `se` token ordering | Initiator computes `DH(e,rs)` not `DH(s,re)` | Part of custom IK. Eliminated in 0.4.0-dev by switching to Noise XX. |
+| D3 | x-only ECDH | `SHA256(x_coordinate)` instead of raw ECDH shared secret | Required for Nostr npub compatibility. Same technique as BIP-340. |
+
+microfips matches all three for interoperability. Golden vectors (FIPS issue #1) validate cross-implementation compatibility.
+
+### ESPHome Integration
+
+FIPS has a `leaf_proxies` config feature that supports ESPHome devices via identity derivation:
+`SHA256("esphome:fips_ble:" + identity_seed)` → secp256k1 keypair. This is a FIPS-side TCP
+proxy pattern, not a standalone ESPHome component. microfips takes a different approach: direct
+BLE L2CAP from ESP32 to FIPS, implementing the FIPS protocol stack natively. Both can coexist.
+
+### Upcoming Breaking Changes (0.4.0-dev)
+
+When the `next` branch ships, microfips will need:
+
+1. **Noise XX migration** — rewrite `microfips-core/src/noise.rs` for 3-message XX handshake (both link and session layers)
+2. **FMP v1 wire format** — new msg3 header, version negotiation payload
+3. **Version negotiation** — min/max version range, 64-bit feature bitfield, TLV extensions
+4. **Profile negotiation** — new concept, requirements TBD
+5. **Golden vector regeneration** — XX handshake vectors needed for validation

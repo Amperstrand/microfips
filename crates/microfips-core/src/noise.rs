@@ -4,6 +4,18 @@
 //! - **Noise_IK_secp256k1_ChaChaPoly_SHA256** for link-layer (FMP)
 //! - **Noise_XK_secp256k1_ChaChaPoly_SHA256** for session-layer (FSP)
 //!
+//! ## Design Note
+//!
+//! FIPS implements Noise directly (not via a spec-compliant Noise library), following
+//! only the cryptographic primitives and ordering from the Noise spec. Custom payloads
+//! (startup epoch, capability flags, negotiation) are attached to handshake messages.
+//! This is the same approach Lightning Network uses. All crypto primitives use standard
+//! Rust crates (secp256k1, chacha20poly1305, sha2, hkdf), portable to embedded targets.
+//!
+//! **Upstream (0.4.0-dev):** The `next` branch switches both link and session layers to
+//! **Noise XX** (`Noise_XX_secp256k1_ChaChaPoly_SHA256`), a 3-message handshake where
+//! neither side knows the other's static key beforehand. D2 below is eliminated by XX.
+//!
 //! ## Reference Sources
 //!
 //! - **Noise Protocol Framework** (rev 34): <https://noiseprotocol.org/noise.html>
@@ -22,19 +34,19 @@
 //! - **RFC 7748**: Elliptic Curves for Security — ECDH function
 //! - **FIPS source**: `/root/src/fips/src/noise/` on VPS (orangeclaw)
 //!   - `handshake.rs`: HandshakeState with IK/XK patterns
-//!   - `mod.rs`: CipherState with encrypt/decrypt (no AAD during handshake)
+//!   - `mod.rs`: CipherState with encrypt/decrypt
 //!
-//! ## Noise Spec Compliance — Deviation Table
+//! ## FIPS Design Choices (confirmed by maintainer)
 //!
-//! | # | Spec Section | Deviation | Severity | Impact |
-//! |---|-------------|-----------|----------|--------|
-//! | D1 | §5.2 EncryptAndHash | Empty AAD during handshake instead of `h` | HIGH | Weakens handshake binding; not interoperable with spec-compliant Noise implementations |
-//! | D2 | §7.5 IK `se` token | Initiator computes `DH(e,rs)` not `DH(s,re)` | MEDIUM | Different transcript hash; interops only with FIPS, not generic Noise IK |
-//! | D3 | §13 DH function | Custom `SHA256(x_coordinate)` instead of raw ECDH output | LOW | Non-standard but valid per §13; required for FIPS interop |
-//! | D4 | §5.1 CipherState nonce | Nonce format `[0x00;4] \|\| LE64(n)` | OK | Matches Noise spec §5.1 and RFC 8439 §2.3 |
+//! These are deliberate design decisions in FIPS's custom Noise implementation,
+//! not bugs. microfips matches them for interoperability.
 //!
-//! Deviation D1 and D2 are FIPS-bug-compatible: we match FIPS behavior for interoperability.
-//! See `ik_se_uses_es_dh_inputs_intentionally` and `se_and_es_produce_different_keys` tests.
+//! | # | Choice | Description | Rationale |
+//! |---|--------|-------------|-----------|
+//! | D1 | Empty AAD during handshake | `AEAD_ENCRYPT(k, n, b"", plaintext)` instead of passing `h` as AAD | Custom Noise implementation with own payloads; transport keys bind via `ck`, not `h` |
+//! | D2 | IK `se` token ordering | Initiator computes `DH(e,rs)` not `DH(s,re)` | Part of custom IK implementation. Eliminated in 0.4.0-dev by switching to Noise XX. |
+//! | D3 | x-only ECDH | `SHA256(x_coordinate)` instead of raw ECDH shared secret | Required for Nostr npub compatibility (x-only keys, no parity). Same technique as BIP-340. |
+//! | D4 | Nonce format | `[0x00;4] \|\| LE64(n)` | Matches Noise spec §5.1 and RFC 8439 §2.3 — not a deviation. |
 //!
 //! ## FIPS 140-3 Compliance Gap Table
 //!
@@ -77,7 +89,7 @@
 //! - `s`: static public key (encrypted)
 //! - `ss`: DH(s_initiator_priv, rs_responder_pub) → mix_key
 //! - `ee`: DH(e_initiator_priv, re_responder_pub) → mix_key
-//! - `se`: DH(e_initiator_priv, rs_responder_pub) → mix_key [FIPS deviation: should be DH(s_initiator, re_responder)]
+//! - `se`: DH(e_initiator_priv, rs_responder_pub) → mix_key [D2: FIPS design choice]
 
 #[allow(deprecated)]
 use chacha20poly1305::aead::generic_array::GenericArray;
@@ -421,12 +433,11 @@ impl NoiseIkInitiator {
         self.n = 0;
 
         // Token: s — encrypt static public key
-        // FIPS deviation #1: encrypt with empty AAD (not h)
-        // Reference: FIPS SymmetricState::encrypt_and_hash() calls cipher.encrypt(pt)
+        // D1: empty AAD (FIPS design choice, see module docs)
         let enc_len = aead_encrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &[], // FIPS: no AAD during handshake
+            &[],
             my_static_pub,
             &mut out[pos..],
         )?;
@@ -442,11 +453,11 @@ impl NoiseIkInitiator {
         self.n = 0;
 
         // Payload: epoch — encrypted with k from ss
-        // FIPS deviation #1: encrypt with empty AAD (not h)
+        // D1: empty AAD (FIPS design choice, see module docs)
         let enc_len = aead_encrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &[], // FIPS: no AAD during handshake
+            &[], // FIPS: no AAD during handshake[],
             epoch,
             &mut out[pos..],
         )?;
@@ -467,7 +478,7 @@ impl NoiseIkInitiator {
     /// Token processing order:
     /// 1. `e`: parse responder's ephemeral public key, mix_hash(re_pub)
     /// 2. `ee`: DH(e_priv, re_pub) → mix_key
-    /// 3. `se`: DH(e_priv, rs_pub) → mix_key [FIPS deviation #2: swapped keys]
+    /// 3. `se`: DH(e_priv, rs_pub) → mix_key [D2: FIPS design choice (see module docs)]
     /// 4. epoch (payload): decrypt_and_hash(enc_epoch) with k from se
     ///
     /// Reference: FIPS `HandshakeState::read_message_2()` in
@@ -513,13 +524,13 @@ impl NoiseIkInitiator {
         self.n = 0;
 
         // Payload: epoch — decrypt with k from se
-        // FIPS deviation #1: decrypt with empty AAD (not h)
+        // D1: empty AAD (FIPS design choice, see module docs)
         let enc_epoch = &payload[pos..];
         let mut epoch_buf = [0u8; EPOCH_SIZE];
         aead_decrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &[], // FIPS: no AAD during handshake
+            &[], // FIPS: no AAD during handshake[],
             enc_epoch,
             &mut epoch_buf,
         )?;
@@ -564,7 +575,7 @@ impl NoiseIkInitiator {
 /// ```
 ///
 /// The initiator knows the responder's static key upfront (from the link-layer
-/// peer index). No AAD during handshake (FIPS deviation, same as IK).
+/// peer index). D1: empty AAD (FIPS design choice, see module docs).
 // FIPS: bd08505 noise/handshake.rs:new_xk_initiator()
 // FIPS: bd08505 noise/handshake.rs:write_xk_message_1()
 // FIPS: bd08505 noise/handshake.rs:read_xk_message_2()
@@ -708,7 +719,7 @@ impl NoiseXkInitiator {
         let enc_len = aead_encrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &[], // FIPS: no AAD during handshake
+            &[], // FIPS: no AAD during handshake[],
             my_static_pub,
             &mut out[pos..],
         )?;
@@ -727,7 +738,7 @@ impl NoiseXkInitiator {
         let enc_epoch_len = aead_encrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &[], // FIPS: no AAD during handshake
+            &[], // FIPS: no AAD during handshake[],
             epoch,
             &mut out[pos..],
         )?;
@@ -839,7 +850,7 @@ impl NoiseXkResponder {
         let enc_len = aead_encrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &[], // FIPS: no AAD during handshake
+            &[], // FIPS: no AAD during handshake[],
             epoch,
             &mut out[pos..],
         )?;
@@ -874,7 +885,7 @@ impl NoiseXkResponder {
         aead_decrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &[], // FIPS: no AAD during handshake
+            &[], // FIPS: no AAD during handshake[],
             enc_static,
             &mut static_buf,
         )?;
@@ -895,7 +906,7 @@ impl NoiseXkResponder {
         aead_decrypt(
             self.k.as_ref().unwrap(),
             self.n,
-            &[], // FIPS: no AAD during handshake
+            &[], // FIPS: no AAD during handshake[],
             enc_epoch,
             &mut epoch_buf,
         )?;
@@ -1579,7 +1590,7 @@ mod responder_tests {
         //   es = DH(e, rs)
         //   se = DH(s, re)
         //
-        // This IS a deviation from the spec, but both sides do it,
+        // D3: x-only ECDH (FIPS design choice for Nostr npub compat, see module docs). Both sides do it,
         // so keys still match. Our test responder mirrors FIPS exactly.
         let (i_eph, _) = test_keypair();
         let (r_stat, _) = test_keypair();
