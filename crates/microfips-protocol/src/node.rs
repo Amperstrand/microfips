@@ -386,6 +386,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             FrameAction::SendDatagram(len) => {
                                 self.send_datagram(them, &mut send_ctr, len, ks).await;
                             }
+                            FrameAction::SendLinkMessage { msg_type, len } => {
+                                self.send_link_message(them, &mut send_ctr, msg_type, len, ks)
+                                    .await;
+                            }
                         }
                     }
                     if self.rpos >= self.rlen {
@@ -451,6 +455,25 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             ks,
             &mut out,
         );
+        if let Some(fl) = fl {
+            let _ = self.send_frame(&out[..fl]).await;
+        }
+    }
+
+    async fn send_link_message(
+        &mut self,
+        them: u32,
+        send_ctr: &mut u64,
+        msg_type: u8,
+        len: usize,
+        ks: &[u8; 32],
+    ) {
+        use microfips_core::fmp;
+        let c = *send_ctr;
+        *send_ctr += 1;
+        let ts = embassy_time::Instant::now().as_millis() as u32;
+        let mut out = [0u8; 256];
+        let fl = fmp::build_established(them, c, msg_type, ts, &self.resp_buf[..len], ks, &mut out);
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
         }
@@ -644,18 +667,40 @@ fn handle_frame_inner<H: NodeHandler>(
                 return FrameAction::Continue;
             }
             let msg_type = dec[4];
+            let inner_payload = &dec[fmp::INNER_HEADER_SIZE..dl];
             #[cfg(feature = "std")]
             log::debug!(
                 "FMP frame: msg_type=0x{:02x} payload_len={}",
                 msg_type,
-                dl - 5
+                inner_payload.len()
             );
             match msg_type {
                 fmp::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
                 fmp::MSG_DISCONNECT => FrameAction::PeerDC,
+                fmp::MSG_SENDER_REPORT => {
+                    // FIPS MMP SenderReport → ReceiverReport (wire format offsets from FIPS src/mmp/report.rs).
+                    // SenderReport inner payload (47B): [3B reserved][8B start_ctr][8B end_ctr]
+                    //   [4B start_ts][4B end_ts][4B bytes_sent][8B pkts_sent][8B bytes_sent_total]
+                    // ReceiverReport inner payload (67B): [3B reserved][8B highest_ctr][8B pkts_recv]
+                    //   [8B bytes_recv][4B timestamp_echo][40B remaining fields, all zero]
+                    if inner_payload.len() >= 27 && resp.len() >= 67 {
+                        let end_ctr =
+                            u64::from_le_bytes(inner_payload[11..19].try_into().unwrap_or(0u64.to_le_bytes()));
+                        let end_ts =
+                            u32::from_le_bytes(inner_payload[23..27].try_into().unwrap_or(0u32.to_le_bytes()));
+                        resp[..67].copy_from_slice(&[0u8; 67]);
+                        resp[3..11].copy_from_slice(&end_ctr.to_le_bytes());
+                        resp[27..31].copy_from_slice(&end_ts.to_le_bytes());
+                        FrameAction::SendLinkMessage {
+                            msg_type: fmp::MSG_RECEIVER_REPORT,
+                            len: 67,
+                        }
+                    } else {
+                        FrameAction::Continue
+                    }
+                }
                 _ => {
-                    let payload = &dec[fmp::INNER_HEADER_SIZE..dl];
-                    match handler.on_message(msg_type, payload, resp) {
+                    match handler.on_message(msg_type, inner_payload, resp) {
                         HandleResult::None => FrameAction::Continue,
                         HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
                         HandleResult::Disconnect => FrameAction::PeerDC,
@@ -682,6 +727,7 @@ enum FrameAction {
     HeartbeatRecv,
     PeerDC,
     SendDatagram(usize),
+    SendLinkMessage { msg_type: u8, len: usize },
 }
 
 /// Determine the total wire size of a raw FMP frame from its 4-byte common prefix.
