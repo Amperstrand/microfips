@@ -24,9 +24,10 @@ pub const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 
 /// When true, the ESP32 uses its factory IEEE public BLE address (matches FIPS 3621e4b
 /// LePublic connect). When false, a random static address is derived from DEVICE_SECRET.
-/// Set to false when upstream FIPS switches to LeRandom for L2CAP connections.
+/// Set to false when upstream FIPS uses LeRandom for L2CAP connections (current state:
+/// FIPS config has D0WD at 32:AE:A4:99:7E:E5 as LeRandom, so we must match).
 #[cfg(feature = "l2cap")]
-pub const USE_PUBLIC_BLE_ADDRESS: bool = true;
+pub const USE_PUBLIC_BLE_ADDRESS: bool = false;
 
 #[cfg(feature = "l2cap")]
 pub const L2CAP_FRAME_CAP: usize = 512;
@@ -37,12 +38,18 @@ pub const L2CAP_PSM: u16 = 133;
 #[cfg(feature = "l2cap")]
 pub const FIPS_BLE_ADDR: [u8; 6] = [0x24, 0xC2, 0x49, 0xFC, 0x5A, 0x14];
 
-/// Expected FIPS daemon x-only pubkey (32 bytes). Used to validate BLE L2CAP connections
-/// and reject non-FIPS peers (e.g., other ESP32 devices advertising the same service UUID).
+/// Allowed FIPS daemon x-only pubkeys. Mirrors FIPS PR #50 ACL concept:
+/// only peers in this list are accepted on BLE L2CAP. Others are rejected
+/// to prevent cross-mesh connections (e.g. macOS FIPS grabbing an ESP32
+/// configured for the Linux mesh).
 #[cfg(feature = "l2cap")]
-pub const FIPS_EXPECTED_PUBKEY: [u8; 32] = [
-    0xb3, 0x98, 0x90, 0x43, 0xc6, 0x8d, 0x9c, 0x2d, 0x3c, 0x8f, 0x94, 0x9d, 0x73, 0xe6, 0x1c, 0xae,
-    0x27, 0x99, 0x79, 0x93, 0x43, 0x2c, 0x3d, 0xbb, 0xd8, 0x49, 0x81, 0x17, 0xd9, 0x2d, 0x95, 0xbb,
+pub const FIPS_ALLOWED_PUBKEYS: [[u8; 32]; 1] = [
+    // Linux FIPS node (ubuntu-Legion)
+    [
+        0xb3, 0x98, 0x90, 0x43, 0xc6, 0x8d, 0x9c, 0x2d, 0x3c, 0x8f, 0x94, 0x9d, 0x73, 0xe6, 0x1c,
+        0xae, 0x27, 0x99, 0x79, 0x93, 0x43, 0x2c, 0x3d, 0xbb, 0xd8, 0x49, 0x81, 0x17, 0xd9, 0x2d,
+        0x95, 0xbb,
+    ],
 ];
 
 #[cfg(feature = "l2cap")]
@@ -50,6 +57,17 @@ pub mod ble_caps {
     pub const LEAF_ONLY: u8 = 0x01;
     pub const HAS_TUN: u8 = 0x02;
     pub const HAS_INTERNET: u8 = 0x04;
+}
+
+/// Must match FIPS PeerCapabilities bit definitions (src/transport/ble/mod.rs).
+#[cfg(feature = "l2cap")]
+pub mod peer_caps {
+    pub const CAN_PERIPHERAL: u8 = 0x10;
+    pub const L2CAP_SUPPORTED: u8 = 0x20;
+    pub const PREFER_L2CAP: u8 = 0x04;
+
+    /// Peripheral-only: prevents cross-connection (FIPS initiates as sole central).
+    pub const ESP32_DEFAULT: u8 = CAN_PERIPHERAL | L2CAP_SUPPORTED | PREFER_L2CAP;
 }
 
 #[cfg(feature = "l2cap")]
