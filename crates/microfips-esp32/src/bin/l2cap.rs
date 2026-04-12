@@ -96,6 +96,9 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let mut node = Node::new(transport, rng, ESP32_SECRET, peer_pub);
     node.set_raw_framing(true);
+    // FIPS connects as BLE central and sends MSG1 first. As peripheral,
+    // we skip our own MSG1 and enter responder path to avoid cross-connection.
+    node.set_peer_sent_first(true);
 
     let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
     let mut handler = EspHandler { led: &mut led, fsp };
