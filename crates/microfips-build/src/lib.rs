@@ -15,15 +15,15 @@ pub fn emit_all_keys() {
         .expect("keys.json: missing 'devices' object");
 
     for (name, entry) in devices {
-        if let Some(hex) = entry["secret_hex"].as_str() {
+        if let Some(hex) = entry["nsec_hex"].as_str() {
             if !hex.starts_with("RETRIEVE") {
-                let env_name = format!("DEVICE_SECRET_HEX_{}", name);
+                let env_name = format!("DEVICE_NSEC_HEX_{}", name);
                 println!("cargo:rustc-env={}={}", env_name, hex);
             }
         }
-        if let Some(hex) = entry["pubkey_hex"].as_str() {
+        if let Some(hex) = entry["npub_hex"].as_str() {
             if !hex.starts_with("RETRIEVE") {
-                let env_name = format!("DEVICE_PUBKEY_HEX_{}", name);
+                let env_name = format!("DEVICE_NPUB_HEX_{}", name);
                 println!("cargo:rustc-env={}={}", env_name, hex);
             }
         }
