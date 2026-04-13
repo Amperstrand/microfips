@@ -150,8 +150,8 @@ cargo test -p microfips-http-demo --features http  # HTTP demo tests
 
 ```sh
 cargo run -p microfips-link -- --keygen              # generate keys
-FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-link
-FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-link -- 127.0.0.1:2121
+FIPS_NSEC=<hex> FIPS_PEER_NPUB=<hex> cargo run -p microfips-link
+FIPS_NSEC=<hex> FIPS_PEER_NPUB=<hex> cargo run -p microfips-link -- 127.0.0.1:2121
 # Exit 0 = success, 1 = timeout, 2 = error
 ```
 
@@ -176,7 +176,7 @@ STM32 must be connected via serial bridge (see AGENTS.md for hardware setup).
 st-flash --connect-under-reset reset && sleep 8
 python3 tools/serial_udp_bridge.py --serial /dev/ttyACM1 --udp-host orangeclaw.dns4sats.xyz &
 
-FIPS_SECRET=0303030303030303030303030303030303030303030303030303030303030303 \
+FIPS_NSEC=0303030303030303030303030303030303030303030303030303030303030303 \
   cargo run -p microfips-sim --release -- \
   --udp orangeclaw.dns4sats.xyz:2121 --initiator --target 132f39a98c31baaddba6525f5d43f295 --test-ping
 # Expected: "*** PONG received from target! ***" (exit 0)
@@ -297,8 +297,8 @@ All host tools accept key overrides via environment variables:
 
 | Variable | Format | Used by | Purpose |
 |----------|--------|---------|---------|
-| `FIPS_SECRET` | 64 hex chars (32B secret) | fips-handshake, microfips-sim, microfips-http-test | Override identity secret key |
-| `FIPS_PEER_PUB` | 66 hex chars (33B compressed pubkey) | fips-handshake, microfips-sim | Override peer's public key |
+| `FIPS_NSEC` | 64 hex chars (32B secret) | fips-handshake, microfips-sim, microfips-http-test | Override identity secret key |
+| `FIPS_PEER_NPUB` | 66 hex chars (33B compressed pubkey) | fips-handshake, microfips-sim | Override peer's public key |
 
 Host tools do not fall back to hardcoded identities anymore. Set both variables explicitly.
 

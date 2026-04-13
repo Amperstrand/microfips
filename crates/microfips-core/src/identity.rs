@@ -55,42 +55,72 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
     result
 }
 
-/// Load the FIPS secret key from the `FIPS_SECRET` env var (64 hex chars).
+/// Load the FIPS secret key (nsec) from an environment variable.
 ///
-/// Panics if the env var is missing, invalid, or the wrong length.
-/// Host-side tools must now choose their identity explicitly instead of
-/// implicitly impersonating a firmware default. Secure on-device key
+/// Checks `FIPS_NSEC` first (preferred), then falls back to `FIPS_SECRET`
+/// with a deprecation warning printed to stderr.
+///
+/// Panics if neither env var is set, or if the value is invalid/wrong-length.
+/// Host-side tools must choose their identity explicitly. Secure on-device key
 /// provisioning is tracked in microfips issue #64.
 // FIPS: bd08505 identity/node_addr.rs:NodeAddr::from_pubkey()
 #[cfg(feature = "std")]
 pub fn load_secret() -> [u8; 32] {
-    let h = std::env::var("FIPS_SECRET").expect(
-        "FIPS_SECRET is required; no default device identity is allowed anymore. See microfips issue #64 for secure on-device key provisioning.",
-    );
-    let b = hex::decode(h.trim()).expect("FIPS_SECRET: invalid hex");
+    let (h, from_var) = match std::env::var("FIPS_NSEC") {
+        Ok(v) => (v, "FIPS_NSEC"),
+        Err(_) => {
+            let v = std::env::var("FIPS_SECRET").expect(
+                "FIPS_NSEC is required; no default device identity is allowed. \
+                 (FIPS_SECRET is accepted but deprecated — use FIPS_NSEC instead.) \
+                 See microfips issue #64 for secure on-device key provisioning.",
+            );
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                b"WARNING: FIPS_SECRET is deprecated, use FIPS_NSEC instead\n",
+            );
+            (v, "FIPS_SECRET")
+        }
+    };
+    let b = hex::decode(h.trim()).unwrap_or_else(|_| panic!("{}: invalid hex", from_var));
     assert!(
         b.len() == 32,
-        "FIPS_SECRET: must be 32 bytes (64 hex chars)"
+        "{}: must be 32 bytes (64 hex chars)",
+        from_var
     );
     b.try_into().unwrap()
 }
 
-/// Load the FIPS peer public key from the `FIPS_PEER_PUB` env var (66 hex chars).
+/// Load the FIPS peer public key (npub) from an environment variable.
 ///
-/// Panics if the env var is missing, invalid, or the wrong length.
-/// Host-side tools must now choose the remote peer explicitly instead of
-/// inheriting a built-in VPS pubkey. Secure on-device key provisioning is
-/// tracked in microfips issue #64.
+/// Checks `FIPS_PEER_NPUB` first (preferred), then falls back to `FIPS_PEER_PUB`
+/// with a deprecation warning printed to stderr.
+///
+/// Panics if neither env var is set, or if the value is invalid/wrong-length.
+/// Host-side tools must choose the remote peer explicitly. Secure on-device key
+/// provisioning is tracked in microfips issue #64.
 // FIPS: bd08505 identity/node_addr.rs:NodeAddr::from_pubkey()
 #[cfg(feature = "std")]
 pub fn load_peer_pub() -> [u8; 33] {
-    let h = std::env::var("FIPS_PEER_PUB").expect(
-        "FIPS_PEER_PUB is required; no default peer identity is allowed anymore. See microfips issue #64 for secure on-device key provisioning.",
-    );
-    let b = hex::decode(h.trim()).expect("FIPS_PEER_PUB: invalid hex");
+    let (h, from_var) = match std::env::var("FIPS_PEER_NPUB") {
+        Ok(v) => (v, "FIPS_PEER_NPUB"),
+        Err(_) => {
+            let v = std::env::var("FIPS_PEER_PUB").expect(
+                "FIPS_PEER_NPUB is required; no default peer identity is allowed. \
+                 (FIPS_PEER_PUB is accepted but deprecated — use FIPS_PEER_NPUB instead.) \
+                 See microfips issue #64 for secure on-device key provisioning.",
+            );
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                b"WARNING: FIPS_PEER_PUB is deprecated, use FIPS_PEER_NPUB instead\n",
+            );
+            (v, "FIPS_PEER_PUB")
+        }
+    };
+    let b = hex::decode(h.trim()).unwrap_or_else(|_| panic!("{}: invalid hex", from_var));
     assert!(
         b.len() == 33,
-        "FIPS_PEER_PUB: must be 33 bytes (66 hex chars)"
+        "{}: must be 33 bytes (66 hex chars)",
+        from_var
     );
     b.try_into().unwrap()
 }
@@ -201,34 +231,59 @@ mod tests {
 
     #[test]
     #[cfg(feature = "std")]
-    #[should_panic(expected = "FIPS_SECRET is required")]
+    #[should_panic(expected = "FIPS_NSEC is required")]
     fn load_secret_panics_when_env_not_set() {
-        let _g = EnvGuard::remove("FIPS_SECRET");
+        let _g1 = EnvGuard::remove("FIPS_NSEC");
+        let _g2 = EnvGuard::remove("FIPS_SECRET");
         let _ = load_secret();
     }
 
     #[test]
     #[cfg(feature = "std")]
-    #[should_panic(expected = "FIPS_PEER_PUB is required")]
+    #[should_panic(expected = "FIPS_PEER_NPUB is required")]
     fn load_peer_pub_panics_when_env_not_set() {
-        let _g = EnvGuard::remove("FIPS_PEER_PUB");
+        let _g1 = EnvGuard::remove("FIPS_PEER_NPUB");
+        let _g2 = EnvGuard::remove("FIPS_PEER_PUB");
         let _ = load_peer_pub();
     }
 
     #[test]
     #[cfg(feature = "std")]
-    fn load_secret_reads_from_env() {
+    fn load_secret_reads_from_fips_nsec() {
         let hex_key = "0101010101010101010101010101010101010101010101010101010101010101";
-        let _g = EnvGuard::set("FIPS_SECRET", hex_key);
+        let _g1 = EnvGuard::set("FIPS_NSEC", hex_key);
+        let _g2 = EnvGuard::remove("FIPS_SECRET");
         let secret = load_secret();
         assert_eq!(secret, [0x01u8; 32]);
     }
 
     #[test]
     #[cfg(feature = "std")]
-    fn load_peer_pub_reads_from_env() {
+    fn load_secret_falls_back_to_fips_secret() {
+        let hex_key = "0202020202020202020202020202020202020202020202020202020202020202";
+        let _g1 = EnvGuard::remove("FIPS_NSEC");
+        let _g2 = EnvGuard::set("FIPS_SECRET", hex_key);
+        let secret = load_secret();
+        assert_eq!(secret, [0x02u8; 32]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn load_secret_prefers_fips_nsec_over_fips_secret() {
+        let hex_nsec = "0101010101010101010101010101010101010101010101010101010101010101";
+        let hex_old = "0202020202020202020202020202020202020202020202020202020202020202";
+        let _g1 = EnvGuard::set("FIPS_NSEC", hex_nsec);
+        let _g2 = EnvGuard::set("FIPS_SECRET", hex_old);
+        let secret = load_secret();
+        assert_eq!(secret, [0x01u8; 32]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn load_peer_pub_reads_from_fips_peer_npub() {
         let hex_pub = "020101010101010101010101010101010101010101010101010101010101010101";
-        let _g = EnvGuard::set("FIPS_PEER_PUB", hex_pub);
+        let _g1 = EnvGuard::set("FIPS_PEER_NPUB", hex_pub);
+        let _g2 = EnvGuard::remove("FIPS_PEER_PUB");
         let peer = load_peer_pub();
         assert_eq!(peer[0], 0x02);
         assert_eq!(&peer[1..], &[0x01u8; 32]);
@@ -236,17 +291,30 @@ mod tests {
 
     #[test]
     #[cfg(feature = "std")]
-    #[should_panic(expected = "FIPS_SECRET: invalid hex")]
+    fn load_peer_pub_falls_back_to_fips_peer_pub() {
+        let hex_pub = "020101010101010101010101010101010101010101010101010101010101010101";
+        let _g1 = EnvGuard::remove("FIPS_PEER_NPUB");
+        let _g2 = EnvGuard::set("FIPS_PEER_PUB", hex_pub);
+        let peer = load_peer_pub();
+        assert_eq!(peer[0], 0x02);
+        assert_eq!(&peer[1..], &[0x01u8; 32]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[should_panic(expected = "FIPS_NSEC: invalid hex")]
     fn load_secret_panics_on_invalid_hex() {
-        let _g = EnvGuard::set("FIPS_SECRET", "not_valid_hex!");
+        let _g1 = EnvGuard::set("FIPS_NSEC", "not_valid_hex!");
+        let _g2 = EnvGuard::remove("FIPS_SECRET");
         let _ = load_secret();
     }
 
     #[test]
     #[cfg(feature = "std")]
-    #[should_panic(expected = "FIPS_SECRET: must be 32 bytes")]
+    #[should_panic(expected = "FIPS_NSEC: must be 32 bytes")]
     fn load_secret_panics_on_wrong_length() {
-        let _g = EnvGuard::set("FIPS_SECRET", "0102030405");
+        let _g1 = EnvGuard::set("FIPS_NSEC", "0102030405");
+        let _g2 = EnvGuard::remove("FIPS_SECRET");
         let _ = load_secret();
     }
 

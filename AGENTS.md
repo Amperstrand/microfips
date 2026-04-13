@@ -939,9 +939,10 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 
 ### Environment variables for CI key override
 
-All host tools accept `FIPS_SECRET` (64 hex chars) to override the identity secret key.
-`FIPS_PEER_PUB` (66 hex chars) overrides the peer's public key (used by `fips-handshake` and `microfips-sim`).
-When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubkey).
+All host tools accept `FIPS_NSEC` (64 hex chars) to override the identity secret key.
+`FIPS_PEER_NPUB` (66 hex chars) overrides the peer's public key (used by `fips-handshake` and `microfips-sim`).
+`FIPS_SECRET` and `FIPS_PEER_PUB` are accepted as deprecated fallbacks (with a warning printed to stderr).
+When not set, tools panic — no default device identity is allowed.
 
 ## Open Issues
 
