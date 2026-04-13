@@ -254,10 +254,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             noise_payload,
                         } => {
                             if my_addr.as_bytes() == peer_addr.as_bytes() {
+                                #[cfg(feature = "log")]
+                                log::warn!("handshake: self-connection detected, aborting");
                                 return Err(ProtocolError::InvalidMessage);
                             }
 
                             if noise_payload.len() < noise::PUBKEY_SIZE {
+                                #[cfg(feature = "log")]
+                                log::warn!("handshake: MSG1 noise payload too short ({})", noise_payload.len());
                                 return Err(ProtocolError::InvalidMessage);
                             }
 
@@ -266,13 +270,27 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 .try_into()
                                 .map_err(|_| ProtocolError::InvalidMessage)?;
 
-                            let mut responder =
-                                noise::NoiseIkResponder::new(&self.secret, &peer_e_pub)
-                                    .map_err(|_| ProtocolError::InvalidMessage)?;
+                            let mut responder = match noise::NoiseIkResponder::new(
+                                &self.secret, &peer_e_pub,
+                            ) {
+                                Ok(r) => r,
+                                Err(_e) => {
+                                    #[cfg(feature = "log")]
+                                    log::error!("handshake: NoiseIkResponder::new failed: {:?}", _e);
+                                    return Err(ProtocolError::InvalidMessage);
+                                }
+                            };
 
-                            let (initiator_static_pub, epoch) = responder
+                            let (initiator_static_pub, epoch) = match responder
                                 .read_message1(&noise_payload[noise::PUBKEY_SIZE..])
-                                .map_err(|_| ProtocolError::InvalidMessage)?;
+                            {
+                                Ok(v) => v,
+                                Err(_e) => {
+                                    #[cfg(feature = "log")]
+                                    log::error!("handshake: read_message1 failed: {:?}", _e);
+                                    return Err(ProtocolError::InvalidMessage);
+                                }
+                            };
 
                             // Compare x-only bytes only (1..33). The prefix byte may differ:
                             // peer_pub is constructed with 0x02 from x-only exchange data,
@@ -280,12 +298,16 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             // compressed pubkey prefix (0x02 or 0x03 depending on y-parity).
                             // Both represent the same key — only the x-coordinate matters.
                             let from_configured_peer = initiator_static_pub[1..33] == self.peer_pub[1..33];
+                            #[cfg(feature = "log")]
+                            {
+                                log::info!("handshake: from_configured_peer={} peer_sent_first={} prefix_initiator=0x{:02x} prefix_peer=0x{:02x}",
+                                    from_configured_peer, self.peer_sent_first,
+                                    initiator_static_pub[0], self.peer_pub[0]);
+                            }
 
                             if from_configured_peer && !self.peer_sent_first && my_addr.as_bytes() < peer_addr.as_bytes() {
-                                #[cfg(feature = "std")]
-                                log::warn!(
-                                    "discarding MSG1 from configured peer (waiting for MSG2)"
-                                );
+                                #[cfg(feature = "log")]
+                                log::warn!("discarding MSG1 from configured peer (waiting for MSG2)");
                                 continue;
                             }
 
@@ -303,9 +325,16 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             }
 
                             let mut msg2_noise = [0u8; 128];
-                            let msg2_noise_len = responder
+                            let msg2_noise_len = match responder
                                 .write_message2(&resp_eph, &epoch, &mut msg2_noise)
-                                .map_err(|_| ProtocolError::DecryptFailed)?;
+                            {
+                                Ok(n) => n,
+                                Err(_e) => {
+                                    #[cfg(feature = "log")]
+                                    log::error!("handshake: write_message2 failed: {:?}", _e);
+                                    return Err(ProtocolError::DecryptFailed);
+                                }
+                            };
 
                             let mut msg2_buf = [0u8; 256];
                             let msg2_len = fmp::build_msg2(
@@ -484,7 +513,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
     }
 
-    /// Send a heartbeat via FMP established frame.
+    /// Encrypt and send a heartbeat via FMP established frame.
     /// FIPS: Same send path as send_datagram, with MSG_HEARTBEAT (0x51) and empty payload.
     /// FIPS: dispatch.rs:54 traces "Received heartbeat" on rx.
     async fn send_heartbeat(
@@ -639,14 +668,18 @@ fn handle_frame_inner<H: NodeHandler>(
 
     let m = match fmp::parse_message(data) {
         Some(m) => m,
-        None => return FrameAction::Continue,
+        None => {
+            #[cfg(feature = "log")]
+            log::warn!("handle_frame: parse_message failed ({}B)", data.len());
+            return FrameAction::Continue;
+        }
     };
 
     match m {
         fmp::FmpMessage::Established {
             counter, encrypted, ..
         } => {
-            #[cfg(feature = "std")]
+            #[cfg(feature = "log")]
             log::debug!(
                 "FMP established: counter={} enc_len={}",
                 counter,
@@ -673,7 +706,7 @@ fn handle_frame_inner<H: NodeHandler>(
             }
             let msg_type = dec[4];
             let inner_payload = &dec[fmp::INNER_HEADER_SIZE..dl];
-            #[cfg(feature = "std")]
+            #[cfg(feature = "log")]
             log::debug!(
                 "FMP frame: msg_type=0x{:02x} payload_len={}",
                 msg_type,
