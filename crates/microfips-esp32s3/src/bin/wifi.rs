@@ -8,11 +8,11 @@ use core::panic::PanicInfo;
 use esp_hal::gpio::Level;
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
-use microfips_core::identity::VPS_PEER_PUB;
+use microfips_core::identity::VPS_NPUB;
 use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
-use microfips_esp32s3::config::ESP32S3_SECRET;
+use microfips_esp32s3::config::ESP32S3_NSEC;
 use microfips_esp32s3::control;
 use microfips_esp32s3::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32s3::led::Led;
@@ -66,7 +66,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let transport = build_wifi_transport(spawner, peripherals.WIFI, &mut trng).await;
 
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, ESP32S3_SECRET, VPS_PEER_PUB);
+    let mut node = Node::new(transport, rng, ESP32S3_NSEC, VPS_NPUB);
     node.set_raw_framing(true);
 
     let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());

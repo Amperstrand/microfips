@@ -11,7 +11,7 @@ use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerG
 use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
-use microfips_esp32s3::config::ESP32S3_SECRET;
+use microfips_esp32s3::config::ESP32S3_NSEC;
 use microfips_esp32s3::control;
 use microfips_esp32s3::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32s3::l2cap_transport::L2capTransport;
@@ -87,7 +87,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     log::info!("pubkey exchange complete; starting node");
 
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, ESP32S3_SECRET, peer_pub);
+    let mut node = Node::new(transport, rng, ESP32S3_NSEC, peer_pub);
     node.set_raw_framing(true);
     // FIPS connects as BLE central and sends MSG1 first. As peripheral,
     // we skip our own MSG1 and enter responder path to avoid cross-connection.

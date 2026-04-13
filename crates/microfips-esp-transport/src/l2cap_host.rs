@@ -19,7 +19,7 @@ use trouble_host::prelude::{
 };
 
 use crate::config::{
-    DEVICE_SECRET, FIPS_ALLOWED_PUBKEYS, L2CAP_FIPS_SERVICE_UUID_LE,
+    DEVICE_NSEC, FIPS_ALLOWED_PUBKEYS, L2CAP_FIPS_SERVICE_UUID_LE,
     L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
 };
 
@@ -383,11 +383,11 @@ pub async fn l2cap_host_task() {
     } else {
         let ble_addr: [u8; 6] = [
             0xff,
-            DEVICE_SECRET[27],
-            DEVICE_SECRET[28],
-            DEVICE_SECRET[29],
-            DEVICE_SECRET[30],
-            DEVICE_SECRET[31],
+            DEVICE_NSEC[27],
+            DEVICE_NSEC[28],
+            DEVICE_NSEC[29],
+            DEVICE_NSEC[30],
+            DEVICE_NSEC[31],
         ];
         stack.set_random_address(Address::random(ble_addr))
     };
@@ -512,7 +512,7 @@ pub async fn l2cap_host_task() {
 
                 let (mut writer, mut reader) = channel.split();
 
-                let Some(peer_pub) = exchange_pubkeys(&DEVICE_SECRET, &mut writer, &mut reader, &stack)
+                let Some(peer_pub) = exchange_pubkeys(&DEVICE_NSEC, &mut writer, &mut reader, &stack)
                     .await
                     else {
                         log::error!("pubkey exchange failed");

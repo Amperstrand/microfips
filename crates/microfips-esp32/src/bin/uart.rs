@@ -9,11 +9,11 @@ use esp_hal::gpio::Level;
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::uart::{Config, RxConfig, Uart};
 use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
-use microfips_core::identity::VPS_PEER_PUB;
+use microfips_core::identity::VPS_NPUB;
 use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
-use microfips_esp32::config::ESP32_SECRET;
+use microfips_esp32::config::ESP32_NSEC;
 use microfips_esp_transport::config::{PANIC_BLINK_CYCLES, UART_BAUDRATE, UART_FIFO_THRESHOLD};
 use microfips_esp32::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32::led::Led;
@@ -71,7 +71,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let transport = UartTransport { tx, rx };
 
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, ESP32_SECRET, VPS_PEER_PUB);
+    let mut node = Node::new(transport, rng, ESP32_NSEC, VPS_NPUB);
 
     let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
     let mut handler = EspHandler { led: &mut led, fsp };

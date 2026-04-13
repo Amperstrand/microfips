@@ -23,7 +23,7 @@ pub const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 ]];
 
 /// When true, the ESP32 uses its factory IEEE public BLE address (matches FIPS 3621e4b
-/// LePublic connect). When false, a random static address is derived from DEVICE_SECRET.
+/// LePublic connect). When false, a random static address is derived from DEVICE_NSEC.
 /// Set to false when upstream FIPS uses LeRandom for L2CAP connections (current state:
 /// FIPS config has D0WD at 32:AE:A4:99:7E:E5 as LeRandom, so we must match).
 #[cfg(feature = "l2cap")]
@@ -80,11 +80,10 @@ pub const L2CAP_FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 
 // Device identity secret key (populated from env var at compile time)
 #[cfg(feature = "esp32")]
-pub const DEVICE_SECRET: [u8; 32] =
-    microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_esp32"));
+pub const DEVICE_NSEC: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_esp32"));
 #[cfg(feature = "esp32s3")]
-pub const DEVICE_SECRET: [u8; 32] =
-    microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_esp32s3"));
+pub const DEVICE_NSEC: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_esp32s3"));
 
 #[cfg(all(feature = "esp32", feature = "ble"))]
 pub const BLE_DEVICE_NAME: &str = "microfips-esp32";

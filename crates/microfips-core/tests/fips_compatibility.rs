@@ -3,13 +3,13 @@ use microfips_core::fsp;
 use microfips_core::identity::NodeAddr;
 use microfips_core::noise;
 
-const STM32_SECRET: [u8; 32] = [0x01; 32];
-const ESP32_SECRET: [u8; 32] = [0x02; 32];
+const STM32_NSEC: [u8; 32] = [0x01; 32];
+const ESP32_NSEC: [u8; 32] = [0x02; 32];
 
 fn deterministic_pubkeys() -> ([u8; 33], [u8; 33]) {
     (
-        noise::ecdh_pubkey(&STM32_SECRET).expect("valid deterministic key"),
-        noise::ecdh_pubkey(&ESP32_SECRET).expect("valid deterministic key"),
+        noise::ecdh_pubkey(&STM32_NSEC).expect("valid deterministic key"),
+        noise::ecdh_pubkey(&ESP32_NSEC).expect("valid deterministic key"),
     )
 }
 
@@ -290,8 +290,8 @@ fn noise_x_only_ecdh_is_parity_invariant() {
     let mut negated = stm32_pub;
     negated[0] = if stm32_pub[0] == 0x02 { 0x03 } else { 0x02 };
 
-    let dh_even = noise::x_only_ecdh(&ESP32_SECRET, &stm32_pub).unwrap();
-    let dh_odd = noise::x_only_ecdh(&ESP32_SECRET, &negated).unwrap();
+    let dh_even = noise::x_only_ecdh(&ESP32_NSEC, &stm32_pub).unwrap();
+    let dh_odd = noise::x_only_ecdh(&ESP32_NSEC, &negated).unwrap();
     assert_eq!(dh_even, dh_odd);
 }
 
@@ -302,9 +302,9 @@ fn noise_fips_compatible_es_se_ordering_inputs_differ_from_spec_se() {
     let responder_eph_secret = [0x03u8; 32];
     let responder_eph_pub = noise::ecdh_pubkey(&responder_eph_secret).unwrap();
 
-    let es_fips = noise::x_only_ecdh(&STM32_SECRET, &esp32_pub).unwrap();
-    let se_fips = noise::x_only_ecdh(&STM32_SECRET, &esp32_pub).unwrap();
-    let se_spec_like = noise::x_only_ecdh(&STM32_SECRET, &responder_eph_pub).unwrap();
+    let es_fips = noise::x_only_ecdh(&STM32_NSEC, &esp32_pub).unwrap();
+    let se_fips = noise::x_only_ecdh(&STM32_NSEC, &esp32_pub).unwrap();
+    let se_spec_like = noise::x_only_ecdh(&STM32_NSEC, &responder_eph_pub).unwrap();
 
     assert_eq!(es_fips, se_fips);
     assert_ne!(es_fips, se_spec_like);

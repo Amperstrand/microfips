@@ -33,18 +33,18 @@ pub fn build_demo_fsp(
     )
 }
 
-/// Convenience wrapper that uses `crate::config::DEVICE_SECRET` and STM32 peer defaults.
+/// Convenience wrapper that uses `crate::config::DEVICE_NSEC` and STM32 peer defaults.
 pub fn build_demo_fsp_default(
     responder_ephemeral: [u8; 32],
     initiator_ephemeral: [u8; 32],
     fsp_epoch: [u8; 8],
 ) -> EspFspHandler {
-    use microfips_core::identity::{STM32_NODE_ADDR, STM32_PEER_PUB};
+    use microfips_core::identity::{STM32_NODE_ADDR, STM32_NPUB};
     build_demo_fsp(
-        &crate::config::DEVICE_SECRET,
+        &crate::config::DEVICE_NSEC,
         responder_ephemeral,
         initiator_ephemeral,
-        &STM32_PEER_PUB,
+        &STM32_NPUB,
         STM32_NODE_ADDR,
         fsp_epoch,
     )

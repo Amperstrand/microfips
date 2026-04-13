@@ -12,4 +12,4 @@ pub const S_HB_RX: u32 = 5;
 pub const S_ERR: u32 = 6;
 pub const S_DISCONNECTED: u32 = 7;
 
-pub use microfips_core::identity::{ESP32_NODE_ADDR, ESP32_PEER_PUB};
+pub use microfips_core::identity::{ESP32_NODE_ADDR, ESP32_NPUB};

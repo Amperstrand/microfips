@@ -1,0 +1,93 @@
+[2m2026-04-10T20:10:10.809574Z[0m [32m INFO[0m [2mfips[0m[2m:[0m FIPS 0.3.0-dev (rev e95aa43f0a-dirty) starting
+[2m2026-04-10T20:10:10.809633Z[0m [32m INFO[0m [2mfips[0m[2m:[0m Loaded config file [3mpath[0m[2m=[0m/etc/fips/fips.yaml
+[2m2026-04-10T20:10:10.813597Z[0m [32m INFO[0m [2mfips[0m[2m:[0m Loaded persistent identity from key file [3mpath[0m[2m=[0m/etc/fips/fips.key
+[2m2026-04-10T20:10:10.813624Z[0m [34mDEBUG[0m [2mfips[0m[2m:[0m Creating node
+[2m2026-04-10T20:10:10.813881Z[0m [34mDEBUG[0m [2mfips::upper::hosts[0m[2m:[0m No hosts file found, skipping [3mpath[0m[2m=[0m/etc/fips/hosts
+[2m2026-04-10T20:10:10.813896Z[0m [32m INFO[0m [2mfips[0m[2m:[0m Node created:
+[2m2026-04-10T20:10:10.813903Z[0m [32m INFO[0m [2mfips[0m[2m:[0m       npub: npub1kwvfqs7x3kwz60y0jjwh8esu4cnej7vngvkrmw7cfxq30kfdjkassl3m4s
+[2m2026-04-10T20:10:10.813914Z[0m [32m INFO[0m [2mfips[0m[2m:[0m    node_addr: 8b5844e7c090f6cdad002354d56ec094
+[2m2026-04-10T20:10:10.813917Z[0m [32m INFO[0m [2mfips[0m[2m:[0m    address: fd8b:5844:e7c0:90f6:cdad:23:54d5:6ec0
+[2m2026-04-10T20:10:10.813921Z[0m [32m INFO[0m [2mfips[0m[2m:[0m      state: created
+[2m2026-04-10T20:10:10.813924Z[0m [32m INFO[0m [2mfips[0m[2m:[0m  leaf_only: false
+[2m2026-04-10T20:10:10.817764Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BluerIo initialized [3madapter[0m[2m=[0mhci0
+[2m2026-04-10T20:10:10.818316Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BLE listener bound [3mpsm[0m[2m=[0m133 [3mmtu[0m[2m=[0m2048
+[2m2026-04-10T20:10:10.818337Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE accept loop started [3madapter[0m[2m=[0mhci0 [3mpsm[0m[2m=[0m133
+[2m2026-04-10T20:10:10.833313Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BLE advertising started
+[2m2026-04-10T20:10:10.833351Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE advertising started (continuous) [3madapter[0m[2m=[0mhci0
+[2m2026-04-10T20:10:10.833358Z[0m [32m INFO[0m [2mfips::transport::ble[0m[2m:[0m BLE transport started [3madapter[0m[2m=[0mhci0 [3mpsm[0m[2m=[0m133
+[2m2026-04-10T20:10:10.833368Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Transports initialized [3mcount[0m[2m=[0m1
+[2m2026-04-10T20:10:10.833373Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m No static peers configured
+[2m2026-04-10T20:10:10.837129Z[0m [33m WARN[0m [2mnetlink_packet_route::link::buffer_tool[0m[2m:[0m Specified IFLA_INET6_CONF NLA attribute holds more(most likely new kernel) data which is unknown to netlink-packet-route crate, expecting 236, got 240
+[2m2026-04-10T20:10:10.839242Z[0m [34mDEBUG[0m [2mfips::upper::tun::platform[0m[2m:[0m ip6 rule for fd00::/8 not added (may already exist): Received a netlink error message File exists (os error 17)
+[2m2026-04-10T20:10:10.839287Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m TUN device active:
+[2m2026-04-10T20:10:10.839291Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m      name: fips0
+[2m2026-04-10T20:10:10.839294Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m   address: fd8b:5844:e7c0:90f6:cdad:23:54d5:6ec0
+[2m2026-04-10T20:10:10.839298Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m       mtu: 1280
+[2m2026-04-10T20:10:10.839302Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m effective MTU: 1971 bytes
+[2m2026-04-10T20:10:10.839305Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m    max TCP MSS: 1911 bytes
+[2m2026-04-10T20:10:10.839464Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Node started:
+[2m2026-04-10T20:10:10.839477Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m        state: running
+[2m2026-04-10T20:10:10.839480Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m   transports: 1
+[2m2026-04-10T20:10:10.839483Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m  connections: 0
+[2m2026-04-10T20:10:10.839486Z[0m [32m INFO[0m [2mfips[0m[2m:[0m FIPS running, press Ctrl+C to exit
+[2m2026-04-10T20:10:10.839525Z[0m [32m INFO[0m [2mfips::node::handlers::rx_loop[0m[2m:[0m RX event loop started
+[2m2026-04-10T20:10:10.840459Z[0m [34mDEBUG[0m [2mfips::upper::tun[0m[2m:[0m TUN reader starting [3mname[0m[2m=[0mfips0 [3mtun_mtu[0m[2m=[0m1280 [3mtransport_mtu[0m[2m=[0m2048 [3meffective_mtu[0m[2m=[0m1971 [3mmax_mss[0m[2m=[0m1911
+[2m2026-04-10T20:10:10.839486Z[0m [34mDEBUG[0m [2mfips::upper::tun[0m[2m:[0m TUN writer starting [3mname[0m[2m=[0mfips0 [3mmax_mss[0m[2m=[0m1911
+[2m2026-04-10T20:10:10.849514Z[0m [34mDEBUG[0m [2mfips::control[0m[2m:[0m 'fips' group not found, skipping chown for /run/fips/control.sock
+[2m2026-04-10T20:10:10.850443Z[0m [34mDEBUG[0m [2mfips::control[0m[2m:[0m 'fips' group not found, skipping chown for /run/fips
+[2m2026-04-10T20:10:10.850465Z[0m [32m INFO[0m [2mfips::control[0m[2m:[0m Control socket listening [3mpath[0m[2m=[0m/run/fips/control.sock
+[2m2026-04-10T20:10:13.561157Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BLE connection established [3maddr[0m[2m=[0mhci0/14:7D:DA:7D:4C:31 [3mphy[0m[2m=[0m0 [3msend_mtu[0m[2m=[0m1498 [3mrecv_mtu[0m[2m=[0m2048
+[2m2026-04-10T20:10:13.591481Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE inbound pubkey exchange complete [3maddr[0m[2m=[0mhci0/14:7D:DA:7D:4C:31
+[2m2026-04-10T20:10:13.591528Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE inbound: peer is CENTRAL_ONLY, keeping connection [3maddr[0m[2m=[0mhci0/14:7D:DA:7D:4C:31
+[2m2026-04-10T20:10:13.591539Z[0m [32m INFO[0m [2mfips::transport::ble[0m[2m:[0m BLE inbound connection accepted [3maddr[0m[2m=[0mhci0/14:7D:DA:7D:4C:31 [3msend_mtu[0m[2m=[0m1498 [3mrecv_mtu[0m[2m=[0m2048
+[2m2026-04-10T20:10:14.912869Z[0m [34mDEBUG[0m [2mfips::node::handlers::handshake[0m[2m:[0m Sent msg2 response [3mlink_id[0m[2m=[0mlink:1 [3mour_index[0m[2m=[0m9aef4748 [3mtheir_index[0m[2m=[0mf41d5385 [3mbytes[0m[2m=[0m69
+[2m2026-04-10T20:10:14.912938Z[0m [32m INFO[0m [2mfips::node::handlers::handshake[0m[2m:[0m Connection promoted to active peer [3mpeer[0m[2m=[0mnpub19u36...h629 [3mlink_id[0m[2m=[0mlink:1 [3mour_index[0m[2m=[0m9aef4748 [3mtheir_index[0m[2m=[0mf41d5385
+[2m2026-04-10T20:10:14.912948Z[0m [34mDEBUG[0m [2mfips::node::handlers::handshake[0m[2m:[0m Inbound peer promoted to active [3mpeer[0m[2m=[0mnpub19u36...h629 [3mlink_id[0m[2m=[0mlink:1 [3mour_index[0m[2m=[0m9aef4748
+[2m2026-04-10T20:10:15.049629Z[0m [34mDEBUG[0m [2mfips::node::tree[0m[2m:[0m Processed TreeAnnounce [3mfrom[0m[2m=[0mnpub19u36...h629 [3mseq[0m[2m=[0m1 [3mdepth[0m[2m=[0m0 [3mroot[0m[2m=[0m612863ded239670a687372cc002bf3d7
+[2m2026-04-10T20:10:15.049776Z[0m [32m INFO[0m [2mfips::node::tree[0m[2m:[0m Parent switched, flushed coord cache, announcing to all peers [3mnew_parent[0m[2m=[0mnpub19u36...h629 [3mnew_seq[0m[2m=[0m2 [3mnew_root[0m[2m=[0m612863ded239670a687372cc002bf3d7 [3mdepth[0m[2m=[0m1
+[2m2026-04-10T20:10:15.049786Z[0m [34mDEBUG[0m [2mfips::node::tree[0m[2m:[0m TreeAnnounce rate-limited, marking pending [3mpeer[0m[2m=[0mnpub19u36...h629
+[2m2026-04-10T20:10:15.840584Z[0m [34mDEBUG[0m [2mfips::node::bloom[0m[2m:[0m Sent FilterAnnounce [3mpeer[0m[2m=[0mnpub19u36...h629 [3mseq[0m[2m=[0m1 [3mest_entries[0m[2m=[0m1 [3mset_bits[0m[2m=[0m5 [3mfill[0m[2m=[0m0.1% [3mtree_peer[0m[2m=[0mtrue
+[2m2026-04-10T20:10:15.840622Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0mn/a [3mloss[0m[2m=[0mn/a [3mjitter[0m[2m=[0m0.0ms [3mgoodput[0m[2m=[0mn/a [3mtx_pkts[0m[2m=[0m3 [3mrx_pkts[0m[2m=[0m1
+[2m2026-04-10T20:10:16.039257Z[0m [34mDEBUG[0m [2mfips::node::bloom[0m[2m:[0m Received FilterAnnounce [3mfrom[0m[2m=[0mnpub19u36...h629 [3mseq[0m[2m=[0m4 [3mest_entries[0m[2m=[0m1 [3mset_bits[0m[2m=[0m5 [3mfill[0m[2m=[0m0.1% [3mtree_peer[0m[2m=[0mtrue
+[2m2026-04-10T20:10:16.841324Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:10:46.840502Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m210.0ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m23.5ms [3mgoodput[0m[2m=[0m227B/s [3mtx_pkts[0m[2m=[0m60 [3mrx_pkts[0m[2m=[0m27
+[2m2026-04-10T20:10:47.840553Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:11:16.841002Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m202.4ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m20.4ms [3mgoodput[0m[2m=[0m197B/s [3mtx_pkts[0m[2m=[0m115 [3mrx_pkts[0m[2m=[0m50
+[2m2026-04-10T20:11:17.840592Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:11:47.840975Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:11:47.841030Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m194.1ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m16.5ms [3mgoodput[0m[2m=[0m179B/s [3mtx_pkts[0m[2m=[0m168 [3mrx_pkts[0m[2m=[0m74
+[2m2026-04-10T20:12:15.841358Z[0m [34mDEBUG[0m [2mfips::node::handlers::rekey[0m[2m:[0m Rekey initiated, sent msg1 on existing link [3mpeer[0m[2m=[0mnpub19u36...h629 [3mour_index[0m[2m=[0m8e52f4ec
+[2m2026-04-10T20:12:15.917625Z[0m [34mDEBUG[0m [2mfips::node::handlers::handshake[0m[2m:[0m Rekey completed (initiator), pending K-bit cutover [3mpeer[0m[2m=[0mnpub19u36...h629 [3mnew_our_index[0m[2m=[0m8e52f4ec [3mnew_their_index[0m[2m=[0m209f5735
+[2m2026-04-10T20:12:16.840451Z[0m [34mDEBUG[0m [2mfips::node::handlers::rekey[0m[2m:[0m Rekey cutover complete (initiator), K-bit flipped [3mpeer[0m[2m=[0mnpub19u36...h629
+[2m2026-04-10T20:12:18.840798Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:12:18.840841Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m190.7ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m0.0ms [3mgoodput[0m[2m=[0m162B/s [3mtx_pkts[0m[2m=[0m207 [3mrx_pkts[0m[2m=[0m95
+[2m2026-04-10T20:12:49.840419Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:12:49.840456Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m174.9ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m24.3ms [3mgoodput[0m[2m=[0m134B/s [3mtx_pkts[0m[2m=[0m248 [3mrx_pkts[0m[2m=[0m119
+[2m2026-04-10T20:13:19.840514Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:13:19.840566Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m167.2ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m19.4ms [3mgoodput[0m[2m=[0m121B/s [3mtx_pkts[0m[2m=[0m285 [3mrx_pkts[0m[2m=[0m141
+[2m2026-04-10T20:13:50.840425Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:13:50.840470Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m153.0ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m19.0ms [3mgoodput[0m[2m=[0m121B/s [3mtx_pkts[0m[2m=[0m325 [3mrx_pkts[0m[2m=[0m166
+[2m2026-04-10T20:14:16.972748Z[0m [34mDEBUG[0m [2mfips::node::handlers::handshake[0m[2m:[0m Sent rekey msg2 response [3mpeer[0m[2m=[0mnpub19u36...h629 [3mnew_our_index[0m[2m=[0mcfb713e2
+[2m2026-04-10T20:14:17.841140Z[0m [34mDEBUG[0m [2mfips::node::handlers::rekey[0m[2m:[0m Rekey cutover complete (initiator), K-bit flipped [3mpeer[0m[2m=[0mnpub19u36...h629
+[2m2026-04-10T20:14:20.840510Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:14:20.840551Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m141.9ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m0.0ms [3mgoodput[0m[2m=[0m113B/s [3mtx_pkts[0m[2m=[0m366 [3mrx_pkts[0m[2m=[0m189
+[2m2026-04-10T20:14:51.840494Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:14:51.840543Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m131.8ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m9.7ms [3mgoodput[0m[2m=[0m119B/s [3mtx_pkts[0m[2m=[0m406 [3mrx_pkts[0m[2m=[0m214
+[2m2026-04-10T20:15:22.840492Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:15:22.840535Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m115.0ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m12.9ms [3mgoodput[0m[2m=[0m111B/s [3mtx_pkts[0m[2m=[0m445 [3mrx_pkts[0m[2m=[0m246
+[2m2026-04-10T20:15:52.840499Z[0m [34mDEBUG[0m [2mfips::node[0m[2m:[0m Mesh size estimate [3mestimated_mesh_size[0m[2m=[0m2 [3mpeers[0m[2m=[0m1 [3mchildren[0m[2m=[0m0
+[2m2026-04-10T20:15:52.840537Z[0m [34mDEBUG[0m [2mfips::node::handlers::mmp[0m[2m:[0m MMP link metrics [3mpeer[0m[2m=[0mnpub19u36...h629 [3mrtt[0m[2m=[0m103.6ms [3mloss[0m[2m=[0m0.0% [3mjitter[0m[2m=[0m17.6ms [3mgoodput[0m[2m=[0m108B/s [3mtx_pkts[0m[2m=[0m484 [3mrx_pkts[0m[2m=[0m274
+[2m2026-04-10T20:16:13.085644Z[0m [32m INFO[0m [2mfips[0m[2m:[0m Shutdown signal received
+[2m2026-04-10T20:16:13.085671Z[0m [32m INFO[0m [2mfips[0m[2m:[0m FIPS shutting down
+[2m2026-04-10T20:16:13.085675Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Node stopping [3mstate[0m[2m=[0mstopping
+[2m2026-04-10T20:16:13.085701Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Sent disconnect notifications [3msent[0m[2m=[0m1 [3mtotal[0m[2m=[0m1 [3mreason[0m[2m=[0mShutdown
+[2m2026-04-10T20:16:13.085711Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BLE advertising stopped
+[2m2026-04-10T20:16:13.085718Z[0m [32m INFO[0m [2mfips::transport::ble[0m[2m:[0m BLE transport stopped
+[2m2026-04-10T20:16:13.085721Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Transport stopped [3mtransport_id[0m[2m=[0mtransport:1 [3mtransport_type[0m[2m=[0m"ble"
+[2m2026-04-10T20:16:13.085729Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Shutting down TUN interface [3mname[0m[2m=[0mfips0
+[2m2026-04-10T20:16:13.085733Z[0m [34mDEBUG[0m [2mfips::upper::tun[0m[2m:[0m Shutting down TUN interface fips0
+[2m2026-04-10T20:16:13.085935Z[0m [33m WARN[0m [2mnetlink_packet_route::link::buffer_tool[0m[2m:[0m Specified IFLA_INET6_CONF NLA attribute holds more(most likely new kernel) data which is unknown to netlink-packet-route crate, expecting 236, got 240
+[2m2026-04-10T20:16:13.107573Z[0m [34mDEBUG[0m [2mfips::upper::tun[0m[2m:[0m TUN interface fips0 stopped
+[2m2026-04-10T20:16:13.107592Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Node stopped [3mstate[0m[2m=[0mstopped
+[2m2026-04-10T20:16:13.107597Z[0m [32m INFO[0m [2mfips[0m[2m:[0m FIPS shutdown complete
+[2m2026-04-10T20:16:13.107637Z[0m [34mDEBUG[0m [2mfips::control[0m[2m:[0m Control socket removed [3mpath[0m[2m=[0m/run/fips/control.sock
