@@ -8,12 +8,12 @@ use core::panic::PanicInfo;
 use esp_hal::gpio::Level;
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
-use microfips_core::identity::VPS_PEER_PUB;
+use microfips_core::identity::VPS_NPUB;
 use microfips_protocol::node::Node;
 use rand_core::RngCore;
 
 use microfips_esp32::ble_transport::BleTransport;
-use microfips_esp32::config::ESP32_SECRET;
+use microfips_esp32::config::ESP32_NSEC;
 use microfips_esp32::control;
 use microfips_esp32::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
 use microfips_esp32::led::Led;
@@ -53,7 +53,7 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let identity = NodeIdentity::compute();
     control::init_control(&identity, "ble_gatt");
-    control::set_peer_pub(VPS_PEER_PUB);
+    control::set_peer_pub(VPS_NPUB);
 
     log::info!("BLE mode starting");
 
@@ -78,7 +78,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     log::info!("BLE advertising as '{}'", BLE_DEVICE_NAME);
 
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, ESP32_SECRET, VPS_PEER_PUB);
+    let mut node = Node::new(transport, rng, ESP32_NSEC, VPS_NPUB);
 
     let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
     let mut handler = EspHandler { led: &mut led, fsp };

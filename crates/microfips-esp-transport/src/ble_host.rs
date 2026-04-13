@@ -16,7 +16,7 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::config::{
-    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, DEVICE_SECRET, FIPS_SERVICE_UUID_LE,
+    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, DEVICE_NSEC, FIPS_SERVICE_UUID_LE,
     RECV_RETRY_DELAY_MS,
 };
 use crate::stats::{STAT_BLE_CONNECT, STAT_BLE_DISCONNECT, STAT_BLE_RX, STAT_BLE_TX};
@@ -162,11 +162,11 @@ pub async fn ble_host_task() {
     let stack = trouble_host::new(controller, resources)
         .set_random_address(Address::random([
             0xff,
-            DEVICE_SECRET[27],
-            DEVICE_SECRET[28],
-            DEVICE_SECRET[29],
-            DEVICE_SECRET[30],
-            DEVICE_SECRET[31],
+            DEVICE_NSEC[27],
+            DEVICE_NSEC[28],
+            DEVICE_NSEC[29],
+            DEVICE_NSEC[30],
+            DEVICE_NSEC[31],
         ]));
 
     let Host {

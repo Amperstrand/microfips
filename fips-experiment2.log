@@ -1,0 +1,81 @@
+[2m2026-04-10T20:17:09.898283Z[0m [32m INFO[0m [2mfips[0m[2m:[0m FIPS 0.3.0-dev (rev e95aa43f0a-dirty) starting
+[2m2026-04-10T20:17:09.898315Z[0m [32m INFO[0m [2mfips[0m[2m:[0m Loaded config file [3mpath[0m[2m=[0m/etc/fips/fips.yaml
+[2m2026-04-10T20:17:09.898900Z[0m [32m INFO[0m [2mfips[0m[2m:[0m Loaded persistent identity from key file [3mpath[0m[2m=[0m/etc/fips/fips.key
+[2m2026-04-10T20:17:09.898906Z[0m [34mDEBUG[0m [2mfips[0m[2m:[0m Creating node
+[2m2026-04-10T20:17:09.899048Z[0m [34mDEBUG[0m [2mfips::upper::hosts[0m[2m:[0m Host map entries from peer config [3mcount[0m[2m=[0m1
+[2m2026-04-10T20:17:09.899055Z[0m [34mDEBUG[0m [2mfips::upper::hosts[0m[2m:[0m No hosts file found, skipping [3mpath[0m[2m=[0m/etc/fips/hosts
+[2m2026-04-10T20:17:09.899060Z[0m [32m INFO[0m [2mfips[0m[2m:[0m Node created:
+[2m2026-04-10T20:17:09.899063Z[0m [32m INFO[0m [2mfips[0m[2m:[0m       npub: npub1kwvfqs7x3kwz60y0jjwh8esu4cnej7vngvkrmw7cfxq30kfdjkassl3m4s
+[2m2026-04-10T20:17:09.899068Z[0m [32m INFO[0m [2mfips[0m[2m:[0m    node_addr: 8b5844e7c090f6cdad002354d56ec094
+[2m2026-04-10T20:17:09.899070Z[0m [32m INFO[0m [2mfips[0m[2m:[0m    address: fd8b:5844:e7c0:90f6:cdad:23:54d5:6ec0
+[2m2026-04-10T20:17:09.899073Z[0m [32m INFO[0m [2mfips[0m[2m:[0m      state: created
+[2m2026-04-10T20:17:09.899076Z[0m [32m INFO[0m [2mfips[0m[2m:[0m  leaf_only: false
+[2m2026-04-10T20:17:09.900931Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BluerIo initialized [3madapter[0m[2m=[0mhci0
+[2m2026-04-10T20:17:09.901127Z[0m [33m WARN[0m [2mfips::transport::udp::socket[0m[2m:[0m UDP recv buffer clamped by kernel (increase net.core.rmem_max) [3mrequested[0m[2m=[0m2097152 [3mactual[0m[2m=[0m425984
+[2m2026-04-10T20:17:09.901133Z[0m [33m WARN[0m [2mfips::transport::udp::socket[0m[2m:[0m UDP send buffer clamped by kernel (increase net.core.wmem_max) [3mrequested[0m[2m=[0m2097152 [3mactual[0m[2m=[0m425984
+[2m2026-04-10T20:17:09.901145Z[0m [32m INFO[0m [2mfips::transport::udp[0m[2m:[0m UDP transport started [3mlocal_addr[0m[2m=[0m0.0.0.0:2121 [3mrecv_buf[0m[2m=[0m425984 [3msend_buf[0m[2m=[0m425984
+[2m2026-04-10T20:17:09.901311Z[0m [34mDEBUG[0m [2mfips::transport::udp[0m[2m:[0m UDP receive loop starting [3mtransport_id[0m[2m=[0mtransport:1
+[2m2026-04-10T20:17:09.905017Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BLE scanner: cleared cached devices [3mcount[0m[2m=[0m1
+[2m2026-04-10T20:17:10.018797Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BLE scanning started
+[2m2026-04-10T20:17:10.018836Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE scan+probe loop started [3madapter[0m[2m=[0mhci0
+[2m2026-04-10T20:17:10.018842Z[0m [32m INFO[0m [2mfips::transport::ble[0m[2m:[0m BLE transport started [3madapter[0m[2m=[0mhci0 [3mpsm[0m[2m=[0m133
+[2m2026-04-10T20:17:10.018848Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Transports initialized [3mcount[0m[2m=[0m2
+[2m2026-04-10T20:17:10.018878Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m Initiating static peer connections [3mcount[0m[2m=[0m1
+[2m2026-04-10T20:17:10.018905Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect initiated (non-blocking) [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:1
+[2m2026-04-10T20:17:10.019734Z[0m [33m WARN[0m [2mnetlink_packet_route::link::buffer_tool[0m[2m:[0m Specified IFLA_INET6_CONF NLA attribute holds more(most likely new kernel) data which is unknown to netlink-packet-route crate, expecting 236, got 240
+[2m2026-04-10T20:17:10.019999Z[0m [34mDEBUG[0m [2mfips::upper::tun::platform[0m[2m:[0m ip6 rule for fd00::/8 not added (may already exist): Received a netlink error message File exists (os error 17)
+[2m2026-04-10T20:17:10.020009Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m TUN device active:
+[2m2026-04-10T20:17:10.020020Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m      name: fips0
+[2m2026-04-10T20:17:10.020022Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m   address: fd8b:5844:e7c0:90f6:cdad:23:54d5:6ec0
+[2m2026-04-10T20:17:10.020025Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m       mtu: 1280
+[2m2026-04-10T20:17:10.020028Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m effective MTU: 1203 bytes
+[2m2026-04-10T20:17:10.020030Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m    max TCP MSS: 1143 bytes
+[2m2026-04-10T20:17:10.020172Z[0m [34mDEBUG[0m [2mfips::upper::hosts[0m[2m:[0m Host map entries from peer config [3mcount[0m[2m=[0m1
+[2m2026-04-10T20:17:10.020186Z[0m [34mDEBUG[0m [2mfips::upper::hosts[0m[2m:[0m No hosts file found, skipping [3mpath[0m[2m=[0m/etc/fips/hosts
+[2m2026-04-10T20:17:10.020197Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m DNS responder started for .fips domain (auto-reload enabled) [3mbind[0m[2m=[0m127.0.0.1:5354 [3mhosts[0m[2m=[0m1
+[2m2026-04-10T20:17:10.020208Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m Node started:
+[2m2026-04-10T20:17:10.020211Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m        state: running
+[2m2026-04-10T20:17:10.020209Z[0m [34mDEBUG[0m [2mfips::upper::tun[0m[2m:[0m TUN writer starting [3mname[0m[2m=[0mfips0 [3mmax_mss[0m[2m=[0m1143
+[2m2026-04-10T20:17:10.020214Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m   transports: 2
+[2m2026-04-10T20:17:10.020229Z[0m [32m INFO[0m [2mfips::node::lifecycle[0m[2m:[0m  connections: 0
+[2m2026-04-10T20:17:10.020226Z[0m [34mDEBUG[0m [2mfips::upper::tun[0m[2m:[0m TUN reader starting [3mname[0m[2m=[0mfips0 [3mtun_mtu[0m[2m=[0m1280 [3mtransport_mtu[0m[2m=[0m1280 [3meffective_mtu[0m[2m=[0m1203 [3mmax_mss[0m[2m=[0m1143
+[2m2026-04-10T20:17:10.020233Z[0m [32m INFO[0m [2mfips[0m[2m:[0m FIPS running, press Ctrl+C to exit
+[2m2026-04-10T20:17:10.020241Z[0m [32m INFO[0m [2mfips::node::handlers::rx_loop[0m[2m:[0m RX event loop started
+[2m2026-04-10T20:17:10.021402Z[0m [34mDEBUG[0m [2mfips::control[0m[2m:[0m 'fips' group not found, skipping chown for /run/fips/control.sock
+[2m2026-04-10T20:17:10.021831Z[0m [34mDEBUG[0m [2mfips::control[0m[2m:[0m 'fips' group not found, skipping chown for /run/fips
+[2m2026-04-10T20:17:10.021836Z[0m [32m INFO[0m [2mfips::control[0m[2m:[0m Control socket listening [3mpath[0m[2m=[0m/run/fips/control.sock
+[2m2026-04-10T20:17:10.062706Z[0m [34mDEBUG[0m [2mfips::transport::ble::io::bluer_impl[0m[2m:[0m BLE scanner: FIPS peer found [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:17:40.020588Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:17:40.021721Z[0m [33m WARN[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect failed [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:1 [3mreason[0m[2m=[0mno connection attempt found
+[2m2026-04-10T20:17:40.021751Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m First connection attempt failed, scheduling retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mdelay_secs[0m[2m=[0m10
+[2m2026-04-10T20:17:40.063994Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:17:50.021490Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Attempting connection retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mretry[0m[2m=[0m1
+[2m2026-04-10T20:17:50.028829Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect initiated (non-blocking) [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:2
+[2m2026-04-10T20:17:50.028856Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Retry connection initiated, suppressing re-fire for 30s [3mpeer[0m[2m=[0mfips-esp32s3
+[2m2026-04-10T20:18:10.065284Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:18:20.021491Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Attempting connection retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mretry[0m[2m=[0m1
+[2m2026-04-10T20:18:20.021544Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect initiated (non-blocking) [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:3
+[2m2026-04-10T20:18:20.021552Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Retry connection initiated, suppressing re-fire for 30s [3mpeer[0m[2m=[0mfips-esp32s3
+[2m2026-04-10T20:18:20.030678Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:18:21.021486Z[0m [33m WARN[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect failed [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:3 [3mreason[0m[2m=[0mno connection attempt found
+[2m2026-04-10T20:18:21.021513Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Scheduling connection retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mretry[0m[2m=[0m2 [3mreconnect[0m[2m=[0mtrue [3mdelay_secs[0m[2m=[0m20
+[2m2026-04-10T20:18:21.021518Z[0m [33m WARN[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect failed [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:2 [3mreason[0m[2m=[0mno connection attempt found
+[2m2026-04-10T20:18:21.021522Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Scheduling connection retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mretry[0m[2m=[0m3 [3mreconnect[0m[2m=[0mtrue [3mdelay_secs[0m[2m=[0m40
+[2m2026-04-10T20:18:40.066357Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:19:01.021722Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Attempting connection retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mretry[0m[2m=[0m3
+[2m2026-04-10T20:19:01.021784Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect initiated (non-blocking) [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:4
+[2m2026-04-10T20:19:01.021793Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Retry connection initiated, suppressing re-fire for 30s [3mpeer[0m[2m=[0mfips-esp32s3
+[2m2026-04-10T20:19:10.066972Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:19:31.021517Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Attempting connection retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mretry[0m[2m=[0m3
+[2m2026-04-10T20:19:31.021574Z[0m [34mDEBUG[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect initiated (non-blocking) [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:5
+[2m2026-04-10T20:19:31.021584Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Retry connection initiated, suppressing re-fire for 30s [3mpeer[0m[2m=[0mfips-esp32s3
+[2m2026-04-10T20:19:31.023734Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:19:32.021051Z[0m [33m WARN[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect failed [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:5 [3mreason[0m[2m=[0mno connection attempt found
+[2m2026-04-10T20:19:32.021103Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Scheduling connection retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mretry[0m[2m=[0m4 [3mreconnect[0m[2m=[0mtrue [3mdelay_secs[0m[2m=[0m80
+[2m2026-04-10T20:19:32.021110Z[0m [33m WARN[0m [2mfips::node::lifecycle[0m[2m:[0m Transport connect failed [3mpeer[0m[2m=[0mfips-esp32s3 [3mtransport_id[0m[2m=[0mtransport:2 [3mremote_addr[0m[2m=[0mhci0/E6:01:72:33:E8:64 [3mlink_id[0m[2m=[0mlink:4 [3mreason[0m[2m=[0mno connection attempt found
+[2m2026-04-10T20:19:32.021115Z[0m [34mDEBUG[0m [2mfips::node::retry[0m[2m:[0m Scheduling connection retry [3mpeer[0m[2m=[0mfips-esp32s3 [3mretry[0m[2m=[0m5 [3mreconnect[0m[2m=[0mtrue [3mdelay_secs[0m[2m=[0m160
+[2m2026-04-10T20:19:40.067931Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:20:10.069749Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:20:40.071192Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:21:10.072794Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64
+[2m2026-04-10T20:21:40.074140Z[0m [34mDEBUG[0m [2mfips::transport::ble[0m[2m:[0m BLE probe connect timeout [3maddr[0m[2m=[0mhci0/E6:01:72:33:E8:64

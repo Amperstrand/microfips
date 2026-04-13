@@ -8,9 +8,9 @@ pub struct NodeIdentity {
 }
 
 impl NodeIdentity {
-    /// Convenience: compute identity from `crate::config::DEVICE_SECRET`.
+    /// Convenience: compute identity from `crate::config::DEVICE_NSEC`.
     pub fn compute() -> Self {
-        Self::from_secret(&crate::config::DEVICE_SECRET)
+        Self::from_secret(&crate::config::DEVICE_NSEC)
     }
 
     pub fn from_secret(secret: &[u8; 32]) -> Self {

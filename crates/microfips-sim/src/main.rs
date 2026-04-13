@@ -171,7 +171,7 @@ impl SimHandler {
     }
 
     fn my_addr(&self) -> Option<[u8; 16]> {
-        let pub_key = noise::ecdh_pubkey(&self.inner.secret).ok()?;
+        let pub_key = noise::ecdh_pubkey(&self.inner.nsec).ok()?;
         let normalized = noise::parity_normalize(&pub_key);
         let x_only: [u8; 32] = normalized[1..].try_into().ok()?;
         Some(NodeAddr::from_pubkey_x(&x_only).0)
@@ -375,12 +375,12 @@ where
 // Leaf node identities (from keys.json)
 // ---------------------------------------------------------------------------
 
-const SIM_A_SECRET: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_sim-a"));
-const SIM_B_SECRET: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_SECRET_HEX_sim-b"));
-const SIM_A_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_PUBKEY_HEX_sim-a"));
-const STM32_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_PUBKEY_HEX_stm32"));
-const ESP32_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_PUBKEY_HEX_esp32"));
-const ESP32S3_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_PUBKEY_HEX_esp32s3"));
+const SIM_A_SECRET: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_sim-a"));
+const SIM_B_SECRET: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_sim-b"));
+const SIM_A_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_NPUB_HEX_sim-a"));
+const STM32_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_NPUB_HEX_stm32"));
+const ESP32_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_NPUB_HEX_esp32"));
+const ESP32S3_PUBKEY: [u8; 33] = microfips_core::hex::hex_bytes_33(env!("DEVICE_NPUB_HEX_esp32s3"));
 const SIM_A_TARGET: [u8; 16] = microfips_core::hex::hex_bytes_16(env!("DEVICE_NODE_ADDR_sim-a"));
 
 #[allow(dead_code)]
