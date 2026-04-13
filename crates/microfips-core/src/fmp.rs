@@ -167,7 +167,7 @@ pub fn build_established(
         return None;
     }
 
-    let prefix = build_prefix(PHASE_ESTABLISHED, 0x00, payload_len as u16);
+    let prefix = build_prefix(PHASE_ESTABLISHED, 0x00, payload_len);
     out[..COMMON_PREFIX_SIZE].copy_from_slice(&prefix);
     let mut pos = COMMON_PREFIX_SIZE;
 
