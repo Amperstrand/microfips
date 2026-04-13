@@ -532,10 +532,6 @@ pub async fn l2cap_host_task() {
                         core::str::from_utf8(&hex).unwrap_or("?")
                     );
                     drain_l2cap_channels();
-                    // Backoff 10s after rejection so the allowed FIPS node
-                    // can discover and connect during the advertising window.
-                    embassy_time::Timer::after(embassy_time::Duration::from_secs(10))
-                        .await;
                     continue;
                 }
 

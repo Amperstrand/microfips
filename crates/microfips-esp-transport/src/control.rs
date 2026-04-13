@@ -1,6 +1,10 @@
-//! FIPS-compatible control interface over UART0 for ESP32 BLE/L2CAP/WiFi firmware.
-//! Reads line-delimited commands from UART0 RX, responds with JSON on UART0 TX.
-//! UART0 TX is shared with esp_println (both write to the same FIFO, no conflict).
+//! FIPS-compatible control interface for ESP32 BLE/L2CAP/WiFi firmware.
+//! Reads line-delimited commands, responds with JSON.
+//!
+//! ESP32-D0WD: reads from UART0 RX via GPIO matrix (GPIO3).
+//! ESP32-S3: reads from USB Serial JTAG RX FIFO (GPIO44 goes through
+//! USB Serial JTAG, not UART0 — esp-println outputs via USB Serial JTAG ROM
+//! functions on S3, so control input must match).
 
 #![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 
@@ -10,21 +14,67 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use crate::config::{GPIO_FUNC_IN_SEL_BASE, RESET_REGISTER, UART0_BASE, UART_RX_GPIO_NUM};
+use crate::config::RESET_REGISTER;
 use crate::node_info::{NodeIdentity, PeerInfo};
 use crate::stats::StatsSnapshot;
 
-const UART_FIFO_REG: *mut u32 = (UART0_BASE + 0x00) as *mut u32;
-const UART_STATUS_REG: *const u32 = (UART0_BASE + 0x1C) as *const u32;
-
-const U0RXD_SIG_IN_IDX: usize = 44;
-const RXFIFO_CNT_MASK: u32 = 0xFF;
 const LINE_BUF_SIZE: usize = 128;
 
-fn uart0_init_rx() {
+// --- ESP32-D0WD: UART0 register access ---
+#[cfg(feature = "esp32")]
+const UART_FIFO_REG: *mut u32 = (0x3FF4_0000 + 0x00) as *mut u32;
+#[cfg(feature = "esp32")]
+const UART_STATUS_REG: *const u32 = (0x3FF4_0000 + 0x1C) as *const u32;
+#[cfg(feature = "esp32")]
+const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
+
+#[cfg(feature = "esp32")]
+fn init_rx() {
     unsafe {
-        let gpio_in_sel = (GPIO_FUNC_IN_SEL_BASE + 4 * U0RXD_SIG_IN_IDX) as *mut u32;
-        write_volatile(gpio_in_sel, UART_RX_GPIO_NUM | (1 << 7));
+        let gpio_in_sel = (GPIO_FUNC_IN_SEL_BASE + 4 * 44) as *mut u32;
+        write_volatile(gpio_in_sel, 3u32 | (1 << 7));
+    }
+}
+
+#[cfg(feature = "esp32")]
+fn rx_available() -> bool {
+    let status = unsafe { read_volatile(UART_STATUS_REG) };
+    (status & 0xFF) != 0
+}
+
+#[cfg(feature = "esp32")]
+fn read_byte() -> u8 {
+    (unsafe { read_volatile(UART_FIFO_REG) } & 0xFF) as u8
+}
+
+// --- ESP32-S3: USB Serial JTAG EP1 CDC register access ---
+#[cfg(feature = "esp32s3")]
+const USB_SERIAL_JTAG_BASE: usize = 0x6003_8000;
+#[cfg(feature = "esp32s3")]
+const USB_SERIAL_JTAG_EP1_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x08) as *const u32;
+#[cfg(feature = "esp32s3")]
+const USB_SERIAL_JTAG_EP1_CONF_REG: *mut u32 = (USB_SERIAL_JTAG_BASE + 0x0C) as *mut u32;
+#[cfg(feature = "esp32s3")]
+const USB_SERIAL_JTAG_IN_EP1_ST_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x44) as *const u32;
+
+#[cfg(feature = "esp32s3")]
+fn init_rx() {}
+
+#[cfg(feature = "esp32s3")]
+fn rx_available() -> bool {
+    unsafe {
+        let st = read_volatile(USB_SERIAL_JTAG_IN_EP1_ST_REG);
+        (st & 0x04) != 0
+    }
+}
+
+#[cfg(feature = "esp32s3")]
+fn read_byte() -> u8 {
+    unsafe {
+        let val = read_volatile(USB_SERIAL_JTAG_EP1_REG) & 0xFF;
+        // Clear EP1 done by writing bit 0 of EP1_CONF (wr_done)
+        write_volatile(USB_SERIAL_JTAG_EP1_CONF_REG, 0x01);
+        val as u8
     }
 }
 
@@ -99,16 +149,6 @@ fn peer_pub() -> Option<&'static [u8; 33]> {
     Some(unsafe { &*ptr })
 }
 
-fn uart0_rx_available() -> bool {
-    let status = unsafe { read_volatile(UART_STATUS_REG) };
-    (status & RXFIFO_CNT_MASK) != 0
-}
-
-fn uart0_read_byte() -> u8 {
-    let value = unsafe { read_volatile(UART_FIFO_REG) };
-    (value & 0xFF) as u8
-}
-
 fn respond_error(message: &str) {
     esp_println::println!(r#"{{"status":"error","message":"{}"}}"#, message);
 }
@@ -173,21 +213,10 @@ fn handle_version() {
 }
 
 fn handle_reset() {
-    const RESP: &[u8] = br#"{"status":"ok","data":{"message":"resetting"}}"#;
-    unsafe {
-        for &b in RESP {
-            write_volatile(UART_FIFO_REG, b as u32);
-        }
-        write_volatile(UART_FIFO_REG, b'\n' as u32);
-        for _ in 0..1_000_000 {
-            if read_volatile(UART_STATUS_REG) & (1 << 14) != 0 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
+    esp_println::println!(r#"{{"status":"ok","data":{{"message":"resetting"}}}}"#);
+    for _ in 0..1_000_000 {
+        core::hint::spin_loop();
     }
-    // RTC_CNTL_OPTIONS0_REG bit 31: SW_SYS_RST triggers full system reset.
-    // See ESP32 TRM §18.5 and soc/rtc_cntl_reg.h RTC_CNTL_SW_SYS_RST.
     unsafe {
         core::ptr::write_volatile(RESET_REGISTER as *mut u32, 1 << 31);
     }
@@ -220,14 +249,14 @@ fn handle_command(line: &[u8]) {
 
 #[embassy_executor::task]
 pub async fn control_task() {
-    uart0_init_rx();
+    init_rx();
 
     let mut line_buf = [0u8; LINE_BUF_SIZE];
     let mut line_len = 0usize;
 
     loop {
-        if uart0_rx_available() {
-            let byte = uart0_read_byte();
+        if rx_available() {
+            let byte = read_byte();
 
             if byte == b'\n' || byte == b'\r' {
                 if line_len != 0 {
