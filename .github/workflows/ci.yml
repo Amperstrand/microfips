@@ -246,19 +246,19 @@ jobs:
           echo "--- Generating node (responder) key pair ---"
           NODE_KEYS=$(./bin/fips-handshake --keygen)
           echo "$NODE_KEYS"
-          echo "NODE_SECRET=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_SECRET=//p')" >> "$GITHUB_ENV"
+          echo "NODE_SECRET=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_NSEC=//p')" >> "$GITHUB_ENV"
           echo "NODE_PUB=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_PUB=//p')" >> "$GITHUB_ENV"
 
           echo "--- Generating leaf (initiator) key pair ---"
           LEAF_KEYS=$(./bin/fips-handshake --keygen)
           echo "$LEAF_KEYS"
-          echo "LEAF_SECRET=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_SECRET=//p')" >> "$GITHUB_ENV"
+          echo "LEAF_SECRET=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_NSEC=//p')" >> "$GITHUB_ENV"
           echo "LEAF_PUB=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_PUB=//p')" >> "$GITHUB_ENV"
 
       - name: Start FIPS responder
         run: |
           echo "Starting responder with node key..."
-          FIPS_SECRET="$NODE_SECRET" FIPS_PEER_PUB="$LEAF_PUB" ./bin/microfips-http-test 127.0.0.1:31338 &
+          FIPS_NSEC="$NODE_SECRET" FIPS_PEER_NPUB="$LEAF_PUB" ./bin/microfips-http-test 127.0.0.1:31338 &
           echo $! > /tmp/responder.pid
           sleep 1
           echo "Responder running (pid $(cat /tmp/responder.pid))"
@@ -267,7 +267,7 @@ jobs:
         timeout-minutes: 1
         run: |
           echo "=== Leaf → Node handshake (fresh keys, localhost) ==="
-          FIPS_SECRET="$LEAF_SECRET" FIPS_PEER_PUB="$NODE_PUB" \
+          FIPS_NSEC="$LEAF_SECRET" FIPS_PEER_NPUB="$NODE_PUB" \
             ./bin/fips-handshake 127.0.0.1:31338
           echo "=== LOCAL HANDSHAKE SUCCEEDED ==="
 
@@ -298,7 +298,7 @@ jobs:
           )
           echo "=== Leaf → public FIPS node ==="
           echo "Using explicit STM32 identity and VPS peer pubkey from keys.json"
-          FIPS_SECRET="$STM32_SECRET" FIPS_PEER_PUB="$VPS_PUB" ./bin/fips-handshake "$FIPS_ADDR" 2>&1 || true
+          FIPS_NSEC="$STM32_SECRET" FIPS_PEER_NPUB="$VPS_PUB" ./bin/fips-handshake "$FIPS_ADDR" 2>&1 || true
           echo "=== (continue-on-error: VPS may be unreachable from CI) ==="
 
   build-firmware:
@@ -423,7 +423,7 @@ jobs:
           PY
           )
 
-          FIPS_PEER_PUB="$VPS_PUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
+          FIPS_PEER_NPUB="$VPS_PUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
           SIMA_PID=$!
           sleep 8
 
@@ -434,7 +434,7 @@ jobs:
           fi
           echo "SIM-A connected"
 
-          FIPS_PEER_PUB="$VPS_PUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
+          FIPS_PEER_NPUB="$VPS_PUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
           SIMB_PID=$!
 
           wait $SIMB_PID 2>/dev/null

@@ -16,7 +16,7 @@ fn keygen() -> ExitCode {
     let _ =
         SecretKey::from_slice(&secret).expect("generated invalid key (astronomically unlikely)");
     let pubkey = noise::ecdh_pubkey(&secret).expect("pubkey derivation failed");
-    println!("FIPS_SECRET={}", hex::encode(secret));
+    println!("FIPS_NSEC={}", hex::encode(secret));
     println!("FIPS_PUB={}", hex::encode(pubkey));
     ExitCode::SUCCESS
 }

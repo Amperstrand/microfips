@@ -395,7 +395,7 @@ const ESP32S3_TARGET: [u8; 16] = microfips_core::hex::hex_bytes_16(env!("DEVICE_
 fn keygen_from(secret: &[u8; 32]) {
     let _ = SecretKey::from_slice(secret).expect("invalid key");
     let pubkey = noise::ecdh_pubkey(secret).expect("pubkey failed");
-    println!("FIPS_SECRET={}", hex::encode(secret));
+    println!("FIPS_NSEC={}", hex::encode(secret));
     println!("FIPS_PUB={}", hex::encode(pubkey));
     let pub_normalized = noise::parity_normalize(&pubkey);
     let x_only = &pub_normalized[1..];
@@ -423,8 +423,8 @@ fn print_usage() {
     );
     eprintln!();
     eprintln!("Environment variables:");
-    eprintln!("  FIPS_SECRET   64 hex chars (identity secret key, required unless using --sim-a/--sim-b)");
-    eprintln!("  FIPS_PEER_PUB  66 hex chars (peer's compressed pubkey, always required)");
+    eprintln!("  FIPS_NSEC      64 hex chars (identity secret key, required unless using --sim-a/--sim-b)");
+    eprintln!("  FIPS_PEER_NPUB 66 hex chars (peer's compressed pubkey, always required)");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --udp <addr>    Connect directly to FIPS via UDP (no bridge needed)");
