@@ -247,7 +247,8 @@ pub async fn run_wifi_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use crate::wifi_transport::build_wifi_transport;
+    use crate::config::{WIFI_PASSWORD, WIFI_SSID};
+    use microfips_esp_transport::wifi_transport::build_wifi_transport;
 
     let mut led = Led(esp_hal::gpio::Output::new(
         gpio2,
@@ -267,7 +268,7 @@ pub async fn run_wifi_node(
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
-    let transport = build_wifi_transport(spawner, wifi, &mut trng).await;
+    let transport = build_wifi_transport(spawner, wifi, &mut trng, WIFI_SSID, WIFI_PASSWORD).await;
 
     let rng = EspRng(trng);
     let mut node = Node::new(transport, rng, ESP32S3_NSEC, VPS_NPUB);
