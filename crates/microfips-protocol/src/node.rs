@@ -86,8 +86,8 @@ impl NodeHandler for NoopHandler {
 pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     transport: T,
     rng: R,
-    secret: [u8; 32],
-    peer_pub: [u8; 33],
+    nsec: [u8; 32],
+    peer_npub: [u8; 33],
     rbuf: [u8; 2048],
     rpos: usize,
     rlen: usize,
@@ -98,12 +98,12 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
 }
 
 impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
-    pub fn new(transport: T, rng: R, secret: [u8; 32], peer_pub: [u8; 33]) -> Self {
+    pub fn new(transport: T, rng: R, nsec: [u8; 32], peer_npub: [u8; 33]) -> Self {
         Self {
             transport,
             rng,
-            secret,
-            peer_pub,
+            nsec,
+            peer_npub,
             rbuf: [0u8; 2048],
             rpos: 0,
             rlen: 0,
@@ -200,15 +200,15 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         use microfips_core::identity::NodeAddr;
         use microfips_core::noise;
 
-        let my_pub = noise::ecdh_pubkey(&self.secret).unwrap();
+        let my_pub = noise::ecdh_pubkey(&self.nsec).unwrap();
         let my_x_only: [u8; 32] = my_pub[1..33].try_into().unwrap();
         let my_addr = NodeAddr::from_pubkey_x(&my_x_only);
-        let peer_x_only: [u8; 32] = self.peer_pub[1..33].try_into().unwrap();
+        let peer_x_only: [u8; 32] = self.peer_npub[1..33].try_into().unwrap();
         let peer_addr = NodeAddr::from_pubkey_x(&peer_x_only);
 
         let initiator_eph = self.generate_valid_eph();
         let (mut noise_st, _e_pub) =
-            noise::NoiseIkInitiator::new(&initiator_eph, &self.secret, &self.peer_pub)
+            noise::NoiseIkInitiator::new(&initiator_eph, &self.nsec, &self.peer_npub)
                 .expect("noise init");
 
         let mut n1 = [0u8; 256];
@@ -271,7 +271,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 .map_err(|_| ProtocolError::InvalidMessage)?;
 
                             let mut responder = match noise::NoiseIkResponder::new(
-                                &self.secret, &peer_e_pub,
+                                &self.nsec, &peer_e_pub,
                             ) {
                                 Ok(r) => r,
                                 Err(_e) => {
@@ -297,12 +297,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             // but the Noise-decrypted initiator_static_pub has the actual
                             // compressed pubkey prefix (0x02 or 0x03 depending on y-parity).
                             // Both represent the same key — only the x-coordinate matters.
-                            let from_configured_peer = initiator_static_pub[1..33] == self.peer_pub[1..33];
+                            let from_configured_peer = initiator_static_pub[1..33] == self.peer_npub[1..33];
                             #[cfg(feature = "log")]
                             {
                                 log::info!("handshake: from_configured_peer={} peer_sent_first={} prefix_initiator=0x{:02x} prefix_peer=0x{:02x}",
                                     from_configured_peer, self.peer_sent_first,
-                                    initiator_static_pub[0], self.peer_pub[0]);
+                                    initiator_static_pub[0], self.peer_npub[0]);
                             }
 
                             if from_configured_peer && !self.peer_sent_first && my_addr.as_bytes() < peer_addr.as_bytes() {
