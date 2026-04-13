@@ -227,7 +227,7 @@ Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
 | PacketPool MTU | 2054 bytes (configured via `.cargo/config.toml`) |
 | Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey]` (33 bytes, 5s timeout) |
 | Framing | 2-byte BE length prefix on all frames (matches FIPS `BluerStream` on `linux-ble-stability-v2`) |
-| BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_SECRET[27..32]` + `0xFF` prefix, MSB-first |
+| BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_NSEC[27..32]` + `0xFF` prefix, MSB-first |
 | Advertising name | `microfips-l2cap` |
 
 **Build L2CAP firmware:**
@@ -917,8 +917,8 @@ Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` wit
 
 | MCU | Source | Pubkey (x-only, hex) | npub |
 |-----|--------|----------------------|------|
-| STM32 | `STM32_SECRET` | `635696dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842` | `npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf` |
-| ESP32-D0WD | running firmware | TBD (differs from `ESP32_SECRET` in code) | `npub1nqppng4kga6luldsu3s95hyayh8vl5gpvvvje0h8z422l6zegflqd8942y` |
+| STM32 | `STM32_NSEC` | `635696dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842` | `npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf` |
+| ESP32-D0WD | running firmware | TBD (differs from `ESP32_NSEC` in code) | `npub1nqppng4kga6luldsu3s95hyayh8vl5gpvvvje0h8z422l6zegflqd8942y` |
 | ESP32-S3 | `keys.json` sim-a | `b3989043c68d9c2d3c8f949d73e61cae27997993432c3dbbd8498117d92d95bb` | `npub1979azcrp...` |
 | VPS | — | `020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d` | `npub1peaqmgq6y4wduyr2yqh0fatnvah0ncj0rjqhd5p6aqaz5wsr05ssu0cnha` |
 

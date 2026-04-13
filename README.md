@@ -40,7 +40,6 @@ Capabilities:
 ### Known Issues
 - ESP32-D0WD L2CAP scan does not find Linux FIPS daemon (connects via peripheral path instead — FIPS scans and connects to D0WD)
 - ESP32-S3 WiFi steady state: connects but heartbeat cycle fails (link-dead after 30s)
-- Embassy task files (ble_host, l2cap_host, control) still duplicated between chip crates (~2400 lines remaining)
 
 ## Architecture
 
