@@ -38,7 +38,7 @@ impl FspAppHandler for NoopFspApp {
 }
 
 pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
-    pub secret: [u8; 32],
+    pub nsec: [u8; 32],
     pub fsp_session: FspSession,
     pub fsp_ephemeral: [u8; 32],
     /// FSP session-layer epoch. Aligned with upstream FIPS which reuses its
@@ -55,9 +55,9 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
 }
 
 impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
-    pub fn new_responder(secret: [u8; 32], ephemeral: [u8; 32], fsp_epoch: [u8; 8], app: A) -> Self {
+    pub fn new_responder(nsec: [u8; 32], ephemeral: [u8; 32], fsp_epoch: [u8; 8], app: A) -> Self {
         Self {
-            secret,
+            nsec,
             fsp_session: FspSession::new(),
             fsp_ephemeral: ephemeral,
             fsp_epoch,
@@ -77,7 +77,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
     /// (cryptographic requirement — reusing the same ephemeral in both
     /// directions leaks key material).
     pub fn new_dual(
-        secret: [u8; 32],
+        nsec: [u8; 32],
         responder_ephemeral: [u8; 32],
         initiator_ephemeral: [u8; 32],
         target_pub: &[u8; 33],
@@ -85,9 +85,9 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
         fsp_epoch: [u8; 8],
         app: A,
     ) -> Self {
-        let initiator = FspInitiatorSession::new(&secret, &initiator_ephemeral, target_pub).ok();
+        let initiator = FspInitiatorSession::new(&nsec, &initiator_ephemeral, target_pub).ok();
         Self {
-            secret,
+            nsec,
             fsp_session: FspSession::new(),
             fsp_ephemeral: responder_ephemeral,
             fsp_epoch,
@@ -153,7 +153,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                     return HandleResult::None;
                 }
                 let ack_len = match self.fsp_session.handle_setup(
-                    &self.secret,
+                    &self.nsec,
                     &self.fsp_ephemeral,
                     &self.fsp_epoch,
                     fsp_data,
@@ -163,7 +163,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                     Err(microfips_core::fsp::FspSessionError::InvalidState) => {
                         self.fsp_session.reset();
                         match self.fsp_session.handle_setup(
-                            &self.secret,
+                            &self.nsec,
                             &self.fsp_ephemeral,
                             &self.fsp_epoch,
                             fsp_data,
@@ -350,7 +350,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
     }
 
     fn my_addr(&self) -> Option<[u8; 16]> {
-        let pub_key = noise::ecdh_pubkey(&self.secret).ok()?;
+        let pub_key = noise::ecdh_pubkey(&self.nsec).ok()?;
         let normalized = noise::parity_normalize(&pub_key);
         let x_only: [u8; 32] = normalized[1..].try_into().ok()?;
         Some(microfips_core::identity::NodeAddr::from_pubkey_x(&x_only).0)
@@ -461,7 +461,7 @@ impl<A: FspAppHandler, const APP_BUF: usize> NodeHandler for FspDualHandler<A, A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microfips_core::identity::STM32_SECRET;
+    use microfips_core::identity::STM32_NSEC;
     use microfips_core::noise::ecdh_pubkey;
 
     fn test_target_pub() -> [u8; 33] {
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn dual_handler_starts_timer_after_handshake() {
         let mut handler: FspDualHandler<_, 1024> = FspDualHandler::new_dual(
-            STM32_SECRET,
+            STM32_NSEC,
             [0x11; 32],
             [0x22; 32],
             &test_target_pub(),
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn responder_handler_does_not_start_timer_after_handshake() {
         let mut handler: FspDualHandler<_, 1024> =
-            FspDualHandler::new_responder(STM32_SECRET, [0x11; 32], [0x01, 0, 0, 0, 0, 0, 0, 0], NoopFspApp);
+            FspDualHandler::new_responder(STM32_NSEC, [0x11; 32], [0x01, 0, 0, 0, 0, 0, 0, 0], NoopFspApp);
         handler.on_event_default(NodeEvent::HandshakeOk);
         assert_eq!(handler.fsp_timer, None);
     }
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn on_tick_from_idle_builds_session_setup() {
         let mut handler: FspDualHandler<_, 1024> = FspDualHandler::new_dual(
-            STM32_SECRET,
+            STM32_NSEC,
             [0x11; 32],
             [0x22; 32],
             &test_target_pub(),
