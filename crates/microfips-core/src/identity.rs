@@ -2,11 +2,11 @@ use sha2::{Digest, Sha256};
 
 use crate::hex::{hex_bytes_16, hex_bytes_32, hex_bytes_33};
 
-pub const STM32_SECRET: [u8; 32] = hex_bytes_32(env!("DEVICE_SECRET_HEX_stm32"));
-pub const VPS_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_vps"));
-pub const STM32_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_stm32"));
+pub const STM32_NSEC: [u8; 32] = hex_bytes_32(env!("DEVICE_NSEC_HEX_stm32"));
+pub const VPS_NPUB: [u8; 33] = hex_bytes_33(env!("DEVICE_NPUB_HEX_vps"));
+pub const STM32_NPUB: [u8; 33] = hex_bytes_33(env!("DEVICE_NPUB_HEX_stm32"));
 pub const STM32_NODE_ADDR: [u8; 16] = hex_bytes_16(env!("DEVICE_NODE_ADDR_stm32"));
-pub const ESP32_PEER_PUB: [u8; 33] = hex_bytes_33(env!("DEVICE_PUBKEY_HEX_esp32"));
+pub const ESP32_NPUB: [u8; 33] = hex_bytes_33(env!("DEVICE_NPUB_HEX_esp32"));
 pub const ESP32_NODE_ADDR: [u8; 16] = hex_bytes_16(env!("DEVICE_NODE_ADDR_esp32"));
 
 pub struct NodeAddr(pub [u8; 16]);
@@ -252,8 +252,8 @@ mod tests {
 
     /// Verify keys.json-derived constants are internally consistent:
     ///  1. Each secret produces a valid secp256k1 pubkey
-    ///  2. STM32_PEER_PUB matches ecdh_pubkey(STM32_SECRET)
-    ///  3. ESP32_PEER_PUB matches ecdh_pubkey(esp32 secret from keys.json)
+    ///  2. STM32_NPUB matches ecdh_pubkey(STM32_NSEC)
+    ///  3. ESP32_NPUB matches ecdh_pubkey(esp32 nsec from keys.json)
     ///   4. VPS peer pubkey matches its node_addr
     ///  5. All leaf secrets and node_addrs are distinct
     #[test]
@@ -262,10 +262,10 @@ mod tests {
         use crate::noise;
 
         let stm32_pub =
-            noise::ecdh_pubkey(&STM32_SECRET).expect("STM32 secret must be a valid secp256k1 key");
+            noise::ecdh_pubkey(&STM32_NSEC).expect("STM32 nsec must be a valid secp256k1 key");
         assert_eq!(
-            stm32_pub, STM32_PEER_PUB,
-            "STM32_PEER_PUB must match ecdh_pubkey(STM32_SECRET)"
+            stm32_pub, STM32_NPUB,
+            "STM32_NPUB must match ecdh_pubkey(STM32_NSEC)"
         );
 
         let stm32_x: [u8; 32] = stm32_pub[1..].try_into().unwrap();
@@ -276,12 +276,12 @@ mod tests {
             "STM32_NODE_ADDR must match sha256(pubkey_x)[0..16]"
         );
 
-        let esp32_secret = hex_bytes_32(env!("DEVICE_SECRET_HEX_esp32"));
+        let esp32_secret = hex_bytes_32(env!("DEVICE_NSEC_HEX_esp32"));
         let esp32_pub =
-            noise::ecdh_pubkey(&esp32_secret).expect("ESP32 secret must be a valid secp256k1 key");
+            noise::ecdh_pubkey(&esp32_secret).expect("ESP32 nsec must be a valid secp256k1 key");
         assert_eq!(
-            esp32_pub, ESP32_PEER_PUB,
-            "ESP32_PEER_PUB must match ecdh_pubkey(ESP32_SECRET)"
+            esp32_pub, ESP32_NPUB,
+            "ESP32_NPUB must match ecdh_pubkey(ESP32_NSEC)"
         );
 
         let esp32_x: [u8; 32] = esp32_pub[1..].try_into().unwrap();
@@ -292,7 +292,7 @@ mod tests {
             "ESP32_NODE_ADDR must match sha256(pubkey_x)[0..16]"
         );
 
-        let vps_x: [u8; 32] = VPS_PEER_PUB[1..].try_into().unwrap();
+        let vps_x: [u8; 32] = VPS_NPUB[1..].try_into().unwrap();
         let vps_addr = NodeAddr::from_pubkey_x(&vps_x);
         assert_eq!(
             vps_addr.as_bytes(),
@@ -301,8 +301,8 @@ mod tests {
         );
 
         // Uniqueness: all 4 leaf secrets produce distinct addresses
-        let sim_a_secret = hex_bytes_32(env!("DEVICE_SECRET_HEX_sim-a"));
-        let sim_b_secret = hex_bytes_32(env!("DEVICE_SECRET_HEX_sim-b"));
+        let sim_a_secret = hex_bytes_32(env!("DEVICE_NSEC_HEX_sim-a"));
+        let sim_b_secret = hex_bytes_32(env!("DEVICE_NSEC_HEX_sim-b"));
         let sim_a_pub = noise::ecdh_pubkey(&sim_a_secret).unwrap();
         let sim_b_pub = noise::ecdh_pubkey(&sim_b_secret).unwrap();
         let sim_a_addr = NodeAddr::from_pubkey_x(&sim_a_pub[1..].try_into().unwrap());
