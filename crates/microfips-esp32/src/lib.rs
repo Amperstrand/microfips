@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod config;
+pub mod run;
 pub use microfips_esp_transport::{handler, node_info};
 
 pub use microfips_esp_transport::{led, rng, stats, uart_transport};
