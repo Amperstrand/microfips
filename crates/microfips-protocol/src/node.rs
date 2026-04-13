@@ -274,7 +274,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 .read_message1(&noise_payload[noise::PUBKEY_SIZE..])
                                 .map_err(|_| ProtocolError::InvalidMessage)?;
 
-                            let from_configured_peer = initiator_static_pub == self.peer_pub;
+                            // Compare x-only bytes only (1..33). The prefix byte may differ:
+                            // peer_pub is constructed with 0x02 from x-only exchange data,
+                            // but the Noise-decrypted initiator_static_pub has the actual
+                            // compressed pubkey prefix (0x02 or 0x03 depending on y-parity).
+                            // Both represent the same key — only the x-coordinate matters.
+                            let from_configured_peer = initiator_static_pub[1..33] == self.peer_pub[1..33];
 
                             if from_configured_peer && !self.peer_sent_first && my_addr.as_bytes() < peer_addr.as_bytes() {
                                 #[cfg(feature = "std")]
@@ -1847,5 +1852,25 @@ mod tests {
         buf[..4].copy_from_slice(&prefix);
         buf[4..].fill(0xCC);
         assert_eq!(extract_raw_frame(&buf, 0, 32), None);
+    }
+
+    #[test]
+    fn test_xonly_peer_comparison_accepts_odd_parity() {
+        // Same x-coordinate, different prefix byte (even vs odd y-parity)
+        let mut peer_pub_even = [0u8; 33];
+        peer_pub_even[0] = 0x02;
+        peer_pub_even[1..33].copy_from_slice(&[0xABu8; 32]);
+
+        let mut initiator_pub_odd = [0u8; 33];
+        initiator_pub_odd[0] = 0x03;  // different prefix
+        initiator_pub_odd[1..33].copy_from_slice(&[0xABu8; 32]);  // same x-coord
+
+        // x-only comparison should match
+        assert_eq!(initiator_pub_odd[1..33], peer_pub_even[1..33],
+            "x-only comparison failed: same x-coord should match regardless of prefix");
+
+        // Full comparison would wrongly fail
+        assert_ne!(initiator_pub_odd, peer_pub_even,
+            "full comparison correctly differs when prefix differs");
     }
 }
