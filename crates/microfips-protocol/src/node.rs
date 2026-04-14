@@ -261,7 +261,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
                             if noise_payload.len() < noise::PUBKEY_SIZE {
                                 #[cfg(feature = "log")]
-                                log::warn!("handshake: MSG1 noise payload too short ({})", noise_payload.len());
+                                log::warn!(
+                                    "handshake: MSG1 noise payload too short ({})",
+                                    noise_payload.len()
+                                );
                                 return Err(ProtocolError::InvalidMessage);
                             }
 
@@ -270,16 +273,18 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 .try_into()
                                 .map_err(|_| ProtocolError::InvalidMessage)?;
 
-                            let mut responder = match noise::NoiseIkResponder::new(
-                                &self.nsec, &peer_e_pub,
-                            ) {
-                                Ok(r) => r,
-                                Err(_e) => {
-                                    #[cfg(feature = "log")]
-                                    log::error!("handshake: NoiseIkResponder::new failed: {:?}", _e);
-                                    return Err(ProtocolError::InvalidMessage);
-                                }
-                            };
+                            let mut responder =
+                                match noise::NoiseIkResponder::new(&self.nsec, &peer_e_pub) {
+                                    Ok(r) => r,
+                                    Err(_e) => {
+                                        #[cfg(feature = "log")]
+                                        log::error!(
+                                            "handshake: NoiseIkResponder::new failed: {:?}",
+                                            _e
+                                        );
+                                        return Err(ProtocolError::InvalidMessage);
+                                    }
+                                };
 
                             let (initiator_static_pub, epoch) = match responder
                                 .read_message1(&noise_payload[noise::PUBKEY_SIZE..])
@@ -297,7 +302,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             // but the Noise-decrypted initiator_static_pub has the actual
                             // compressed pubkey prefix (0x02 or 0x03 depending on y-parity).
                             // Both represent the same key — only the x-coordinate matters.
-                            let from_configured_peer = initiator_static_pub[1..33] == self.peer_npub[1..33];
+                            let from_configured_peer =
+                                initiator_static_pub[1..33] == self.peer_npub[1..33];
                             #[cfg(feature = "log")]
                             {
                                 log::info!("handshake: from_configured_peer={} peer_sent_first={} prefix_initiator=0x{:02x} prefix_peer=0x{:02x}",
@@ -305,9 +311,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     initiator_static_pub[0], self.peer_npub[0]);
                             }
 
-                            if from_configured_peer && !self.peer_sent_first && my_addr.as_bytes() < peer_addr.as_bytes() {
+                            if from_configured_peer
+                                && !self.peer_sent_first
+                                && my_addr.as_bytes() < peer_addr.as_bytes()
+                            {
                                 #[cfg(feature = "log")]
-                                log::warn!("discarding MSG1 from configured peer (waiting for MSG2)");
+                                log::warn!(
+                                    "discarding MSG1 from configured peer (waiting for MSG2)"
+                                );
                                 continue;
                             }
 
@@ -325,9 +336,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             }
 
                             let mut msg2_noise = [0u8; 128];
-                            let msg2_noise_len = match responder
-                                .write_message2(&resp_eph, &epoch, &mut msg2_noise)
-                            {
+                            let msg2_noise_len = match responder.write_message2(
+                                &resp_eph,
+                                &epoch,
+                                &mut msg2_noise,
+                            ) {
                                 Ok(n) => n,
                                 Err(_e) => {
                                     #[cfg(feature = "log")]
@@ -722,10 +735,16 @@ fn handle_frame_inner<H: NodeHandler>(
                     // ReceiverReport inner payload (67B): [3B reserved][8B highest_ctr][8B pkts_recv]
                     //   [8B bytes_recv][4B timestamp_echo][40B remaining fields, all zero]
                     if inner_payload.len() >= 27 && resp.len() >= 67 {
-                        let end_ctr =
-                            u64::from_le_bytes(inner_payload[11..19].try_into().unwrap_or(0u64.to_le_bytes()));
-                        let end_ts =
-                            u32::from_le_bytes(inner_payload[23..27].try_into().unwrap_or(0u32.to_le_bytes()));
+                        let end_ctr = u64::from_le_bytes(
+                            inner_payload[11..19]
+                                .try_into()
+                                .unwrap_or(0u64.to_le_bytes()),
+                        );
+                        let end_ts = u32::from_le_bytes(
+                            inner_payload[23..27]
+                                .try_into()
+                                .unwrap_or(0u32.to_le_bytes()),
+                        );
                         resp[..67].copy_from_slice(&[0u8; 67]);
                         resp[3..11].copy_from_slice(&end_ctr.to_le_bytes());
                         resp[27..31].copy_from_slice(&end_ts.to_le_bytes());
@@ -737,13 +756,11 @@ fn handle_frame_inner<H: NodeHandler>(
                         FrameAction::Continue
                     }
                 }
-                _ => {
-                    match handler.on_message(msg_type, inner_payload, resp) {
-                        HandleResult::None => FrameAction::Continue,
-                        HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
-                        HandleResult::Disconnect => FrameAction::PeerDC,
-                    }
-                }
+                _ => match handler.on_message(msg_type, inner_payload, resp) {
+                    HandleResult::None => FrameAction::Continue,
+                    HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
+                    HandleResult::Disconnect => FrameAction::PeerDC,
+                },
             }
         }
         _ => {
@@ -1895,15 +1912,20 @@ mod tests {
         peer_pub_even[1..33].copy_from_slice(&[0xABu8; 32]);
 
         let mut initiator_pub_odd = [0u8; 33];
-        initiator_pub_odd[0] = 0x03;  // different prefix
-        initiator_pub_odd[1..33].copy_from_slice(&[0xABu8; 32]);  // same x-coord
+        initiator_pub_odd[0] = 0x03; // different prefix
+        initiator_pub_odd[1..33].copy_from_slice(&[0xABu8; 32]); // same x-coord
 
         // x-only comparison should match
-        assert_eq!(initiator_pub_odd[1..33], peer_pub_even[1..33],
-            "x-only comparison failed: same x-coord should match regardless of prefix");
+        assert_eq!(
+            initiator_pub_odd[1..33],
+            peer_pub_even[1..33],
+            "x-only comparison failed: same x-coord should match regardless of prefix"
+        );
 
         // Full comparison would wrongly fail
-        assert_ne!(initiator_pub_odd, peer_pub_even,
-            "full comparison correctly differs when prefix differs");
+        assert_ne!(
+            initiator_pub_odd, peer_pub_even,
+            "full comparison correctly differs when prefix differs"
+        );
     }
 }

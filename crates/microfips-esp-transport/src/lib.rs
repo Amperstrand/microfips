@@ -2,7 +2,11 @@
 
 extern crate alloc;
 
-#[cfg(all(feature = "esp32", feature = "esp32s3", any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "esp32",
+    feature = "esp32s3",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
 compile_error!("features \"esp32\" and \"esp32s3\" are mutually exclusive");
 
 pub mod config;

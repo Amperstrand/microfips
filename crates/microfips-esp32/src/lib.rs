@@ -7,9 +7,9 @@ pub use microfips_esp_transport::{handler, node_info};
 pub use microfips_esp_transport::{led, rng, stats, uart_transport};
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
-pub use microfips_esp_transport::logger;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 pub use microfips_esp_transport::control;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+pub use microfips_esp_transport::logger;
 
 #[cfg(feature = "ble")]
 pub use microfips_esp_transport::ble_transport;

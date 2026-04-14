@@ -45,7 +45,9 @@ impl<H: BleHostAdapter> Transport for SharedBleTransport<H> {
 
     async fn wait_ready(&mut self) -> Result<(), BleError> {
         if !H::task_started().swap(true, Ordering::Relaxed) {
-            H::spawn_host_task().await.map_err(|_| BleError::InitFailed)?;
+            H::spawn_host_task()
+                .await
+                .map_err(|_| BleError::InitFailed)?;
         }
 
         if H::link_up() {
@@ -120,7 +122,9 @@ impl<H: BleHostAdapter> Transport for SharedBleTransport<H> {
     }
 }
 
-use crate::ble_host::{ble_host_task, ble_link_up, ble_task_started, recv_frame, send_frame, wait_for_link};
+use crate::ble_host::{
+    ble_host_task, ble_link_up, ble_task_started, recv_frame, send_frame, wait_for_link,
+};
 
 pub struct EspBleHost;
 
