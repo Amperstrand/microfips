@@ -804,6 +804,19 @@ recv hot path adds latency with no visual benefit (the LED is already on from st
    before rebuilding. This is a Cargo feature unification cache issue, not a nightly
    or crate version incompatibility.
 
+7. **BLE address type must match remote device.** When constructing a targeted BLE
+   connect (e.g. trouble-host `Central::connect()` with `filter_accept_list`), the
+   address kind (PUBLIC vs RANDOM) must match what the remote device actually advertises.
+   `Address::random(bytes)` hardcodes `AddrKind::RANDOM` -- if the target has a PUBLIC
+   address (check with `hciconfig hci0`), use `AddrKind::PUBLIC` explicitly. A mismatch
+   causes silent connect failure. See issue #81.
+
+8. **BLE disconnect settle delay.** After a BLE L2CAP disconnect, the HCI controller
+   needs time to clean up before accepting a new connection. The firmware uses a
+   500ms settle delay (`BLE_DISCONNECT_SETTLE_MS`) between disconnect and the next
+   connect attempt. Reducing this risks "Connection Already Exists" errors from the
+   controller.
+
 ## DANGER: Do NOT erase flash via probe-rs
 
 ```bash
@@ -952,6 +965,9 @@ When not set, tools panic — no default device identity is allowed.
 | #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
 
 ## Upstream FIPS Compatibility
+
+**Upstream FIPS source:** `/home/ubuntu/src/fips` (NOT `/home/ubuntu/src2/fips.rm` which is stale/abandoned).
+Use `/home/ubuntu/src/fips` for any FIPS source code reference, diff, or API lookup.
 
 ### Current State (as of 2026-04-11)
 
