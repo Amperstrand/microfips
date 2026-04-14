@@ -560,8 +560,8 @@ fn test_fmp_constants_match_fips() {
     assert_eq!(fmp::PHASE_MSG1, 0x01, "FIPS: wire.rs:34");
     assert_eq!(fmp::PHASE_MSG2, 0x02, "FIPS: wire.rs:37");
     assert_eq!(fmp::FLAG_KEY_EPOCH, 0x01, "FIPS: wire.rs:61");
-    assert_eq!(fmp::FLAG_CONGESTION, 0x02, "FIPS: wire.rs:64");
-    assert_eq!(fmp::FLAG_SPIN, 0x04, "FIPS: wire.rs:67");
+    assert_eq!(fmp::FLAG_CE, 0x02, "FIPS: wire.rs:64");
+    assert_eq!(fmp::FLAG_SP, 0x04, "FIPS: wire.rs:67");
 }
 
 #[test]
