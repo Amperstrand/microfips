@@ -15,14 +15,14 @@ use esp_radio::ble::controller::BleConnector;
 use static_cell::StaticCell;
 use trouble_host::l2cap::{L2capChannelReader, L2capChannelWriter};
 use trouble_host::prelude::{
-    AdStructure, Address, Advertisement, DefaultPacketPool, ExternalController, Host,
-    HostResources, L2capChannel, L2capChannelConfig, PacketPool, Stack, BR_EDR_NOT_SUPPORTED,
-    LE_GENERAL_DISCOVERABLE,
+    AdStructure, Address, Advertisement, Central, ConnectConfig, DefaultPacketPool,
+    ExternalController, Host, HostResources, L2capChannel, L2capChannelConfig, PacketPool,
+    RequestedConnParams, ScanConfig, Stack, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
 };
 
 use crate::config::{
-    DEVICE_NSEC, FIPS_ALLOWED_PUBKEYS, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM,
-    RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
+    DEVICE_NSEC, FIPS_ALLOWED_PUBKEYS, FIPS_BLE_ADDR, L2CAP_FIPS_SERVICE_UUID_LE,
+    L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
 };
 
 const L2CAP_SDU_CAP: usize = L2CAP_FRAME_CAP + 2;
@@ -232,6 +232,20 @@ fn peer_is_fips(peer_pub: &[u8; 33]) -> bool {
         .any(|allowed| peer_pub[1..33] == allowed[..])
 }
 
+/// Why the L2CAP relay disconnected.
+#[derive(Debug, Clone, Copy)]
+enum DisconnectReason {
+    /// Remote closed the connection before any data was relayed.
+    /// Likely a FIPS tie-breaker yield: pubkey exchange succeeded but
+    /// FIPS dropped the connection because its NodeAddr >= ours.
+    /// See Amperstrand/fips#55.
+    CleanYield,
+    /// Some frames were relayed before disconnect — normal operation.
+    DataExchanged,
+    /// Send-side error (write failed).
+    SendError,
+}
+
 /// Relay frames between L2CAP channel and internal channels.
 ///
 /// Wire format (matches FIPS `BluerStream` on `linux-ble-stability-v2`):
@@ -248,7 +262,8 @@ async fn relay_l2cap_frames<T, P>(
     reader: &mut L2capChannelReader<'_, P>,
     recv_disconnect_log: &'static str,
     send_disconnect_log: &'static str,
-) where
+) -> DisconnectReason
+where
     T: trouble_host::prelude::Controller,
     P: PacketPool,
 {
@@ -263,7 +278,7 @@ async fn relay_l2cap_frames<T, P>(
                 if n < 2 {
                     log::warn!("RX: SDU too short ({}B), disconnecting", n);
                     mark_link_down();
-                    break;
+                    break DisconnectReason::DataExchanged;
                 }
                 let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
                 if n < 2 + payload_len || payload_len > L2CAP_FRAME_CAP {
@@ -273,7 +288,7 @@ async fn relay_l2cap_frames<T, P>(
                         n
                     );
                     mark_link_down();
-                    break;
+                    break DisconnectReason::DataExchanged;
                 }
                 let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
                 if frame
@@ -281,7 +296,7 @@ async fn relay_l2cap_frames<T, P>(
                     .is_err()
                 {
                     mark_link_down();
-                    break;
+                    break DisconnectReason::DataExchanged;
                 }
 
                 rx_count += 1;
@@ -319,7 +334,10 @@ async fn relay_l2cap_frames<T, P>(
                     tx_count
                 );
                 mark_link_down();
-                break;
+                if rx_count == 0 && tx_count == 0 {
+                    break DisconnectReason::CleanYield;
+                }
+                break DisconnectReason::DataExchanged;
             }
             Either::Second(frame) => {
                 let len = frame.len() as u16;
@@ -329,7 +347,7 @@ async fn relay_l2cap_frames<T, P>(
                 {
                     log::warn!("TX: frame too large for SDU ({}B)", len);
                     mark_link_down();
-                    break;
+                    break DisconnectReason::DataExchanged;
                 }
 
                 tx_count += 1;
@@ -362,13 +380,17 @@ async fn relay_l2cap_frames<T, P>(
                             tx_count
                         );
                         mark_link_down();
-                        break;
+                        break DisconnectReason::SendError;
                     }
                 }
             }
         }
     }
 }
+
+const CENTRAL_CONNECT_TIMEOUT_SECS: u64 = 3;
+const BLE_DISCONNECT_SETTLE_MS: u64 = 500;
+const BLE_YIELD_RETRY_MS: u64 = 3000;
 
 #[embassy_executor::task]
 pub async fn l2cap_host_task() {
@@ -417,11 +439,12 @@ pub async fn l2cap_host_task() {
     log::info!("stack initialized");
 
     let Host {
+        mut central,
         mut peripheral,
         mut runner,
         ..
     } = stack.build();
-    log::info!("host built (peripheral-only mode)");
+    log::info!("host built (dual-role: central + peripheral)");
 
     let _ = embassy_futures::join::join(
         async {
@@ -432,159 +455,292 @@ pub async fn l2cap_host_task() {
         },
         async {
             loop {
-                // Peripheral-only: advertise and wait for FIPS to connect.
-                // Sending CAN_PERIPHERAL (no CAN_CENTRAL) in pubkey exchange flags
-                // tells FIPS it must initiate. This prevents the cross-connection
-                // race where both sides send MSG1 simultaneously.
                 mark_link_down();
-                log::info!("advertising as peripheral (no central scan)");
 
-                let mut adv_data = [0u8; 31];
-                let Ok(adv_len) = AdStructure::encode_slice(
-                    &[
-                        AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                        AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE),
-                    ],
-                    &mut adv_data,
-                ) else {
-                    log::error!("adv_data encode failed");
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                        RECV_RETRY_DELAY_MS,
-                    ))
-                    .await;
-                    continue;
-                };
-
-                let mut scan_data = [0u8; 31];
-                let caps = crate::config::ble_caps::LEAF_ONLY;
-                let Ok(scan_len) = AdStructure::encode_slice(
-                    &[
-                        AdStructure::CompleteLocalName(b"microfips-l2cap"),
-                        AdStructure::ServiceData16 {
-                            uuid: crate::config::FIPS_CAPS_SERVICE_UUID,
-                            data: &[caps],
-                        },
-                    ],
-                    &mut scan_data,
-                ) else {
-                    log::error!("scan_data encode failed");
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                        RECV_RETRY_DELAY_MS,
-                    ))
-                    .await;
-                    continue;
-                };
-
-                let advertiser = match peripheral
-                    .advertise(
-                        &Default::default(),
-                        Advertisement::ConnectableScannableUndirected {
-                            adv_data: &adv_data[..adv_len],
-                            scan_data: &scan_data[..scan_len],
-                        },
+                let connected_as_central = do_central_connect(&stack, &mut central).await;
+                if let Some((mut writer, mut reader, peer_pub)) = connected_as_central {
+                    drain_l2cap_channels();
+                    mark_link_ready(peer_pub);
+                    relay_l2cap_frames(
+                        &stack,
+                        &mut writer,
+                        &mut reader,
+                        "central receive loop disconnected",
+                        "central send loop disconnected",
                     )
-                    .await
-                {
-                    Ok(a) => {
-                        log::info!("BLE advertising started");
-                        a
-                    }
-                    Err(e) => {
-                        log::error!("advertise() error: {:?}", e);
-                        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
-                        continue;
-                    }
-                };
+                    .await;
+                    mark_link_down();
+                    drain_l2cap_channels();
+                    log::info!("central disconnected, retrying");
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                        BLE_DISCONNECT_SETTLE_MS,
+                    ))
+                    .await;
+                    continue;
+                }
 
-                let conn = match advertiser.accept().await {
-                    Ok(c) => {
-                        log::info!("BLE connection accepted");
-                        c
-                    }
-                    Err(e) => {
-                        log::warn!("peripheral accept error: {:?}", e);
+                log::info!("central connect failed, falling back to peripheral");
+                let reason = do_peripheral(&stack, &mut peripheral).await;
+                mark_link_down();
+                drain_l2cap_channels();
+                match reason {
+                    DisconnectReason::CleanYield => {
+                        log::info!(
+                            "peripheral clean yield (FIPS tie-breaker), waiting {}ms",
+                            BLE_YIELD_RETRY_MS
+                        );
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                            RECV_RETRY_DELAY_MS,
+                            BLE_YIELD_RETRY_MS,
                         ))
                         .await;
-                        continue;
                     }
-                };
-
-                let l2cap_config = L2capChannelConfig {
-                    mtu: Some(2048),
-                    ..Default::default()
-                };
-
-                let channel =
-                    match L2capChannel::accept(&stack, &conn, &[L2CAP_PSM], &l2cap_config).await {
-                        Ok(ch) => {
-                            log::info!("L2CAP channel accepted on PSM {}", L2CAP_PSM);
-                            ch
-                        }
-                        Err(e) => {
-                            log::error!("L2CAP accept error on PSM {}: {:?}", L2CAP_PSM, e);
-                            drain_l2cap_channels();
-                            embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                                RECV_RETRY_DELAY_MS,
-                            ))
-                            .await;
-                            continue;
-                        }
-                    };
-
-                let (mut writer, mut reader) = channel.split();
-
-                let Some(peer_pub) =
-                    exchange_pubkeys(&DEVICE_NSEC, &mut writer, &mut reader, &stack).await
-                else {
-                    log::error!("pubkey exchange failed");
-                    drain_l2cap_channels();
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                        RECV_RETRY_DELAY_MS,
-                    ))
-                    .await;
-                    continue;
-                };
-
-                if !peer_is_fips(&peer_pub) {
-                    let mut hex = [0u8; 64];
-                    microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
-                    log::warn!(
-                        "rejecting peripheral peer (not in FIPS_ALLOWED_PUBKEYS): {}",
-                        core::str::from_utf8(&hex).unwrap_or("?")
-                    );
-                    drain_l2cap_channels();
-                    continue;
+                    _ => {
+                        log::info!("peripheral disconnected, retrying");
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                            BLE_DISCONNECT_SETTLE_MS,
+                        ))
+                        .await;
+                    }
                 }
-
-                {
-                    let mut hex = [0u8; 64];
-                    microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
-                    log::info!(
-                        "peripheral peer accepted: {}",
-                        core::str::from_utf8(&hex).unwrap_or("?")
-                    );
-                }
-
-                drain_l2cap_channels();
-                mark_link_ready(peer_pub);
-                relay_l2cap_frames(
-                    &stack,
-                    &mut writer,
-                    &mut reader,
-                    "peripheral receive loop disconnected",
-                    "peripheral send loop disconnected",
-                )
-                .await;
-
-                mark_link_down();
-                drain_l2cap_channels();
-                log::info!("disconnected, re-advertising");
             }
         },
     )
     .await;
+}
+
+async fn do_central_connect<'s, T, P>(
+    stack: &'s Stack<'s, T, P>,
+    central: &mut Central<'s, T, P>,
+) -> Option<(L2capChannelWriter<'s, P>, L2capChannelReader<'s, P>, [u8; 33])>
+where
+    T: trouble_host::prelude::Controller,
+    P: PacketPool,
+{
+    let bd_addr = bt_hci::param::BdAddr::new(FIPS_BLE_ADDR);
+    log::info!(
+        "attempting central connect to {:?} (timeout {}s)",
+        bd_addr,
+        CENTRAL_CONNECT_TIMEOUT_SECS
+    );
+
+    let config = ConnectConfig {
+        scan_config: ScanConfig {
+            active: true,
+            filter_accept_list: &[(bt_hci::param::AddrKind::PUBLIC, &bd_addr)],
+            ..Default::default()
+        },
+        connect_params: RequestedConnParams {
+            min_connection_interval: embassy_time::Duration::from_millis(20),
+            max_connection_interval: embassy_time::Duration::from_millis(40),
+            max_latency: 0,
+            supervision_timeout: embassy_time::Duration::from_millis(400),
+            min_event_length: embassy_time::Duration::from_millis(20),
+            max_event_length: embassy_time::Duration::from_millis(40),
+        },
+    };
+
+    let conn = match embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(CENTRAL_CONNECT_TIMEOUT_SECS),
+        central.connect(&config),
+    )
+    .await
+    {
+        Ok(Ok(c)) => {
+            log::info!("central BLE connection established");
+            c
+        }
+        Ok(Err(e)) => {
+            log::warn!("central connect error: {:?}", e);
+            return None;
+        }
+        Err(_) => {
+            log::info!("central connect timed out");
+            return None;
+        }
+    };
+
+    let l2cap_config = L2capChannelConfig {
+        mtu: Some(2048),
+        ..Default::default()
+    };
+
+    let channel = match L2capChannel::create(stack, &conn, L2CAP_PSM, &l2cap_config).await {
+        Ok(ch) => {
+            log::info!("central L2CAP channel created on PSM {}", L2CAP_PSM);
+            ch
+        }
+        Err(e) => {
+            log::error!("central L2CAP create error on PSM {}: {:?}", L2CAP_PSM, e);
+            return None;
+        }
+    };
+
+    let (mut writer, mut reader) = channel.split();
+
+    let Some(peer_pub) = exchange_pubkeys(&DEVICE_NSEC, &mut writer, &mut reader, stack).await
+    else {
+        log::error!("central pubkey exchange failed");
+        return None;
+    };
+
+    if !peer_is_fips(&peer_pub) {
+        let mut hex = [0u8; 64];
+        microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+        log::warn!(
+            "rejecting central peer (not in FIPS_ALLOWED_PUBKEYS): {}",
+            core::str::from_utf8(&hex).unwrap_or("?")
+        );
+        return None;
+    }
+
+    {
+        let mut hex = [0u8; 64];
+        microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+        log::info!(
+            "central peer accepted: {}",
+            core::str::from_utf8(&hex).unwrap_or("?")
+        );
+    }
+
+    Some((writer, reader, peer_pub))
+}
+
+async fn do_peripheral<'s, T, P>(
+    stack: &'s Stack<'s, T, P>,
+    peripheral: &mut trouble_host::peripheral::Peripheral<'s, T, P>,
+) -> DisconnectReason
+where
+    T: trouble_host::prelude::Controller,
+    P: PacketPool,
+{
+    log::info!("advertising as peripheral");
+
+    let mut adv_data = [0u8; 31];
+    let Ok(adv_len) = AdStructure::encode_slice(
+        &[
+            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE),
+        ],
+        &mut adv_data,
+    ) else {
+        log::error!("adv_data encode failed");
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
+            .await;
+        return DisconnectReason::DataExchanged;
+    };
+
+    let mut scan_data = [0u8; 31];
+    let caps = crate::config::ble_caps::LEAF_ONLY;
+    let Ok(scan_len) = AdStructure::encode_slice(
+        &[
+            AdStructure::CompleteLocalName(b"microfips-l2cap"),
+            AdStructure::ServiceData16 {
+                uuid: crate::config::FIPS_CAPS_SERVICE_UUID,
+                data: &[caps],
+            },
+        ],
+        &mut scan_data,
+    ) else {
+        log::error!("scan_data encode failed");
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
+            .await;
+        return DisconnectReason::DataExchanged;
+    };
+
+    let advertiser = match peripheral
+        .advertise(
+            &Default::default(),
+            Advertisement::ConnectableScannableUndirected {
+                adv_data: &adv_data[..adv_len],
+                scan_data: &scan_data[..scan_len],
+            },
+        )
+        .await
+    {
+        Ok(a) => {
+            log::info!("BLE advertising started");
+            a
+        }
+        Err(e) => {
+            log::error!("advertise() error: {:?}", e);
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+            return DisconnectReason::DataExchanged;
+        }
+    };
+
+    let conn = match advertiser.accept().await {
+        Ok(c) => {
+            log::info!("BLE connection accepted");
+            c
+        }
+        Err(e) => {
+            log::warn!("peripheral accept error: {:?}", e);
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
+                .await;
+            return DisconnectReason::DataExchanged;
+        }
+    };
+
+    let l2cap_config = L2capChannelConfig {
+        mtu: Some(2048),
+        ..Default::default()
+    };
+
+    let channel = match L2capChannel::accept(stack, &conn, &[L2CAP_PSM], &l2cap_config).await {
+        Ok(ch) => {
+            log::info!("L2CAP channel accepted on PSM {}", L2CAP_PSM);
+            ch
+        }
+        Err(e) => {
+            log::error!("L2CAP accept error on PSM {}: {:?}", L2CAP_PSM, e);
+            drain_l2cap_channels();
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
+                .await;
+            return DisconnectReason::DataExchanged;
+        }
+    };
+
+    let (mut writer, mut reader) = channel.split();
+
+    let Some(peer_pub) = exchange_pubkeys(&DEVICE_NSEC, &mut writer, &mut reader, stack).await
+    else {
+        log::error!("pubkey exchange failed");
+        drain_l2cap_channels();
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
+            .await;
+        return DisconnectReason::DataExchanged;
+    };
+
+    if !peer_is_fips(&peer_pub) {
+        let mut hex = [0u8; 64];
+        microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+        log::warn!(
+            "rejecting peripheral peer (not in FIPS_ALLOWED_PUBKEYS): {}",
+            core::str::from_utf8(&hex).unwrap_or("?")
+        );
+        drain_l2cap_channels();
+        return DisconnectReason::DataExchanged;
+    }
+
+    {
+        let mut hex = [0u8; 64];
+        microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+        log::info!(
+            "peripheral peer accepted: {}",
+            core::str::from_utf8(&hex).unwrap_or("?")
+        );
+    }
+
+    drain_l2cap_channels();
+    mark_link_ready(peer_pub);
+    relay_l2cap_frames(
+        stack,
+        &mut writer,
+        &mut reader,
+        "peripheral receive loop disconnected",
+        "peripheral send loop disconnected",
+    )
+    .await
 }
 
 pub fn l2cap_task_started() -> &'static AtomicBool {

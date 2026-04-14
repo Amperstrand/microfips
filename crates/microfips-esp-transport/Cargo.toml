@@ -35,7 +35,7 @@ heapless = "0.9"
 static_cell = "2"
 embassy-net = { version = "0.9.0", features = ["dhcpv4", "udp"], optional = true }
 esp-radio = { version = "0.17.0", default-features = false, features = ["ble", "wifi", "unstable"], optional = true }
-trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "scan"], optional = true }
+trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "scan", "central"], optional = true }
 esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }

@@ -43,8 +43,12 @@ pub const FIPS_BLE_ADDR: [u8; 6] = [0x24, 0xC2, 0x49, 0xFC, 0x5A, 0x14];
 /// to prevent cross-mesh connections (e.g. macOS FIPS grabbing an ESP32
 /// configured for the Linux mesh).
 #[cfg(feature = "l2cap")]
-pub const FIPS_ALLOWED_PUBKEYS: [[u8; 32]; 1] = [
-    // Linux FIPS node (ubuntu-Legion)
+pub const FIPS_ALLOWED_PUBKEYS: [[u8; 32]; 2] = [
+    [
+        0xb3, 0xae, 0x36, 0xdf, 0x8b, 0xc8, 0xea, 0x0e, 0xc8, 0x8b, 0xd5, 0xf4, 0x7e, 0x21, 0x86,
+        0x7e, 0xb7, 0xf7, 0xe0, 0x2d, 0xaf, 0x34, 0x80, 0xf3, 0x52, 0xf1, 0xc8, 0xc4, 0x9f, 0xb2,
+        0x4d, 0x6a,
+    ],
     [
         0xb3, 0x98, 0x90, 0x43, 0xc6, 0x8d, 0x9c, 0x2d, 0x3c, 0x8f, 0x94, 0x9d, 0x73, 0xe6, 0x1c,
         0xae, 0x27, 0x99, 0x79, 0x93, 0x43, 0x2c, 0x3d, 0xbb, 0xd8, 0x49, 0x81, 0x17, 0xd9, 0x2d,
@@ -62,12 +66,16 @@ pub mod ble_caps {
 /// Must match FIPS PeerCapabilities bit definitions (src/transport/ble/mod.rs).
 #[cfg(feature = "l2cap")]
 pub mod peer_caps {
+    pub const LEGACY_CENTRAL_ONLY: u8 = 0x01;
+    pub const PREFER_OUTBOUND: u8 = 0x02;
+    pub const PREFER_L2CAP: u8 = 0x04;
+    pub const CAN_CENTRAL: u8 = 0x08;
     pub const CAN_PERIPHERAL: u8 = 0x10;
     pub const L2CAP_SUPPORTED: u8 = 0x20;
-    pub const PREFER_L2CAP: u8 = 0x04;
 
-    /// Peripheral-only: prevents cross-connection (FIPS initiates as sole central).
-    pub const ESP32_DEFAULT: u8 = CAN_PERIPHERAL | L2CAP_SUPPORTED | PREFER_L2CAP;
+    /// Matches FIPS PeerCapabilities::linux_default() on linux-ble-stability-v2
+    /// (commit 87eed02). CAN_CENTRAL + CAN_PERIPHERAL + L2CAP_SUPPORTED + PREFER_L2CAP = 0x3C.
+    pub const ESP32_DEFAULT: u8 = CAN_CENTRAL | CAN_PERIPHERAL | L2CAP_SUPPORTED | PREFER_L2CAP;
 }
 
 #[cfg(feature = "l2cap")]
