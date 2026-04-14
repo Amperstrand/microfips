@@ -209,7 +209,11 @@ fn handle_help() {
 }
 
 fn handle_version() {
-    esp_println::println!("{} {}", crate::config::DEVICE_NAME, env!("CARGO_PKG_VERSION"));
+    esp_println::println!(
+        "{} {}",
+        crate::config::DEVICE_NAME,
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 fn handle_reset() {

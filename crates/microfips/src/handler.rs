@@ -6,7 +6,9 @@ use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::{HandleResult, NodeEvent, NodeHandler};
 use microfips_service::FspServiceAdapter;
 
-use crate::config::{S_DISCONNECTED, S_ERR, S_HANDSHAKE_OK, S_HB_RX, S_HB_TX, S_MSG1_SENT, S_USB_READY};
+use crate::config::{
+    S_DISCONNECTED, S_ERR, S_HANDSHAKE_OK, S_HB_RX, S_HB_TX, S_MSG1_SENT, S_USB_READY,
+};
 use crate::led::Leds;
 use crate::stats::{
     STAT_DATA_RX, STAT_DATA_TX, STAT_HB_RX, STAT_HB_TX, STAT_MSG1_TX, STAT_MSG2_RX,

@@ -9,9 +9,9 @@ use esp_hal::rng::{Trng, TrngSource};
 use rand_core::RngCore;
 
 use microfips_core::identity::VPS_NPUB;
-use microfips_protocol::node::Node;
 use microfips_esp_transport::config::{UART_BAUDRATE, UART_FIFO_THRESHOLD};
 use microfips_esp_transport::node_info::NodeIdentity;
+use microfips_protocol::node::Node;
 
 use crate::config::ESP32S3_NSEC;
 use crate::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
@@ -114,9 +114,9 @@ pub async fn run_ble_node(
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
     use crate::ble_transport::BleTransport;
+    use core::sync::atomic::Ordering;
     use microfips_esp_transport::config::BLE_DEVICE_NAME;
     use microfips_esp_transport::stats::BOOT_TICK_MS;
-    use core::sync::atomic::Ordering;
 
     crate::logger::init();
     BOOT_TICK_MS.store(
@@ -171,9 +171,9 @@ pub async fn run_l2cap_node(
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
     use crate::l2cap_transport::L2capTransport;
+    use core::sync::atomic::Ordering;
     use microfips_esp_transport::config::RECV_RETRY_DELAY_MS;
     use microfips_esp_transport::stats::BOOT_TICK_MS;
-    use core::sync::atomic::Ordering;
 
     crate::logger::init();
     BOOT_TICK_MS.store(

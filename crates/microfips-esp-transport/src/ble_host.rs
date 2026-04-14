@@ -159,15 +159,14 @@ pub async fn ble_host_task() {
     let controller: ExternalController<_, 20> =
         ExternalController::new(BleHciTransport::new(connector));
     let resources = HOST_RESOURCES.init(HostResources::new());
-    let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([
-            0xff,
-            DEVICE_NSEC[27],
-            DEVICE_NSEC[28],
-            DEVICE_NSEC[29],
-            DEVICE_NSEC[30],
-            DEVICE_NSEC[31],
-        ]));
+    let stack = trouble_host::new(controller, resources).set_random_address(Address::random([
+        0xff,
+        DEVICE_NSEC[27],
+        DEVICE_NSEC[28],
+        DEVICE_NSEC[29],
+        DEVICE_NSEC[30],
+        DEVICE_NSEC[31],
+    ]));
 
     let Host {
         mut peripheral,

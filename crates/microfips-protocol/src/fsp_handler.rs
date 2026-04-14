@@ -486,8 +486,12 @@ mod tests {
 
     #[test]
     fn responder_handler_does_not_start_timer_after_handshake() {
-        let mut handler: FspDualHandler<_, 1024> =
-            FspDualHandler::new_responder(STM32_NSEC, [0x11; 32], [0x01, 0, 0, 0, 0, 0, 0, 0], NoopFspApp);
+        let mut handler: FspDualHandler<_, 1024> = FspDualHandler::new_responder(
+            STM32_NSEC,
+            [0x11; 32],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
+            NoopFspApp,
+        );
         handler.on_event_default(NodeEvent::HandshakeOk);
         assert_eq!(handler.fsp_timer, None);
     }

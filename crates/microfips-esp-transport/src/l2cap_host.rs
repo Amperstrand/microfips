@@ -4,7 +4,9 @@ extern crate alloc;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use bt_hci::{ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci};
+use bt_hci::{
+    ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci,
+};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -13,20 +15,19 @@ use esp_radio::ble::controller::BleConnector;
 use static_cell::StaticCell;
 use trouble_host::l2cap::{L2capChannelReader, L2capChannelWriter};
 use trouble_host::prelude::{
-    Address, AdStructure, Advertisement, DefaultPacketPool, ExternalController, Host,
+    AdStructure, Address, Advertisement, DefaultPacketPool, ExternalController, Host,
     HostResources, L2capChannel, L2capChannelConfig, PacketPool, Stack, BR_EDR_NOT_SUPPORTED,
     LE_GENERAL_DISCOVERABLE,
 };
 
 use crate::config::{
-    DEVICE_NSEC, FIPS_ALLOWED_PUBKEYS, L2CAP_FIPS_SERVICE_UUID_LE,
-    L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
+    DEVICE_NSEC, FIPS_ALLOWED_PUBKEYS, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP, L2CAP_PSM,
+    RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
 };
 
 const L2CAP_SDU_CAP: usize = L2CAP_FRAME_CAP + 2;
 
-static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> =
-    StaticCell::new();
+static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> = StaticCell::new();
 static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
     Channel::new();
 static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
@@ -162,7 +163,11 @@ where
     tx[3..35].copy_from_slice(&local_pub[1..33]);
     tx[35] = crate::config::peer_caps::ESP32_DEFAULT;
 
-    log::info!("sending pubkey exchange ({}B payload, {}B wire)", payload_len, tx.len());
+    log::info!(
+        "sending pubkey exchange ({}B payload, {}B wire)",
+        payload_len,
+        tx.len()
+    );
     writer.send(stack, &tx).await.ok()?;
 
     let mut rx_buf = [0u8; L2CAP_SDU_CAP];
@@ -196,7 +201,10 @@ where
             {
                 let mut hex = [0u8; 64];
                 microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
-                log::info!("peer x-only pubkey: {}", core::str::from_utf8(&hex).unwrap_or("?"));
+                log::info!(
+                    "peer x-only pubkey: {}",
+                    core::str::from_utf8(&hex).unwrap_or("?")
+                );
             }
 
             if payload_len == 34 && n == 36 {
@@ -240,8 +248,7 @@ async fn relay_l2cap_frames<T, P>(
     reader: &mut L2capChannelReader<'_, P>,
     recv_disconnect_log: &'static str,
     send_disconnect_log: &'static str,
-)
-where
+) where
     T: trouble_host::prelude::Controller,
     P: PacketPool,
 {
@@ -262,13 +269,17 @@ where
                 if n < 2 + payload_len || payload_len > L2CAP_FRAME_CAP {
                     log::warn!(
                         "RX: bad length prefix ({}B payload in {}B SDU), disconnecting",
-                        payload_len, n
+                        payload_len,
+                        n
                     );
                     mark_link_down();
                     break;
                 }
                 let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-                if frame.extend_from_slice(&rx_buf[2..2 + payload_len]).is_err() {
+                if frame
+                    .extend_from_slice(&rx_buf[2..2 + payload_len])
+                    .is_err()
+                {
                     mark_link_down();
                     break;
                 }
@@ -293,18 +304,29 @@ where
                 }
 
                 if L2CAP_RX_CH.try_send(frame).is_err() {
-                    log::warn!("RX: L2CAP_RX_CH full, dropping {}B frame #{}", payload_len, rx_count);
+                    log::warn!(
+                        "RX: L2CAP_RX_CH full, dropping {}B frame #{}",
+                        payload_len,
+                        rx_count
+                    );
                 }
             }
             Either::First(Err(_)) => {
-                log::warn!("{} (after {} RX, {} TX frames)", recv_disconnect_log, rx_count, tx_count);
+                log::warn!(
+                    "{} (after {} RX, {} TX frames)",
+                    recv_disconnect_log,
+                    rx_count,
+                    tx_count
+                );
                 mark_link_down();
                 break;
             }
             Either::Second(frame) => {
                 let len = frame.len() as u16;
                 let mut sdu = heapless::Vec::<u8, L2CAP_SDU_CAP>::new();
-                if sdu.extend_from_slice(&len.to_be_bytes()).is_err() || sdu.extend_from_slice(&frame).is_err() {
+                if sdu.extend_from_slice(&len.to_be_bytes()).is_err()
+                    || sdu.extend_from_slice(&frame).is_err()
+                {
                     log::warn!("TX: frame too large for SDU ({}B)", len);
                     mark_link_down();
                     break;
@@ -373,7 +395,8 @@ pub async fn l2cap_host_task() {
     };
     log::info!("connector ready");
 
-    let controller: ExternalController<_, 20> = ExternalController::new(BleHciTransport::new(connector));
+    let controller: ExternalController<_, 20> =
+        ExternalController::new(BleHciTransport::new(connector));
     log::info!("controller created");
     let resources = L2CAP_HOST_RESOURCES.init(HostResources::new());
     log::info!("host resources initialized");
@@ -512,17 +535,17 @@ pub async fn l2cap_host_task() {
 
                 let (mut writer, mut reader) = channel.split();
 
-                let Some(peer_pub) = exchange_pubkeys(&DEVICE_NSEC, &mut writer, &mut reader, &stack)
-                    .await
-                    else {
-                        log::error!("pubkey exchange failed");
-                        drain_l2cap_channels();
-                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                            RECV_RETRY_DELAY_MS,
-                        ))
-                        .await;
-                        continue;
-                    };
+                let Some(peer_pub) =
+                    exchange_pubkeys(&DEVICE_NSEC, &mut writer, &mut reader, &stack).await
+                else {
+                    log::error!("pubkey exchange failed");
+                    drain_l2cap_channels();
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                        RECV_RETRY_DELAY_MS,
+                    ))
+                    .await;
+                    continue;
+                };
 
                 if !peer_is_fips(&peer_pub) {
                     let mut hex = [0u8; 64];
