@@ -55,7 +55,8 @@ fn test_fmp_msg1_wire_layout() {
     // Layout: [0x01][0x00][payload_len:2LE][sender_idx:4LE][noise_payload:106]
     let noise_payload = [0x42u8; fmp::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    let len = fmp::build_msg1(0xDEADBEEF, &noise_payload, &mut out).unwrap();
+    let len =
+        fmp::build_msg1(fmp::SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out).unwrap();
 
     assert_eq!(len, fmp::MSG1_WIRE_SIZE, "MSG1 total size");
     assert_eq!(len, 114, "MSG1 = 4+4+106");
@@ -85,7 +86,13 @@ fn test_fmp_msg2_wire_layout() {
     // Layout: [0x02][0x00][payload_len:2LE][sender_idx:4LE][receiver_idx:4LE][noise_payload:57]
     let noise_payload = [0x42u8; fmp::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
-    let len = fmp::build_msg2(1, 2, &noise_payload, &mut out).unwrap();
+    let len = fmp::build_msg2(
+        fmp::SessionIndex::new(1),
+        fmp::SessionIndex::new(2),
+        &noise_payload,
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(len, fmp::MSG2_WIRE_SIZE, "MSG2 total size");
     assert_eq!(len, 69, "MSG2 = 4+4+4+57");
@@ -117,8 +124,16 @@ fn test_fmp_established_header_is_16_bytes_aad() {
     // FIPS: encrypted.rs:97 uses header_bytes (first 16 bytes) as AEAD AAD
     let key = [0x42u8; 32];
     let mut out = [0u8; 256];
-    let len =
-        fmp::build_established(5, 42, fmp::MSG_HEARTBEAT, 99999, &[], &key, &mut out).unwrap();
+    let len = fmp::build_established(
+        fmp::SessionIndex::new(5),
+        42,
+        fmp::MSG_HEARTBEAT,
+        99999,
+        &[],
+        &key,
+        &mut out,
+    )
+    .unwrap();
 
     assert!(
         len >= fmp::ESTABLISHED_HEADER_SIZE,

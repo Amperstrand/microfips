@@ -58,7 +58,7 @@ fn session_datagram_body(src: &NodeAddr, dst: &NodeAddr) -> [u8; SESSION_DATAGRA
 }
 
 fn build_fmp_established_datagram(
-    receiver_idx: u32,
+    receiver_idx: fmp::SessionIndex,
     counter: u64,
     timestamp: u32,
     payload: &[u8],
@@ -313,9 +313,15 @@ fn test_fsp_setup_over_fmp_roundtrip() {
     dg_payload[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&setup_buf[..setup_len]);
 
     let mut fmp_out = [0u8; 1024];
-    let fmp_len =
-        build_fmp_established_datagram(0, 0, 1000, &dg_payload, &resp_k_send, &mut fmp_out)
-            .unwrap();
+    let fmp_len = build_fmp_established_datagram(
+        fmp::SessionIndex::new(0),
+        0,
+        1000,
+        &dg_payload,
+        &resp_k_send,
+        &mut fmp_out,
+    )
+    .unwrap();
     assert!(fmp_len > 0);
 
     let (ctr, msg_type, payload) =

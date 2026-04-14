@@ -39,7 +39,8 @@ fn fmp_prefix_phase_established_matches_commonprefix_layout() {
 fn msg1_total_size_is_114_bytes() {
     let noise_payload = [0x11u8; fmp::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    let len = fmp::build_msg1(0xA1A2A3A4, &noise_payload, &mut out).unwrap();
+    let len =
+        fmp::build_msg1(fmp::SessionIndex::new(0xA1A2A3A4), &noise_payload, &mut out).unwrap();
 
     assert_eq!(len, fmp::MSG1_WIRE_SIZE);
     assert_eq!(len, 114);
@@ -50,7 +51,7 @@ fn msg1_total_size_is_114_bytes() {
 fn msg1_sender_index_at_offset_4() {
     let noise_payload = [0x22u8; fmp::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    fmp::build_msg1(0xDEADBEEF, &noise_payload, &mut out).unwrap();
+    fmp::build_msg1(fmp::SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out).unwrap();
 
     let idx = u32::from_le_bytes(out[4..8].try_into().unwrap());
     assert_eq!(idx, 0xDEADBEEF);
@@ -61,7 +62,8 @@ fn msg1_sender_index_at_offset_4() {
 fn msg1_noise_payload_offset_and_length_match_fips() {
     let noise_payload = [0x33u8; fmp::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    let len = fmp::build_msg1(0x01020304, &noise_payload, &mut out).unwrap();
+    let len =
+        fmp::build_msg1(fmp::SessionIndex::new(0x01020304), &noise_payload, &mut out).unwrap();
 
     assert_eq!(len, 4 + 4 + 106);
     assert_eq!(&out[8..114], &noise_payload);
@@ -72,7 +74,13 @@ fn msg1_noise_payload_offset_and_length_match_fips() {
 fn msg2_total_size_is_69_bytes() {
     let noise_payload = [0x44u8; fmp::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
-    let len = fmp::build_msg2(0x11111111, 0x22222222, &noise_payload, &mut out).unwrap();
+    let len = fmp::build_msg2(
+        fmp::SessionIndex::new(0x11111111),
+        fmp::SessionIndex::new(0x22222222),
+        &noise_payload,
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(len, fmp::MSG2_WIRE_SIZE);
     assert_eq!(len, 69);
@@ -83,7 +91,13 @@ fn msg2_total_size_is_69_bytes() {
 fn msg2_indices_offsets_match_fips_layout() {
     let noise_payload = [0x55u8; fmp::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
-    fmp::build_msg2(0x01020304, 0x0A0B0C0D, &noise_payload, &mut out).unwrap();
+    fmp::build_msg2(
+        fmp::SessionIndex::new(0x01020304),
+        fmp::SessionIndex::new(0x0A0B0C0D),
+        &noise_payload,
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(
         u32::from_le_bytes(out[4..8].try_into().unwrap()),
@@ -100,7 +114,13 @@ fn msg2_indices_offsets_match_fips_layout() {
 fn msg2_noise_payload_offset_and_length_match_fips() {
     let noise_payload = [0x66u8; fmp::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
-    fmp::build_msg2(7, 8, &noise_payload, &mut out).unwrap();
+    fmp::build_msg2(
+        fmp::SessionIndex::new(7),
+        fmp::SessionIndex::new(8),
+        &noise_payload,
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(&out[12..69], &noise_payload);
 }
@@ -111,7 +131,7 @@ fn established_frame_header_layout_matches_fips() {
     let key = [0x77u8; 32];
     let mut out = [0u8; 256];
     let len = fmp::build_established(
-        0xAABBCCDD,
+        fmp::SessionIndex::new(0xAABBCCDD),
         0x0102030405060708,
         0x51,
         0x99AA55CC,
@@ -139,8 +159,16 @@ fn established_frame_decrypts_to_timestamp_and_msg_type() {
     let key = [0x88u8; 32];
     let mut out = [0u8; 256];
     let timestamp = 0x11223344;
-    let len =
-        fmp::build_established(5, 42, fmp::MSG_HEARTBEAT, timestamp, &[], &key, &mut out).unwrap();
+    let len = fmp::build_established(
+        fmp::SessionIndex::new(5),
+        42,
+        fmp::MSG_HEARTBEAT,
+        timestamp,
+        &[],
+        &key,
+        &mut out,
+    )
+    .unwrap();
 
     let aad = &out[..fmp::ESTABLISHED_HEADER_SIZE];
     let mut plaintext = [0u8; 64];
@@ -166,7 +194,16 @@ fn established_frame_decrypts_to_timestamp_and_msg_type() {
 fn heartbeat_frame_size_is_37_bytes() {
     let key = [0x99u8; 32];
     let mut out = [0u8; 256];
-    let len = fmp::build_established(9, 10, fmp::MSG_HEARTBEAT, 11, &[], &key, &mut out).unwrap();
+    let len = fmp::build_established(
+        fmp::SessionIndex::new(9),
+        10,
+        fmp::MSG_HEARTBEAT,
+        11,
+        &[],
+        &key,
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(len, 37);
 }
@@ -176,7 +213,16 @@ fn heartbeat_frame_size_is_37_bytes() {
 fn heartbeat_inner_payload_is_empty() {
     let key = [0xABu8; 32];
     let mut out = [0u8; 256];
-    let len = fmp::build_established(1, 2, fmp::MSG_HEARTBEAT, 3, &[], &key, &mut out).unwrap();
+    let len = fmp::build_established(
+        fmp::SessionIndex::new(1),
+        2,
+        fmp::MSG_HEARTBEAT,
+        3,
+        &[],
+        &key,
+        &mut out,
+    )
+    .unwrap();
 
     let aad = &out[..fmp::ESTABLISHED_HEADER_SIZE];
     let mut plaintext = [0u8; 64];

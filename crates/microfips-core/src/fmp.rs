@@ -98,16 +98,16 @@ impl core::fmt::Display for SessionIndex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FmpMessage<'a> {
     Msg1 {
-        sender_idx: u32,
+        sender_idx: SessionIndex,
         noise_payload: &'a [u8],
     },
     Msg2 {
-        sender_idx: u32,
-        receiver_idx: u32,
+        sender_idx: SessionIndex,
+        receiver_idx: SessionIndex,
         noise_payload: &'a [u8],
     },
     Established {
-        receiver_idx: u32,
+        receiver_idx: SessionIndex,
         counter: u64,
         encrypted: &'a [u8],
     },
@@ -135,7 +135,7 @@ pub fn parse_prefix(data: &[u8]) -> Option<(u8, u8, u16)> {
 }
 
 // FIPS: bd08505 node/wire.rs:build_msg1()
-pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> Option<usize> {
+pub fn build_msg1(sender_idx: SessionIndex, noise_payload: &[u8], out: &mut [u8]) -> Option<usize> {
     let needed = COMMON_PREFIX_SIZE + IDX_SIZE + noise_payload.len();
     if out.len() < needed {
         return None;
@@ -151,8 +151,8 @@ pub fn build_msg1(sender_idx: u32, noise_payload: &[u8], out: &mut [u8]) -> Opti
 
 // FIPS: bd08505 node/wire.rs:build_msg2()
 pub fn build_msg2(
-    sender_idx: u32,
-    receiver_idx: u32,
+    sender_idx: SessionIndex,
+    receiver_idx: SessionIndex,
     noise_payload: &[u8],
     out: &mut [u8],
 ) -> Option<usize> {
@@ -225,7 +225,7 @@ pub fn strip_inner_header(plaintext: &[u8]) -> Option<(u32, &[u8])> {
 // FIPS: bd08505 node/wire.rs:build_established_header()
 // FIPS: bd08505 noise/mod.rs:send_encrypted_link_message_with_ce()
 pub fn build_established(
-    receiver_idx: u32,
+    receiver_idx: SessionIndex,
     counter: u64,
     msg_type: u8,
     timestamp: u32,
@@ -435,7 +435,7 @@ pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
             if payload.len() < IDX_SIZE {
                 return None;
             }
-            let sender_idx = u32::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
+            let sender_idx = SessionIndex::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
             let noise_payload = &payload[IDX_SIZE..];
             Some(FmpMessage::Msg1 {
                 sender_idx,
@@ -446,8 +446,9 @@ pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
             if payload.len() < IDX_SIZE * 2 {
                 return None;
             }
-            let sender_idx = u32::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
-            let receiver_idx = u32::from_le_bytes(payload[IDX_SIZE..IDX_SIZE * 2].try_into().ok()?);
+            let sender_idx = SessionIndex::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
+            let receiver_idx =
+                SessionIndex::from_le_bytes(payload[IDX_SIZE..IDX_SIZE * 2].try_into().ok()?);
             let noise_payload = &payload[IDX_SIZE * 2..];
             Some(FmpMessage::Msg2 {
                 sender_idx,
@@ -459,7 +460,7 @@ pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
             if payload.len() < IDX_SIZE + 8 {
                 return None;
             }
-            let receiver_idx = u32::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
+            let receiver_idx = SessionIndex::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
             let counter = u64::from_le_bytes(payload[IDX_SIZE..IDX_SIZE + 8].try_into().ok()?);
             let encrypted = &payload[IDX_SIZE + 8..];
             Some(FmpMessage::Established {
@@ -524,7 +525,7 @@ mod tests {
     fn build_msg1_size() {
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 256];
-        let len = build_msg1(42, &noise_payload, &mut out).unwrap();
+        let len = build_msg1(SessionIndex::new(42), &noise_payload, &mut out).unwrap();
         assert_eq!(len, MSG1_WIRE_SIZE);
     }
 
@@ -532,7 +533,7 @@ mod tests {
     fn build_msg1_has_correct_prefix() {
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 256];
-        build_msg1(42, &noise_payload, &mut out);
+        build_msg1(SessionIndex::new(42), &noise_payload, &mut out);
         assert_eq!(out[0], 0x01);
         assert_eq!(out[1], 0x00);
     }
@@ -541,7 +542,7 @@ mod tests {
     fn build_msg1_has_sender_idx() {
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 256];
-        build_msg1(0xDEADBEEF, &noise_payload, &mut out);
+        build_msg1(SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out);
         let idx = u32::from_le_bytes(out[4..8].try_into().unwrap());
         assert_eq!(idx, 0xDEADBEEF);
     }
@@ -550,7 +551,13 @@ mod tests {
     fn build_msg2_size() {
         let noise_payload = [0u8; 57];
         let mut out = [0u8; 256];
-        let len = build_msg2(1, 0, &noise_payload, &mut out).unwrap();
+        let len = build_msg2(
+            SessionIndex::new(1),
+            SessionIndex::new(0),
+            &noise_payload,
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(len, MSG2_WIRE_SIZE);
     }
 
@@ -558,7 +565,12 @@ mod tests {
     fn build_msg2_has_both_indices() {
         let noise_payload = [0u8; 57];
         let mut out = [0u8; 256];
-        build_msg2(1, 0, &noise_payload, &mut out);
+        build_msg2(
+            SessionIndex::new(1),
+            SessionIndex::new(0),
+            &noise_payload,
+            &mut out,
+        );
         let sender = u32::from_le_bytes(out[4..8].try_into().unwrap());
         let receiver = u32::from_le_bytes(out[8..12].try_into().unwrap());
         assert_eq!(sender, 1);
@@ -569,14 +581,14 @@ mod tests {
     fn parse_msg1_roundtrip() {
         let noise_payload = [0xAA; 106];
         let mut out = [0u8; 256];
-        let len = build_msg1(42, &noise_payload, &mut out).unwrap();
+        let len = build_msg1(SessionIndex::new(42), &noise_payload, &mut out).unwrap();
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
             FmpMessage::Msg1 {
                 sender_idx,
                 noise_payload: parsed,
             } => {
-                assert_eq!(sender_idx, 42);
+                assert_eq!(sender_idx, SessionIndex::new(42));
                 assert_eq!(parsed, &noise_payload[..]);
             }
             _ => panic!("expected Msg1"),
@@ -587,7 +599,13 @@ mod tests {
     fn parse_msg2_roundtrip() {
         let noise_payload = [0xBB; 57];
         let mut out = [0u8; 256];
-        let len = build_msg2(1, 0, &noise_payload, &mut out).unwrap();
+        let len = build_msg2(
+            SessionIndex::new(1),
+            SessionIndex::new(0),
+            &noise_payload,
+            &mut out,
+        )
+        .unwrap();
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
             FmpMessage::Msg2 {
@@ -595,8 +613,8 @@ mod tests {
                 receiver_idx,
                 noise_payload: parsed,
             } => {
-                assert_eq!(sender_idx, 1);
-                assert_eq!(receiver_idx, 0);
+                assert_eq!(sender_idx, SessionIndex::new(1));
+                assert_eq!(receiver_idx, SessionIndex::new(0));
                 assert_eq!(parsed, &noise_payload[..]);
             }
             _ => panic!("expected Msg2"),
@@ -607,7 +625,16 @@ mod tests {
     fn build_established_size() {
         let key = [0x42u8; 32];
         let mut out = [0u8; 1024];
-        let len = build_established(0, 1, MSG_HEARTBEAT, 12345, &[], &key, &mut out).unwrap();
+        let len = build_established(
+            SessionIndex::new(0),
+            1,
+            MSG_HEARTBEAT,
+            12345,
+            &[],
+            &key,
+            &mut out,
+        )
+        .unwrap();
         let header_size = COMMON_PREFIX_SIZE + IDX_SIZE + 8;
         let encrypted_size = INNER_HEADER_SIZE + crate::noise::TAG_SIZE;
         assert_eq!(len, header_size + encrypted_size);
@@ -617,7 +644,16 @@ mod tests {
     fn parse_established_roundtrip() {
         let key = [0x42u8; 32];
         let mut out = [0u8; 1024];
-        let len = build_established(1, 42, MSG_HEARTBEAT, 12345, &[], &key, &mut out).unwrap();
+        let len = build_established(
+            SessionIndex::new(1),
+            42,
+            MSG_HEARTBEAT,
+            12345,
+            &[],
+            &key,
+            &mut out,
+        )
+        .unwrap();
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
             FmpMessage::Established {
@@ -625,7 +661,7 @@ mod tests {
                 counter,
                 encrypted,
             } => {
-                assert_eq!(receiver_idx, 1);
+                assert_eq!(receiver_idx, SessionIndex::new(1));
                 assert_eq!(counter, 42);
                 assert!(!encrypted.is_empty());
             }
@@ -638,8 +674,16 @@ mod tests {
         let key = [0x42u8; 32];
         let payload = b"test data";
         let mut out = [0u8; 1024];
-        let len =
-            build_established(1, 42, MSG_SESSION_DATAGRAM, 99999, payload, &key, &mut out).unwrap();
+        let len = build_established(
+            SessionIndex::new(1),
+            42,
+            MSG_SESSION_DATAGRAM,
+            99999,
+            payload,
+            &key,
+            &mut out,
+        )
+        .unwrap();
 
         let msg = parse_message(&out[..len]).unwrap();
         match msg {
@@ -695,7 +739,16 @@ mod tests {
         //            37 (encrypted = 5 inner + 16 tag) = 53 bytes
         let key = [0x42u8; 32];
         let mut out = [0u8; 256];
-        let len = build_established(1, 0, MSG_HEARTBEAT, 0, &[], &key, &mut out).unwrap();
+        let len = build_established(
+            SessionIndex::new(1),
+            0,
+            MSG_HEARTBEAT,
+            0,
+            &[],
+            &key,
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(
             len,
             COMMON_PREFIX_SIZE + IDX_SIZE + 8 + INNER_HEADER_SIZE + crate::noise::TAG_SIZE
@@ -717,7 +770,7 @@ mod tests {
         // Initiator sends sender_idx=0 (hasn't received an index from responder yet)
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 256];
-        let len = build_msg1(0, &noise_payload, &mut out).unwrap();
+        let len = build_msg1(SessionIndex::new(0), &noise_payload, &mut out).unwrap();
         let idx = u32::from_le_bytes(
             out[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
                 .try_into()
@@ -800,7 +853,8 @@ mod tests {
 
         // Wrap in FMP MSG1 frame
         let mut fmp_out = [0u8; 256];
-        let fmp_len = build_msg1(0, &noise_out[..noise_len], &mut fmp_out).unwrap();
+        let fmp_len =
+            build_msg1(SessionIndex::new(0), &noise_out[..noise_len], &mut fmp_out).unwrap();
         assert_eq!(fmp_len, MSG1_WIRE_SIZE);
 
         // Parse and verify noise_payload section offsets
@@ -833,14 +887,23 @@ mod tests {
         let key = [0x42u8; 32];
         // A heartbeat needs at least 37 bytes (4+4+8+5+16). A 10-byte buffer is too small.
         let mut out = [0u8; 10];
-        assert!(build_established(0, 0, MSG_HEARTBEAT, 0, &[], &key, &mut out).is_none());
+        assert!(build_established(
+            SessionIndex::new(0),
+            0,
+            MSG_HEARTBEAT,
+            0,
+            &[],
+            &key,
+            &mut out
+        )
+        .is_none());
     }
 
     #[test]
     fn build_msg1_returns_none_on_small_buffer() {
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 10];
-        assert!(build_msg1(0, &noise_payload, &mut out).is_none());
+        assert!(build_msg1(SessionIndex::new(0), &noise_payload, &mut out).is_none());
     }
 
     #[test]
@@ -901,7 +964,16 @@ mod tests {
     fn build_established_header_matches_existing_build_established_prefix() {
         let key = [0x42u8; 32];
         let mut out = [0u8; 256];
-        build_established(7, 42, MSG_HEARTBEAT, 99999, &[], &key, &mut out).unwrap();
+        build_established(
+            SessionIndex::new(7),
+            42,
+            MSG_HEARTBEAT,
+            99999,
+            &[],
+            &key,
+            &mut out,
+        )
+        .unwrap();
         let header = build_established_header(SessionIndex::new(7), 42, 0x00, 5);
         assert_eq!(&out[..ESTABLISHED_HEADER_SIZE], &header);
     }
@@ -917,7 +989,16 @@ mod tests {
             (MSG_SESSION_DATAGRAM, &[0u8; 200][..]),
             (MSG_DISCONNECT, &[][..]),
         ] {
-            let len = build_established(0, 1, msg_type, 99999, payload, &key, &mut out).unwrap();
+            let len = build_established(
+                SessionIndex::new(0),
+                1,
+                msg_type,
+                99999,
+                payload,
+                &key,
+                &mut out,
+            )
+            .unwrap();
             let payload_len = u16::from_le_bytes([out[2], out[3]]) as usize;
             let fips_frame_len = ESTABLISHED_HEADER_SIZE + payload_len + crate::noise::TAG_SIZE;
             assert_eq!(

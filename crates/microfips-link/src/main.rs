@@ -96,7 +96,12 @@ fn main() -> ExitCode {
     };
 
     let mut fmp_msg1 = [0u8; 256];
-    let fmp_len = fmp::build_msg1(0, &noise_msg1[..noise_len], &mut fmp_msg1).unwrap();
+    let fmp_len = fmp::build_msg1(
+        fmp::SessionIndex::new(0),
+        &noise_msg1[..noise_len],
+        &mut fmp_msg1,
+    )
+    .unwrap();
     log::debug!("[LINK → FIPS] MSG1 frame ready: {}B", fmp_len);
 
     if let Err(e) = socket.send_to(&fmp_msg1[..fmp_len], target) {
