@@ -233,6 +233,138 @@ pub fn build_established(
     Some(total)
 }
 
+/// Common 4-byte FMP prefix present on every frame.
+///
+/// ```text
+/// [ver+phase:1][flags:1][payload_len:2 LE]
+/// ```
+pub struct CommonPrefix {
+    pub version: u8,
+    pub phase: u8,
+    pub flags: u8,
+    pub payload_len: u16,
+}
+
+impl CommonPrefix {
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < COMMON_PREFIX_SIZE {
+            return None;
+        }
+        let ver_phase = data[0];
+        let version = ver_phase >> 4;
+        let phase = ver_phase & 0x0F;
+        let flags = data[1];
+        let payload_len = u16::from_le_bytes([data[2], data[3]]);
+        Some(Self {
+            version,
+            phase,
+            flags,
+            payload_len,
+        })
+    }
+
+    pub fn ver_phase_byte(version: u8, phase: u8) -> u8 {
+        (version << 4) | (phase & 0x0F)
+    }
+}
+
+/// 16-byte established-frame header. Carries `header_bytes` for AEAD AAD.
+pub struct EncryptedHeader {
+    #[allow(dead_code)]
+    pub flags: u8,
+    #[allow(dead_code)]
+    pub payload_len: u16,
+    pub receiver_idx: SessionIndex,
+    pub counter: u64,
+    pub header_bytes: [u8; ESTABLISHED_HEADER_SIZE],
+}
+
+impl EncryptedHeader {
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < ESTABLISHED_HEADER_SIZE {
+            return None;
+        }
+        let (phase, _flags, payload_len) = parse_prefix(data)?;
+        if phase != PHASE_ESTABLISHED {
+            return None;
+        }
+        let receiver_idx = SessionIndex::from_le_bytes(data[4..8].try_into().ok()?);
+        let counter = u64::from_le_bytes(data[8..16].try_into().ok()?);
+        let mut header_bytes = [0u8; ESTABLISHED_HEADER_SIZE];
+        header_bytes[..ESTABLISHED_HEADER_SIZE].copy_from_slice(&data[..ESTABLISHED_HEADER_SIZE]);
+        Some(Self {
+            flags: _flags,
+            payload_len,
+            receiver_idx,
+            counter,
+            header_bytes,
+        })
+    }
+
+    pub fn ciphertext_offset(&self) -> usize {
+        ESTABLISHED_HEADER_SIZE
+    }
+}
+
+pub struct Msg1Header {
+    pub sender_idx: SessionIndex,
+    pub noise_msg1_offset: usize,
+}
+
+impl Msg1Header {
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() != MSG1_WIRE_SIZE {
+            return None;
+        }
+        let (_, flags, _payload_len) = parse_prefix(data)?;
+        if flags != 0 {
+            return None;
+        }
+        let sender_idx = SessionIndex::from_le_bytes(
+            data[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
+                .try_into()
+                .ok()?,
+        );
+        Some(Self {
+            sender_idx,
+            noise_msg1_offset: COMMON_PREFIX_SIZE + IDX_SIZE + IDX_SIZE,
+        })
+    }
+}
+
+pub struct Msg2Header {
+    pub sender_idx: SessionIndex,
+    pub receiver_idx: SessionIndex,
+    pub noise_msg2_offset: usize,
+}
+
+impl Msg2Header {
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() != MSG2_WIRE_SIZE {
+            return None;
+        }
+        let (_, flags, _payload_len) = parse_prefix(data)?;
+        if flags != 0 {
+            return None;
+        }
+        let sender_idx = SessionIndex::from_le_bytes(
+            data[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
+                .try_into()
+                .ok()?,
+        );
+        let receiver_idx = SessionIndex::from_le_bytes(
+            data[COMMON_PREFIX_SIZE + IDX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE + IDX_SIZE]
+                .try_into()
+                .ok()?,
+        );
+        Some(Self {
+            sender_idx,
+            receiver_idx,
+            noise_msg2_offset: COMMON_PREFIX_SIZE + IDX_SIZE + IDX_SIZE + IDX_SIZE,
+        })
+    }
+}
+
 // FIPS: bd08505 node/wire.rs:Msg1Header::parse()
 // FIPS: bd08505 node/wire.rs:Msg2Header::parse()
 // FIPS: bd08505 node/wire.rs:EncryptedHeader::parse()
