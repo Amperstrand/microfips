@@ -690,36 +690,44 @@ fn handle_frame_inner<H: NodeHandler>(
     };
 
     match m {
-        fmp::FmpMessage::Established {
-            counter, encrypted, ..
-        } => {
+        fmp::FmpMessage::Established { .. } => {
+            let enc = match fmp::EncryptedHeader::parse(data) {
+                Some(h) => h,
+                None => return FrameAction::Continue,
+            };
             #[cfg(feature = "log")]
             log::debug!(
                 "FMP established: counter={} enc_len={}",
-                counter,
-                encrypted.len()
+                enc.counter,
+                data.len() - fmp::ESTABLISHED_HEADER_SIZE
             );
-            let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
             let mut dec = [0u8; 2048];
             let dl =
-                match microfips_core::noise::aead_decrypt(kr, counter, hdr, encrypted, &mut dec) {
+                match microfips_core::noise::aead_decrypt(
+                    kr,
+                    enc.counter,
+                    &enc.header_bytes,
+                    &data[fmp::ESTABLISHED_HEADER_SIZE..],
+                    &mut dec,
+                ) {
                     Ok(l) => l,
                     Err(_err) => {
                         #[cfg(feature = "std")]
                         log::debug!(
                             "FMP decrypt failed: counter={} hdr={:02x?} err={:?}",
-                            counter,
-                            &hdr[..16.min(hdr.len())],
+                            enc.counter,
+                            &enc.header_bytes[..16.min(enc.header_bytes.len())],
                             _err
                         );
                         return FrameAction::Continue;
                     }
                 };
-            if dl < fmp::INNER_HEADER_SIZE {
-                return FrameAction::Continue;
-            }
-            let msg_type = dec[4];
-            let inner_payload = &dec[fmp::INNER_HEADER_SIZE..dl];
+            let (_timestamp, inner_rest) = match fmp::strip_inner_header(&dec[..dl]) {
+                Some(r) => r,
+                None => return FrameAction::Continue,
+            };
+            let msg_type = inner_rest.first().copied().unwrap_or(0);
+            let inner_payload = &inner_rest[1..];
             #[cfg(feature = "log")]
             log::debug!(
                 "FMP frame: msg_type=0x{:02x} payload_len={}",
@@ -803,9 +811,8 @@ enum FrameAction {
 fn fmp_raw_frame_size(data: &[u8]) -> Option<usize> {
     use microfips_core::fmp;
 
-    let (phase, _flags, _payload_len) = fmp::parse_prefix(data)?;
-
-    match phase {
+    let prefix = fmp::CommonPrefix::parse(data)?;
+    match prefix.phase {
         fmp::PHASE_MSG1 => {
             let total = fmp::MSG1_WIRE_SIZE;
             if data.len() < total {
@@ -876,8 +883,8 @@ fn extract_raw_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize
             Some((&buf[pos..e], e))
         }
         None => {
-            let (phase, _flags, _pl) = fmp::parse_prefix(&buf[pos..len])?;
-            match phase {
+            let prefix = fmp::CommonPrefix::parse(&buf[pos..len])?;
+            match prefix.phase {
                 fmp::PHASE_ESTABLISHED => {
                     if avail < fmp::ESTABLISHED_HEADER_SIZE + microfips_core::noise::TAG_SIZE {
                         return None;
