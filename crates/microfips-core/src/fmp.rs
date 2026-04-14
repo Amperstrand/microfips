@@ -172,6 +172,57 @@ pub fn build_msg2(
 }
 
 // FIPS: bd08505 node/wire.rs:build_established_header()
+/// Build the 16-byte outer header for an established frame.
+///
+/// Returns the header bytes (for use as AEAD AAD). The caller encrypts
+/// the inner plaintext with this header as associated data, then assembles
+/// `[header:16][ciphertext+tag]`.
+pub fn build_established_header(
+    receiver_idx: SessionIndex,
+    counter: u64,
+    flags: u8,
+    payload_len: u16,
+) -> [u8; ESTABLISHED_HEADER_SIZE] {
+    let mut header = [0u8; ESTABLISHED_HEADER_SIZE];
+    header[0] = CommonPrefix::ver_phase_byte(FMP_VERSION, PHASE_ESTABLISHED);
+    header[1] = flags;
+    header[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    header[4..8].copy_from_slice(&receiver_idx.to_le_bytes());
+    header[8..16].copy_from_slice(&counter.to_le_bytes());
+    header
+}
+
+// FIPS: bd08505 node/wire.rs:prepend_inner_header()
+/// Prepend the 4-byte timestamp to a link-layer plaintext.
+///
+/// The caller provides `payload` starting with `[msg_type][data...]`.
+/// This writes `[timestamp:4 LE][msg_type][data...]` into `out`.
+///
+/// Returns `Some(total_len)` or `None` if `out` is too small.
+pub fn prepend_inner_header(timestamp_ms: u32, payload: &[u8], out: &mut [u8]) -> Option<usize> {
+    let needed = 4 + payload.len();
+    if out.len() < needed {
+        return None;
+    }
+    out[..4].copy_from_slice(&timestamp_ms.to_le_bytes());
+    out[4..needed].copy_from_slice(payload);
+    Some(needed)
+}
+
+// FIPS: bd08505 node/wire.rs:strip_inner_header()
+/// Strip the 4-byte timestamp from a decrypted inner payload.
+///
+/// Returns `(timestamp, &rest_starting_at_msg_type)` or `None` if too short.
+/// The caller then reads `rest[0]` as the message type byte.
+pub fn strip_inner_header(plaintext: &[u8]) -> Option<(u32, &[u8])> {
+    if plaintext.len() < INNER_HEADER_SIZE {
+        return None;
+    }
+    let timestamp = u32::from_le_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]);
+    Some((timestamp, &plaintext[4..]))
+}
+
+// FIPS: bd08505 node/wire.rs:build_established_header()
 // FIPS: bd08505 noise/mod.rs:send_encrypted_link_message_with_ce()
 pub fn build_established(
     receiver_idx: u32,
@@ -790,6 +841,69 @@ mod tests {
         let noise_payload = [0u8; 106];
         let mut out = [0u8; 10];
         assert!(build_msg1(0, &noise_payload, &mut out).is_none());
+    }
+
+    #[test]
+    fn build_established_header_roundtrip_with_parse() {
+        let header = build_established_header(SessionIndex::new(42), 99, FLAG_KEY_EPOCH, 37);
+        assert_eq!(header.len(), ESTABLISHED_HEADER_SIZE);
+        assert_eq!(header[0], 0x00); // ver=0, phase=0 (established)
+        assert_eq!(header[1], FLAG_KEY_EPOCH);
+        let parsed_len = u16::from_le_bytes([header[2], header[3]]);
+        assert_eq!(parsed_len, 37);
+        let parsed_idx = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        assert_eq!(parsed_idx, 42);
+        let parsed_counter = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        assert_eq!(parsed_counter, 99);
+
+        let enc = EncryptedHeader::parse(&header).unwrap();
+        assert_eq!(enc.receiver_idx, SessionIndex::new(42));
+        assert_eq!(enc.counter, 99);
+        assert_eq!(enc.payload_len, 37);
+        assert_eq!(enc.header_bytes, header);
+    }
+
+    #[test]
+    fn prepend_inner_header_writes_timestamp_and_payload() {
+        let payload = [MSG_HEARTBEAT, 0xAA, 0xBB];
+        let mut out = [0u8; 32];
+        let len = prepend_inner_header(12345, &payload, &mut out).unwrap();
+        assert_eq!(len, 4 + payload.len());
+        let ts = u32::from_le_bytes(out[..4].try_into().unwrap());
+        assert_eq!(ts, 12345);
+        assert_eq!(&out[4..len], &payload);
+    }
+
+    #[test]
+    fn prepend_inner_header_returns_none_on_small_buffer() {
+        let mut out = [0u8; 2];
+        assert!(prepend_inner_header(0, &[0x00], &mut out).is_none());
+    }
+
+    #[test]
+    fn strip_inner_header_roundtrip() {
+        let payload = [MSG_HEARTBEAT, 0xAA, 0xBB];
+        let mut buf = [0u8; 32];
+        prepend_inner_header(12345, &payload, &mut buf).unwrap();
+        let (ts, rest) = strip_inner_header(&buf[..4 + payload.len()]).unwrap();
+        assert_eq!(ts, 12345);
+        assert_eq!(rest[0], MSG_HEARTBEAT);
+        assert_eq!(&rest[1..], &[0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn strip_inner_header_rejects_short_input() {
+        assert!(strip_inner_header(&[]).is_none());
+        assert!(strip_inner_header(&[0, 0, 0, 0]).is_none()); // 4 bytes but INNER_HEADER_SIZE=5
+    }
+
+    #[test]
+    fn build_established_header_matches_existing_build_established_prefix() {
+        let key = [0x42u8; 32];
+        let mut out = [0u8; 256];
+        build_established(7, 42, MSG_HEARTBEAT, 99999, &[], &key, &mut out).unwrap();
+        let header = build_established_header(SessionIndex::new(7), 42, 0x00, 5);
+        assert_eq!(&out[..ESTABLISHED_HEADER_SIZE], &header);
     }
 
     #[test]
