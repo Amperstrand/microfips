@@ -11,9 +11,9 @@
 //! - `noise/mod.rs` — Noise constants, CipherState
 //! - `noise/handshake.rs` — HandshakeState, SymmetricState
 
-use microfips_core::wire;
 use microfips_core::fsp;
 use microfips_core::noise;
+use microfips_core::wire;
 
 fn gen_key() -> [u8; 32] {
     use k256::SecretKey;
@@ -83,8 +83,12 @@ fn test_fmp_msg1_wire_layout() {
     // Layout: [0x01][0x00][payload_len:2LE][sender_idx:4LE][noise_payload:106]
     let noise_payload = [0x42u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    let len =
-        wire::build_msg1(wire::SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out).unwrap();
+    let len = wire::build_msg1(
+        wire::SessionIndex::new(0xDEADBEEF),
+        &noise_payload,
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(len, wire::MSG1_WIRE_SIZE, "MSG1 total size");
     assert_eq!(len, 114, "MSG1 = 4+4+106");
@@ -591,7 +595,11 @@ fn test_fmp_constants_match_fips() {
     // FIPS: wire.rs:28-67
     assert_eq!(wire::FMP_VERSION, 0, "FIPS: wire.rs:28");
     assert_eq!(wire::COMMON_PREFIX_SIZE, 4, "FIPS: wire.rs:40");
-    assert_eq!(wire::ESTABLISHED_HEADER_SIZE, 16, "FIPS: wire.rs:43 — 4+4+8");
+    assert_eq!(
+        wire::ESTABLISHED_HEADER_SIZE,
+        16,
+        "FIPS: wire.rs:43 — 4+4+8"
+    );
     assert_eq!(wire::INNER_HEADER_SIZE, 5, "FIPS: wire.rs:55 — 4+1");
     assert_eq!(wire::ENCRYPTED_MIN_SIZE, 32, "FIPS: wire.rs:52 — 16+16");
     assert_eq!(wire::MSG1_WIRE_SIZE, 114, "FIPS: wire.rs:46 — 4+4+106");

@@ -1,11 +1,11 @@
 use embassy_time::{Duration, Instant};
 
-use microfips_core::wire;
 use microfips_core::fsp::{
     FspInitiatorSession, FspInitiatorState, FspSession, FspSessionState, FSP_HEADER_SIZE,
     FSP_INNER_HEADER_SIZE, SESSION_DATAGRAM_BODY_SIZE,
 };
 use microfips_core::noise;
+use microfips_core::wire;
 
 use crate::node::{HandleResult, NodeEvent, NodeHandler};
 

@@ -3,9 +3,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use k256::SecretKey;
-use microfips_core::wire;
 use microfips_core::identity::{load_peer_pub, load_secret};
 use microfips_core::noise;
+use microfips_core::wire;
 use rand::RngCore;
 
 fn keygen() -> ExitCode {

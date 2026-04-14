@@ -1,7 +1,7 @@
-use microfips_core::wire;
 use microfips_core::fsp;
 use microfips_core::identity::NodeAddr;
 use microfips_core::noise;
+use microfips_core::wire;
 
 const STM32_NSEC: [u8; 32] = [0x01; 32];
 const ESP32_NSEC: [u8; 32] = [0x02; 32];
@@ -39,8 +39,12 @@ fn fmp_prefix_phase_established_matches_commonprefix_layout() {
 fn msg1_total_size_is_114_bytes() {
     let noise_payload = [0x11u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    let len =
-        wire::build_msg1(wire::SessionIndex::new(0xA1A2A3A4), &noise_payload, &mut out).unwrap();
+    let len = wire::build_msg1(
+        wire::SessionIndex::new(0xA1A2A3A4),
+        &noise_payload,
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(len, wire::MSG1_WIRE_SIZE);
     assert_eq!(len, 114);
@@ -51,7 +55,12 @@ fn msg1_total_size_is_114_bytes() {
 fn msg1_sender_index_at_offset_4() {
     let noise_payload = [0x22u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    wire::build_msg1(wire::SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out).unwrap();
+    wire::build_msg1(
+        wire::SessionIndex::new(0xDEADBEEF),
+        &noise_payload,
+        &mut out,
+    )
+    .unwrap();
 
     let idx = u32::from_le_bytes(out[4..8].try_into().unwrap());
     assert_eq!(idx, 0xDEADBEEF);
@@ -62,8 +71,12 @@ fn msg1_sender_index_at_offset_4() {
 fn msg1_noise_payload_offset_and_length_match_fips() {
     let noise_payload = [0x33u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    let len =
-        wire::build_msg1(wire::SessionIndex::new(0x01020304), &noise_payload, &mut out).unwrap();
+    let len = wire::build_msg1(
+        wire::SessionIndex::new(0x01020304),
+        &noise_payload,
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(len, 4 + 4 + 106);
     assert_eq!(&out[8..114], &noise_payload);
