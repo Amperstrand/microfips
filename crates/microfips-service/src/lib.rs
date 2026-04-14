@@ -400,7 +400,7 @@ pub fn route_suffix<'a>(route: &'a str, prefix: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microfips_core::fmp;
+    use microfips_core::wire;
     use microfips_core::fsp::{
         build_fsp_data_message, build_session_datagram_body, FspInitiatorSession,
         FspInitiatorState, SESSION_DATAGRAM_BODY_SIZE,
@@ -531,7 +531,7 @@ mod tests {
 
         let mut ack = [0u8; 512];
         let ack_len = match responder.on_message(
-            fmp::MSG_SESSION_DATAGRAM,
+            wire::MSG_SESSION_DATAGRAM,
             &setup_payload[..SESSION_DATAGRAM_BODY_SIZE + setup_len],
             &mut ack,
         ) {
@@ -555,7 +555,7 @@ mod tests {
             .copy_from_slice(&msg3[..msg3_len]);
         assert_eq!(
             responder.on_message(
-                fmp::MSG_SESSION_DATAGRAM,
+                wire::MSG_SESSION_DATAGRAM,
                 &msg3_payload[..SESSION_DATAGRAM_BODY_SIZE + msg3_len],
                 &mut ack,
             ),
@@ -585,7 +585,7 @@ mod tests {
 
         let mut response_payload = [0u8; 512];
         let response_len = match responder.on_message(
-            fmp::MSG_SESSION_DATAGRAM,
+            wire::MSG_SESSION_DATAGRAM,
             &request_payload[..SESSION_DATAGRAM_BODY_SIZE + fsp_len],
             &mut response_payload,
         ) {

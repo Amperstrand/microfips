@@ -1,6 +1,6 @@
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Timer};
-use microfips_core::fmp;
+use microfips_core::wire;
 
 use crate::error::ProtocolError;
 use crate::framing;
@@ -196,8 +196,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         &mut self,
         epoch: [u8; microfips_core::noise::EPOCH_SIZE],
         handler: &mut H,
-    ) -> Result<([u8; 32], [u8; 32], fmp::SessionIndex), ProtocolError> {
-        use microfips_core::fmp;
+    ) -> Result<([u8; 32], [u8; 32], wire::SessionIndex), ProtocolError> {
+        use microfips_core::wire;
         use microfips_core::identity::NodeAddr;
         use microfips_core::noise;
 
@@ -218,7 +218,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             .expect("write_message1");
 
         let mut f1 = [0u8; 256];
-        let f1len = fmp::build_msg1(fmp::SessionIndex::new(0), &n1[..n1len], &mut f1).unwrap();
+        let f1len = wire::build_msg1(wire::SessionIndex::new(0), &n1[..n1len], &mut f1).unwrap();
 
         if !self.peer_sent_first {
             self.send_frame(&f1[..f1len]).await?;
@@ -238,9 +238,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             {
                 Ok(ml) => {
                     resend_count = 0;
-                    let m = fmp::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
+                    let m = wire::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
                     match m {
-                        fmp::FmpMessage::Msg2 {
+                        wire::FmpMessage::Msg2 {
                             sender_idx,
                             noise_payload,
                             ..
@@ -250,7 +250,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             let (ks, kr) = st.finalize();
                             return Ok((ks, kr, sender_idx));
                         }
-                        fmp::FmpMessage::Msg1 {
+                        wire::FmpMessage::Msg1 {
                             sender_idx: peer_sender_idx,
                             noise_payload,
                         } => {
@@ -351,8 +351,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             };
 
                             let mut msg2_buf = [0u8; 256];
-                            let msg2_len = fmp::build_msg2(
-                                fmp::SessionIndex::new(0),
+                            let msg2_len = wire::build_msg2(
+                                wire::SessionIndex::new(0),
                                 peer_sender_idx,
                                 &msg2_noise[..msg2_noise_len],
                                 &mut msg2_buf,
@@ -382,7 +382,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         &mut self,
         ks: &[u8; 32],
         kr: &[u8; 32],
-        them: fmp::SessionIndex,
+        them: wire::SessionIndex,
         handler: &mut H,
     ) -> Result<(), ProtocolError> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
@@ -488,21 +488,19 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     /// FIPS: mod.rs:1578-1663 send_encrypted_link_message_with_ce() —
     /// prepend_inner_header(timestamp, plaintext) → build_established_header →
     /// encrypt_with_aad(header as AAD) → transport.send().
-    async fn send_datagram(&mut self, them: fmp::SessionIndex, send_ctr: &mut u64, len: usize, ks: &[u8; 32]) {
-        use microfips_core::fmp;
+    async fn send_datagram(&mut self, them: wire::SessionIndex, send_ctr: &mut u64, len: usize, ks: &[u8; 32]) {
+        use microfips_core::wire;
         let c = *send_ctr;
         *send_ctr += 1;
         let ts = embassy_time::Instant::now().as_millis() as u32;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(
-            them,
-            c,
-            fmp::MSG_SESSION_DATAGRAM,
-            ts,
-            &self.resp_buf[..len],
-            ks,
-            &mut out,
-        );
+        let msg_end = 1 + len;
+        let mut msg_buf = [0u8; 512];
+        msg_buf[0] = wire::MSG_SESSION_DATAGRAM;
+        msg_buf[1..msg_end].copy_from_slice(&self.resp_buf[..len]);
+        let mut inner_buf = [0u8; 512];
+        let inner_len = wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+        let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
         }
@@ -510,18 +508,24 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
     async fn send_link_message(
         &mut self,
-        them: fmp::SessionIndex,
+        them: wire::SessionIndex,
         send_ctr: &mut u64,
         msg_type: u8,
         len: usize,
         ks: &[u8; 32],
     ) {
-        use microfips_core::fmp;
+        use microfips_core::wire;
         let c = *send_ctr;
         *send_ctr += 1;
         let ts = embassy_time::Instant::now().as_millis() as u32;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(them, c, msg_type, ts, &self.resp_buf[..len], ks, &mut out);
+        let msg_end = 1 + len;
+        let mut msg_buf = [0u8; 512];
+        msg_buf[0] = msg_type;
+        msg_buf[1..msg_end].copy_from_slice(&self.resp_buf[..len]);
+        let mut inner_buf = [0u8; 512];
+        let inner_len = wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+        let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
         }
@@ -533,16 +537,18 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     async fn send_heartbeat(
         &mut self,
         ks: &[u8; 32],
-        them: fmp::SessionIndex,
+        them: wire::SessionIndex,
         ctr: &mut u64,
     ) -> embassy_time::Instant {
-        use microfips_core::fmp;
+        use microfips_core::wire;
 
         let c = *ctr;
         *ctr += 1;
         let ts = embassy_time::Instant::now().as_millis() as u32;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(them, c, fmp::MSG_HEARTBEAT, ts, &[], ks, &mut out);
+        let mut inner_buf = [0u8; 32];
+        let inner_len = wire::prepend_inner_header(ts, &[wire::MSG_HEARTBEAT], &mut inner_buf).unwrap();
+        let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
 
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
@@ -678,9 +684,9 @@ fn handle_frame_inner<H: NodeHandler>(
     handler: &mut H,
     resp: &mut [u8],
 ) -> FrameAction {
-    use microfips_core::fmp;
+    use microfips_core::wire;
 
-    let m = match fmp::parse_message(data) {
+    let m = match wire::parse_message(data) {
         Some(m) => m,
         None => {
             #[cfg(feature = "log")]
@@ -690,8 +696,8 @@ fn handle_frame_inner<H: NodeHandler>(
     };
 
     match m {
-        fmp::FmpMessage::Established { .. } => {
-            let enc = match fmp::EncryptedHeader::parse(data) {
+        wire::FmpMessage::Established { .. } => {
+            let enc = match wire::EncryptedHeader::parse(data) {
                 Some(h) => h,
                 None => return FrameAction::Continue,
             };
@@ -699,7 +705,7 @@ fn handle_frame_inner<H: NodeHandler>(
             log::debug!(
                 "FMP established: counter={} enc_len={}",
                 enc.counter,
-                data.len() - fmp::ESTABLISHED_HEADER_SIZE
+                data.len() - wire::ESTABLISHED_HEADER_SIZE
             );
             let mut dec = [0u8; 2048];
             let dl =
@@ -707,7 +713,7 @@ fn handle_frame_inner<H: NodeHandler>(
                     kr,
                     enc.counter,
                     &enc.header_bytes,
-                    &data[fmp::ESTABLISHED_HEADER_SIZE..],
+                    &data[wire::ESTABLISHED_HEADER_SIZE..],
                     &mut dec,
                 ) {
                     Ok(l) => l,
@@ -722,7 +728,7 @@ fn handle_frame_inner<H: NodeHandler>(
                         return FrameAction::Continue;
                     }
                 };
-            let (_timestamp, inner_rest) = match fmp::strip_inner_header(&dec[..dl]) {
+            let (_timestamp, inner_rest) = match wire::strip_inner_header(&dec[..dl]) {
                 Some(r) => r,
                 None => return FrameAction::Continue,
             };
@@ -735,9 +741,9 @@ fn handle_frame_inner<H: NodeHandler>(
                 inner_payload.len()
             );
             match msg_type {
-                fmp::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
-                fmp::MSG_DISCONNECT => FrameAction::PeerDC,
-                fmp::MSG_SENDER_REPORT => {
+                wire::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
+                wire::MSG_DISCONNECT => FrameAction::PeerDC,
+                wire::MSG_SENDER_REPORT => {
                     // FIPS MMP SenderReport → ReceiverReport (wire format offsets from FIPS src/mmp/report.rs).
                     // SenderReport inner payload (47B): [3B reserved][8B start_ctr][8B end_ctr]
                     //   [4B start_ts][4B end_ts][4B bytes_sent][8B pkts_sent][8B bytes_sent_total]
@@ -758,7 +764,7 @@ fn handle_frame_inner<H: NodeHandler>(
                         resp[3..11].copy_from_slice(&end_ctr.to_le_bytes());
                         resp[27..31].copy_from_slice(&end_ts.to_le_bytes());
                         FrameAction::SendLinkMessage {
-                            msg_type: fmp::MSG_RECEIVER_REPORT,
+                            msg_type: wire::MSG_RECEIVER_REPORT,
                             len: 67,
                         }
                     } else {
@@ -776,7 +782,7 @@ fn handle_frame_inner<H: NodeHandler>(
             #[cfg(feature = "std")]
             if matches!(
                 m,
-                fmp::FmpMessage::Msg1 { .. } | fmp::FmpMessage::Msg2 { .. }
+                wire::FmpMessage::Msg1 { .. } | wire::FmpMessage::Msg2 { .. }
             ) {
                 log::warn!("discarding handshake frame in established state");
             }
@@ -809,20 +815,20 @@ enum FrameAction {
 /// AEAD tag), the field is unreliable for determining frame boundaries across
 /// implementations. Raw UDP framing relies on datagram boundaries instead.
 fn fmp_raw_frame_size(data: &[u8]) -> Option<usize> {
-    use microfips_core::fmp;
+    use microfips_core::wire;
 
-    let prefix = fmp::CommonPrefix::parse(data)?;
+    let prefix = wire::CommonPrefix::parse(data)?;
     match prefix.phase {
-        fmp::PHASE_MSG1 => {
-            let total = fmp::MSG1_WIRE_SIZE;
+        wire::PHASE_MSG1 => {
+            let total = wire::MSG1_WIRE_SIZE;
             if data.len() < total {
                 None
             } else {
                 Some(total)
             }
         }
-        fmp::PHASE_MSG2 => {
-            let total = fmp::MSG2_WIRE_SIZE;
+        wire::PHASE_MSG2 => {
+            let total = wire::MSG2_WIRE_SIZE;
             if data.len() < total {
                 None
             } else {
@@ -868,10 +874,10 @@ fn extract_length_prefixed_frame(buf: &[u8], pos: usize, len: usize) -> Option<(
 /// available buffer as one frame — this is correct for raw UDP transport
 /// where each datagram is exactly one FMP frame.
 fn extract_raw_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize)> {
-    use microfips_core::fmp;
+    use microfips_core::wire;
 
     let avail = len - pos;
-    if avail < fmp::COMMON_PREFIX_SIZE {
+    if avail < wire::COMMON_PREFIX_SIZE {
         return None;
     }
     match fmp_raw_frame_size(&buf[pos..len]) {
@@ -883,10 +889,10 @@ fn extract_raw_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize
             Some((&buf[pos..e], e))
         }
         None => {
-            let prefix = fmp::CommonPrefix::parse(&buf[pos..len])?;
+            let prefix = wire::CommonPrefix::parse(&buf[pos..len])?;
             match prefix.phase {
-                fmp::PHASE_ESTABLISHED => {
-                    if avail < fmp::ESTABLISHED_HEADER_SIZE + microfips_core::noise::TAG_SIZE {
+                wire::PHASE_ESTABLISHED => {
+                    if avail < wire::ESTABLISHED_HEADER_SIZE + microfips_core::noise::TAG_SIZE {
                         return None;
                     }
                     let e = pos + avail;
@@ -1022,61 +1028,67 @@ mod tests {
         }
     }
 
+    fn build_test_frame(receiver: wire::SessionIndex, counter: u64, msg_type: u8, timestamp: u32, payload: &[u8], key: &[u8; 32]) -> std::vec::Vec<u8> {
+        let msg_end = 1 + payload.len();
+        let mut msg_buf = [0u8; 512];
+        msg_buf[0] = msg_type;
+        msg_buf[1..msg_end].copy_from_slice(payload);
+        let mut inner_buf = [0u8; 512];
+        let inner_len = wire::prepend_inner_header(timestamp, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+        let mut out = [0u8; 1024];
+        let fl = wire::encrypt_and_assemble(receiver, counter, 0x00, &inner_buf[..inner_len], key, &mut out).unwrap();
+        out[..fl].to_vec()
+    }
+
     #[test]
     fn test_handle_frame_heartbeat() {
-        use microfips_core::fmp;
+        use microfips_core::wire;
 
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 12345;
-        let mut out = [0u8; 256];
-        let fl = fmp::build_established(fmp::SessionIndex::new(0), 0, fmp::MSG_HEARTBEAT, ts, &[], &key, &mut out).unwrap();
+        let frame = build_test_frame(wire::SessionIndex::new(0), 0, wire::MSG_HEARTBEAT, ts, &[], &key);
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(&key, &frame, &mut NoopTestHandler, &mut resp);
         assert_eq!(result, FrameAction::HeartbeatRecv);
     }
 
     #[test]
     fn test_handle_frame_disconnect() {
-        use microfips_core::fmp;
+        use microfips_core::wire;
 
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 54321;
-        let mut out = [0u8; 256];
-        let fl =
-            fmp::build_established(fmp::SessionIndex::new(0), 1, fmp::MSG_DISCONNECT, ts, &[], &key, &mut out).unwrap();
+        let frame = build_test_frame(wire::SessionIndex::new(0), 1, wire::MSG_DISCONNECT, ts, &[], &key);
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(&key, &frame, &mut NoopTestHandler, &mut resp);
         assert_eq!(result, FrameAction::PeerDC);
     }
 
     #[test]
     fn test_handle_frame_unknown_type_skipped() {
-        use microfips_core::fmp;
+        use microfips_core::wire;
 
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 99999;
-        let mut out = [0u8; 256];
-        let fl = fmp::build_established(fmp::SessionIndex::new(0), 2, 0x05, ts, b"unknown", &key, &mut out).unwrap();
+        let frame = build_test_frame(wire::SessionIndex::new(0), 2, 0x05, ts, b"unknown", &key);
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(&key, &frame, &mut NoopTestHandler, &mut resp);
         assert_eq!(result, FrameAction::Continue);
     }
 
     #[test]
     fn test_handle_frame_wrong_key_skipped() {
-        use microfips_core::fmp;
+        use microfips_core::wire;
 
         let key_a: [u8; 32] = [0x42; 32];
         let key_b: [u8; 32] = [0x99; 32];
-        let mut out = [0u8; 256];
-        let fl =
-            fmp::build_established(fmp::SessionIndex::new(0), 0, fmp::MSG_HEARTBEAT, 100, &[], &key_a, &mut out).unwrap();
+        let frame = build_test_frame(wire::SessionIndex::new(0), 0, wire::MSG_HEARTBEAT, 100, &[], &key_a);
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key_b, &out[..fl], &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(&key_b, &frame, &mut NoopTestHandler, &mut resp);
         assert_eq!(result, FrameAction::Continue);
     }
 
@@ -1100,7 +1112,7 @@ mod tests {
 
     #[test]
     fn test_handle_frame_datagram_response() {
-        use microfips_core::fmp;
+        use microfips_core::wire;
 
         struct DatagramHandler;
         impl NodeHandler for DatagramHandler {
@@ -1111,7 +1123,7 @@ mod tests {
                 payload: &[u8],
                 resp: &mut [u8],
             ) -> HandleResult {
-                if msg_type == fmp::MSG_SESSION_DATAGRAM && payload == b"ping" {
+                if msg_type == wire::MSG_SESSION_DATAGRAM && payload == b"ping" {
                     let response = b"pong";
                     resp[..response.len()].copy_from_slice(response);
                     HandleResult::SendDatagram(response.len())
@@ -1123,13 +1135,11 @@ mod tests {
 
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 77777;
-        let mut out = [0u8; 256];
-        let fl =
-            fmp::build_established(fmp::SessionIndex::new(0), 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out)
-                .unwrap();
+        let frame =
+            build_test_frame(wire::SessionIndex::new(0), 5, wire::MSG_SESSION_DATAGRAM, ts, b"ping", &key);
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &out[..fl], &mut DatagramHandler, &mut resp);
+        let result = handle_frame_inner(&key, &frame, &mut DatagramHandler, &mut resp);
         assert_eq!(result, FrameAction::SendDatagram(4));
         assert_eq!(&resp[..4], b"pong");
     }
@@ -1203,7 +1213,7 @@ mod tests {
         sender_idx: u32,
         epoch: u64,
     ) -> (std::vec::Vec<u8>, microfips_core::noise::NoiseIkInitiator) {
-        use microfips_core::fmp;
+        use microfips_core::wire;
         use microfips_core::noise::{self, NoiseIkInitiator};
 
         let initiator_pub = noise::ecdh_pubkey(initiator_secret).unwrap();
@@ -1219,7 +1229,7 @@ mod tests {
 
         let mut msg1_buf = [0u8; 256];
         let msg1_len =
-            fmp::build_msg1(fmp::SessionIndex::new(sender_idx), &msg1_noise[..msg1_noise_len], &mut msg1_buf).unwrap();
+            wire::build_msg1(wire::SessionIndex::new(sender_idx), &msg1_noise[..msg1_noise_len], &mut msg1_buf).unwrap();
         (msg1_buf[..msg1_len].to_vec(), initiator)
     }
 
@@ -1251,7 +1261,7 @@ mod tests {
     fn test_handshake_with_responder() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::fmp;
+        use microfips_core::wire;
         use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
 
         // Use fresh random keys to prove the handshake works with any valid keypair.
@@ -1275,9 +1285,9 @@ mod tests {
                     total += resp_transport.recv(&mut buf[total..]).await.unwrap();
                 }
 
-                let msg = fmp::parse_message(&buf[..msg1_len]).unwrap();
+                let msg = wire::parse_message(&buf[..msg1_len]).unwrap();
                 let noise_payload = match msg {
-                    fmp::FmpMessage::Msg1 { noise_payload, .. } => noise_payload,
+                    wire::FmpMessage::Msg1 { noise_payload, .. } => noise_payload,
                     _ => panic!("expected Msg1"),
                 };
 
@@ -1296,7 +1306,7 @@ mod tests {
 
                 let mut msg2_buf = [0u8; 256];
                 let msg2_len =
-                    fmp::build_msg2(fmp::SessionIndex::new(1), fmp::SessionIndex::new(0), &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
+                    wire::build_msg2(wire::SessionIndex::new(1), wire::SessionIndex::new(0), &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
 
                 let frame_hdr = (msg2_len as u16).to_le_bytes();
                 resp_transport.send(&frame_hdr).await.unwrap();
@@ -1315,7 +1325,7 @@ mod tests {
                 let result = node.handshake(epoch, &mut handler).await;
                 assert!(result.is_ok(), "handshake should succeed");
                 let (ks, kr, them) = result.unwrap();
-                assert_eq!(them, fmp::SessionIndex::new(1), "responder sender_idx should be 1");
+                assert_eq!(them, wire::SessionIndex::new(1), "responder sender_idx should be 1");
                 assert_eq!(ks.len(), 32);
                 assert_eq!(kr.len(), 32);
             };
@@ -1328,7 +1338,7 @@ mod tests {
     fn test_handshake_msg1_wire_size() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::fmp;
+        use microfips_core::wire;
         use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
@@ -1347,7 +1357,7 @@ mod tests {
                 let msg1_len = u16::from_le_bytes(hdr) as usize;
                 assert_eq!(
                     msg1_len,
-                    fmp::MSG1_WIRE_SIZE,
+                    wire::MSG1_WIRE_SIZE,
                     "MSG1 should be 114 bytes on wire"
                 );
                 let mut buf = [0u8; 256];
@@ -1355,14 +1365,14 @@ mod tests {
                 while total < msg1_len {
                     total += resp_transport.recv(&mut buf[total..]).await.unwrap();
                 }
-                let msg = fmp::parse_message(&buf[..msg1_len]).unwrap();
+                let msg = wire::parse_message(&buf[..msg1_len]).unwrap();
                 match msg {
-                    fmp::FmpMessage::Msg1 {
+                    wire::FmpMessage::Msg1 {
                         sender_idx,
                         noise_payload,
                         ..
                     } => {
-                        assert_eq!(sender_idx, fmp::SessionIndex::new(0), "initiator sender_idx should be 0");
+                        assert_eq!(sender_idx, wire::SessionIndex::new(0), "initiator sender_idx should be 0");
                         assert_eq!(noise_payload.len(), 106);
                     }
                     _ => panic!("expected Msg1"),
@@ -1424,7 +1434,7 @@ mod tests {
     fn test_session_emits_disconnected_after_transport_close() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::fmp;
+        use microfips_core::wire;
         use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
 
         let initiator_secret = random_secret();
@@ -1447,9 +1457,9 @@ mod tests {
                     total += resp_transport.recv(&mut buf[total..]).await.unwrap();
                 }
 
-                let msg = fmp::parse_message(&buf[..msg1_len]).unwrap();
+                let msg = wire::parse_message(&buf[..msg1_len]).unwrap();
                 let noise_payload = match msg {
-                    fmp::FmpMessage::Msg1 { noise_payload, .. } => noise_payload,
+                    wire::FmpMessage::Msg1 { noise_payload, .. } => noise_payload,
                     _ => panic!("expected Msg1"),
                 };
 
@@ -1466,7 +1476,7 @@ mod tests {
 
                 let mut msg2_buf = [0u8; 256];
                 let msg2_len =
-                    fmp::build_msg2(fmp::SessionIndex::new(1), fmp::SessionIndex::new(0), &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
+                    wire::build_msg2(wire::SessionIndex::new(1), wire::SessionIndex::new(0), &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
                 let frame_hdr = (msg2_len as u16).to_le_bytes();
                 resp_transport.send(&frame_hdr).await.unwrap();
                 resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
@@ -1547,7 +1557,7 @@ mod tests {
     fn test_tiebreaker_winner_ignores_msg1() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::fmp;
+        use microfips_core::wire;
         use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
 
         let (a, b) = distinct_secret_pair();
@@ -1570,9 +1580,9 @@ mod tests {
                 send_test_frame(&mut remote_transport, &competing_msg1).await;
 
                 let local_msg1 = recv_test_frame(&mut remote_transport).await;
-                let msg = fmp::parse_message(&local_msg1).unwrap();
+                let msg = wire::parse_message(&local_msg1).unwrap();
                 let (local_sender_idx, noise_payload) = match msg {
-                    fmp::FmpMessage::Msg1 {
+                    wire::FmpMessage::Msg1 {
                         sender_idx,
                         noise_payload,
                     } => (sender_idx, noise_payload),
@@ -1591,8 +1601,8 @@ mod tests {
                     .unwrap();
 
                 let mut msg2_buf = [0u8; 256];
-                let msg2_len = fmp::build_msg2(
-                    fmp::SessionIndex::new(11),
+                let msg2_len = wire::build_msg2(
+                    wire::SessionIndex::new(11),
                     local_sender_idx,
                     &msg2_noise[..msg2_noise_len],
                     &mut msg2_buf,
@@ -1611,7 +1621,7 @@ mod tests {
                 let mut handler = NoopTestHandler;
                 let epoch = node.advance_epoch();
                 let result = node.handshake(epoch, &mut handler).await.unwrap();
-                assert_eq!(result.2, fmp::SessionIndex::new(11));
+                assert_eq!(result.2, wire::SessionIndex::new(11));
             };
 
             join(remote, local).await;
@@ -1622,7 +1632,7 @@ mod tests {
     fn test_tiebreaker_loser_becomes_responder() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::fmp;
+        use microfips_core::wire;
         use microfips_core::noise::ecdh_pubkey;
 
         let (a, b) = distinct_secret_pair();
@@ -1652,16 +1662,16 @@ mod tests {
 
                 loop {
                     let frame = recv_test_frame(&mut remote_transport).await;
-                    let msg = fmp::parse_message(&frame).unwrap();
+                    let msg = wire::parse_message(&frame).unwrap();
                     match msg {
-                        fmp::FmpMessage::Msg1 { .. } => continue,
-                        fmp::FmpMessage::Msg2 {
+                        wire::FmpMessage::Msg1 { .. } => continue,
+                        wire::FmpMessage::Msg2 {
                             sender_idx,
                             receiver_idx,
                             noise_payload,
                         } => {
-                            assert_eq!(sender_idx, fmp::SessionIndex::new(0));
-                            assert_eq!(receiver_idx, fmp::SessionIndex::new(remote_sender_idx));
+                            assert_eq!(sender_idx, wire::SessionIndex::new(0));
+                            assert_eq!(receiver_idx, wire::SessionIndex::new(remote_sender_idx));
                             initiator.read_message2(noise_payload).unwrap();
                             return initiator.finalize();
                         }
@@ -1683,7 +1693,7 @@ mod tests {
             };
 
             let ((remote_ks, remote_kr), local_result) = join(remote, local).await;
-            assert_eq!(local_result.2, fmp::SessionIndex::new(7));
+            assert_eq!(local_result.2, wire::SessionIndex::new(7));
             assert_eq!(local_result.0, remote_kr);
             assert_eq!(local_result.1, remote_ks);
         });
@@ -1738,24 +1748,24 @@ mod tests {
 
     #[test]
     fn test_fmp_raw_frame_size_valid_msg1() {
-        use microfips_core::fmp;
-        let mut data = [0u8; fmp::MSG1_WIRE_SIZE];
-        data[..4].copy_from_slice(&fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 110));
-        assert_eq!(fmp_raw_frame_size(&data), Some(fmp::MSG1_WIRE_SIZE));
+        use microfips_core::wire;
+        let mut data = [0u8; wire::MSG1_WIRE_SIZE];
+        data[..4].copy_from_slice(&wire::build_prefix(wire::PHASE_MSG1, 0x00, 110));
+        assert_eq!(fmp_raw_frame_size(&data), Some(wire::MSG1_WIRE_SIZE));
     }
 
     #[test]
     fn test_fmp_raw_frame_size_valid_msg2() {
-        use microfips_core::fmp;
-        let mut data = [0u8; fmp::MSG2_WIRE_SIZE];
-        data[..4].copy_from_slice(&fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 65));
-        assert_eq!(fmp_raw_frame_size(&data), Some(fmp::MSG2_WIRE_SIZE));
+        use microfips_core::wire;
+        let mut data = [0u8; wire::MSG2_WIRE_SIZE];
+        data[..4].copy_from_slice(&wire::build_prefix(wire::PHASE_MSG2, 0x00, 65));
+        assert_eq!(fmp_raw_frame_size(&data), Some(wire::MSG2_WIRE_SIZE));
     }
 
     #[test]
     fn test_fmp_raw_frame_size_established_returns_none() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 84);
+        use microfips_core::wire;
+        let prefix = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 84);
         assert_eq!(fmp_raw_frame_size(&prefix), None);
     }
 
@@ -1768,15 +1778,15 @@ mod tests {
 
     #[test]
     fn test_fmp_raw_frame_size_zero_payload_non_established() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 0);
+        use microfips_core::wire;
+        let prefix = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
         assert_eq!(fmp_raw_frame_size(&prefix), None);
     }
 
     #[test]
     fn test_fmp_raw_frame_size_zero_payload_established() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 0);
+        use microfips_core::wire;
+        let prefix = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 0);
         assert_eq!(fmp_raw_frame_size(&prefix), None);
     }
 
@@ -1788,8 +1798,8 @@ mod tests {
 
     #[test]
     fn test_fmp_raw_frame_size_msg1_needs_full_data() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 110);
+        use microfips_core::wire;
+        let prefix = wire::build_prefix(wire::PHASE_MSG1, 0x00, 110);
         assert_eq!(fmp_raw_frame_size(&prefix), None);
     }
 
@@ -1857,8 +1867,8 @@ mod tests {
 
     #[test]
     fn test_extract_raw_frame_established_uses_full_buffer() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 10);
+        use microfips_core::wire;
+        let prefix = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 10);
         let mut buf = [0u8; 64];
         buf[..4].copy_from_slice(&prefix);
         buf[4..].fill(0xAA);
@@ -1870,8 +1880,8 @@ mod tests {
 
     #[test]
     fn test_extract_raw_frame_established_too_short() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 10);
+        use microfips_core::wire;
+        let prefix = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 10);
         let mut buf = [0u8; 20];
         buf[..4].copy_from_slice(&prefix);
         buf[4..].fill(0xAA);
@@ -1891,8 +1901,8 @@ mod tests {
 
     #[test]
     fn test_extract_raw_frame_msg2_mid_buffer() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 65);
+        use microfips_core::wire;
+        let prefix = wire::build_prefix(wire::PHASE_MSG2, 0x00, 65);
         let mut buf = [0u8; 128];
         buf[10..14].copy_from_slice(&prefix);
         buf[14..14 + 65].fill(0xCC);
@@ -1904,8 +1914,8 @@ mod tests {
 
     #[test]
     fn test_extract_raw_frame_msg2_needs_full_data() {
-        use microfips_core::fmp;
-        let prefix = fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 65);
+        use microfips_core::wire;
+        let prefix = wire::build_prefix(wire::PHASE_MSG2, 0x00, 65);
         let mut buf = [0u8; 32];
         buf[..4].copy_from_slice(&prefix);
         buf[4..].fill(0xCC);

@@ -1,4 +1,4 @@
-use microfips_core::fmp;
+use microfips_core::wire;
 use std::path::PathBuf;
 
 fn workspace_root() -> PathBuf {
@@ -71,7 +71,7 @@ fn pcap_msg1_wire_size_matches_constant() {
 
     let msg1_packets: Vec<_> = packets
         .iter()
-        .filter(|p| p.payload.len() == fmp::MSG1_WIRE_SIZE && p.payload[0] == fmp::PHASE_MSG1)
+        .filter(|p| p.payload.len() == wire::MSG1_WIRE_SIZE && p.payload[0] == wire::PHASE_MSG1)
         .collect();
 
     assert!(
@@ -82,15 +82,15 @@ fn pcap_msg1_wire_size_matches_constant() {
     for pkt in &msg1_packets {
         assert_eq!(
             pkt.payload.len(),
-            fmp::MSG1_WIRE_SIZE,
+            wire::MSG1_WIRE_SIZE,
             "MSG1 payload length"
         );
-        assert_eq!(pkt.payload[0], fmp::PHASE_MSG1, "MSG1 phase byte");
+        assert_eq!(pkt.payload[0], wire::PHASE_MSG1, "MSG1 phase byte");
         assert_eq!(pkt.payload[1], 0x00, "MSG1 flags must be 0");
         let payload_len = u16::from_le_bytes([pkt.payload[2], pkt.payload[3]]);
         assert_eq!(
             payload_len as usize,
-            fmp::MSG1_WIRE_SIZE - 4,
+            wire::MSG1_WIRE_SIZE - 4,
             "MSG1 inner payload_len field"
         );
     }
@@ -103,7 +103,7 @@ fn pcap_msg2_wire_size_matches_constant() {
 
     let msg2_packets: Vec<_> = packets
         .iter()
-        .filter(|p| p.payload.len() == fmp::MSG2_WIRE_SIZE && p.payload[0] == fmp::PHASE_MSG2)
+        .filter(|p| p.payload.len() == wire::MSG2_WIRE_SIZE && p.payload[0] == wire::PHASE_MSG2)
         .collect();
 
     assert!(
@@ -114,15 +114,15 @@ fn pcap_msg2_wire_size_matches_constant() {
     for pkt in &msg2_packets {
         assert_eq!(
             pkt.payload.len(),
-            fmp::MSG2_WIRE_SIZE,
+            wire::MSG2_WIRE_SIZE,
             "MSG2 payload length"
         );
-        assert_eq!(pkt.payload[0], fmp::PHASE_MSG2, "MSG2 phase byte");
+        assert_eq!(pkt.payload[0], wire::PHASE_MSG2, "MSG2 phase byte");
         assert_eq!(pkt.payload[1], 0x00, "MSG2 flags must be 0");
         let payload_len = u16::from_le_bytes([pkt.payload[2], pkt.payload[3]]);
         assert_eq!(
             payload_len as usize,
-            fmp::MSG2_WIRE_SIZE - 4,
+            wire::MSG2_WIRE_SIZE - 4,
             "MSG2 inner payload_len field"
         );
     }
@@ -140,11 +140,11 @@ fn pcap_frame_count_and_phases() {
 
     let msg1_count = packets
         .iter()
-        .filter(|p| !p.payload.is_empty() && p.payload[0] == fmp::PHASE_MSG1)
+        .filter(|p| !p.payload.is_empty() && p.payload[0] == wire::PHASE_MSG1)
         .count();
     let msg2_count = packets
         .iter()
-        .filter(|p| !p.payload.is_empty() && p.payload[0] == fmp::PHASE_MSG2)
+        .filter(|p| !p.payload.is_empty() && p.payload[0] == wire::PHASE_MSG2)
         .count();
 
     assert!(msg1_count >= 1, "At least one MSG1 frame expected");
@@ -179,7 +179,7 @@ fn pcap_corruption_detected() {
     let packets_after = extract_udp_payloads(&pcap);
     let any_change = packets_after.iter().any(|p| {
         p.payload[0] != original_first_pkt_first_payload_byte
-            || p.payload.len() != fmp::MSG1_WIRE_SIZE
+            || p.payload.len() != wire::MSG1_WIRE_SIZE
     });
 
     let _ = any_change;

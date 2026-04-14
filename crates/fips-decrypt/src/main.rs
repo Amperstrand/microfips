@@ -3,14 +3,14 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use clap::Parser;
-use microfips_core::fmp::{
-    parse_message, parse_prefix, FmpMessage, COMMON_PREFIX_SIZE, ESTABLISHED_HEADER_SIZE,
-    PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
-};
 use microfips_core::identity::sha256;
 use microfips_core::noise::{
     aead_decrypt, ecdh_pubkey, NoiseIkInitiator, NoiseIkResponder, EPOCH_SIZE, PUBKEY_SIZE,
     TAG_SIZE,
+};
+use microfips_core::wire::{
+    parse_message, parse_prefix, FmpMessage, COMMON_PREFIX_SIZE, ESTABLISHED_HEADER_SIZE,
+    PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
 use pcap_file::pcap::PcapReader;
 
@@ -447,8 +447,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microfips_core::fmp::{build_prefix, PHASE_MSG1};
     use microfips_core::noise::aead_encrypt;
+    use microfips_core::wire::{build_prefix, PHASE_MSG1};
 
     #[test]
     fn parses_known_fmp_prefix() {
