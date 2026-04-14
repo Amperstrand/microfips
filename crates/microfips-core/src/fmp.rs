@@ -44,6 +44,10 @@ pub const PHASE_MSG1: u8 = 0x01;
 pub const PHASE_MSG2: u8 = 0x02;
 
 // FIPS: bd08505 node/link.rs:handle_heartbeat()
+/// Link-layer message types (inner header byte, after 4-byte LE timestamp).
+///
+/// These occupy the same wire position as FMP `flags` in established frames
+/// but have a different semantic namespace. FIPS defines them in `session_wire.rs`.
 pub const MSG_HEARTBEAT: u8 = 0x51;
 // FIPS: bd08505 node/link.rs:handle_session_datagram()
 pub const MSG_SESSION_DATAGRAM: u8 = 0x00;
@@ -54,12 +58,41 @@ pub const MSG_RECEIVER_REPORT: u8 = 0x02;
 // FIPS: bd08505 node/link.rs:handle_disconnect()
 pub const MSG_DISCONNECT: u8 = 0x50;
 
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
-pub const FLAG_CONGESTION: u8 = 0x02;
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
-pub const FLAG_SPIN: u8 = 0x04;
+pub const FLAG_CE: u8 = 0x02;
+pub const FLAG_SP: u8 = 0x04;
+
+/// Wire-level session index (mirrors FIPS `utils::SessionIndex`).
+///
+/// Wraps a `u32` to prevent accidental conflation with `NodeAddr` or
+/// other 32-bit identifiers. Only used in the 4-byte sender/receiver
+/// index fields of MSG1, MSG2, and established-frame headers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SessionIndex(pub u32);
+
+impl SessionIndex {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+
+    pub const fn from_le_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(bytes))
+    }
+}
+
+impl core::fmt::Display for SessionIndex {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:08x}", self.0)
+    }
+}
 
 // FIPS: bd08505 node/wire.rs:build_msg1() / build_msg2() / build_established_header()
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
