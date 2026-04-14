@@ -28,7 +28,12 @@ fn build_valid_msg1() -> ([u8; 256], usize) {
     assert_eq!(noise_len, fmp::HANDSHAKE_MSG1_SIZE);
 
     let mut out = [0u8; 256];
-    let len = fmp::build_msg1(0x0001, &noise_out[..noise_len], &mut out).unwrap();
+    let len = fmp::build_msg1(
+        fmp::SessionIndex::new(0x0001),
+        &noise_out[..noise_len],
+        &mut out,
+    )
+    .unwrap();
     (out, len)
 }
 
@@ -97,7 +102,11 @@ fn test_fmp_parse_message_unknown_phase_0xff() {
 fn test_fmp_prefix_wrong_payload_length_zero() {
     // Build a valid MSG1 then overwrite payload_len with 0
     let mut frame = [0u8; 256];
-    fmp::build_msg1(0x0001, &[0u8; fmp::HANDSHAKE_MSG1_SIZE], &mut frame);
+    fmp::build_msg1(
+        fmp::SessionIndex::new(0x0001),
+        &[0u8; fmp::HANDSHAKE_MSG1_SIZE],
+        &mut frame,
+    );
     // Force payload_len = 0 by zeroing bytes 2-3
     frame[2] = 0x00;
     frame[3] = 0x00;
@@ -149,7 +158,7 @@ fn test_fmp_msg1_minimal_truncation_noise_layer_rejects() {
         }) => {
             // noise_payload is empty → initiator read_message2 would need exactly 57 bytes
             assert_eq!(noise_payload.len(), 0, "8-byte frame has no noise payload");
-            assert_eq!(sender_idx, 0x0001);
+            assert_eq!(sender_idx, fmp::SessionIndex::new(0x0001));
             // Confirm that read_message2 would reject this empty payload
             let init_secret = [0x01u8; 32];
             let resp_pub = noise::ecdh_pubkey(&[0x02u8; 32]).unwrap();
@@ -181,7 +190,13 @@ fn test_fmp_msg1_minimal_truncation_noise_layer_rejects() {
 fn test_fmp_truncated_msg2_30_bytes() {
     let noise_payload = [0xBBu8; fmp::HANDSHAKE_MSG2_SIZE];
     let mut frame = [0u8; 256];
-    fmp::build_msg2(1, 2, &noise_payload, &mut frame).unwrap();
+    fmp::build_msg2(
+        fmp::SessionIndex::new(1),
+        fmp::SessionIndex::new(2),
+        &noise_payload,
+        &mut frame,
+    )
+    .unwrap();
 
     let result = fmp::parse_message(&frame[..30]);
     match result {
@@ -207,7 +222,13 @@ fn test_fmp_truncated_msg2_30_bytes() {
 fn test_fmp_msg2_minimal_truncation_noise_layer_rejects() {
     let noise_payload_full = [0xBBu8; fmp::HANDSHAKE_MSG2_SIZE];
     let mut frame = [0u8; 256];
-    fmp::build_msg2(1, 2, &noise_payload_full, &mut frame).unwrap();
+    fmp::build_msg2(
+        fmp::SessionIndex::new(1),
+        fmp::SessionIndex::new(2),
+        &noise_payload_full,
+        &mut frame,
+    )
+    .unwrap();
 
     let result = fmp::parse_message(&frame[..12]);
     match result {
@@ -273,7 +294,7 @@ fn test_fmp_oversized_payload_claimed_65535() {
             sender_idx,
         }) => {
             // No panic — safe handling, noise_payload is just very short
-            assert_eq!(sender_idx, 42);
+            assert_eq!(sender_idx, fmp::SessionIndex::new(42));
             assert_eq!(
                 noise_payload.len(),
                 0,
@@ -296,7 +317,13 @@ fn test_fmp_msg2_mismatched_receiver_index() {
     let noise_payload = [0x55u8; fmp::HANDSHAKE_MSG2_SIZE];
     let mut frame = [0u8; 256];
     // sender_idx=0xAAAA, receiver_idx=0xBBBB (mismatch — we sent sender_idx=0x0001 in MSG1)
-    let len = fmp::build_msg2(0xAAAA, 0xBBBB, &noise_payload, &mut frame).unwrap();
+    let len = fmp::build_msg2(
+        fmp::SessionIndex::new(0xAAAA),
+        fmp::SessionIndex::new(0xBBBB),
+        &noise_payload,
+        &mut frame,
+    )
+    .unwrap();
 
     let result = fmp::parse_message(&frame[..len]).unwrap();
     match result {
@@ -305,12 +332,13 @@ fn test_fmp_msg2_mismatched_receiver_index() {
             receiver_idx,
             noise_payload: np,
         } => {
-            assert_eq!(sender_idx, 0xAAAA);
-            assert_eq!(receiver_idx, 0xBBBB);
+            assert_eq!(sender_idx, fmp::SessionIndex::new(0xAAAA));
+            assert_eq!(receiver_idx, fmp::SessionIndex::new(0xBBBB));
             // Application must check receiver_idx == our_sender_idx; here we verify
             // it is detectable (0xBBBB ≠ 0x0001 which was in MSG1)
             assert_ne!(
-                receiver_idx, 0x0001,
+                receiver_idx,
+                fmp::SessionIndex::new(0x0001),
                 "mismatched receiver_idx must be detectable"
             );
             assert_eq!(np.len(), fmp::HANDSHAKE_MSG2_SIZE);
@@ -328,8 +356,14 @@ fn test_fmp_msg1_msg2_index_mismatch_detectable() {
     let mut msg1_frame = [0u8; 256];
     let mut msg2_frame = [0u8; 256];
 
-    let len1 = fmp::build_msg1(0xDEAD, &noise1, &mut msg1_frame).unwrap();
-    let len2 = fmp::build_msg2(0xAAAA, 0xBEEF, &noise2, &mut msg2_frame).unwrap();
+    let len1 = fmp::build_msg1(fmp::SessionIndex::new(0xDEAD), &noise1, &mut msg1_frame).unwrap();
+    let len2 = fmp::build_msg2(
+        fmp::SessionIndex::new(0xAAAA),
+        fmp::SessionIndex::new(0xBEEF),
+        &noise2,
+        &mut msg2_frame,
+    )
+    .unwrap();
 
     let msg1 = fmp::parse_message(&msg1_frame[..len1]).unwrap();
     let msg2 = fmp::parse_message(&msg2_frame[..len2]).unwrap();
@@ -384,7 +418,7 @@ fn test_fmp_established_zero_length_encrypted() {
             counter,
             encrypted,
         }) => {
-            assert_eq!(receiver_idx, 7);
+            assert_eq!(receiver_idx, fmp::SessionIndex::new(7));
             assert_eq!(counter, 0);
             assert_eq!(encrypted.len(), 0, "no encrypted bytes in payload");
             // Trying to decrypt empty ciphertext with AEAD must fail (< TAG_SIZE)
@@ -491,7 +525,7 @@ fn test_fmp_msg1_replay_double_parse() {
     // The attack vector is: replaying MSG1 to get a fresh MSG2 from the responder.
     let noise_payload = [0x77u8; fmp::HANDSHAKE_MSG1_SIZE];
     let mut frame = [0u8; 256];
-    let len = fmp::build_msg1(0x9999, &noise_payload, &mut frame).unwrap();
+    let len = fmp::build_msg1(fmp::SessionIndex::new(0x9999), &noise_payload, &mut frame).unwrap();
 
     // First parse
     let r1 = fmp::parse_message(&frame[..len]);

@@ -1,5 +1,6 @@
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Timer};
+use microfips_core::fmp;
 
 use crate::error::ProtocolError;
 use crate::framing;
@@ -195,7 +196,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         &mut self,
         epoch: [u8; microfips_core::noise::EPOCH_SIZE],
         handler: &mut H,
-    ) -> Result<([u8; 32], [u8; 32], u32), ProtocolError> {
+    ) -> Result<([u8; 32], [u8; 32], fmp::SessionIndex), ProtocolError> {
         use microfips_core::fmp;
         use microfips_core::identity::NodeAddr;
         use microfips_core::noise;
@@ -217,7 +218,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             .expect("write_message1");
 
         let mut f1 = [0u8; 256];
-        let f1len = fmp::build_msg1(0, &n1[..n1len], &mut f1).unwrap();
+        let f1len = fmp::build_msg1(fmp::SessionIndex::new(0), &n1[..n1len], &mut f1).unwrap();
 
         if !self.peer_sent_first {
             self.send_frame(&f1[..f1len]).await?;
@@ -351,7 +352,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
                             let mut msg2_buf = [0u8; 256];
                             let msg2_len = fmp::build_msg2(
-                                0,
+                                fmp::SessionIndex::new(0),
                                 peer_sender_idx,
                                 &msg2_noise[..msg2_noise_len],
                                 &mut msg2_buf,
@@ -381,7 +382,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         &mut self,
         ks: &[u8; 32],
         kr: &[u8; 32],
-        them: u32,
+        them: fmp::SessionIndex,
         handler: &mut H,
     ) -> Result<(), ProtocolError> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
@@ -487,7 +488,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     /// FIPS: mod.rs:1578-1663 send_encrypted_link_message_with_ce() —
     /// prepend_inner_header(timestamp, plaintext) → build_established_header →
     /// encrypt_with_aad(header as AAD) → transport.send().
-    async fn send_datagram(&mut self, them: u32, send_ctr: &mut u64, len: usize, ks: &[u8; 32]) {
+    async fn send_datagram(&mut self, them: fmp::SessionIndex, send_ctr: &mut u64, len: usize, ks: &[u8; 32]) {
         use microfips_core::fmp;
         let c = *send_ctr;
         *send_ctr += 1;
@@ -509,7 +510,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
     async fn send_link_message(
         &mut self,
-        them: u32,
+        them: fmp::SessionIndex,
         send_ctr: &mut u64,
         msg_type: u8,
         len: usize,
@@ -532,7 +533,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     async fn send_heartbeat(
         &mut self,
         ks: &[u8; 32],
-        them: u32,
+        them: fmp::SessionIndex,
         ctr: &mut u64,
     ) -> embassy_time::Instant {
         use microfips_core::fmp;
@@ -1021,7 +1022,7 @@ mod tests {
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 12345;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, ts, &[], &key, &mut out).unwrap();
+        let fl = fmp::build_established(fmp::SessionIndex::new(0), 0, fmp::MSG_HEARTBEAT, ts, &[], &key, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -1036,7 +1037,7 @@ mod tests {
         let ts: u32 = 54321;
         let mut out = [0u8; 256];
         let fl =
-            fmp::build_established(0, 1, fmp::MSG_DISCONNECT, ts, &[], &key, &mut out).unwrap();
+            fmp::build_established(fmp::SessionIndex::new(0), 1, fmp::MSG_DISCONNECT, ts, &[], &key, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -1050,7 +1051,7 @@ mod tests {
         let key: [u8; 32] = [0x42; 32];
         let ts: u32 = 99999;
         let mut out = [0u8; 256];
-        let fl = fmp::build_established(0, 2, 0x05, ts, b"unknown", &key, &mut out).unwrap();
+        let fl = fmp::build_established(fmp::SessionIndex::new(0), 2, 0x05, ts, b"unknown", &key, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -1065,7 +1066,7 @@ mod tests {
         let key_b: [u8; 32] = [0x99; 32];
         let mut out = [0u8; 256];
         let fl =
-            fmp::build_established(0, 0, fmp::MSG_HEARTBEAT, 100, &[], &key_a, &mut out).unwrap();
+            fmp::build_established(fmp::SessionIndex::new(0), 0, fmp::MSG_HEARTBEAT, 100, &[], &key_a, &mut out).unwrap();
 
         let mut resp = [0u8; 256];
         let result = handle_frame_inner(&key_b, &out[..fl], &mut NoopTestHandler, &mut resp);
@@ -1117,7 +1118,7 @@ mod tests {
         let ts: u32 = 77777;
         let mut out = [0u8; 256];
         let fl =
-            fmp::build_established(0, 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out)
+            fmp::build_established(fmp::SessionIndex::new(0), 5, fmp::MSG_SESSION_DATAGRAM, ts, b"ping", &key, &mut out)
                 .unwrap();
 
         let mut resp = [0u8; 256];
@@ -1211,7 +1212,7 @@ mod tests {
 
         let mut msg1_buf = [0u8; 256];
         let msg1_len =
-            fmp::build_msg1(sender_idx, &msg1_noise[..msg1_noise_len], &mut msg1_buf).unwrap();
+            fmp::build_msg1(fmp::SessionIndex::new(sender_idx), &msg1_noise[..msg1_noise_len], &mut msg1_buf).unwrap();
         (msg1_buf[..msg1_len].to_vec(), initiator)
     }
 
@@ -1288,7 +1289,7 @@ mod tests {
 
                 let mut msg2_buf = [0u8; 256];
                 let msg2_len =
-                    fmp::build_msg2(1, 0, &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
+                    fmp::build_msg2(fmp::SessionIndex::new(1), fmp::SessionIndex::new(0), &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
 
                 let frame_hdr = (msg2_len as u16).to_le_bytes();
                 resp_transport.send(&frame_hdr).await.unwrap();
@@ -1307,7 +1308,7 @@ mod tests {
                 let result = node.handshake(epoch, &mut handler).await;
                 assert!(result.is_ok(), "handshake should succeed");
                 let (ks, kr, them) = result.unwrap();
-                assert_eq!(them, 1, "responder sender_idx should be 1");
+                assert_eq!(them, fmp::SessionIndex::new(1), "responder sender_idx should be 1");
                 assert_eq!(ks.len(), 32);
                 assert_eq!(kr.len(), 32);
             };
@@ -1354,7 +1355,7 @@ mod tests {
                         noise_payload,
                         ..
                     } => {
-                        assert_eq!(sender_idx, 0, "initiator sender_idx should be 0");
+                        assert_eq!(sender_idx, fmp::SessionIndex::new(0), "initiator sender_idx should be 0");
                         assert_eq!(noise_payload.len(), 106);
                     }
                     _ => panic!("expected Msg1"),
@@ -1458,7 +1459,7 @@ mod tests {
 
                 let mut msg2_buf = [0u8; 256];
                 let msg2_len =
-                    fmp::build_msg2(1, 0, &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
+                    fmp::build_msg2(fmp::SessionIndex::new(1), fmp::SessionIndex::new(0), &msg2_noise[..msg2_noise_len], &mut msg2_buf).unwrap();
                 let frame_hdr = (msg2_len as u16).to_le_bytes();
                 resp_transport.send(&frame_hdr).await.unwrap();
                 resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
@@ -1584,7 +1585,7 @@ mod tests {
 
                 let mut msg2_buf = [0u8; 256];
                 let msg2_len = fmp::build_msg2(
-                    11,
+                    fmp::SessionIndex::new(11),
                     local_sender_idx,
                     &msg2_noise[..msg2_noise_len],
                     &mut msg2_buf,
@@ -1603,7 +1604,7 @@ mod tests {
                 let mut handler = NoopTestHandler;
                 let epoch = node.advance_epoch();
                 let result = node.handshake(epoch, &mut handler).await.unwrap();
-                assert_eq!(result.2, 11);
+                assert_eq!(result.2, fmp::SessionIndex::new(11));
             };
 
             join(remote, local).await;
@@ -1652,8 +1653,8 @@ mod tests {
                             receiver_idx,
                             noise_payload,
                         } => {
-                            assert_eq!(sender_idx, 0);
-                            assert_eq!(receiver_idx, remote_sender_idx);
+                            assert_eq!(sender_idx, fmp::SessionIndex::new(0));
+                            assert_eq!(receiver_idx, fmp::SessionIndex::new(remote_sender_idx));
                             initiator.read_message2(noise_payload).unwrap();
                             return initiator.finalize();
                         }
@@ -1675,7 +1676,7 @@ mod tests {
             };
 
             let ((remote_ks, remote_kr), local_result) = join(remote, local).await;
-            assert_eq!(local_result.2, 7);
+            assert_eq!(local_result.2, fmp::SessionIndex::new(7));
             assert_eq!(local_result.0, remote_kr);
             assert_eq!(local_result.1, remote_ks);
         });
