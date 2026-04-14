@@ -58,6 +58,18 @@ pub const MSG_RECEIVER_REPORT: u8 = 0x02;
 // FIPS: bd08505 node/link.rs:handle_disconnect()
 pub const MSG_DISCONNECT: u8 = 0x50;
 
+/// Disconnect reason codes (1-byte payload in Disconnect message).
+/// FIPS: protocol/link.rs DisconnectReason
+pub const DISC_REASON_SHUTDOWN: u8 = 0x00;
+pub const DISC_REASON_RESTART: u8 = 0x01;
+pub const DISC_REASON_PROTOCOL_ERROR: u8 = 0x02;
+pub const DISC_REASON_TRANSPORT_FAILURE: u8 = 0x03;
+pub const DISC_REASON_RESOURCE_EXHAUSTION: u8 = 0x04;
+pub const DISC_REASON_SECURITY_VIOLATION: u8 = 0x05;
+pub const DISC_REASON_CONFIGURATION_CHANGE: u8 = 0x06;
+pub const DISC_REASON_TIMEOUT: u8 = 0x07;
+pub const DISC_REASON_OTHER: u8 = 0xFF;
+
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
 pub const FLAG_CE: u8 = 0x02;
 pub const FLAG_SP: u8 = 0x04;

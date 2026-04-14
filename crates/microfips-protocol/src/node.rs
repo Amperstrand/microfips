@@ -9,6 +9,7 @@ use crate::transport::{CryptoRng, RngCore, Transport};
 pub const HB_SECS: u64 = 10;
 pub const RECV_TIMEOUT_MS: u64 = 30_000;
 pub const RETRY_SECS: u64 = 3;
+pub const BACKOFF_MAX_SECS: u64 = 60;
 pub const MSG1_RESEND_SECS: u64 = 3;
 pub const MSG1_RESEND_MAX: u32 = 10;
 pub const CONNECT_DELAY_MS: u64 = 500;
@@ -150,6 +151,15 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
     }
 
+    fn allocate_session_index(&mut self) -> wire::SessionIndex {
+        loop {
+            let idx = self.rng.next_u32();
+            if idx != 0 {
+                return wire::SessionIndex::new(idx);
+            }
+        }
+    }
+
     fn advance_epoch(&mut self) -> [u8; microfips_core::noise::EPOCH_SIZE] {
         self.epoch = self.epoch.wrapping_add(1);
         let mut epoch = [0u8; microfips_core::noise::EPOCH_SIZE];
@@ -160,9 +170,16 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     }
 
     pub async fn run<H: NodeHandler>(&mut self, handler: &mut H) -> ! {
+        let mut backoff: u32 = 0;
         loop {
-            let _ = self.session(handler).await;
-            Timer::after(Duration::from_secs(RETRY_SECS)).await;
+            let result = self.session(handler).await;
+            if result.is_ok() {
+                backoff = 0;
+            } else {
+                backoff = backoff.saturating_add(1);
+            }
+            let delay = RETRY_SECS * (1u64 << backoff.min(4));
+            Timer::after(Duration::from_secs(delay.min(BACKOFF_MAX_SECS))).await;
         }
     }
 
@@ -217,8 +234,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             .write_message1(&my_pub, &epoch, &mut n1)
             .expect("write_message1");
 
+        let our_index = self.allocate_session_index();
         let mut f1 = [0u8; 256];
-        let f1len = wire::build_msg1(wire::SessionIndex::new(0), &n1[..n1len], &mut f1).unwrap();
+        let f1len = wire::build_msg1(our_index, &n1[..n1len], &mut f1).unwrap();
 
         if !self.peer_sent_first {
             self.send_frame(&f1[..f1len]).await?;
@@ -350,9 +368,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 }
                             };
 
+                            let our_index = self.allocate_session_index();
                             let mut msg2_buf = [0u8; 256];
                             let msg2_len = wire::build_msg2(
-                                wire::SessionIndex::new(0),
+                                our_index,
                                 peer_sender_idx,
                                 &msg2_noise[..msg2_noise_len],
                                 &mut msg2_buf,
@@ -386,13 +405,17 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         handler: &mut H,
     ) -> Result<(), ProtocolError> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
+        let mut next_sr = embassy_time::Instant::now() + Duration::from_secs(HB_SECS / 2);
         let mut send_ctr: u64 = 0;
+        let mut sr_start_ctr: u64 = 0;
+        let mut sr_start_ts: u32 = embassy_time::Instant::now().as_millis() as u32;
 
         loop {
             let mut rx = [0u8; RECV_BUF_SIZE];
             let rx_fut = self.transport.recv(&mut rx);
             let tick = handler.poll_at();
-            let deadline = tick.unwrap_or(next_hb).min(next_hb);
+            let base_deadline = next_hb.min(next_sr);
+            let deadline = tick.unwrap_or(base_deadline).min(base_deadline);
             let hb_fut = Timer::at(deadline);
 
             match select(rx_fut, hb_fut).await {
@@ -431,6 +454,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 handler.on_event(NodeEvent::HeartbeatRecv).await;
                             }
                             FrameAction::PeerDC => return Ok(()),
+                            FrameAction::SelfDC => {
+                                let _ = self
+                                    .send_disconnect(ks, them, &mut send_ctr, wire::DISC_REASON_SHUTDOWN)
+                                    .await;
+                                return Ok(());
+                            }
                             FrameAction::SendDatagram(len) => {
                                 self.send_datagram(them, &mut send_ctr, len, ks).await;
                             }
@@ -449,6 +478,20 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
                         handler.on_event(NodeEvent::HeartbeatSent).await;
                     }
+                    if now >= next_sr {
+                        next_sr = now + Duration::from_secs(HB_SECS);
+                        let sr_end_ts = now.as_millis() as u32;
+                        let mut sr = [0u8; 47];
+                        sr[3..11].copy_from_slice(&sr_start_ctr.to_le_bytes());
+                        sr[11..19].copy_from_slice(&send_ctr.to_le_bytes());
+                        sr[19..23].copy_from_slice(&sr_start_ts.to_le_bytes());
+                        sr[23..27].copy_from_slice(&sr_end_ts.to_le_bytes());
+                        self.resp_buf[..47].copy_from_slice(&sr);
+                        self.send_link_message(them, &mut send_ctr, wire::MSG_SENDER_REPORT, 47, ks)
+                            .await;
+                        sr_start_ctr = send_ctr;
+                        sr_start_ts = sr_end_ts;
+                    }
                     if let Some(t) = tick {
                         #[allow(clippy::collapsible_if)]
                         if now >= t {
@@ -461,6 +504,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     }
                 }
                 Either::First(Err(_)) => {
+                    let _ = self
+                        .send_disconnect(
+                            ks,
+                            them,
+                            &mut send_ctr,
+                            wire::DISC_REASON_TRANSPORT_FAILURE,
+                        )
+                        .await;
                     return Err(ProtocolError::Disconnected);
                 }
                 Either::Second(()) => {
@@ -468,6 +519,20 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     if now >= next_hb {
                         next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
                         handler.on_event(NodeEvent::HeartbeatSent).await;
+                    }
+                    if now >= next_sr {
+                        next_sr = now + Duration::from_secs(HB_SECS);
+                        let sr_end_ts = now.as_millis() as u32;
+                        let mut sr = [0u8; 47];
+                        sr[3..11].copy_from_slice(&sr_start_ctr.to_le_bytes());
+                        sr[11..19].copy_from_slice(&send_ctr.to_le_bytes());
+                        sr[19..23].copy_from_slice(&sr_start_ts.to_le_bytes());
+                        sr[23..27].copy_from_slice(&sr_end_ts.to_le_bytes());
+                        self.resp_buf[..47].copy_from_slice(&sr);
+                        self.send_link_message(them, &mut send_ctr, wire::MSG_SENDER_REPORT, 47, ks)
+                            .await;
+                        sr_start_ctr = send_ctr;
+                        sr_start_ts = sr_end_ts;
                     }
                     if let Some(t) = tick {
                         #[allow(clippy::collapsible_if)]
@@ -564,6 +629,28 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
 
         embassy_time::Instant::now() + Duration::from_secs(HB_SECS)
+    }
+
+    async fn send_disconnect(
+        &mut self,
+        ks: &[u8; 32],
+        them: wire::SessionIndex,
+        ctr: &mut u64,
+        reason: u8,
+    ) {
+        let c = *ctr;
+        *ctr += 1;
+        let ts = embassy_time::Instant::now().as_millis() as u32;
+        let mut out = [0u8; 256];
+        let mut inner_buf = [0u8; 32];
+        let inner_len =
+            wire::prepend_inner_header(ts, &[wire::MSG_DISCONNECT, reason], &mut inner_buf)
+                .unwrap();
+        let fl =
+            wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
+        if let Some(fl) = fl {
+            let _ = self.send_frame(&out[..fl]).await;
+        }
     }
 
     async fn send_frame(&mut self, payload: &[u8]) -> Result<(), ProtocolError> {
@@ -779,11 +866,17 @@ fn handle_frame_inner<H: NodeHandler>(
                         FrameAction::Continue
                     }
                 }
-                _ => match handler.on_message(msg_type, inner_payload, resp) {
-                    HandleResult::None => FrameAction::Continue,
-                    HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
-                    HandleResult::Disconnect => FrameAction::PeerDC,
-                },
+                _ => {
+                    if msg_type != wire::MSG_SESSION_DATAGRAM {
+                        #[cfg(feature = "log")]
+                        log::warn!("unrecognized link message type: 0x{:02x}", msg_type);
+                    }
+                    match handler.on_message(msg_type, inner_payload, resp) {
+                        HandleResult::None => FrameAction::Continue,
+                        HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
+                        HandleResult::Disconnect => FrameAction::SelfDC,
+                    }
+                }
             }
         }
         _ => {
@@ -804,6 +897,7 @@ enum FrameAction {
     Continue,
     HeartbeatRecv,
     PeerDC,
+    SelfDC,
     SendDatagram(usize),
     SendLinkMessage { msg_type: u8, len: usize },
 }
@@ -1436,10 +1530,10 @@ mod tests {
                         noise_payload,
                         ..
                     } => {
-                        assert_eq!(
+                        assert_ne!(
                             sender_idx,
                             wire::SessionIndex::new(0),
-                            "initiator sender_idx should be 0"
+                            "initiator sender_idx should be random non-zero"
                         );
                         assert_eq!(noise_payload.len(), 106);
                     }
