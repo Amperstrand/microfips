@@ -1,4 +1,4 @@
-use microfips_core::fmp;
+use microfips_core::wire;
 use microfips_core::fsp;
 use microfips_core::identity::NodeAddr;
 use microfips_core::noise;
@@ -16,42 +16,42 @@ fn deterministic_pubkeys() -> ([u8; 33], [u8; 33]) {
 // Tests FIPS: bd08505 fips/src/node/wire.rs:CommonPrefix::ver_phase_byte() — MSG1 prefix byte layout.
 #[test]
 fn fmp_prefix_phase_msg1_matches_commonprefix_layout() {
-    let p = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 0);
+    let p = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
     assert_eq!(p, [0x01, 0x00, 0x00, 0x00]);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:CommonPrefix::ver_phase_byte() — MSG2 prefix byte layout.
 #[test]
 fn fmp_prefix_phase_msg2_matches_commonprefix_layout() {
-    let p = fmp::build_prefix(fmp::PHASE_MSG2, 0x00, 0);
+    let p = wire::build_prefix(wire::PHASE_MSG2, 0x00, 0);
     assert_eq!(p, [0x02, 0x00, 0x00, 0x00]);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:CommonPrefix::ver_phase_byte() — established prefix byte layout.
 #[test]
 fn fmp_prefix_phase_established_matches_commonprefix_layout() {
-    let p = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 0);
+    let p = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 0);
     assert_eq!(p, [0x00, 0x00, 0x00, 0x00]);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:build_msg1() — MSG1 total wire size is 114 bytes.
 #[test]
 fn msg1_total_size_is_114_bytes() {
-    let noise_payload = [0x11u8; fmp::HANDSHAKE_MSG1_SIZE];
+    let noise_payload = [0x11u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
     let len =
-        fmp::build_msg1(fmp::SessionIndex::new(0xA1A2A3A4), &noise_payload, &mut out).unwrap();
+        wire::build_msg1(wire::SessionIndex::new(0xA1A2A3A4), &noise_payload, &mut out).unwrap();
 
-    assert_eq!(len, fmp::MSG1_WIRE_SIZE);
+    assert_eq!(len, wire::MSG1_WIRE_SIZE);
     assert_eq!(len, 114);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:Msg1Header::parse() — sender_idx sits at offset 4..8.
 #[test]
 fn msg1_sender_index_at_offset_4() {
-    let noise_payload = [0x22u8; fmp::HANDSHAKE_MSG1_SIZE];
+    let noise_payload = [0x22u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
-    fmp::build_msg1(fmp::SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out).unwrap();
+    wire::build_msg1(wire::SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out).unwrap();
 
     let idx = u32::from_le_bytes(out[4..8].try_into().unwrap());
     assert_eq!(idx, 0xDEADBEEF);
@@ -60,10 +60,10 @@ fn msg1_sender_index_at_offset_4() {
 // Tests FIPS: bd08505 fips/src/node/wire.rs:Msg1Header::noise_msg1() — Noise payload starts at offset 8 and is 106 bytes.
 #[test]
 fn msg1_noise_payload_offset_and_length_match_fips() {
-    let noise_payload = [0x33u8; fmp::HANDSHAKE_MSG1_SIZE];
+    let noise_payload = [0x33u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
     let len =
-        fmp::build_msg1(fmp::SessionIndex::new(0x01020304), &noise_payload, &mut out).unwrap();
+        wire::build_msg1(wire::SessionIndex::new(0x01020304), &noise_payload, &mut out).unwrap();
 
     assert_eq!(len, 4 + 4 + 106);
     assert_eq!(&out[8..114], &noise_payload);
@@ -72,28 +72,28 @@ fn msg1_noise_payload_offset_and_length_match_fips() {
 // Tests FIPS: bd08505 fips/src/node/wire.rs:build_msg2() — MSG2 total wire size is 69 bytes.
 #[test]
 fn msg2_total_size_is_69_bytes() {
-    let noise_payload = [0x44u8; fmp::HANDSHAKE_MSG2_SIZE];
+    let noise_payload = [0x44u8; wire::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
-    let len = fmp::build_msg2(
-        fmp::SessionIndex::new(0x11111111),
-        fmp::SessionIndex::new(0x22222222),
+    let len = wire::build_msg2(
+        wire::SessionIndex::new(0x11111111),
+        wire::SessionIndex::new(0x22222222),
         &noise_payload,
         &mut out,
     )
     .unwrap();
 
-    assert_eq!(len, fmp::MSG2_WIRE_SIZE);
+    assert_eq!(len, wire::MSG2_WIRE_SIZE);
     assert_eq!(len, 69);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:Msg2Header::parse() — sender/receiver indices are at offsets 4..8 and 8..12.
 #[test]
 fn msg2_indices_offsets_match_fips_layout() {
-    let noise_payload = [0x55u8; fmp::HANDSHAKE_MSG2_SIZE];
+    let noise_payload = [0x55u8; wire::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
-    fmp::build_msg2(
-        fmp::SessionIndex::new(0x01020304),
-        fmp::SessionIndex::new(0x0A0B0C0D),
+    wire::build_msg2(
+        wire::SessionIndex::new(0x01020304),
+        wire::SessionIndex::new(0x0A0B0C0D),
         &noise_payload,
         &mut out,
     )
@@ -112,11 +112,11 @@ fn msg2_indices_offsets_match_fips_layout() {
 // Tests FIPS: bd08505 fips/src/node/wire.rs:Msg2Header::noise_msg2() — Noise payload starts at offset 12 and is 57 bytes.
 #[test]
 fn msg2_noise_payload_offset_and_length_match_fips() {
-    let noise_payload = [0x66u8; fmp::HANDSHAKE_MSG2_SIZE];
+    let noise_payload = [0x66u8; wire::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
-    fmp::build_msg2(
-        fmp::SessionIndex::new(7),
-        fmp::SessionIndex::new(8),
+    wire::build_msg2(
+        wire::SessionIndex::new(7),
+        wire::SessionIndex::new(8),
         &noise_payload,
         &mut out,
     )
@@ -125,23 +125,48 @@ fn msg2_noise_payload_offset_and_length_match_fips() {
     assert_eq!(&out[12..69], &noise_payload);
 }
 
+fn established_frame(
+    receiver: wire::SessionIndex,
+    counter: u64,
+    msg_type: u8,
+    timestamp: u32,
+    payload: &[u8],
+    key: &[u8; 32],
+) -> std::vec::Vec<u8> {
+    let msg_end = 1 + payload.len();
+    let mut msg_buf = [0u8; 512];
+    msg_buf[0] = msg_type;
+    msg_buf[1..msg_end].copy_from_slice(payload);
+    let mut inner_buf = [0u8; 512];
+    let inner_len =
+        wire::prepend_inner_header(timestamp, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+    let mut out = [0u8; 1024];
+    let fl = wire::encrypt_and_assemble(
+        receiver,
+        counter,
+        0x00,
+        &inner_buf[..inner_len],
+        key,
+        &mut out,
+    )
+    .unwrap();
+    out[..fl].to_vec()
+}
+
 // Tests FIPS: bd08505 fips/src/node/wire.rs:build_established_header() — established outer header carries receiver_idx and counter.
 #[test]
 fn established_frame_header_layout_matches_fips() {
     let key = [0x77u8; 32];
-    let mut out = [0u8; 256];
-    let len = fmp::build_established(
-        fmp::SessionIndex::new(0xAABBCCDD),
+    let out = established_frame(
+        wire::SessionIndex::new(0xAABBCCDD),
         0x0102030405060708,
         0x51,
         0x99AA55CC,
         &[],
         &key,
-        &mut out,
-    )
-    .unwrap();
+    );
 
-    assert!(len >= fmp::ESTABLISHED_HEADER_SIZE + noise::TAG_SIZE);
+    assert!(out.len() >= wire::ESTABLISHED_HEADER_SIZE + noise::TAG_SIZE);
     assert_eq!(out[0], 0x00);
     assert_eq!(
         u32::from_le_bytes(out[4..8].try_into().unwrap()),
@@ -157,26 +182,23 @@ fn established_frame_header_layout_matches_fips() {
 #[test]
 fn established_frame_decrypts_to_timestamp_and_msg_type() {
     let key = [0x88u8; 32];
-    let mut out = [0u8; 256];
     let timestamp = 0x11223344;
-    let len = fmp::build_established(
-        fmp::SessionIndex::new(5),
+    let out = established_frame(
+        wire::SessionIndex::new(5),
         42,
-        fmp::MSG_HEARTBEAT,
+        wire::MSG_HEARTBEAT,
         timestamp,
         &[],
         &key,
-        &mut out,
-    )
-    .unwrap();
+    );
 
-    let aad = &out[..fmp::ESTABLISHED_HEADER_SIZE];
+    let aad = &out[..wire::ESTABLISHED_HEADER_SIZE];
     let mut plaintext = [0u8; 64];
     let pt_len = noise::aead_decrypt(
         &key,
         42,
         aad,
-        &out[fmp::ESTABLISHED_HEADER_SIZE..len],
+        &out[wire::ESTABLISHED_HEADER_SIZE..],
         &mut plaintext,
     )
     .unwrap();
@@ -186,56 +208,50 @@ fn established_frame_decrypts_to_timestamp_and_msg_type() {
         u32::from_le_bytes(plaintext[..4].try_into().unwrap()),
         timestamp
     );
-    assert_eq!(plaintext[4], fmp::MSG_HEARTBEAT);
+    assert_eq!(plaintext[4], wire::MSG_HEARTBEAT);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:ENCRYPTED_MIN_SIZE semantics — heartbeat wire frame is 4+4+8+5+16=37 bytes.
 #[test]
 fn heartbeat_frame_size_is_37_bytes() {
     let key = [0x99u8; 32];
-    let mut out = [0u8; 256];
-    let len = fmp::build_established(
-        fmp::SessionIndex::new(9),
+    let out = established_frame(
+        wire::SessionIndex::new(9),
         10,
-        fmp::MSG_HEARTBEAT,
+        wire::MSG_HEARTBEAT,
         11,
         &[],
         &key,
-        &mut out,
-    )
-    .unwrap();
+    );
 
-    assert_eq!(len, 37);
+    assert_eq!(out.len(), 37);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:strip_inner_header() — heartbeat carries no extra inner payload bytes.
 #[test]
 fn heartbeat_inner_payload_is_empty() {
     let key = [0xABu8; 32];
-    let mut out = [0u8; 256];
-    let len = fmp::build_established(
-        fmp::SessionIndex::new(1),
+    let out = established_frame(
+        wire::SessionIndex::new(1),
         2,
-        fmp::MSG_HEARTBEAT,
+        wire::MSG_HEARTBEAT,
         3,
         &[],
         &key,
-        &mut out,
-    )
-    .unwrap();
+    );
 
-    let aad = &out[..fmp::ESTABLISHED_HEADER_SIZE];
+    let aad = &out[..wire::ESTABLISHED_HEADER_SIZE];
     let mut plaintext = [0u8; 64];
     let pt_len = noise::aead_decrypt(
         &key,
         2,
         aad,
-        &out[fmp::ESTABLISHED_HEADER_SIZE..len],
+        &out[wire::ESTABLISHED_HEADER_SIZE..],
         &mut plaintext,
     )
     .unwrap();
 
-    assert_eq!(pt_len, fmp::INNER_HEADER_SIZE);
+    assert_eq!(pt_len, wire::INNER_HEADER_SIZE);
 }
 
 // Tests FIPS: bd08505 fips/src/protocol/session.rs:SessionSetup::encode() — SessionSetup prefix/body/count/hs_len layout matches reference.

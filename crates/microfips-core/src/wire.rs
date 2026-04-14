@@ -222,28 +222,47 @@ pub fn strip_inner_header(plaintext: &[u8]) -> Option<(u32, &[u8])> {
     Some((timestamp, &plaintext[4..]))
 }
 
-// FIPS: bd08505 node/wire.rs:build_established_header()
-// FIPS: bd08505 noise/mod.rs:send_encrypted_link_message_with_ce()
-pub fn build_established(
+// FIPS: bd08505 node/wire.rs:build_encrypted()
+/// Assemble a complete established frame from a 16-byte header and ciphertext.
+///
+/// Writes `[header:16][ciphertext]` into `out`.
+/// Returns `Some(total_len)` or `None` if `out` is too small.
+pub fn build_encrypted(
+    header: &[u8; ESTABLISHED_HEADER_SIZE],
+    ciphertext: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let total = ESTABLISHED_HEADER_SIZE + ciphertext.len();
+    if out.len() < total {
+        return None;
+    }
+    out[..ESTABLISHED_HEADER_SIZE].copy_from_slice(header);
+    out[ESTABLISHED_HEADER_SIZE..total].copy_from_slice(ciphertext);
+    Some(total)
+}
+
+// FIPS: bd08505 node/wire.rs:build_established_header() + noise/mod.rs:encrypt_with_aad()
+/// Encrypt inner plaintext and assemble a complete established frame (two-step pattern).
+///
+/// The caller constructs `inner` via `prepend_inner_header(timestamp, &[msg_type, ..payload], buf)`.
+/// This function builds the outer header, encrypts with the header as AEAD AAD, and assembles.
+/// Returns `Some(total_frame_len)` or `None` on buffer overflow or encryption failure.
+pub fn encrypt_and_assemble(
     receiver_idx: SessionIndex,
     counter: u64,
-    msg_type: u8,
-    timestamp: u32,
-    inner_payload: &[u8],
+    flags: u8,
+    inner: &[u8],
     key: &[u8; 32],
     out: &mut [u8],
 ) -> Option<usize> {
-    let inner_len = INNER_HEADER_SIZE + inner_payload.len();
-    let encrypted_len = inner_len + crate::noise::TAG_SIZE;
-    let payload_len = inner_len as u16;
+    let encrypted_len = inner.len() + crate::noise::TAG_SIZE;
     let total = ESTABLISHED_HEADER_SIZE + encrypted_len;
 
     #[cfg(feature = "std")]
     log::debug!(
-        "FMP build_established: msg_type=0x{:02x} counter={} inner_len={} total={}",
-        msg_type,
+        "FMP encrypt_and_assemble: counter={} inner_len={} total={}",
         counter,
-        inner_len,
+        inner.len(),
         total
     );
 
@@ -251,37 +270,17 @@ pub fn build_established(
         return None;
     }
 
-    let prefix = build_prefix(PHASE_ESTABLISHED, 0x00, payload_len);
-    out[..COMMON_PREFIX_SIZE].copy_from_slice(&prefix);
-    let mut pos = COMMON_PREFIX_SIZE;
-
-    out[pos..pos + IDX_SIZE].copy_from_slice(&receiver_idx.to_le_bytes());
-    pos += IDX_SIZE;
-    out[pos..pos + 8].copy_from_slice(&counter.to_le_bytes());
-    pos += 8;
-
-    let mut outer_header = [0u8; ESTABLISHED_HEADER_SIZE];
-    outer_header[..pos].copy_from_slice(&out[..pos]);
-    let outer_header_ref = &outer_header[..pos];
-
-    let mut inner = [0u8; 512];
-    inner[..4].copy_from_slice(&timestamp.to_le_bytes());
-    inner[4] = msg_type;
-    if !inner_payload.is_empty() {
-        inner[INNER_HEADER_SIZE..INNER_HEADER_SIZE + inner_payload.len()]
-            .copy_from_slice(inner_payload);
-    }
-
-    let _enc_len = crate::noise::aead_encrypt(
+    let header = build_established_header(receiver_idx, counter, flags, inner.len() as u16);
+    out[..ESTABLISHED_HEADER_SIZE].copy_from_slice(&header);
+    let enc_len = crate::noise::aead_encrypt(
         key,
         counter,
-        outer_header_ref,
-        &inner[..inner_len],
-        &mut out[pos..],
+        &header,
+        inner,
+        &mut out[ESTABLISHED_HEADER_SIZE..],
     )
     .ok()?;
-
-    Some(total)
+    Some(ESTABLISHED_HEADER_SIZE + enc_len)
 }
 
 /// Common 4-byte FMP prefix present on every frame.
@@ -624,13 +623,14 @@ mod tests {
     #[test]
     fn build_established_size() {
         let key = [0x42u8; 32];
+        let mut inner_buf = [0u8; 32];
+        let inner_len = prepend_inner_header(12345, &[MSG_HEARTBEAT], &mut inner_buf).unwrap();
         let mut out = [0u8; 1024];
-        let len = build_established(
+        let len = encrypt_and_assemble(
             SessionIndex::new(0),
             1,
-            MSG_HEARTBEAT,
-            12345,
-            &[],
+            0x00,
+            &inner_buf[..inner_len],
             &key,
             &mut out,
         )
@@ -643,13 +643,14 @@ mod tests {
     #[test]
     fn parse_established_roundtrip() {
         let key = [0x42u8; 32];
+        let mut inner_buf = [0u8; 32];
+        let inner_len = prepend_inner_header(12345, &[MSG_HEARTBEAT], &mut inner_buf).unwrap();
         let mut out = [0u8; 1024];
-        let len = build_established(
+        let len = encrypt_and_assemble(
             SessionIndex::new(1),
             42,
-            MSG_HEARTBEAT,
-            12345,
-            &[],
+            0x00,
+            &inner_buf[..inner_len],
             &key,
             &mut out,
         )
@@ -673,13 +674,25 @@ mod tests {
     fn established_decrypt_roundtrip() {
         let key = [0x42u8; 32];
         let payload = b"test data";
+        let msg_with_payload = {
+            let mut buf = [0u8; 512];
+            buf[0] = MSG_SESSION_DATAGRAM;
+            buf[1..1 + payload.len()].copy_from_slice(payload);
+            buf
+        };
+        let mut inner_buf = [0u8; 512];
+        let inner_len = prepend_inner_header(
+            99999,
+            &msg_with_payload[..1 + payload.len()],
+            &mut inner_buf,
+        )
+        .unwrap();
         let mut out = [0u8; 1024];
-        let len = build_established(
+        let len = encrypt_and_assemble(
             SessionIndex::new(1),
             42,
-            MSG_SESSION_DATAGRAM,
-            99999,
-            payload,
+            0x00,
+            &inner_buf[..inner_len],
             &key,
             &mut out,
         )
@@ -735,16 +748,15 @@ mod tests {
 
     #[test]
     fn established_heartbeat_minimum_size() {
-        // Heartbeat: 4 (prefix) + 4 (receiver_idx) + 8 (counter) +
-        //            37 (encrypted = 5 inner + 16 tag) = 53 bytes
         let key = [0x42u8; 32];
+        let mut inner_buf = [0u8; 32];
+        let inner_len = prepend_inner_header(0, &[MSG_HEARTBEAT], &mut inner_buf).unwrap();
         let mut out = [0u8; 256];
-        let len = build_established(
+        let len = encrypt_and_assemble(
             SessionIndex::new(1),
             0,
-            MSG_HEARTBEAT,
-            0,
-            &[],
+            0x00,
+            &inner_buf[..inner_len],
             &key,
             &mut out,
         )
@@ -883,16 +895,17 @@ mod tests {
     }
 
     #[test]
-    fn build_established_returns_none_on_small_buffer() {
+    fn encrypt_and_assemble_returns_none_on_small_buffer() {
         let key = [0x42u8; 32];
+        let mut inner_buf = [0u8; 32];
+        let inner_len = prepend_inner_header(0, &[MSG_HEARTBEAT], &mut inner_buf).unwrap();
         // A heartbeat needs at least 37 bytes (4+4+8+5+16). A 10-byte buffer is too small.
         let mut out = [0u8; 10];
-        assert!(build_established(
+        assert!(encrypt_and_assemble(
             SessionIndex::new(0),
             0,
-            MSG_HEARTBEAT,
-            0,
-            &[],
+            0x00,
+            &inner_buf[..inner_len],
             &key,
             &mut out
         )
@@ -961,15 +974,16 @@ mod tests {
     }
 
     #[test]
-    fn build_established_header_matches_existing_build_established_prefix() {
+    fn build_established_header_matches_encrypt_and_assemble_prefix() {
         let key = [0x42u8; 32];
+        let mut inner_buf = [0u8; 32];
+        let inner_len = prepend_inner_header(99999, &[MSG_HEARTBEAT], &mut inner_buf).unwrap();
         let mut out = [0u8; 256];
-        build_established(
+        encrypt_and_assemble(
             SessionIndex::new(7),
             42,
-            MSG_HEARTBEAT,
-            99999,
-            &[],
+            0x00,
+            &inner_buf[..inner_len],
             &key,
             &mut out,
         )
@@ -989,12 +1003,17 @@ mod tests {
             (MSG_SESSION_DATAGRAM, &[0u8; 200][..]),
             (MSG_DISCONNECT, &[][..]),
         ] {
-            let len = build_established(
+            let mut msg_buf = [0u8; 512];
+            msg_buf[0] = msg_type;
+            msg_buf[1..1 + payload.len()].copy_from_slice(payload);
+            let mut inner_buf = [0u8; 512];
+            let inner_len =
+                prepend_inner_header(99999, &msg_buf[..1 + payload.len()], &mut inner_buf).unwrap();
+            let len = encrypt_and_assemble(
                 SessionIndex::new(0),
                 1,
-                msg_type,
-                99999,
-                payload,
+                0x00,
+                &inner_buf[..inner_len],
                 &key,
                 &mut out,
             )

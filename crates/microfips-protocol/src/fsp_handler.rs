@@ -1,6 +1,6 @@
 use embassy_time::{Duration, Instant};
 
-use microfips_core::fmp;
+use microfips_core::wire;
 use microfips_core::fsp::{
     FspInitiatorSession, FspInitiatorState, FspSession, FspSessionState, FSP_HEADER_SIZE,
     FSP_INNER_HEADER_SIZE, SESSION_DATAGRAM_BODY_SIZE,
@@ -128,7 +128,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
     where
         A: FspAppHandler,
     {
-        if msg_type != fmp::MSG_SESSION_DATAGRAM {
+        if msg_type != wire::MSG_SESSION_DATAGRAM {
             return HandleResult::None;
         }
         if payload.len() < SESSION_DATAGRAM_BODY_SIZE {
@@ -268,7 +268,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
     }
 
     fn handle_initiator(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
-        if msg_type != fmp::MSG_SESSION_DATAGRAM {
+        if msg_type != wire::MSG_SESSION_DATAGRAM {
             return HandleResult::None;
         }
         let target_addr = match &self.target_addr {

@@ -11,7 +11,7 @@
 //! - `noise/mod.rs` — Noise constants, CipherState
 //! - `noise/handshake.rs` — HandshakeState, SymmetricState
 
-use microfips_core::fmp;
+use microfips_core::wire;
 use microfips_core::fsp;
 use microfips_core::noise;
 
@@ -27,24 +27,52 @@ fn gen_key() -> [u8; 32] {
     }
 }
 
+fn build_two_step_established(
+    receiver: wire::SessionIndex,
+    counter: u64,
+    msg_type: u8,
+    timestamp: u32,
+    payload: &[u8],
+    key: &[u8; 32],
+) -> (std::vec::Vec<u8>, usize) {
+    let msg_end = 1 + payload.len();
+    let mut msg_buf = [0u8; 512];
+    msg_buf[0] = msg_type;
+    msg_buf[1..msg_end].copy_from_slice(payload);
+    let mut inner_buf = [0u8; 512];
+    let inner_len =
+        wire::prepend_inner_header(timestamp, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+    let mut out = [0u8; 1024];
+    let fl = wire::encrypt_and_assemble(
+        receiver,
+        counter,
+        0x00,
+        &inner_buf[..inner_len],
+        key,
+        &mut out,
+    )
+    .unwrap();
+    (out[..fl].to_vec(), fl)
+}
+
 // ---- FMP Wire Format Tests ----
 
 #[test]
 fn test_fmp_prefix_version_phase_encoding() {
     // FIPS: wire.rs:114-116 ver_phase_byte() = (version << 4) | (phase & 0x0F)
     // FIPS: wire.rs:28 FMP_VERSION=0
-    let p1 = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 0);
+    let p1 = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
     assert_eq!(p1[0], 0x01, "phase 1: version=0, phase=1");
     assert_eq!(p1[1], 0x00, "flags=0");
     assert_eq!(p1[2], 0x00, "payload_len low=0");
     assert_eq!(p1[3], 0x00, "payload_len high=0");
 
-    let p2 = fmp::build_prefix(fmp::PHASE_MSG2, 0x03, 65);
+    let p2 = wire::build_prefix(wire::PHASE_MSG2, 0x03, 65);
     assert_eq!(p2[0], 0x02, "phase 2: version=0, phase=2");
     assert_eq!(p2[1], 0x03, "flags=3");
     assert_eq!(u16::from_le_bytes([p2[2], p2[3]]), 65);
 
-    let pe = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 100);
+    let pe = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 100);
     assert_eq!(pe[0], 0x00, "phase 0: version=0, phase=0");
     assert_eq!(u16::from_le_bytes([pe[2], pe[3]]), 100);
 }
@@ -53,12 +81,12 @@ fn test_fmp_prefix_version_phase_encoding() {
 fn test_fmp_msg1_wire_layout() {
     // FIPS: wire.rs:314-326 build_msg1()
     // Layout: [0x01][0x00][payload_len:2LE][sender_idx:4LE][noise_payload:106]
-    let noise_payload = [0x42u8; fmp::HANDSHAKE_MSG1_SIZE];
+    let noise_payload = [0x42u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
     let len =
-        fmp::build_msg1(fmp::SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out).unwrap();
+        wire::build_msg1(wire::SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out).unwrap();
 
-    assert_eq!(len, fmp::MSG1_WIRE_SIZE, "MSG1 total size");
+    assert_eq!(len, wire::MSG1_WIRE_SIZE, "MSG1 total size");
     assert_eq!(len, 114, "MSG1 = 4+4+106");
 
     // Byte 0: ver_phase
@@ -84,17 +112,17 @@ fn test_fmp_msg1_wire_layout() {
 fn test_fmp_msg2_wire_layout() {
     // FIPS: wire.rs:331-344 build_msg2()
     // Layout: [0x02][0x00][payload_len:2LE][sender_idx:4LE][receiver_idx:4LE][noise_payload:57]
-    let noise_payload = [0x42u8; fmp::HANDSHAKE_MSG2_SIZE];
+    let noise_payload = [0x42u8; wire::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
-    let len = fmp::build_msg2(
-        fmp::SessionIndex::new(1),
-        fmp::SessionIndex::new(2),
+    let len = wire::build_msg2(
+        wire::SessionIndex::new(1),
+        wire::SessionIndex::new(2),
         &noise_payload,
         &mut out,
     )
     .unwrap();
 
-    assert_eq!(len, fmp::MSG2_WIRE_SIZE, "MSG2 total size");
+    assert_eq!(len, wire::MSG2_WIRE_SIZE, "MSG2 total size");
     assert_eq!(len, 69, "MSG2 = 4+4+4+57");
 
     assert_eq!(out[0], 0x02, "version=0, phase=2");
@@ -123,25 +151,22 @@ fn test_fmp_established_header_is_16_bytes_aad() {
     // FIPS: wire.rs:43 ESTABLISHED_HEADER_SIZE=16
     // FIPS: encrypted.rs:97 uses header_bytes (first 16 bytes) as AEAD AAD
     let key = [0x42u8; 32];
-    let mut out = [0u8; 256];
-    let len = fmp::build_established(
-        fmp::SessionIndex::new(5),
+    let (out, len) = build_two_step_established(
+        wire::SessionIndex::new(5),
         42,
-        fmp::MSG_HEARTBEAT,
+        wire::MSG_HEARTBEAT,
         99999,
         &[],
         &key,
-        &mut out,
-    )
-    .unwrap();
+    );
 
     assert!(
-        len >= fmp::ESTABLISHED_HEADER_SIZE,
+        len >= wire::ESTABLISHED_HEADER_SIZE,
         "must have at least 16-byte header"
     );
 
     // First 16 bytes = AEAD AAD
-    let aad = &out[..fmp::ESTABLISHED_HEADER_SIZE];
+    let aad = &out[..wire::ESTABLISHED_HEADER_SIZE];
     // Byte 0: ver_phase = (0<<4)|0x0 = 0x00
     assert_eq!(aad[0], 0x00, "established phase=0");
     // Byte 1: flags = 0x00
@@ -160,17 +185,17 @@ fn test_fmp_established_header_is_16_bytes_aad() {
     );
 
     // Verify AEAD decrypt with these 16 bytes as AAD produces correct plaintext
-    let encrypted = &out[fmp::ESTABLISHED_HEADER_SIZE..len];
+    let encrypted = &out[wire::ESTABLISHED_HEADER_SIZE..len];
     let mut dec = [0u8; 512];
     let dl = noise::aead_decrypt(&key, 42, aad, encrypted, &mut dec).unwrap();
     assert_eq!(
         dl,
-        fmp::INNER_HEADER_SIZE,
+        wire::INNER_HEADER_SIZE,
         "heartbeat has 5-byte inner header"
     );
     let ts = u32::from_le_bytes(dec[..4].try_into().unwrap());
     assert_eq!(ts, 99999, "timestamp preserved");
-    assert_eq!(dec[4], fmp::MSG_HEARTBEAT, "msg_type=heartbeat");
+    assert_eq!(dec[4], wire::MSG_HEARTBEAT, "msg_type=heartbeat");
 }
 
 // ---- FSP Wire Format Tests ----
@@ -554,8 +579,8 @@ fn test_noise_constants_match_fips() {
     assert_eq!(noise::TAG_SIZE, 16, "FIPS: mod.rs:65");
     assert_eq!(noise::EPOCH_SIZE, 8, "FIPS: mod.rs:71");
     assert_eq!(noise::PUBKEY_SIZE, 33, "FIPS: mod.rs:68");
-    assert_eq!(fmp::HANDSHAKE_MSG1_SIZE, 106, "FIPS: mod.rs:77 — 33+49+24");
-    assert_eq!(fmp::HANDSHAKE_MSG2_SIZE, 57, "FIPS: mod.rs:80 — 33+24");
+    assert_eq!(wire::HANDSHAKE_MSG1_SIZE, 106, "FIPS: mod.rs:77 — 33+49+24");
+    assert_eq!(wire::HANDSHAKE_MSG2_SIZE, 57, "FIPS: mod.rs:80 — 33+24");
     assert_eq!(fsp::XK_HANDSHAKE_MSG1_SIZE, 33, "FIPS: mod.rs:83");
     assert_eq!(fsp::XK_HANDSHAKE_MSG2_SIZE, 57, "FIPS: mod.rs:86");
     assert_eq!(fsp::XK_HANDSHAKE_MSG3_SIZE, 73, "FIPS: mod.rs:89 — 49+24");
@@ -564,19 +589,19 @@ fn test_noise_constants_match_fips() {
 #[test]
 fn test_fmp_constants_match_fips() {
     // FIPS: wire.rs:28-67
-    assert_eq!(fmp::FMP_VERSION, 0, "FIPS: wire.rs:28");
-    assert_eq!(fmp::COMMON_PREFIX_SIZE, 4, "FIPS: wire.rs:40");
-    assert_eq!(fmp::ESTABLISHED_HEADER_SIZE, 16, "FIPS: wire.rs:43 — 4+4+8");
-    assert_eq!(fmp::INNER_HEADER_SIZE, 5, "FIPS: wire.rs:55 — 4+1");
-    assert_eq!(fmp::ENCRYPTED_MIN_SIZE, 32, "FIPS: wire.rs:52 — 16+16");
-    assert_eq!(fmp::MSG1_WIRE_SIZE, 114, "FIPS: wire.rs:46 — 4+4+106");
-    assert_eq!(fmp::MSG2_WIRE_SIZE, 69, "FIPS: wire.rs:49 — 4+4+4+57");
-    assert_eq!(fmp::PHASE_ESTABLISHED, 0x00, "FIPS: wire.rs:31");
-    assert_eq!(fmp::PHASE_MSG1, 0x01, "FIPS: wire.rs:34");
-    assert_eq!(fmp::PHASE_MSG2, 0x02, "FIPS: wire.rs:37");
-    assert_eq!(fmp::FLAG_KEY_EPOCH, 0x01, "FIPS: wire.rs:61");
-    assert_eq!(fmp::FLAG_CE, 0x02, "FIPS: wire.rs:64");
-    assert_eq!(fmp::FLAG_SP, 0x04, "FIPS: wire.rs:67");
+    assert_eq!(wire::FMP_VERSION, 0, "FIPS: wire.rs:28");
+    assert_eq!(wire::COMMON_PREFIX_SIZE, 4, "FIPS: wire.rs:40");
+    assert_eq!(wire::ESTABLISHED_HEADER_SIZE, 16, "FIPS: wire.rs:43 — 4+4+8");
+    assert_eq!(wire::INNER_HEADER_SIZE, 5, "FIPS: wire.rs:55 — 4+1");
+    assert_eq!(wire::ENCRYPTED_MIN_SIZE, 32, "FIPS: wire.rs:52 — 16+16");
+    assert_eq!(wire::MSG1_WIRE_SIZE, 114, "FIPS: wire.rs:46 — 4+4+106");
+    assert_eq!(wire::MSG2_WIRE_SIZE, 69, "FIPS: wire.rs:49 — 4+4+4+57");
+    assert_eq!(wire::PHASE_ESTABLISHED, 0x00, "FIPS: wire.rs:31");
+    assert_eq!(wire::PHASE_MSG1, 0x01, "FIPS: wire.rs:34");
+    assert_eq!(wire::PHASE_MSG2, 0x02, "FIPS: wire.rs:37");
+    assert_eq!(wire::FLAG_KEY_EPOCH, 0x01, "FIPS: wire.rs:61");
+    assert_eq!(wire::FLAG_CE, 0x02, "FIPS: wire.rs:64");
+    assert_eq!(wire::FLAG_SP, 0x04, "FIPS: wire.rs:67");
 }
 
 #[test]

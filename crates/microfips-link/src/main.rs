@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use k256::SecretKey;
-use microfips_core::fmp;
+use microfips_core::wire;
 use microfips_core::identity::{load_peer_pub, load_secret};
 use microfips_core::noise;
 use rand::RngCore;
@@ -96,8 +96,8 @@ fn main() -> ExitCode {
     };
 
     let mut fmp_msg1 = [0u8; 256];
-    let fmp_len = fmp::build_msg1(
-        fmp::SessionIndex::new(0),
+    let fmp_len = wire::build_msg1(
+        wire::SessionIndex::new(0),
         &noise_msg1[..noise_len],
         &mut fmp_msg1,
     )
@@ -115,9 +115,9 @@ fn main() -> ExitCode {
         Ok((len, addr)) => {
             log::info!("[FIPS → LINK] RX {}B from {}", len, addr);
 
-            match fmp::parse_message(&recv_buf[..len]) {
+            match wire::parse_message(&recv_buf[..len]) {
                 Some(msg) => match msg {
-                    fmp::FmpMessage::Msg2 {
+                    wire::FmpMessage::Msg2 {
                         sender_idx,
                         receiver_idx,
                         noise_payload,
@@ -146,11 +146,11 @@ fn main() -> ExitCode {
                             }
                         }
                     }
-                    fmp::FmpMessage::Msg1 { .. } => {
+                    wire::FmpMessage::Msg1 { .. } => {
                         log::error!("[FIPS → LINK] received MSG1 (expected MSG2)");
                         ExitCode::from(2)
                     }
-                    fmp::FmpMessage::Established { .. } => {
+                    wire::FmpMessage::Established { .. } => {
                         log::error!("[FIPS → LINK] received Established (expected MSG2)");
                         ExitCode::from(2)
                     }
