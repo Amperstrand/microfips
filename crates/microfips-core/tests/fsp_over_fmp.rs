@@ -1,4 +1,3 @@
-use microfips_core::wire;
 use microfips_core::fsp::{
     self, build_fsp_encrypted, build_fsp_header, build_session_datagram_body, build_session_msg3,
     build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack,
@@ -9,6 +8,7 @@ use microfips_core::noise::{
     aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseIkInitiator, NoiseIkResponder,
     NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE,
 };
+use microfips_core::wire;
 use rand::RngCore;
 
 const INIT_SECRET: [u8; 32] = STM32_NSEC;

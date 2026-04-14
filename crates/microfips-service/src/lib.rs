@@ -400,13 +400,13 @@ pub fn route_suffix<'a>(route: &'a str, prefix: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microfips_core::wire;
     use microfips_core::fsp::{
         build_fsp_data_message, build_session_datagram_body, FspInitiatorSession,
         FspInitiatorState, SESSION_DATAGRAM_BODY_SIZE,
     };
     use microfips_core::identity::NodeAddr;
     use microfips_core::noise::{aead_decrypt, ecdh_pubkey, parity_normalize};
+    use microfips_core::wire;
     use microfips_protocol::fsp_handler::FspDualHandler;
     use microfips_protocol::node::{HandleResult, NodeHandler};
 

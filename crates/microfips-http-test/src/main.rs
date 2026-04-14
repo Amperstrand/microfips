@@ -2,10 +2,10 @@ use std::net::UdpSocket;
 use std::time::Duration;
 
 use k256::SecretKey;
-use microfips_core::wire;
 use microfips_core::fsp::{self, SESSION_DATAGRAM_BODY_SIZE};
 use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
+use microfips_core::wire;
 use microfips_service::{decode_response, encode_request, ServiceMethod};
 use rand::RngCore;
 
