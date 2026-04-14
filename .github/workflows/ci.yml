@@ -350,15 +350,11 @@ jobs:
           espup install
           echo "$HOME/.esp-rs/esptool" >> "$GITHUB_PATH"
           source "$HOME/export-esp.sh"
+          rustup component add rust-src --toolchain esp
           echo "ESPUP_HOME=$HOME/.esp-rs" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$HOME/.rustup/toolchains/esp/xtensa-esp32-elf-clang/esp-clang/lib" >> "$GITHUB_ENV"
           echo "PATH=$HOME/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/bin:$PATH" >> "$GITHUB_ENV"
           rustup toolchain list
-
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: esp
-          components: rust-src
 
       - uses: Swatinem/rust-cache@v2
         with:
