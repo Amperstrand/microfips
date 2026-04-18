@@ -1,13 +1,13 @@
 use embassy_time::{Duration, Instant};
 
 pub const MIN_RECONNECT_MS: u64 = 5_000;
-pub const MAX_RECONNECT_MS: u64 = 120_000;
+pub const MAX_RECONNECT_MS: u64 = 300_000;
 pub const RECONNECT_BACKOFF_BASE_MS: u64 = 5_000;
 pub const FRAME_RATE_WINDOW_MS: u64 = 1_000;
 pub const FRAME_RATE_MAX: u16 = 100;
-pub const SILENT_PEER_SECS: u64 = 120;
+pub const SILENT_PEER_SECS: u64 = 30;
 pub const SILENT_PEER_MIN_DATA_RATIO: u32 = 1;
-pub const MAX_CONSECUTIVE_BAD: u16 = 10;
+pub const MAX_CONSECUTIVE_BAD: u16 = 20;
 pub const MAX_CONSECUTIVE_FAILURES: u16 = 20;
 
 pub struct PeerPolicy {
@@ -44,6 +44,12 @@ impl PeerPolicy {
     }
 
     pub fn check_reconnect(&self, now: Instant) -> PolicyVerdict {
+        let Some(last_connect) = self.last_connect else {
+            return PolicyVerdict::Allow;
+        };
+
+        let elapsed_ms = now.as_millis().saturating_sub(last_connect.as_millis()) as u64;
+
         let failure_backoff_ms = if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
             MAX_RECONNECT_MS
         } else if self.consecutive_failures == 0 {
@@ -55,21 +61,10 @@ impl PeerPolicy {
                 .min(MAX_RECONNECT_MS)
         };
 
-        if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-            return PolicyVerdict::Backoff(Duration::from_millis(MAX_RECONNECT_MS));
-        }
+        let required_ms = MIN_RECONNECT_MS.max(failure_backoff_ms);
 
-        if let Some(last_connect) = self.last_connect {
-            let elapsed_ms = now.as_millis().saturating_sub(last_connect.as_millis()) as u64;
-            if elapsed_ms < MIN_RECONNECT_MS {
-                return PolicyVerdict::Backoff(Duration::from_millis(
-                    MIN_RECONNECT_MS - elapsed_ms,
-                ));
-            }
-        }
-
-        if failure_backoff_ms > 0 {
-            PolicyVerdict::Backoff(Duration::from_millis(failure_backoff_ms))
+        if elapsed_ms < required_ms {
+            PolicyVerdict::Backoff(Duration::from_millis(required_ms - elapsed_ms))
         } else {
             PolicyVerdict::Allow
         }
@@ -158,6 +153,15 @@ impl PeerPolicy {
         self.session_start = None;
         self.consecutive_bad_frames = 0;
     }
+
+    pub fn set_session_start(&mut self, instant: Instant) {
+        self.session_start = Some(instant);
+    }
+
+    #[cfg(test)]
+    pub fn force_past_session_start(&mut self) {
+        self.session_start = Some(Instant::from_ticks(0));
+    }
 }
 
 impl Default for PeerPolicy {
@@ -200,15 +204,22 @@ mod tests {
         let mut policy = PeerPolicy::new();
         let now = Instant::now();
         policy.record_handshake_failure(now);
-        let after_min = now + Duration::from_millis(MIN_RECONNECT_MS);
-
-        assert_backoff(policy.check_reconnect(after_min), RECONNECT_BACKOFF_BASE_MS);
-
-        policy.record_handshake_failure(after_min);
-        let after_second_min = after_min + Duration::from_millis(MIN_RECONNECT_MS);
 
         assert_backoff(
-            policy.check_reconnect(after_second_min),
+            policy.check_reconnect(now + Duration::from_millis(MIN_RECONNECT_MS - 1)),
+            RECONNECT_BACKOFF_BASE_MS - (MIN_RECONNECT_MS - 1),
+        );
+
+        assert_eq!(
+            policy.check_reconnect(now + Duration::from_millis(RECONNECT_BACKOFF_BASE_MS)),
+            PolicyVerdict::Allow
+        );
+
+        policy.record_handshake_failure(now + Duration::from_millis(MIN_RECONNECT_MS));
+        let after_second = now + Duration::from_millis(MIN_RECONNECT_MS);
+
+        assert_backoff(
+            policy.check_reconnect(after_second),
             RECONNECT_BACKOFF_BASE_MS * 2,
         );
     }
@@ -217,14 +228,17 @@ mod tests {
     fn test_backoff_caps_at_max() {
         let mut policy = PeerPolicy::new();
         let start = Instant::now();
-        let mut now = start;
+        let last_failure = start;
 
-        for _ in 0..MAX_CONSECUTIVE_FAILURES {
-            policy.record_handshake_failure(now);
-            now += Duration::from_millis(MIN_RECONNECT_MS);
+        policy.record_handshake_failure(last_failure);
+        for _ in 1..MAX_CONSECUTIVE_FAILURES {
+            policy.record_handshake_failure(last_failure);
         }
 
-        assert_backoff(policy.check_reconnect(now), MAX_RECONNECT_MS);
+        assert_backoff(policy.check_reconnect(last_failure), MAX_RECONNECT_MS);
+
+        let after_max = last_failure + Duration::from_millis(MAX_RECONNECT_MS + 1);
+        assert_eq!(policy.check_reconnect(after_max), PolicyVerdict::Allow);
     }
 
     #[test]
