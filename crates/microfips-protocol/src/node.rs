@@ -101,6 +101,8 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     raw_framing: bool,
     epoch: u64,
     peer_sent_first: bool,
+    #[cfg(feature = "mmp")]
+    mmp: crate::mmp::MmpPeerState,
 }
 
 impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
@@ -118,6 +120,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             raw_framing: false,
             epoch: 0,
             peer_sent_first: false,
+            #[cfg(feature = "mmp")]
+            mmp: crate::mmp::MmpPeerState::new(),
         }
     }
 
@@ -525,6 +529,58 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 self.send_link_message(them, &mut send_ctr, msg_type, len, ks)
                                     .await;
                             }
+                            #[cfg(feature = "mmp")]
+                            FrameAction::MmpRecv { counter, sender_timestamp, frame_bytes } => {
+                                self.mmp.receiver.record_recv(
+                                    counter,
+                                    sender_timestamp,
+                                    frame_bytes,
+                                    false,
+                                    embassy_time::Instant::now(),
+                                );
+                            }
+                            #[cfg(feature = "mmp")]
+                            FrameAction::MmpSenderReport { counter, sender_timestamp, frame_bytes, report: _ } => {
+                                let now = embassy_time::Instant::now();
+                                self.mmp.receiver.record_recv(
+                                    counter,
+                                    sender_timestamp,
+                                    frame_bytes,
+                                    false,
+                                    now,
+                                );
+                                if self.mmp.receiver.should_send_report(now) {
+                                    if let Some(rr) = self.mmp.receiver.build_report(now) {
+                                        let encoded = rr.encode();
+                                        let body_len = encoded.len();
+                                        self.resp_buf[..body_len].copy_from_slice(&encoded);
+                                        self.send_link_message(
+                                            them,
+                                            &mut send_ctr,
+                                            wire::MSG_RECEIVER_REPORT,
+                                            body_len,
+                                            ks,
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                            #[cfg(feature = "mmp")]
+                            FrameAction::MmpReceiverReport { counter: _, sender_timestamp: _, frame_bytes: _, report } => {
+                                let now = embassy_time::Instant::now();
+                                let our_ts = now.as_millis() as u32;
+                                let _first_rtt = self.mmp.metrics.process_receiver_report(
+                                    &report, our_ts, now,
+                                );
+                                if let Some(srtt_ms) = self.mmp.metrics.srtt_ms() {
+                                    let srtt_us = (srtt_ms * 1000.0) as i64;
+                                    self.mmp.sender.update_report_interval_from_srtt(srtt_us);
+                                    self.mmp.receiver.update_report_interval_from_srtt(srtt_us);
+                                }
+                                let our_recv = self.mmp.receiver.cumulative_packets_recv();
+                                let peer_highest = self.mmp.receiver.highest_counter();
+                                self.mmp.metrics.update_reverse_delivery(our_recv, peer_highest);
+                            }
                         }
                     }
                     if self.rpos >= self.rlen {
@@ -536,7 +592,23 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         log_steady!("steady: sending heartbeat (recv branch, ctr={})", send_ctr);
                         next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
                         handler.on_event(NodeEvent::HeartbeatSent).await;
+                        #[cfg(feature = "mmp")]
+                        self.mmp.snapshot_stats();
                     }
+                    #[cfg(feature = "mmp")]
+                    if now >= next_sr {
+                        if let Some(sr) = self.mmp.sender.build_report(now) {
+                            next_sr = now + self.mmp.sender.report_interval();
+                            let encoded = sr.encode();
+                            let body_len = encoded.len();
+                            self.resp_buf[..body_len].copy_from_slice(&encoded);
+                            self.send_link_message(them, &mut send_ctr, wire::MSG_SENDER_REPORT, body_len, ks)
+                                .await;
+                        } else {
+                            next_sr = now + self.mmp.sender.report_interval();
+                        }
+                    }
+                    #[cfg(not(feature = "mmp"))]
                     if now >= next_sr {
                         log_steady!("steady: sending sender report (recv branch)");
                         next_sr = now + Duration::from_secs(HB_SECS);
@@ -593,7 +665,23 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             .await;
                             return Err(ProtocolError::Disconnected);
                         }
+                        #[cfg(feature = "mmp")]
+                        self.mmp.snapshot_stats();
                     }
+                    #[cfg(feature = "mmp")]
+                    if now >= next_sr {
+                        if let Some(sr) = self.mmp.sender.build_report(now) {
+                            next_sr = now + self.mmp.sender.report_interval();
+                            let encoded = sr.encode();
+                            let body_len = encoded.len();
+                            self.resp_buf[..body_len].copy_from_slice(&encoded);
+                            self.send_link_message(them, &mut send_ctr, wire::MSG_SENDER_REPORT, body_len, ks)
+                                .await;
+                        } else {
+                            next_sr = now + self.mmp.sender.report_interval();
+                        }
+                    }
+                    #[cfg(not(feature = "mmp"))]
                     if now >= next_sr {
                         next_sr = now + Duration::from_secs(HB_SECS);
                         let sr_end_ts = now.as_millis() as u32;
@@ -649,6 +737,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
+            #[cfg(feature = "mmp")]
+            self.mmp.sender.record_sent(c, ts, fl);
         }
     }
 
@@ -675,6 +765,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
+            #[cfg(feature = "mmp")]
+            self.mmp.sender.record_sent(c, ts, fl);
         }
     }
 
@@ -700,6 +792,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
+            #[cfg(feature = "mmp")]
+            self.mmp.sender.record_sent(c, ts, fl);
         }
 
         embassy_time::Instant::now() + Duration::from_secs(HB_SECS)
@@ -724,6 +818,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
+            #[cfg(feature = "mmp")]
+            self.mmp.sender.record_sent(c, ts, fl);
         }
     }
 
@@ -901,6 +997,7 @@ fn handle_frame_inner<H: NodeHandler>(
                 Some(r) => r,
                 None => return FrameAction::Continue,
             };
+            let timestamp = _timestamp;
             let msg_type = inner_rest.first().copied().unwrap_or(0);
             let inner_payload = &inner_rest[1..];
             #[cfg(feature = "log")]
@@ -909,47 +1006,116 @@ fn handle_frame_inner<H: NodeHandler>(
                 msg_type,
                 inner_payload.len()
             );
+            let frame_bytes = data.len();
             match msg_type {
-                wire::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
+                wire::MSG_HEARTBEAT => {
+                    #[cfg(feature = "mmp")]
+                    {
+                        FrameAction::MmpRecv {
+                            counter: enc.counter,
+                            sender_timestamp: timestamp,
+                            frame_bytes,
+                        }
+                    }
+                    #[cfg(not(feature = "mmp"))]
+                    FrameAction::HeartbeatRecv
+                }
                 wire::MSG_DISCONNECT => FrameAction::PeerDC,
                 wire::MSG_SENDER_REPORT => {
-                    // FIPS MMP SenderReport → ReceiverReport (wire format offsets from FIPS src/mmp/report.rs).
-                    // SenderReport inner payload (47B): [3B reserved][8B start_ctr][8B end_ctr]
-                    //   [4B start_ts][4B end_ts][4B bytes_sent][8B pkts_sent][8B bytes_sent_total]
-                    // ReceiverReport inner payload (67B): [3B reserved][8B highest_ctr][8B pkts_recv]
-                    //   [8B bytes_recv][4B timestamp_echo][40B remaining fields, all zero]
-                    if inner_payload.len() >= 27 && resp.len() >= 67 {
-                        let end_ctr = u64::from_le_bytes(
-                            inner_payload[11..19]
-                                .try_into()
-                                .unwrap_or(0u64.to_le_bytes()),
-                        );
-                        let end_ts = u32::from_le_bytes(
-                            inner_payload[23..27]
-                                .try_into()
-                                .unwrap_or(0u32.to_le_bytes()),
-                        );
-                        resp[..67].copy_from_slice(&[0u8; 67]);
-                        resp[3..11].copy_from_slice(&end_ctr.to_le_bytes());
-                        resp[27..31].copy_from_slice(&end_ts.to_le_bytes());
-                        FrameAction::SendLinkMessage {
-                            msg_type: wire::MSG_RECEIVER_REPORT,
-                            len: 67,
+                    #[cfg(feature = "mmp")]
+                    {
+                        if let Some(sr) = microfips_core::mmp::SenderReport::decode(inner_payload) {
+                            FrameAction::MmpSenderReport {
+                                counter: enc.counter,
+                                sender_timestamp: timestamp,
+                                frame_bytes,
+                                report: sr,
+                            }
+                        } else {
+                            FrameAction::Continue
                         }
-                    } else {
-                        FrameAction::Continue
+                    }
+                    #[cfg(not(feature = "mmp"))]
+                    {
+                        if inner_payload.len() >= 27 && resp.len() >= 67 {
+                            let end_ctr = u64::from_le_bytes(
+                                inner_payload[11..19]
+                                    .try_into()
+                                    .unwrap_or(0u64.to_le_bytes()),
+                            );
+                            let end_ts = u32::from_le_bytes(
+                                inner_payload[23..27]
+                                    .try_into()
+                                    .unwrap_or(0u32.to_le_bytes()),
+                            );
+                            resp[..67].copy_from_slice(&[0u8; 67]);
+                            resp[3..11].copy_from_slice(&end_ctr.to_le_bytes());
+                            resp[27..31].copy_from_slice(&end_ts.to_le_bytes());
+                            FrameAction::SendLinkMessage {
+                                msg_type: wire::MSG_RECEIVER_REPORT,
+                                len: 67,
+                            }
+                        } else {
+                            FrameAction::Continue
+                        }
                     }
                 }
+                wire::MSG_RECEIVER_REPORT => {
+                    #[cfg(feature = "mmp")]
+                    {
+                        if let Some(rr) = microfips_core::mmp::ReceiverReport::decode(inner_payload) {
+                            FrameAction::MmpReceiverReport {
+                                counter: enc.counter,
+                                sender_timestamp: timestamp,
+                                frame_bytes,
+                                report: rr,
+                            }
+                        } else {
+                            FrameAction::Continue
+                        }
+                    }
+                    #[cfg(not(feature = "mmp"))]
+                    FrameAction::Continue
+                }
                 _ => {
-                    if msg_type != wire::MSG_SESSION_DATAGRAM {
-                        #[cfg(feature = "log")]
-                        log::warn!("unrecognized link message type: 0x{:02x}", msg_type);
+                    #[cfg(feature = "mmp")]
+                    let base_action = {
+                        if msg_type == wire::MSG_SESSION_DATAGRAM || inner_payload.is_empty() {
+                            FrameAction::Continue
+                        } else {
+                            match handler.on_message(msg_type, inner_payload, resp) {
+                                HandleResult::None => FrameAction::Continue,
+                                HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
+                                HandleResult::Disconnect => FrameAction::SelfDC,
+                            }
+                        }
+                    };
+                    #[cfg(not(feature = "mmp"))]
+                    let base_action = {
+                        if msg_type != wire::MSG_SESSION_DATAGRAM {
+                            #[cfg(feature = "log")]
+                            log::warn!("unrecognized link message type: 0x{:02x}", msg_type);
+                        }
+                        match handler.on_message(msg_type, inner_payload, resp) {
+                            HandleResult::None => FrameAction::Continue,
+                            HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
+                            HandleResult::Disconnect => FrameAction::SelfDC,
+                        }
+                    };
+                    #[cfg(feature = "mmp")]
+                    {
+                        if msg_type == wire::MSG_SESSION_DATAGRAM || inner_payload.is_empty() {
+                            base_action
+                        } else {
+                            FrameAction::MmpRecv {
+                                counter: enc.counter,
+                                sender_timestamp: timestamp,
+                                frame_bytes,
+                            }
+                        }
                     }
-                    match handler.on_message(msg_type, inner_payload, resp) {
-                        HandleResult::None => FrameAction::Continue,
-                        HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
-                        HandleResult::Disconnect => FrameAction::SelfDC,
-                    }
+                    #[cfg(not(feature = "mmp"))]
+                    base_action
                 }
             }
         }
@@ -1001,6 +1167,26 @@ enum FrameAction {
     SelfDC,
     SendDatagram(usize),
     SendLinkMessage { msg_type: u8, len: usize },
+    #[cfg(feature = "mmp")]
+    MmpRecv {
+        counter: u64,
+        sender_timestamp: u32,
+        frame_bytes: usize,
+    },
+    #[cfg(feature = "mmp")]
+    MmpSenderReport {
+        counter: u64,
+        sender_timestamp: u32,
+        frame_bytes: usize,
+        report: microfips_core::mmp::SenderReport,
+    },
+    #[cfg(feature = "mmp")]
+    MmpReceiverReport {
+        counter: u64,
+        sender_timestamp: u32,
+        frame_bytes: usize,
+        report: microfips_core::mmp::ReceiverReport,
+    },
 }
 
 /// Determine the total wire size of a raw FMP frame from its 4-byte common prefix.

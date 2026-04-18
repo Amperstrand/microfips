@@ -10,6 +10,9 @@ pub mod node;
 pub mod peer_policy;
 pub mod transport;
 
+#[cfg(feature = "mmp")]
+pub mod mmp;
+
 #[cfg(test)]
 pub mod test_helpers {
     use embassy_executor::Executor;
