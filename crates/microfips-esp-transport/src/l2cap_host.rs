@@ -592,11 +592,9 @@ pub async fn l2cap_host_task() {
                     drain_l2cap_channels();
                     match reason {
                         DisconnectReason::CleanYield => {
-                            set_prefer_peripheral_window(CENTRAL_COLLISION_COOLDOWN_MS);
-                            enter_peripheral = true;
                             log::info!(
-                                "central clean yield, preferring peripheral for {}ms",
-                                CENTRAL_COLLISION_COOLDOWN_MS
+                                "central 0-frame disconnect (probe collision), retrying in {}ms",
+                                BLE_DISCONNECT_SETTLE_MS
                             );
                         }
                         _ => log::info!("central disconnected, retrying"),
