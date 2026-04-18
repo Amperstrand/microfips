@@ -13,7 +13,7 @@ pub trait L2capHostAdapter {
     fn link_up() -> bool;
     async fn spawn_host_task() -> Result<(), ()>;
     async fn wait_for_l2cap_ready() -> [u8; 33];
-    async fn send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>);
+    async fn send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) -> Result<(), ()>;
     async fn recv_frame() -> heapless::Vec<u8, L2CAP_FRAME_CAP>;
 }
 
@@ -88,7 +88,7 @@ impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
         frame
             .extend_from_slice(data)
             .map_err(|_| L2capError::FrameTooLarge)?;
-        H::send_frame(frame).await;
+        H::send_frame(frame).await.map_err(|_| L2capError::Disconnected)?;
         Ok(())
     }
 
@@ -149,8 +149,8 @@ impl L2capHostAdapter for EspL2capHost {
         wait_for_l2cap_ready().await
     }
 
-    async fn send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) {
-        l2cap_send_frame(frame).await;
+    async fn send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) -> Result<(), ()> {
+        l2cap_send_frame(frame).await
     }
 
     async fn recv_frame() -> heapless::Vec<u8, L2CAP_FRAME_CAP> {
