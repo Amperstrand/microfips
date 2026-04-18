@@ -221,6 +221,11 @@ pub async fn run_wifi_node(
 
     let identity = NodeIdentity::compute();
     crate::logger::init();
+    use microfips_esp_transport::stats::BOOT_TICK_MS;
+    BOOT_TICK_MS.store(
+        embassy_time::Instant::now().as_millis() as u32,
+        core::sync::atomic::Ordering::Relaxed,
+    );
     log::info!("WiFi mode starting");
 
     let mut resp_eph = [0u8; 32];
@@ -238,6 +243,7 @@ pub async fn run_wifi_node(
     let mut handler = EspHandler { led: &mut led, fsp };
 
     crate::control::init_control(&identity, "wifi");
+    crate::control::set_peer_pub(VPS_NPUB);
     spawner.spawn(crate::control::control_task()).ok();
 
     log::info!("Node running over WiFi...");

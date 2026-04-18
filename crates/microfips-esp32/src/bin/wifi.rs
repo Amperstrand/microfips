@@ -7,7 +7,8 @@ use core::panic::PanicInfo;
 use microfips_esp_transport::config::PANIC_BLINK_CYCLES;
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    esp_println::println!("PANIC: {}", info);
     let gpio = unsafe { &*esp_hal::peripherals::GPIO::PTR };
     loop {
         gpio.out_w1ts()
