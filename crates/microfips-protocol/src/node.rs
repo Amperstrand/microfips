@@ -1,10 +1,18 @@
 use embassy_futures::select::{select, Either};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use microfips_core::wire;
 
 use crate::error::ProtocolError;
 use crate::framing;
+use crate::peer_policy::{PeerPolicy, PolicyVerdict};
 use crate::transport::{CryptoRng, RngCore, Transport};
+
+macro_rules! log_steady {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "log")]
+        log::info!($($arg)*);
+    };
+}
 
 pub const HB_SECS: u64 = 10;
 pub const RECV_TIMEOUT_MS: u64 = 30_000;
@@ -15,12 +23,7 @@ pub const MSG1_RESEND_MAX: u32 = 10;
 pub const CONNECT_DELAY_MS: u64 = 500;
 pub const MAX_COMPETING_MSG1: u32 = 3;
 
-/// Transport recv buffer size. Must be >= the maximum frame size of any transport.
-/// L2CAP SeqPacket delivers complete messages — if a frame exceeds this buffer,
-/// the excess bytes are permanently lost (SeqPacket has no tail-byte buffering).
-/// FSP application payloads can exceed 256 bytes, so 512 matches L2CAP_FRAME_CAP.
-/// See Codex review: github.com/Amperstrand/microfips/pull/57#discussion_r1973271205
-pub const RECV_BUF_SIZE: usize = 512;
+pub const RECV_BUF_SIZE: usize = 1500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Protocol state events emitted to the handler.
@@ -88,6 +91,7 @@ impl NodeHandler for NoopHandler {
 pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     transport: T,
     rng: R,
+    policy: PeerPolicy,
     nsec: [u8; 32],
     peer_npub: [u8; 33],
     rbuf: [u8; 2048],
@@ -104,6 +108,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         Self {
             transport,
             rng,
+            policy: PeerPolicy::new(),
             nsec,
             peer_npub,
             rbuf: [0u8; 2048],
@@ -172,6 +177,19 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     pub async fn run<H: NodeHandler>(&mut self, handler: &mut H) -> ! {
         let mut backoff: u32 = 0;
         loop {
+            match self.policy.check_reconnect(Instant::now()) {
+                PolicyVerdict::Allow => {}
+                PolicyVerdict::Backoff(delay) => {
+                    log_steady!("policy: reconnect backoff {}ms", delay.as_millis());
+                    Timer::after(delay).await;
+                }
+                PolicyVerdict::Reject => {
+                    log_steady!("policy: rejected: reconnect");
+                    Timer::after(Duration::from_secs(RETRY_SECS)).await;
+                    continue;
+                }
+            }
+            self.policy.record_connect_attempt(Instant::now());
             let result = self.session(handler).await;
             if result.is_ok() {
                 backoff = 0;
@@ -197,12 +215,19 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         match self.handshake(epoch, handler).await {
             Ok((ks, kr, them)) => {
+                self.policy.record_handshake_ok(Instant::now());
+                log_steady!("session: handshake ok, entering steady");
                 handler.on_event(NodeEvent::HandshakeOk).await;
                 let result = self.steady(&ks, &kr, them, handler).await;
+                self.policy.reset_session();
+                log_steady!("session: steady exited, result={:?}", result.is_ok());
                 handler.on_event(NodeEvent::Disconnected).await;
                 result
             }
             Err(e) => {
+                self.policy.record_handshake_failure(Instant::now());
+                self.policy.reset_session();
+                log_steady!("session: handshake failed: {:?}", e);
                 handler.on_event(NodeEvent::Error).await;
                 Err(e)
             }
@@ -404,6 +429,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         them: wire::SessionIndex,
         handler: &mut H,
     ) -> Result<(), ProtocolError> {
+        log_steady!("steady: entered, next_hb in {}s", HB_SECS);
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
         let mut next_sr = embassy_time::Instant::now() + Duration::from_secs(HB_SECS / 2);
         let mut send_ctr: u64 = 0;
@@ -420,6 +446,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
             match select(rx_fut, hb_fut).await {
                 Either::First(Ok(n)) => {
+                    log_steady!("steady: recv returned {} bytes", n);
                     if self.rlen + n > self.rbuf.len() {
                         self.rlen = 0;
                         self.rpos = 0;
@@ -444,26 +471,57 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             continue;
                         }
 
+                        self.rpos = new_pos;
+                        if self.policy.check_frame_rate(Instant::now()) == PolicyVerdict::Reject {
+                            log_steady!("policy: rejected: frame rate");
+                            continue;
+                        }
+
                         let result =
                             handle_frame_inner(kr, frame_data, handler, &mut self.resp_buf);
-                        self.rpos = new_pos;
+                        if frame_is_policy_good(kr, frame_data) {
+                            self.policy.record_good_frame();
+                        } else {
+                            self.policy.record_bad_frame();
+                        }
+                        if self.policy.check_bad_frame_limit() == PolicyVerdict::Reject {
+                            log_steady!("policy: rejected: bad frame limit");
+                            self.send_disconnect(
+                                ks,
+                                them,
+                                &mut send_ctr,
+                                wire::DISC_REASON_SECURITY_VIOLATION,
+                            )
+                            .await;
+                            return Err(ProtocolError::Disconnected);
+                        }
 
                         match result {
                             FrameAction::Continue => {}
                             FrameAction::HeartbeatRecv => {
+                                self.policy.record_heartbeat();
+                                log_steady!("steady: heartbeat received from peer");
                                 handler.on_event(NodeEvent::HeartbeatRecv).await;
                             }
-                            FrameAction::PeerDC => return Ok(()),
+                            FrameAction::PeerDC => {
+                                log_steady!("steady: peer disconnect received, exiting steady");
+                                return Ok(());
+                            }
                             FrameAction::SelfDC => {
+                                log_steady!("steady: self disconnect, exiting steady");
                                 let _ = self
                                     .send_disconnect(ks, them, &mut send_ctr, wire::DISC_REASON_SHUTDOWN)
                                     .await;
                                 return Ok(());
                             }
                             FrameAction::SendDatagram(len) => {
+                                self.policy.record_data_frame();
+                                log_steady!("steady: sending datagram {} bytes", len);
                                 self.send_datagram(them, &mut send_ctr, len, ks).await;
                             }
                             FrameAction::SendLinkMessage { msg_type, len } => {
+                                self.policy.record_data_frame();
+                                log_steady!("steady: sending link msg type=0x{:02x} len={}", msg_type, len);
                                 self.send_link_message(them, &mut send_ctr, msg_type, len, ks)
                                     .await;
                             }
@@ -475,10 +533,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     }
                     let now = embassy_time::Instant::now();
                     if now >= next_hb {
+                        log_steady!("steady: sending heartbeat (recv branch, ctr={})", send_ctr);
                         next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
                         handler.on_event(NodeEvent::HeartbeatSent).await;
                     }
                     if now >= next_sr {
+                        log_steady!("steady: sending sender report (recv branch)");
                         next_sr = now + Duration::from_secs(HB_SECS);
                         let sr_end_ts = now.as_millis() as u32;
                         let mut sr = [0u8; 47];
@@ -503,7 +563,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         }
                     }
                 }
-                Either::First(Err(_)) => {
+                Either::First(Err(e)) => {
+                    log_steady!("steady: recv error, disconnecting: {:?}", e);
                     let _ = self
                         .send_disconnect(
                             ks,
@@ -517,8 +578,20 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 Either::Second(()) => {
                     let now = embassy_time::Instant::now();
                     if now >= next_hb {
+                        log_steady!("steady: sending heartbeat (timer branch, ctr={})", send_ctr);
                         next_hb = self.send_heartbeat(ks, them, &mut send_ctr).await;
                         handler.on_event(NodeEvent::HeartbeatSent).await;
+                        if self.policy.check_silent_peer(Instant::now()) == PolicyVerdict::Reject {
+                            log_steady!("policy: rejected: silent peer");
+                            self.send_disconnect(
+                                ks,
+                                them,
+                                &mut send_ctr,
+                                wire::DISC_REASON_RESOURCE_EXHAUSTION,
+                            )
+                            .await;
+                            return Err(ProtocolError::Disconnected);
+                        }
                     }
                     if now >= next_sr {
                         next_sr = now + Duration::from_secs(HB_SECS);
@@ -892,6 +965,33 @@ fn handle_frame_inner<H: NodeHandler>(
     }
 }
 
+fn frame_is_policy_good(kr: &[u8; 32], data: &[u8]) -> bool {
+    use microfips_core::wire;
+
+    let wire::FmpMessage::Established { .. } = (match wire::parse_message(data) {
+        Some(m) => m,
+        None => return false,
+    }) else {
+        return false;
+    };
+
+    let Some(enc) = wire::EncryptedHeader::parse(data) else {
+        return false;
+    };
+    let mut dec = [0u8; 2048];
+    let Ok(dl) = microfips_core::noise::aead_decrypt(
+        kr,
+        enc.counter,
+        &enc.header_bytes,
+        &data[wire::ESTABLISHED_HEADER_SIZE..],
+        &mut dec,
+    ) else {
+        return false;
+    };
+
+    wire::strip_inner_header(&dec[..dl]).is_some()
+}
+
 #[derive(Debug, PartialEq)]
 enum FrameAction {
     Continue,
@@ -1010,6 +1110,7 @@ fn extract_raw_frame(buf: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize
 mod tests {
     use super::*;
     use crate::test_helpers::block_on;
+    use crate::transport::Transport;
     use std::boxed::Box;
     use std::vec;
 
@@ -1156,6 +1257,26 @@ mod tests {
         )
         .unwrap();
         out[..fl].to_vec()
+    }
+
+    fn decrypt_test_frame(
+        key: &[u8; 32],
+        frame: &[u8],
+    ) -> (u8, std::vec::Vec<u8>) {
+        use microfips_core::wire;
+
+        let enc = wire::EncryptedHeader::parse(frame).expect("encrypted header");
+        let mut dec = [0u8; 2048];
+        let dl = microfips_core::noise::aead_decrypt(
+            key,
+            enc.counter,
+            &enc.header_bytes,
+            &frame[wire::ESTABLISHED_HEADER_SIZE..],
+            &mut dec,
+        )
+        .expect("decrypt frame");
+        let (_, inner) = wire::strip_inner_header(&dec[..dl]).expect("inner header");
+        (inner[0], inner[1..].to_vec())
     }
 
     #[test]
@@ -1674,6 +1795,205 @@ mod tests {
             };
 
             join(responder, initiator).await;
+        });
+    }
+
+    #[test]
+    fn test_peer_policy_integration_backoff_on_handshake_failure() {
+        use crate::peer_policy::RECONNECT_BACKOFF_BASE_MS;
+        use crate::transport::channel::pair as channel_pair;
+
+        #[derive(Clone, Default)]
+        struct SharedEvents(std::sync::Arc<std::sync::Mutex<std::vec::Vec<(NodeEvent, Instant)>>>);
+
+        impl SharedEvents {
+            fn push(&self, event: NodeEvent) {
+                self.0.lock().unwrap().push((event, Instant::now()));
+            }
+
+            fn snapshot(&self) -> std::vec::Vec<(NodeEvent, Instant)> {
+                self.0.lock().unwrap().clone()
+            }
+        }
+
+        struct EventHandler {
+            events: SharedEvents,
+        }
+
+        impl NodeHandler for EventHandler {
+            async fn on_event(&mut self, event: NodeEvent) {
+                self.events.push(event);
+            }
+
+            fn on_message(
+                &mut self,
+                _msg_type: u8,
+                _payload: &[u8],
+                _resp: &mut [u8],
+            ) -> HandleResult {
+                HandleResult::None
+            }
+        }
+
+        let (transport, mut peer) = channel_pair();
+        peer.close();
+        let secret = random_secret();
+        let peer_secret = random_secret();
+        let peer_pub = microfips_core::noise::ecdh_pubkey(&peer_secret).unwrap();
+        let events = SharedEvents::default();
+
+        block_on(async move {
+            let mut node = Node::new(transport, TestRng::from_os_rng(), secret, peer_pub);
+            let mut handler = EventHandler {
+                events: events.clone(),
+            };
+
+            let monitor = async move {
+                loop {
+                    let snapshot = events.snapshot();
+                    let connected: std::vec::Vec<_> = snapshot
+                        .iter()
+                        .filter_map(|(event, at)| (*event == NodeEvent::Connected).then_some(*at))
+                        .collect();
+                    let error_count = snapshot
+                        .iter()
+                        .filter(|(event, _)| *event == NodeEvent::Error)
+                        .count();
+                    if connected.len() >= 2 && error_count >= 1 {
+                        return connected;
+                    }
+                    Timer::after(Duration::from_millis(10)).await;
+                }
+            };
+
+            let connected_times = match select(node.run(&mut handler), monitor).await {
+                Either::Second(times) => times,
+                Either::First(_) => unreachable!(),
+            };
+
+            let delta_ms = connected_times[1]
+                .as_millis()
+                .saturating_sub(connected_times[0].as_millis()) as u64;
+            assert!(
+                delta_ms >= (RETRY_SECS * 2 * 1000) + RECONNECT_BACKOFF_BASE_MS - 250,
+                "expected policy backoff after handshake failure, delta_ms={delta_ms}"
+            );
+        });
+    }
+
+    #[test]
+    fn test_peer_policy_integration_survives_frame_flood() {
+        use crate::peer_policy::FRAME_RATE_WINDOW_MS;
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+
+        struct PongHandler;
+
+        impl NodeHandler for PongHandler {
+            async fn on_event(&mut self, _event: NodeEvent) {}
+
+            fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
+                if msg_type == wire::MSG_SESSION_DATAGRAM && payload == b"ping" {
+                    resp[..4].copy_from_slice(b"pong");
+                    HandleResult::SendDatagram(4)
+                } else {
+                    HandleResult::None
+                }
+            }
+        }
+
+        let (transport, mut peer) = channel_pair();
+        let key = [0x42; 32];
+        let them = wire::SessionIndex::new(7);
+
+        block_on(async move {
+            let peer_task = async move {
+                for counter in 0..110u64 {
+                    let frame = build_test_frame(them, counter, wire::MSG_HEARTBEAT, 1000, &[], &key);
+                    send_test_frame(&mut peer, &frame).await;
+                }
+
+                Timer::after(Duration::from_millis(FRAME_RATE_WINDOW_MS + 50)).await;
+
+                let ping = build_test_frame(
+                    them,
+                    200,
+                    wire::MSG_SESSION_DATAGRAM,
+                    2000,
+                    b"ping",
+                    &key,
+                );
+                send_test_frame(&mut peer, &ping).await;
+
+                let response = recv_test_frame(&mut peer).await;
+                let (msg_type, payload) = decrypt_test_frame(&key, &response);
+                assert_eq!(msg_type, wire::MSG_SESSION_DATAGRAM);
+                assert_eq!(payload, b"pong");
+
+                let disconnect = build_test_frame(them, 201, wire::MSG_DISCONNECT, 3000, &[0x00], &key);
+                send_test_frame(&mut peer, &disconnect).await;
+            };
+
+            let node_task = async move {
+                let mut node = Node::new(
+                    transport,
+                    TestRng::from_os_rng(),
+                    random_secret(),
+                    microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
+                );
+                let mut handler = PongHandler;
+                let result = node.steady(&key, &key, them, &mut handler).await;
+                assert_eq!(result, Ok(()));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_peer_policy_integration_detects_silent_peer() {
+        use crate::peer_policy::SILENT_PEER_SECS;
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+
+        let (transport, mut peer) = channel_pair();
+        let key = [0x24; 32];
+        let them = wire::SessionIndex::new(9);
+
+        block_on(async move {
+            let peer_task = async move {
+                let hb = build_test_frame(them, 0, wire::MSG_HEARTBEAT, 1000, &[], &key);
+                send_test_frame(&mut peer, &hb).await;
+
+                let sent_hb = recv_test_frame(&mut peer).await;
+                let (msg_type, payload) = decrypt_test_frame(&key, &sent_hb);
+                assert_eq!(msg_type, wire::MSG_HEARTBEAT);
+                assert!(payload.is_empty());
+
+                let sent_disc = recv_test_frame(&mut peer).await;
+                let (msg_type, payload) = decrypt_test_frame(&key, &sent_disc);
+                assert_eq!(msg_type, wire::MSG_DISCONNECT);
+                assert_eq!(payload, [wire::DISC_REASON_RESOURCE_EXHAUSTION]);
+            };
+
+            let node_task = async move {
+                let mut node = Node::new(
+                    transport,
+                    TestRng::from_os_rng(),
+                    random_secret(),
+                    microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
+                );
+                node.policy.record_handshake_ok(
+                    Instant::now() - Duration::from_secs(SILENT_PEER_SECS + 1),
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.steady(&key, &key, them, &mut handler).await;
+                assert_eq!(result, Err(ProtocolError::Disconnected));
+                assert!(handler.events.contains(&NodeEvent::HeartbeatRecv));
+                assert!(handler.events.contains(&NodeEvent::HeartbeatSent));
+            };
+
+            join(peer_task, node_task).await;
         });
     }
 
