@@ -193,6 +193,11 @@ fn handle_show_peers() {
 
 fn handle_show_stats() {
     let snapshot = StatsSnapshot::capture();
+    let srtt = microfips_protocol::mmp::stats::srtt_ms();
+    let loss = microfips_protocol::mmp::stats::loss_pct();
+    let goodput = microfips_protocol::mmp::stats::goodput_kbps();
+    let jitter = microfips_protocol::mmp::stats::jitter_us();
+
     #[cfg(feature = "l2cap")]
     let l2cap = crate::l2cap_host::l2cap_stats_snapshot();
     #[cfg(not(feature = "l2cap"))]
@@ -200,13 +205,17 @@ fn handle_show_stats() {
 
     #[cfg(feature = "l2cap")]
     esp_println::println!(
-        r#"{{"status":"ok","data":{{"msg1_tx":{},"msg2_rx":{},"hb_tx":{},"hb_rx":{},"data_tx":{},"data_rx":{},"l2cap_zero_frame_disconnects":{},"l2cap_recv_timeouts":{},"l2cap_send_timeouts":{},"l2cap_send_errors":{},"l2cap_rx_drops":{},"l2cap_pubkey_ok":{},"l2cap_central_connects":{},"l2cap_peripheral_connects":{},"l2cap_last_role":{},"l2cap_last_reason":{}}}}}"#,
+        r#"{{"status":"ok","data":{{"msg1_tx":{},"msg2_rx":{},"hb_tx":{},"hb_rx":{},"data_tx":{},"data_rx":{},"srtt_ms":{},"loss_permil":{},"goodput_kbps":{},"jitter_us":{},"l2cap_zero_frame_disconnects":{},"l2cap_recv_timeouts":{},"l2cap_send_timeouts":{},"l2cap_send_errors":{},"l2cap_rx_drops":{},"l2cap_pubkey_ok":{},"l2cap_central_connects":{},"l2cap_peripheral_connects":{},"l2cap_last_role":{},"l2cap_last_reason":{}}}}}"#,
         snapshot.msg1_tx,
         snapshot.msg2_rx,
         snapshot.hb_tx,
         snapshot.hb_rx,
         snapshot.data_tx,
         snapshot.data_rx,
+        srtt,
+        loss,
+        goodput,
+        jitter,
         l2cap.zero_frame_disconnects,
         l2cap.recv_timeouts,
         l2cap.send_timeouts,
@@ -221,13 +230,17 @@ fn handle_show_stats() {
 
     #[cfg(not(feature = "l2cap"))]
     esp_println::println!(
-        r#"{{"status":"ok","data":{{"msg1_tx":{},"msg2_rx":{},"hb_tx":{},"hb_rx":{},"data_tx":{},"data_rx":{}}}}}"#,
+        r#"{{"status":"ok","data":{{"msg1_tx":{},"msg2_rx":{},"hb_tx":{},"hb_rx":{},"data_tx":{},"data_rx":{},"srtt_ms":{},"loss_permil":{},"goodput_kbps":{},"jitter_us":{}}}}}"#,
         snapshot.msg1_tx,
         snapshot.msg2_rx,
         snapshot.hb_tx,
         snapshot.hb_rx,
         snapshot.data_tx,
         snapshot.data_rx,
+        srtt,
+        loss,
+        goodput,
+        jitter,
     );
 }
 

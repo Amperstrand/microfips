@@ -18,6 +18,7 @@ rand = "0.9"
 k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
 
 [features]
-default = []
+default = ["mmp"]
 std = ["microfips-core/std", "embassy-time/std", "dep:log"]
 log = ["dep:log"]
+mmp = []
