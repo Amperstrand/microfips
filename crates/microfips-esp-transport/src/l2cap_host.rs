@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use bt_hci::{
     ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci,
@@ -26,6 +26,9 @@ use crate::config::{
 };
 
 const L2CAP_SDU_CAP: usize = L2CAP_FRAME_CAP + 2;
+const L2CAP_RECV_TIMEOUT_SECS: u64 = 45;
+const L2CAP_SEND_TIMEOUT_SECS: u64 = 15;
+const CENTRAL_COLLISION_COOLDOWN_MS: u64 = 6_000;
 
 static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> = StaticCell::new();
 static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
@@ -35,6 +38,17 @@ static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRA
 static L2CAP_READY_SIG: Signal<CriticalSectionRawMutex, [u8; 33]> = Signal::new();
 static L2CAP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static L2CAP_LINK_UP: AtomicBool = AtomicBool::new(false);
+static L2CAP_PREFER_PERIPHERAL_UNTIL_MS: AtomicU32 = AtomicU32::new(0);
+static STAT_L2CAP_ZERO_FRAME_DC: AtomicU32 = AtomicU32::new(0);
+static STAT_L2CAP_RECV_TIMEOUT: AtomicU32 = AtomicU32::new(0);
+static STAT_L2CAP_SEND_TIMEOUT: AtomicU32 = AtomicU32::new(0);
+static STAT_L2CAP_SEND_ERROR: AtomicU32 = AtomicU32::new(0);
+static STAT_L2CAP_RX_DROP: AtomicU32 = AtomicU32::new(0);
+static STAT_L2CAP_PUBKEY_OK: AtomicU32 = AtomicU32::new(0);
+static STAT_L2CAP_CENTRAL_OK: AtomicU32 = AtomicU32::new(0);
+static STAT_L2CAP_PERIPHERAL_OK: AtomicU32 = AtomicU32::new(0);
+static L2CAP_LAST_ROLE: AtomicU32 = AtomicU32::new(0);
+static L2CAP_LAST_REASON: AtomicU32 = AtomicU32::new(0);
 
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
@@ -143,6 +157,50 @@ fn mark_link_ready(peer_pub: [u8; 33]) {
     L2CAP_READY_SIG.signal(peer_pub);
 }
 
+fn now_ms_u32() -> u32 {
+    embassy_time::Instant::now().as_millis() as u32
+}
+
+fn set_prefer_peripheral_window(delay_ms: u64) {
+    let until = now_ms_u32().saturating_add(delay_ms as u32);
+    L2CAP_PREFER_PERIPHERAL_UNTIL_MS.store(until, Ordering::Relaxed);
+}
+
+fn should_prefer_peripheral() -> bool {
+    now_ms_u32() < L2CAP_PREFER_PERIPHERAL_UNTIL_MS.load(Ordering::Relaxed)
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum L2capRole {
+    None = 0,
+    Central = 1,
+    Peripheral = 2,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum L2capDisconnectCode {
+    None = 0,
+    CleanYield = 1,
+    DataExchanged = 2,
+    SendError = 3,
+    RecvTimeout = 4,
+    SendTimeout = 5,
+}
+
+fn set_last_disconnect(role: L2capRole, reason: DisconnectReason) {
+    L2CAP_LAST_ROLE.store(role as u32, Ordering::Relaxed);
+    let code = match reason {
+        DisconnectReason::CleanYield => L2capDisconnectCode::CleanYield,
+        DisconnectReason::DataExchanged => L2capDisconnectCode::DataExchanged,
+        DisconnectReason::SendError => L2capDisconnectCode::SendError,
+        DisconnectReason::RecvTimeout => L2capDisconnectCode::RecvTimeout,
+        DisconnectReason::SendTimeout => L2capDisconnectCode::SendTimeout,
+    };
+    L2CAP_LAST_REASON.store(code as u32, Ordering::Relaxed);
+}
+
 async fn exchange_pubkeys<T, P>(
     secret: &[u8; 32],
     writer: &mut L2capChannelWriter<'_, P>,
@@ -168,7 +226,13 @@ where
         payload_len,
         tx.len()
     );
-    writer.send(stack, &tx).await.ok()?;
+    embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(L2CAP_SEND_TIMEOUT_SECS),
+        writer.send(stack, &tx),
+    )
+    .await
+    .ok()?
+    .ok()?;
 
     let mut rx_buf = [0u8; L2CAP_SDU_CAP];
     let result = embassy_time::with_timeout(
@@ -213,6 +277,7 @@ where
             } else {
                 log::info!("pubkey exchange OK (got {}B, old format)", n);
             }
+            STAT_L2CAP_PUBKEY_OK.fetch_add(1, Ordering::Relaxed);
             Some(peer_pub)
         }
         Ok(Err(e)) => {
@@ -244,6 +309,8 @@ enum DisconnectReason {
     DataExchanged,
     /// Send-side error (write failed).
     SendError,
+    RecvTimeout,
+    SendTimeout,
 }
 
 /// Relay frames between L2CAP channel and internal channels.
@@ -273,8 +340,32 @@ where
     let mut rx_count: u32 = 0;
 
     loop {
-        match select(reader.receive(stack, &mut rx_buf), L2CAP_TX_CH.receive()).await {
-            Either::First(Ok(n)) => {
+        match select(
+            select(
+                embassy_time::with_timeout(
+                    embassy_time::Duration::from_secs(L2CAP_RECV_TIMEOUT_SECS),
+                    reader.receive(stack, &mut rx_buf),
+                ),
+                L2CAP_TX_CH.receive(),
+            ),
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(1)),
+        )
+        .await
+        {
+            Either::Second(()) => continue,
+            Either::First(Either::First(Err(_))) => {
+                log::warn!(
+                    "{}: recv timeout after {}s (after {} RX, {} TX frames)",
+                    recv_disconnect_log,
+                    L2CAP_RECV_TIMEOUT_SECS,
+                    rx_count,
+                    tx_count
+                );
+                STAT_L2CAP_RECV_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+                mark_link_down();
+                break DisconnectReason::RecvTimeout;
+            }
+            Either::First(Either::First(Ok(Ok(n)))) => {
                 if n < 2 {
                     log::warn!("RX: SDU too short ({}B), disconnecting", n);
                     mark_link_down();
@@ -319,6 +410,7 @@ where
                 }
 
                 if L2CAP_RX_CH.try_send(frame).is_err() {
+                    STAT_L2CAP_RX_DROP.fetch_add(1, Ordering::Relaxed);
                     log::warn!(
                         "RX: L2CAP_RX_CH full, dropping {}B frame #{}",
                         payload_len,
@@ -326,7 +418,7 @@ where
                     );
                 }
             }
-            Either::First(Err(_)) => {
+            Either::First(Either::First(Ok(Err(_)))) => {
                 log::warn!(
                     "{} (after {} RX, {} TX frames)",
                     recv_disconnect_log,
@@ -335,11 +427,12 @@ where
                 );
                 mark_link_down();
                 if rx_count == 0 && tx_count == 0 {
+                    STAT_L2CAP_ZERO_FRAME_DC.fetch_add(1, Ordering::Relaxed);
                     break DisconnectReason::CleanYield;
                 }
                 break DisconnectReason::DataExchanged;
             }
-            Either::Second(frame) => {
+            Either::First(Either::Second(frame)) => {
                 let len = frame.len() as u16;
                 let mut sdu = heapless::Vec::<u8, L2CAP_SDU_CAP>::new();
                 if sdu.extend_from_slice(&len.to_be_bytes()).is_err()
@@ -369,9 +462,15 @@ where
                     );
                 }
 
-                match writer.send(stack, &sdu).await {
-                    Ok(()) => {}
-                    Err(e) => {
+                match embassy_time::with_timeout(
+                    embassy_time::Duration::from_secs(L2CAP_SEND_TIMEOUT_SECS),
+                    writer.send(stack, &sdu),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        STAT_L2CAP_SEND_ERROR.fetch_add(1, Ordering::Relaxed);
                         log::warn!(
                             "{}: {:?} (after {} RX, {} TX frames)",
                             send_disconnect_log,
@@ -381,6 +480,18 @@ where
                         );
                         mark_link_down();
                         break DisconnectReason::SendError;
+                    }
+                    Err(_) => {
+                        STAT_L2CAP_SEND_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+                        log::warn!(
+                            "{}: send timeout after {}s (after {} RX, {} TX frames)",
+                            send_disconnect_log,
+                            L2CAP_SEND_TIMEOUT_SECS,
+                            rx_count,
+                            tx_count
+                        );
+                        mark_link_down();
+                        break DisconnectReason::SendTimeout;
                     }
                 }
             }
@@ -456,12 +567,19 @@ pub async fn l2cap_host_task() {
         async {
             loop {
                 mark_link_down();
+                let mut enter_peripheral = false;
 
-                let connected_as_central = do_central_connect(&stack, &mut central).await;
-                if let Some((mut writer, mut reader, peer_pub)) = connected_as_central {
+                let prefer_peripheral = should_prefer_peripheral();
+                if prefer_peripheral {
+                    log::info!("preferring peripheral role after clean yield");
+                    enter_peripheral = true;
+                } else if let Some((mut writer, mut reader, peer_pub)) =
+                    do_central_connect(&stack, &mut central).await
+                {
                     drain_l2cap_channels();
                     mark_link_ready(peer_pub);
-                    relay_l2cap_frames(
+                    STAT_L2CAP_CENTRAL_OK.fetch_add(1, Ordering::Relaxed);
+                    let reason = relay_l2cap_frames(
                         &stack,
                         &mut writer,
                         &mut reader,
@@ -469,18 +587,35 @@ pub async fn l2cap_host_task() {
                         "central send loop disconnected",
                     )
                     .await;
+                    set_last_disconnect(L2capRole::Central, reason);
                     mark_link_down();
                     drain_l2cap_channels();
-                    log::info!("central disconnected, retrying");
+                    match reason {
+                        DisconnectReason::CleanYield => {
+                            set_prefer_peripheral_window(CENTRAL_COLLISION_COOLDOWN_MS);
+                            enter_peripheral = true;
+                            log::info!(
+                                "central clean yield, preferring peripheral for {}ms",
+                                CENTRAL_COLLISION_COOLDOWN_MS
+                            );
+                        }
+                        _ => log::info!("central disconnected, retrying"),
+                    }
                     embassy_time::Timer::after(embassy_time::Duration::from_millis(
                         BLE_DISCONNECT_SETTLE_MS,
                     ))
                     .await;
+                } else {
+                    enter_peripheral = true;
+                }
+
+                if !enter_peripheral {
                     continue;
                 }
 
-                log::info!("central connect failed, falling back to peripheral");
+                log::info!("entering peripheral mode");
                 let reason = do_peripheral(&stack, &mut peripheral).await;
+                set_last_disconnect(L2capRole::Peripheral, reason);
                 mark_link_down();
                 drain_l2cap_channels();
                 match reason {
@@ -489,6 +624,7 @@ pub async fn l2cap_host_task() {
                             "peripheral clean yield (FIPS tie-breaker), waiting {}ms",
                             BLE_YIELD_RETRY_MS
                         );
+                        set_prefer_peripheral_window(CENTRAL_COLLISION_COOLDOWN_MS);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_YIELD_RETRY_MS,
                         ))
@@ -733,6 +869,7 @@ where
 
     drain_l2cap_channels();
     mark_link_ready(peer_pub);
+    STAT_L2CAP_PERIPHERAL_OK.fetch_add(1, Ordering::Relaxed);
     relay_l2cap_frames(
         stack,
         &mut writer,
@@ -755,10 +892,43 @@ pub async fn wait_for_l2cap_ready() -> [u8; 33] {
     L2CAP_READY_SIG.wait().await
 }
 
-pub async fn l2cap_send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) {
-    L2CAP_TX_CH.send(frame).await;
+pub async fn l2cap_send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) -> Result<(), ()> {
+    embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(L2CAP_SEND_TIMEOUT_SECS),
+        L2CAP_TX_CH.send(frame),
+    )
+    .await
+    .map_err(|_| ())
 }
 
 pub async fn l2cap_recv_frame() -> heapless::Vec<u8, L2CAP_FRAME_CAP> {
     L2CAP_RX_CH.receive().await
+}
+
+pub struct L2capStatsSnapshot {
+    pub zero_frame_disconnects: u32,
+    pub recv_timeouts: u32,
+    pub send_timeouts: u32,
+    pub send_errors: u32,
+    pub rx_drops: u32,
+    pub pubkey_ok: u32,
+    pub central_connects: u32,
+    pub peripheral_connects: u32,
+    pub last_role: u32,
+    pub last_reason: u32,
+}
+
+pub fn l2cap_stats_snapshot() -> L2capStatsSnapshot {
+    L2capStatsSnapshot {
+        zero_frame_disconnects: STAT_L2CAP_ZERO_FRAME_DC.load(Ordering::Relaxed),
+        recv_timeouts: STAT_L2CAP_RECV_TIMEOUT.load(Ordering::Relaxed),
+        send_timeouts: STAT_L2CAP_SEND_TIMEOUT.load(Ordering::Relaxed),
+        send_errors: STAT_L2CAP_SEND_ERROR.load(Ordering::Relaxed),
+        rx_drops: STAT_L2CAP_RX_DROP.load(Ordering::Relaxed),
+        pubkey_ok: STAT_L2CAP_PUBKEY_OK.load(Ordering::Relaxed),
+        central_connects: STAT_L2CAP_CENTRAL_OK.load(Ordering::Relaxed),
+        peripheral_connects: STAT_L2CAP_PERIPHERAL_OK.load(Ordering::Relaxed),
+        last_role: L2CAP_LAST_ROLE.load(Ordering::Relaxed),
+        last_reason: L2CAP_LAST_REASON.load(Ordering::Relaxed),
+    }
 }
