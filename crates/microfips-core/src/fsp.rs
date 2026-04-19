@@ -76,8 +76,8 @@ pub fn build_session_datagram_body(
 ) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
     let mut body = [0u8; SESSION_DATAGRAM_BODY_SIZE];
     body[0] = 64;
-    body[1] = 1400u16.to_le_bytes()[0];
-    body[2] = 1400u16.to_le_bytes()[1];
+    body[1] = u16::MAX.to_le_bytes()[0];
+    body[2] = u16::MAX.to_le_bytes()[1];
     body[3..19].copy_from_slice(src);
     body[19..35].copy_from_slice(dst);
     body
@@ -853,7 +853,7 @@ impl FspInitiatorSession {
         let src_coords = [*src_addr];
         let dst_coords = [*dst_addr];
         let setup_len =
-            build_session_setup(0x03, &src_coords, &dst_coords, &xk_msg1[..xk_msg1_len], out)?;
+            build_session_setup(0x00, &src_coords, &dst_coords, &xk_msg1[..xk_msg1_len], out)?;
         self.state = FspInitiatorState::AwaitingAck;
 
         #[cfg(feature = "std")]
@@ -1131,7 +1131,7 @@ mod tests {
         let dst = [make_addr(0x02)];
         let handshake = [0xAA; XK_HANDSHAKE_MSG1_SIZE];
         let mut out = [0u8; 256];
-        let len = build_session_setup(0x03, &src, &dst, &handshake, &mut out).unwrap();
+        let len = build_session_setup(0x00, &src, &dst, &handshake, &mut out).unwrap();
 
         assert_eq!(out[0], fsp_prefix_byte(PHASE_SESSION_SETUP));
         assert_eq!(out[1], 0x00);
@@ -1139,7 +1139,7 @@ mod tests {
         assert_eq!(payload_len + 4, len);
 
         let (flags, hs_out) = parse_session_setup(&out[..len]).unwrap();
-        assert_eq!(flags, 0x03);
+        assert_eq!(flags, 0x00);
         assert_eq!(hs_out, &handshake);
     }
 
@@ -1281,7 +1281,7 @@ mod tests {
         let initiator_addr = make_addr(0x02);
         let mut setup_buf = [0u8; 512];
         let setup_len = build_session_setup(
-            0x03,
+            0x00,
             &[responder_addr],
             &[initiator_addr],
             &xk_msg1[..msg1_len],
@@ -1377,7 +1377,7 @@ mod tests {
         let dst = [make_addr(0x02)];
         let mut setup_buf = [0u8; 512];
         let setup_len =
-            build_session_setup(0x03, &src, &dst, &xk_msg1[..msg1_len], &mut setup_buf).unwrap();
+            build_session_setup(0x00, &src, &dst, &xk_msg1[..msg1_len], &mut setup_buf).unwrap();
 
         let mut session = FspSession::new();
         let mut ack = [0u8; 512];
