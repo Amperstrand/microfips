@@ -31,7 +31,7 @@ const L2CAP_SEND_TIMEOUT_SECS: u64 = 15;
 const CENTRAL_COLLISION_COOLDOWN_MS: u64 = 6_000;
 
 static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> = StaticCell::new();
-static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
+static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 5> =
     Channel::new();
 static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 4> =
     Channel::new();
@@ -338,34 +338,32 @@ where
 
     let mut tx_count: u32 = 0;
     let mut rx_count: u32 = 0;
+    let mut rx_drop_total: u32 = 0;
 
     loop {
         match select(
-            select(
-                embassy_time::with_timeout(
-                    embassy_time::Duration::from_secs(L2CAP_RECV_TIMEOUT_SECS),
-                    reader.receive(stack, &mut rx_buf),
-                ),
-                L2CAP_TX_CH.receive(),
+            embassy_time::with_timeout(
+                embassy_time::Duration::from_secs(L2CAP_RECV_TIMEOUT_SECS),
+                reader.receive(stack, &mut rx_buf),
             ),
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(1)),
+            L2CAP_TX_CH.receive(),
         )
         .await
         {
-            Either::Second(()) => continue,
-            Either::First(Either::First(Err(_))) => {
+            Either::First(Err(_)) => {
                 log::warn!(
-                    "{}: recv timeout after {}s (after {} RX, {} TX frames)",
+                    "{}: recv timeout after {}s (RX={} TX={} drops={})",
                     recv_disconnect_log,
                     L2CAP_RECV_TIMEOUT_SECS,
                     rx_count,
-                    tx_count
+                    tx_count,
+                    rx_drop_total
                 );
                 STAT_L2CAP_RECV_TIMEOUT.fetch_add(1, Ordering::Relaxed);
                 mark_link_down();
                 break DisconnectReason::RecvTimeout;
             }
-            Either::First(Either::First(Ok(Ok(n)))) => {
+            Either::First(Ok(Ok(n))) => {
                 if n < 2 {
                     log::warn!("RX: SDU too short ({}B), disconnecting", n);
                     mark_link_down();
@@ -391,39 +389,36 @@ where
                 }
 
                 rx_count += 1;
-                let phase = frame.first().copied().unwrap_or(0xFF);
 
-                if rx_count <= 5 || rx_count % 20 == 0 {
-                    let hex_len = payload_len.min(32);
-                    let mut hex = [0u8; 64];
-                    microfips_esp_common::node_info::hex_encode(
-                        &frame[..hex_len],
-                        &mut hex[..hex_len * 2],
-                    );
+                if rx_count <= 3 || rx_count % 100 == 0 {
+                    let phase = frame.first().copied().unwrap_or(0xFF);
                     log::info!(
-                        "RX #{}: {}B phase={:#04x} first32={}",
+                        "RX #{}: {}B phase={:#04x}",
                         rx_count,
                         payload_len,
-                        phase,
-                        core::str::from_utf8(&hex[..hex_len * 2]).unwrap_or("?")
+                        phase
                     );
                 }
 
                 if L2CAP_RX_CH.try_send(frame).is_err() {
+                    rx_drop_total += 1;
                     STAT_L2CAP_RX_DROP.fetch_add(1, Ordering::Relaxed);
-                    log::warn!(
-                        "RX: L2CAP_RX_CH full, dropping {}B frame #{}",
-                        payload_len,
-                        rx_count
-                    );
+                    if rx_drop_total <= 10 || rx_drop_total % 100 == 0 {
+                        log::warn!(
+                            "RX: L2CAP_RX_CH full, dropping {}B (total drops={})",
+                            payload_len,
+                            rx_drop_total
+                        );
+                    }
                 }
             }
-            Either::First(Either::First(Ok(Err(_)))) => {
+            Either::First(Ok(Err(_))) => {
                 log::warn!(
-                    "{} (after {} RX, {} TX frames)",
+                    "{} (RX={} TX={} drops={})",
                     recv_disconnect_log,
                     rx_count,
-                    tx_count
+                    tx_count,
+                    rx_drop_total
                 );
                 mark_link_down();
                 if rx_count == 0 && tx_count == 0 {
@@ -432,7 +427,7 @@ where
                 }
                 break DisconnectReason::DataExchanged;
             }
-            Either::First(Either::Second(frame)) => {
+            Either::Second(frame) => {
                 let len = frame.len() as u16;
                 let mut sdu = heapless::Vec::<u8, L2CAP_SDU_CAP>::new();
                 if sdu.extend_from_slice(&len.to_be_bytes()).is_err()
@@ -444,21 +439,14 @@ where
                 }
 
                 tx_count += 1;
-                let phase = frame.first().copied().unwrap_or(0xFF);
 
-                if tx_count <= 5 || tx_count % 20 == 0 {
-                    let hex_len = (len as usize).min(32);
-                    let mut hex = [0u8; 64];
-                    microfips_esp_common::node_info::hex_encode(
-                        &frame[..hex_len],
-                        &mut hex[..hex_len * 2],
-                    );
+                if tx_count <= 3 || tx_count % 100 == 0 {
+                    let phase = frame.first().copied().unwrap_or(0xFF);
                     log::info!(
-                        "TX #{}: {}B phase={:#04x} first32={}",
+                        "TX #{}: {}B phase={:#04x}",
                         tx_count,
                         len,
-                        phase,
-                        core::str::from_utf8(&hex[..hex_len * 2]).unwrap_or("?")
+                        phase
                     );
                 }
 
@@ -472,11 +460,12 @@ where
                     Ok(Err(e)) => {
                         STAT_L2CAP_SEND_ERROR.fetch_add(1, Ordering::Relaxed);
                         log::warn!(
-                            "{}: {:?} (after {} RX, {} TX frames)",
+                            "{}: {:?} (RX={} TX={} drops={})",
                             send_disconnect_log,
                             e,
                             rx_count,
-                            tx_count
+                            tx_count,
+                            rx_drop_total
                         );
                         mark_link_down();
                         break DisconnectReason::SendError;
@@ -484,11 +473,12 @@ where
                     Err(_) => {
                         STAT_L2CAP_SEND_TIMEOUT.fetch_add(1, Ordering::Relaxed);
                         log::warn!(
-                            "{}: send timeout after {}s (after {} RX, {} TX frames)",
+                            "{}: send timeout after {}s (RX={} TX={} drops={})",
                             send_disconnect_log,
                             L2CAP_SEND_TIMEOUT_SECS,
                             rx_count,
-                            tx_count
+                            tx_count,
+                            rx_drop_total
                         );
                         mark_link_down();
                         break DisconnectReason::SendTimeout;
