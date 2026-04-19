@@ -288,11 +288,11 @@ fn test_session_datagram_body_layout() {
     // Byte 0: TTL
     assert_eq!(body[0], 64, "TTL=64");
 
-    // Bytes 1-2: path_mtu LE
+    // Bytes 1-2: path_mtu LE (u16::MAX to match FIPS default)
     assert_eq!(
         u16::from_le_bytes([body[1], body[2]]),
-        1400,
-        "path_mtu=1400"
+        u16::MAX,
+        "path_mtu=u16::MAX"
     );
 
     // Bytes 3-18: src_addr

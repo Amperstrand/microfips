@@ -8,8 +8,8 @@
 //! | ID | Field | microfips | FIPS | Impact |
 //! |----|-------|-----------|------|--------|
 //! | ~~N1~~ | `payload_len` in established phase | ~~was `4+8+inner_len+16`~~ → now `inner_len` | `inner_len` (plaintext size before encryption) | **Fixed**: was benign on UDP but broke BLE L2CAP (FIPS `calculate_frame_len` depends on this field for frame splitting). |
-//! | N2 | `path_mtu` default | hardcoded 1400 | `u16::MAX` | FIPS caps during forwarding. No functional impact. |
-//! | N3 | `session_flags` | initiator sends 0x03 | defaults to 0x00 | FIPS doesn't validate flags. No functional impact. |
+//! | ~~N2~~ | `path_mtu` default | ~~hardcoded 1400~~ → now `u16::MAX` | `u16::MAX` | **Fixed**: matches FIPS default. FIPS caps during forwarding. |
+//! | ~~N3~~ | `session_flags` | ~~initiator sends 0x03~~ → now 0x00 | defaults to 0x00 | **Fixed**: matches FIPS default. FIPS doesn't validate flags. |
 
 // FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const FMP_VERSION: u8 = 0;
