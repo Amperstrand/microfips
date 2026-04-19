@@ -475,6 +475,15 @@ s.close()
 **CRITICAL: Do NOT use `esptool --no-stub`** — it overwrites the partition table and bricks
 the board. Always use `espflash`.
 
+**Serial logging note:** `esp-println` on S3 outputs to UART0 (GPIO43/44) by default, NOT the
+USB JTAG serial port (`/dev/ttyACM*`). This means UART log output from L2CAP/WiFi variants is
+not visible through the USB JTAG connection. To see logs, either add `"jtag-serial"` feature to
+`esp-println` in Cargo.toml, or connect an external serial adapter to GPIO43/44.
+
+**BLE status (2026-04-19):** S3 L2CAP firmware builds and flashes but does not advertise BLE.
+`esp-radio` BLE init may be failing silently, or the TiLDAGON board may lack an onboard BLE
+antenna. D0WD L2CAP verified working. S3 WiFi variant is the recommended transport for S3.
+
 **Recovery from bricked state:**
 1. Hold boop (back button) while plugging USB
 2. Hold for 3 seconds, then release
