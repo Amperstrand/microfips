@@ -58,6 +58,44 @@ pub const MSG_RECEIVER_REPORT: u8 = 0x02;
 // FIPS: bd08505 node/link.rs:handle_disconnect()
 pub const MSG_DISCONNECT: u8 = 0x50;
 
+// FIPS: protocol/link.rs — experimental benchmark (0xFB-0xFF), feature-gated
+pub const MSG_ECHO_REQUEST: u8 = 0xFF;
+pub const MSG_ECHO_RESPONSE: u8 = 0xFE;
+pub const MSG_THROUGHPUT_REQUEST: u8 = 0xFD;
+pub const MSG_THROUGHPUT_STREAM: u8 = 0xFC;
+pub const MSG_THROUGHPUT_REPORT: u8 = 0xFB;
+
+pub const ECHO_REQUEST_MIN_SIZE: usize = 12;
+pub const ECHO_RESPONSE_MIN_SIZE: usize = 20;
+pub const ECHO_MAX_PAYLOAD: usize = 256;
+
+pub fn parse_echo_request(body: &[u8]) -> Option<(u64, u32, &[u8])> {
+    if body.len() < ECHO_REQUEST_MIN_SIZE {
+        return None;
+    }
+    let ts = u64::from_le_bytes(body[0..8].try_into().ok()?);
+    let seq = u32::from_le_bytes(body[8..12].try_into().ok()?);
+    Some((ts, seq, &body[12..]))
+}
+
+pub fn build_echo_response(
+    send_timestamp_us: u64,
+    recv_timestamp_us: u64,
+    sequence: u32,
+    payload: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let needed = ECHO_RESPONSE_MIN_SIZE + payload.len();
+    if out.len() < needed || payload.len() > ECHO_MAX_PAYLOAD {
+        return None;
+    }
+    out[0..8].copy_from_slice(&send_timestamp_us.to_le_bytes());
+    out[8..16].copy_from_slice(&recv_timestamp_us.to_le_bytes());
+    out[16..20].copy_from_slice(&sequence.to_le_bytes());
+    out[20..needed].copy_from_slice(payload);
+    Some(needed)
+}
+
 /// Disconnect reason codes (1-byte payload in Disconnect message).
 /// FIPS: protocol/link.rs DisconnectReason
 pub const DISC_REASON_SHUTDOWN: u8 = 0x00;

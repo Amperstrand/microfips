@@ -1077,6 +1077,23 @@ fn handle_frame_inner<H: NodeHandler>(
                     #[cfg(not(feature = "mmp"))]
                     FrameAction::Continue
                 }
+                wire::MSG_ECHO_REQUEST => {
+                    if let Some((send_ts, seq, payload)) = wire::parse_echo_request(inner_payload) {
+                        let now_us = Instant::now().as_micros();
+                        if let Some(resp_len) = wire::build_echo_response(
+                            send_ts, now_us, seq, payload, resp,
+                        ) {
+                            FrameAction::SendLinkMessage {
+                                msg_type: wire::MSG_ECHO_RESPONSE,
+                                len: resp_len,
+                            }
+                        } else {
+                            FrameAction::Continue
+                        }
+                    } else {
+                        FrameAction::Continue
+                    }
+                }
                 _ => {
                     #[cfg(feature = "mmp")]
                     let base_action = {
