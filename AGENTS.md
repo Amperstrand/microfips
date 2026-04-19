@@ -476,13 +476,20 @@ s.close()
 the board. Always use `espflash`.
 
 **Serial logging note:** `esp-println` on S3 outputs to UART0 (GPIO43/44) by default, NOT the
-USB JTAG serial port (`/dev/ttyACM*`). This means UART log output from L2CAP/WiFi variants is
-not visible through the USB JTAG connection. To see logs, either add `"jtag-serial"` feature to
-`esp-println` in Cargo.toml, or connect an external serial adapter to GPIO43/44.
+USB JTAG serial port (`/dev/ttyACM*`). To see logs through USB JTAG, add `"jtag-serial"` feature
+to `esp-println` in `crates/microfips-esp32s3/Cargo.toml`:
+```toml
+esp-println = { version = "0.16.1", default-features = false, features = ["esp32s3", "jtag-serial"], optional = true }
+```
+Without `jtag-serial`, use `espflash flash --monitor` to see bootloader output only (no app logs).
 
-**BLE status (2026-04-19):** S3 L2CAP firmware builds and flashes but does not advertise BLE.
-`esp-radio` BLE init may be failing silently, or the TiLDAGON board may lack an onboard BLE
-antenna. D0WD L2CAP verified working. S3 WiFi variant is the recommended transport for S3.
+**BLE status (2026-04-19):** S3 L2CAP firmware boots successfully with `esp-radio` BLE init,
+advertises as peripheral, and connects to FIPS via central role. The 0-frame disconnect
+(tie-breaker yield) and peripheral fallback both work correctly. FIPS must have a free BLE
+connection slot — the Mac peer can occupy the slot and block S3 connections.
+
+**TiLDAGON USB device mapping:** Serial `64:E8:33:72:01:24`, always verify with `lsusb` or
+the detection script above. The M5 Stack (`0403:6001`, `/dev/ttyUSB0`) is a separate device.
 
 **Recovery from bricked state:**
 1. Hold boop (back button) while plugging USB
