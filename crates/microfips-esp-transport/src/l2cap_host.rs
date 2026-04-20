@@ -339,6 +339,9 @@ where
     let mut tx_count: u32 = 0;
     let mut rx_count: u32 = 0;
     let mut rx_drop_total: u32 = 0;
+    let mut first_frame_logged = false;
+
+    log::info!("relay starting (role context: {})", recv_disconnect_log);
 
     loop {
         match select(
@@ -351,6 +354,7 @@ where
         .await
         {
             Either::First(Err(_)) => {
+                log::warn!("relay recv error: timeout");
                 log::warn!(
                     "{}: recv timeout after {}s (RX={} TX={} drops={})",
                     recv_disconnect_log,
@@ -364,6 +368,10 @@ where
                 break DisconnectReason::RecvTimeout;
             }
             Either::First(Ok(Ok(n))) => {
+                if !first_frame_logged {
+                    log::info!("relay first frame received: {}B", n);
+                    first_frame_logged = true;
+                }
                 if n < 2 {
                     log::warn!("RX: SDU too short ({}B), disconnecting", n);
                     mark_link_down();
@@ -412,7 +420,8 @@ where
                     }
                 }
             }
-            Either::First(Ok(Err(_))) => {
+            Either::First(Ok(Err(e))) => {
+                log::warn!("relay recv error: {:?}", e);
                 log::warn!(
                     "{} (RX={} TX={} drops={})",
                     recv_disconnect_log,
@@ -856,6 +865,8 @@ where
     }
 
     drain_l2cap_channels();
+    log::info!("peripheral: settling L2CAP channel before relay");
+    embassy_time::Timer::after(embassy_time::Duration::from_millis(200)).await;
     mark_link_ready(peer_pub);
     STAT_L2CAP_PERIPHERAL_OK.fetch_add(1, Ordering::Relaxed);
     relay_l2cap_frames(
