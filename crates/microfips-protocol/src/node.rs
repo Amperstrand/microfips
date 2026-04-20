@@ -88,6 +88,16 @@ impl NodeHandler for NoopHandler {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ThroughputState {
+    test_id: u32,
+    frames_recv: u32,
+    bytes_recv: u64,
+    start_us: u64,
+    duration_secs: u8,
+    active: bool,
+}
+
 pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     transport: T,
     rng: R,
@@ -101,6 +111,7 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     raw_framing: bool,
     epoch: u64,
     peer_sent_first: bool,
+    throughput: ThroughputState,
     #[cfg(feature = "mmp")]
     mmp: crate::mmp::MmpPeerState,
 }
@@ -120,6 +131,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             raw_framing: false,
             epoch: 0,
             peer_sent_first: false,
+            throughput: ThroughputState::default(),
             #[cfg(feature = "mmp")]
             mmp: crate::mmp::MmpPeerState::new(),
         }
@@ -216,6 +228,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         self.rpos = 0;
         self.rlen = 0;
+        self.throughput = ThroughputState::default();
 
         match self.handshake(epoch, handler).await {
             Ok((ks, kr, them)) => {
@@ -481,8 +494,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             continue;
                         }
 
-                        let result =
-                            handle_frame_inner(kr, frame_data, handler, &mut self.resp_buf);
+                        let result = handle_frame_inner(
+                            kr,
+                            frame_data,
+                            &mut self.throughput,
+                            handler,
+                            &mut self.resp_buf,
+                        );
                         if frame_is_policy_good(kr, frame_data) {
                             self.policy.record_good_frame();
                         } else {
@@ -947,6 +965,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 fn handle_frame_inner<H: NodeHandler>(
     kr: &[u8; 32],
     data: &[u8],
+    throughput: &mut ThroughputState,
     handler: &mut H,
     resp: &mut [u8],
 ) -> FrameAction {
@@ -1089,6 +1108,73 @@ fn handle_frame_inner<H: NodeHandler>(
                             }
                         } else {
                             FrameAction::Continue
+                        }
+                    } else {
+                        FrameAction::Continue
+                    }
+                }
+                wire::MSG_THROUGHPUT_REQUEST => {
+                    if let Some((test_id, direction, duration_secs, _frame_size, _rate_bps)) =
+                        wire::parse_throughput_request(inner_payload)
+                    {
+                        if direction == 0 {
+                            *throughput = ThroughputState {
+                                test_id,
+                                frames_recv: 0,
+                                bytes_recv: 0,
+                                start_us: Instant::now().as_micros(),
+                                duration_secs,
+                                active: true,
+                            };
+                        }
+                    }
+                    FrameAction::Continue
+                }
+                wire::MSG_THROUGHPUT_STREAM => {
+                    if !throughput.active {
+                        return FrameAction::Continue;
+                    }
+
+                    let Some((test_id, _sequence)) = wire::parse_throughput_stream(inner_payload)
+                    else {
+                        return FrameAction::Continue;
+                    };
+
+                    if test_id != throughput.test_id {
+                        return FrameAction::Continue;
+                    }
+
+                    throughput.frames_recv = throughput.frames_recv.saturating_add(1);
+                    throughput.bytes_recv = throughput
+                        .bytes_recv
+                        .saturating_add(inner_payload.len() as u64);
+
+                    let elapsed_us = Instant::now().as_micros().saturating_sub(throughput.start_us);
+                    let target_duration_us = u64::from(throughput.duration_secs) * 1_000_000;
+                    if elapsed_us < target_duration_us {
+                        return FrameAction::Continue;
+                    }
+
+                    let report = *throughput;
+                    throughput.active = false;
+                    let achieved_bps = if elapsed_us > 0 {
+                        report.bytes_recv.saturating_mul(8).saturating_mul(1_000_000) / elapsed_us
+                    } else {
+                        0
+                    };
+
+                    if let Some(resp_len) = wire::build_throughput_report(
+                        report.test_id,
+                        0,
+                        report.frames_recv,
+                        report.bytes_recv,
+                        elapsed_us,
+                        achieved_bps,
+                        resp,
+                    ) {
+                        FrameAction::SendLinkMessage {
+                            msg_type: wire::MSG_THROUGHPUT_REPORT,
+                            len: resp_len,
                         }
                     } else {
                         FrameAction::Continue
@@ -1499,7 +1585,13 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &frame, &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(
+            &key,
+            &frame,
+            &mut ThroughputState::default(),
+            &mut NoopTestHandler,
+            &mut resp,
+        );
         assert_eq!(result, FrameAction::HeartbeatRecv);
     }
 
@@ -1519,7 +1611,13 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &frame, &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(
+            &key,
+            &frame,
+            &mut ThroughputState::default(),
+            &mut NoopTestHandler,
+            &mut resp,
+        );
         assert_eq!(result, FrameAction::PeerDC);
     }
 
@@ -1532,7 +1630,13 @@ mod tests {
         let frame = build_test_frame(wire::SessionIndex::new(0), 2, 0x05, ts, b"unknown", &key);
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &frame, &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(
+            &key,
+            &frame,
+            &mut ThroughputState::default(),
+            &mut NoopTestHandler,
+            &mut resp,
+        );
         assert_eq!(result, FrameAction::Continue);
     }
 
@@ -1552,7 +1656,13 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key_b, &frame, &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(
+            &key_b,
+            &frame,
+            &mut ThroughputState::default(),
+            &mut NoopTestHandler,
+            &mut resp,
+        );
         assert_eq!(result, FrameAction::Continue);
     }
 
@@ -1561,15 +1671,33 @@ mod tests {
         let key: [u8; 32] = [0x42; 32];
         let mut resp = [0u8; 256];
         assert_eq!(
-            handle_frame_inner(&key, &[], &mut NoopTestHandler, &mut resp),
+            handle_frame_inner(
+                &key,
+                &[],
+                &mut ThroughputState::default(),
+                &mut NoopTestHandler,
+                &mut resp,
+            ),
             FrameAction::Continue
         );
         assert_eq!(
-            handle_frame_inner(&key, &[0x00], &mut NoopTestHandler, &mut resp),
+            handle_frame_inner(
+                &key,
+                &[0x00],
+                &mut ThroughputState::default(),
+                &mut NoopTestHandler,
+                &mut resp,
+            ),
             FrameAction::Continue
         );
         assert_eq!(
-            handle_frame_inner(&key, &[0xFF; 4], &mut NoopTestHandler, &mut resp),
+            handle_frame_inner(
+                &key,
+                &[0xFF; 4],
+                &mut ThroughputState::default(),
+                &mut NoopTestHandler,
+                &mut resp,
+            ),
             FrameAction::Continue
         );
     }
@@ -1609,9 +1737,78 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &frame, &mut DatagramHandler, &mut resp);
+        let result = handle_frame_inner(
+            &key,
+            &frame,
+            &mut ThroughputState::default(),
+            &mut DatagramHandler,
+            &mut resp,
+        );
         assert_eq!(result, FrameAction::SendDatagram(4));
         assert_eq!(&resp[..4], b"pong");
+    }
+
+    #[test]
+    fn test_handle_frame_throughput_request_activates_state() {
+        use microfips_core::wire;
+
+        let key: [u8; 32] = [0x42; 32];
+        let body = [0x78, 0x56, 0x34, 0x12, 0x00, 0x01, 0x00, 0x04, 0x00, 0x65, 0xcd, 0x1d];
+        let frame = build_test_frame(
+            wire::SessionIndex::new(0),
+            6,
+            wire::MSG_THROUGHPUT_REQUEST,
+            123,
+            &body,
+            &key,
+        );
+
+        let mut throughput = ThroughputState::default();
+        let mut resp = [0u8; 256];
+        let result = handle_frame_inner(&key, &frame, &mut throughput, &mut NoopTestHandler, &mut resp);
+        assert_eq!(result, FrameAction::Continue);
+        assert!(throughput.active);
+        assert_eq!(throughput.test_id, 0x12345678);
+        assert_eq!(throughput.duration_secs, 1);
+    }
+
+    #[test]
+    fn test_handle_frame_throughput_stream_sends_report() {
+        use microfips_core::wire;
+
+        let key: [u8; 32] = [0x42; 32];
+        let payload = [0x78, 0x56, 0x34, 0x12, 0x01, 0x00, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd];
+        let frame = build_test_frame(
+            wire::SessionIndex::new(0),
+            7,
+            wire::MSG_THROUGHPUT_STREAM,
+            456,
+            &payload,
+            &key,
+        );
+
+        let mut throughput = ThroughputState {
+            test_id: 0x12345678,
+            frames_recv: 0,
+            bytes_recv: 0,
+            start_us: Instant::now().as_micros().saturating_sub(1_000_000),
+            duration_secs: 1,
+            active: true,
+        };
+        let mut resp = [0u8; 256];
+        let result = handle_frame_inner(&key, &frame, &mut throughput, &mut NoopTestHandler, &mut resp);
+        assert!(matches!(
+            result,
+            FrameAction::SendLinkMessage {
+                msg_type: wire::MSG_THROUGHPUT_REPORT,
+                len: wire::THROUGHPUT_REPORT_SIZE,
+            }
+        ));
+        assert!(!throughput.active);
+        assert_eq!(u32::from_le_bytes(resp[0..4].try_into().unwrap()), 0x12345678);
+        assert_eq!(u32::from_le_bytes(resp[4..8].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(resp[8..12].try_into().unwrap()), 1);
+        assert_eq!(u64::from_le_bytes(resp[12..20].try_into().unwrap()), payload.len() as u64);
     }
 
     // NOTE: test_handshake_with_mock_responder requires refactoring handshake()
