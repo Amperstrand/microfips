@@ -19,7 +19,7 @@ use crate::config::{
     ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, DEVICE_NSEC, FIPS_SERVICE_UUID_LE,
     RECV_RETRY_DELAY_MS,
 };
-use crate::stats::{STAT_BLE_CONNECT, STAT_BLE_DISCONNECT, STAT_BLE_RX, STAT_BLE_TX};
+use crate::stats::BLE_STATS;
 
 static HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2>> = StaticCell::new();
 static BLE_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> =
@@ -241,14 +241,14 @@ pub async fn ble_host_task() {
 
             BLE_LINK_UP.store(true, Ordering::Relaxed);
             BLE_NOTIFICATIONS_ENABLED.store(false, Ordering::Relaxed);
-            STAT_BLE_CONNECT.fetch_add(1, Ordering::Relaxed);
+            BLE_STATS.connect.fetch_add(1, Ordering::Relaxed);
             BLE_CONNECTED_SIG.signal(());
 
             loop {
                 match select(conn.next(), BLE_TX_CH.receive()).await {
                     Either::First(GattConnectionEvent::Disconnected { .. }) => {
                         BLE_LINK_UP.store(false, Ordering::Relaxed);
-                        STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                        BLE_STATS.disconnect.fetch_add(1, Ordering::Relaxed);
                         while BLE_RX_CH.try_receive().is_ok() {}
                         while BLE_TX_CH.try_receive().is_ok() {}
                         break;
@@ -266,7 +266,7 @@ pub async fn ble_host_task() {
                                     let mut frame = heapless::Vec::<u8, BLE_MAX_FRAME>::new();
                                     if frame.extend_from_slice(e.data()).is_ok() {
                                         BLE_RX_CH.send(frame).await;
-                                        STAT_BLE_RX.fetch_add(1, Ordering::Relaxed);
+                                        BLE_STATS.rx.fetch_add(1, Ordering::Relaxed);
                                     }
                                 }
                             }
@@ -299,12 +299,12 @@ pub async fn ble_host_task() {
                             }
                             BLE_LINK_UP.store(false, Ordering::Relaxed);
                             BLE_NOTIFICATIONS_ENABLED.store(false, Ordering::Relaxed);
-                            STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                            BLE_STATS.disconnect.fetch_add(1, Ordering::Relaxed);
                             while BLE_RX_CH.try_receive().is_ok() {}
                             while BLE_TX_CH.try_receive().is_ok() {}
                             break;
                         }
-                        STAT_BLE_TX.fetch_add(1, Ordering::Relaxed);
+                        BLE_STATS.tx.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }

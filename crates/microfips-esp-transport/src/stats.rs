@@ -5,13 +5,24 @@ pub use microfips_esp_common::stats::*;
 
 #[cfg(feature = "ble")]
 #[used]
-pub static STAT_BLE_CONNECT: AtomicU32 = AtomicU32::new(0);
+pub static BLE_STATS: BleStats = BleStats::new();
+
 #[cfg(feature = "ble")]
-#[used]
-pub static STAT_BLE_DISCONNECT: AtomicU32 = AtomicU32::new(0);
+pub struct BleStats {
+    pub connect: AtomicU32,
+    pub disconnect: AtomicU32,
+    pub tx: AtomicU32,
+    pub rx: AtomicU32,
+}
+
 #[cfg(feature = "ble")]
-#[used]
-pub static STAT_BLE_TX: AtomicU32 = AtomicU32::new(0);
-#[cfg(feature = "ble")]
-#[used]
-pub static STAT_BLE_RX: AtomicU32 = AtomicU32::new(0);
+impl BleStats {
+    pub const fn new() -> Self {
+        Self {
+            connect: AtomicU32::new(0),
+            disconnect: AtomicU32::new(0),
+            tx: AtomicU32::new(0),
+            rx: AtomicU32::new(0),
+        }
+    }
+}

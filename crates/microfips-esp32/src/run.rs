@@ -77,10 +77,10 @@ pub async fn run_ble_node(
     use crate::ble_transport::BleTransport;
     use core::sync::atomic::Ordering;
     use microfips_esp_transport::config::BLE_DEVICE_NAME;
-    use microfips_esp_transport::stats::BOOT_TICK_MS;
+    use microfips_esp_transport::stats::STATS;
 
     crate::logger::init();
-    BOOT_TICK_MS.store(
+    STATS.boot_tick_ms.store(
         embassy_time::Instant::now().as_millis() as u32,
         Ordering::Relaxed,
     );
@@ -134,10 +134,10 @@ pub async fn run_l2cap_node(
     use crate::l2cap_transport::L2capTransport;
     use core::sync::atomic::Ordering;
     use microfips_esp_transport::config::RECV_RETRY_DELAY_MS;
-    use microfips_esp_transport::stats::BOOT_TICK_MS;
+    use microfips_esp_transport::stats::STATS;
 
     crate::logger::init();
-    BOOT_TICK_MS.store(
+    STATS.boot_tick_ms.store(
         embassy_time::Instant::now().as_millis() as u32,
         Ordering::Relaxed,
     );
@@ -221,8 +221,8 @@ pub async fn run_wifi_node(
 
     let identity = NodeIdentity::compute();
     crate::logger::init();
-    use microfips_esp_transport::stats::BOOT_TICK_MS;
-    BOOT_TICK_MS.store(
+    use microfips_esp_transport::stats::STATS;
+    STATS.boot_tick_ms.store(
         embassy_time::Instant::now().as_millis() as u32,
         core::sync::atomic::Ordering::Relaxed,
     );
