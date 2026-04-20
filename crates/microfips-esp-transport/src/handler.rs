@@ -7,9 +7,7 @@ use microfips_service::FspServiceAdapter;
 
 use crate::config::{LED_OFF, LED_ON};
 use crate::led::Led;
-use crate::stats::{
-    STAT_DATA_RX, STAT_DATA_TX, STAT_HB_RX, STAT_HB_TX, STAT_MSG1_TX, STAT_MSG2_RX, STAT_STATE,
-};
+use crate::stats::STATS;
 
 pub type EspFspHandler = FspDualHandler<FspServiceAdapter<DemoService>>;
 pub type EspHandler<'a> = SharedEspHandler<'a>;
@@ -59,32 +57,32 @@ impl NodeHandler for SharedEspHandler<'_> {
     async fn on_event(&mut self, event: NodeEvent) {
         match event {
             NodeEvent::Connected => {
-                STAT_STATE.store(1, Ordering::Relaxed);
+                STATS.state.store(1, Ordering::Relaxed);
                 self.led.set_state(LED_ON);
             }
             NodeEvent::Msg1Sent => {
-                STAT_STATE.store(2, Ordering::Relaxed);
-                STAT_MSG1_TX.fetch_add(1, Ordering::Relaxed);
+                STATS.state.store(2, Ordering::Relaxed);
+                STATS.msg1_tx.fetch_add(1, Ordering::Relaxed);
                 self.led.set_state(LED_ON);
             }
             NodeEvent::HandshakeOk => {
-                STAT_STATE.store(3, Ordering::Relaxed);
-                STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
+                STATS.state.store(3, Ordering::Relaxed);
+                STATS.msg2_rx.fetch_add(1, Ordering::Relaxed);
                 self.led.set_state(LED_ON);
             }
             NodeEvent::HeartbeatSent => {
-                STAT_STATE.store(4, Ordering::Relaxed);
-                STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
+                STATS.state.store(4, Ordering::Relaxed);
+                STATS.hb_tx.fetch_add(1, Ordering::Relaxed);
             }
             NodeEvent::HeartbeatRecv => {
-                STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
+                STATS.hb_rx.fetch_add(1, Ordering::Relaxed);
             }
             NodeEvent::Disconnected => {
-                STAT_STATE.store(5, Ordering::Relaxed);
+                STATS.state.store(5, Ordering::Relaxed);
                 self.led.set_state(LED_OFF);
             }
             NodeEvent::Error => {
-                STAT_STATE.store(6, Ordering::Relaxed);
+                STATS.state.store(6, Ordering::Relaxed);
                 self.led.set_state(LED_OFF);
             }
         }
@@ -95,10 +93,10 @@ impl NodeHandler for SharedEspHandler<'_> {
         if msg_type != 0x00 {
             return HandleResult::None;
         }
-        STAT_DATA_RX.fetch_add(1, Ordering::Relaxed);
+        STATS.data_rx.fetch_add(1, Ordering::Relaxed);
         let result = self.fsp.on_message(msg_type, payload, resp);
         if let HandleResult::SendDatagram(_) = result {
-            STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
+            STATS.data_tx.fetch_add(1, Ordering::Relaxed);
         }
         result
     }
@@ -110,7 +108,7 @@ impl NodeHandler for SharedEspHandler<'_> {
     fn on_tick(&mut self, resp: &mut [u8]) -> HandleResult {
         let result = self.fsp.on_tick(resp);
         if let HandleResult::SendDatagram(_) = result {
-            STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
+            STATS.data_tx.fetch_add(1, Ordering::Relaxed);
         }
         result
     }
