@@ -68,6 +68,9 @@ pub const MSG_THROUGHPUT_REPORT: u8 = 0xFB;
 pub const ECHO_REQUEST_MIN_SIZE: usize = 12;
 pub const ECHO_RESPONSE_MIN_SIZE: usize = 20;
 pub const ECHO_MAX_PAYLOAD: usize = 256;
+pub const THROUGHPUT_REQUEST_SIZE: usize = 12;
+pub const THROUGHPUT_STREAM_MIN_SIZE: usize = 8;
+pub const THROUGHPUT_REPORT_SIZE: usize = 36;
 
 pub fn parse_echo_request(body: &[u8]) -> Option<(u64, u32, &[u8])> {
     if body.len() < ECHO_REQUEST_MIN_SIZE {
@@ -94,6 +97,48 @@ pub fn build_echo_response(
     out[16..20].copy_from_slice(&sequence.to_le_bytes());
     out[20..needed].copy_from_slice(payload);
     Some(needed)
+}
+
+pub fn parse_throughput_request(body: &[u8]) -> Option<(u32, u8, u8, u16, u32)> {
+    if body.len() < THROUGHPUT_REQUEST_SIZE {
+        return None;
+    }
+    let test_id = u32::from_le_bytes(body[0..4].try_into().ok()?);
+    let direction = body[4];
+    let duration_secs = body[5];
+    let frame_size = u16::from_le_bytes(body[6..8].try_into().ok()?);
+    let rate_bps = u32::from_le_bytes(body[8..12].try_into().ok()?);
+    Some((test_id, direction, duration_secs, frame_size, rate_bps))
+}
+
+pub fn parse_throughput_stream(body: &[u8]) -> Option<(u32, u32)> {
+    if body.len() < THROUGHPUT_STREAM_MIN_SIZE {
+        return None;
+    }
+    let test_id = u32::from_le_bytes(body[0..4].try_into().ok()?);
+    let sequence = u32::from_le_bytes(body[4..8].try_into().ok()?);
+    Some((test_id, sequence))
+}
+
+pub fn build_throughput_report(
+    test_id: u32,
+    frames_sent: u32,
+    frames_recv: u32,
+    bytes_recv: u64,
+    duration_us: u64,
+    achieved_bps: u64,
+    out: &mut [u8],
+) -> Option<usize> {
+    if out.len() < THROUGHPUT_REPORT_SIZE {
+        return None;
+    }
+    out[0..4].copy_from_slice(&test_id.to_le_bytes());
+    out[4..8].copy_from_slice(&frames_sent.to_le_bytes());
+    out[8..12].copy_from_slice(&frames_recv.to_le_bytes());
+    out[12..20].copy_from_slice(&bytes_recv.to_le_bytes());
+    out[20..28].copy_from_slice(&duration_us.to_le_bytes());
+    out[28..36].copy_from_slice(&achieved_bps.to_le_bytes());
+    Some(THROUGHPUT_REPORT_SIZE)
 }
 
 /// Disconnect reason codes (1-byte payload in Disconnect message).
@@ -546,6 +591,38 @@ mod tests {
         let p = build_prefix(PHASE_ESTABLISHED, 0x00, 100);
         assert_eq!(p[0], 0x00);
         assert_eq!(u16::from_le_bytes([p[2], p[3]]), 100);
+    }
+
+    #[test]
+    fn parse_throughput_request_roundtrip() {
+        let body = [
+            0x78, 0x56, 0x34, 0x12, 0x00, 0x0a, 0x80, 0x00, 0x00, 0x65, 0xcd, 0x1d,
+        ];
+        let parsed = parse_throughput_request(&body).unwrap();
+        assert_eq!(parsed, (0x12345678, 0x00, 0x0a, 0x0080, 0x1dcd6500));
+    }
+
+    #[test]
+    fn parse_throughput_stream_roundtrip() {
+        let body = [0x78, 0x56, 0x34, 0x12, 0x11, 0x22, 0x33, 0x44, 0xaa, 0xbb];
+        let parsed = parse_throughput_stream(&body).unwrap();
+        assert_eq!(parsed, (0x12345678, 0x44332211));
+    }
+
+    #[test]
+    fn build_throughput_report_writes_expected_fields() {
+        let mut out = [0u8; THROUGHPUT_REPORT_SIZE];
+        let len = build_throughput_report(7, 0, 11, 4096, 2_000_000, 16_384, &mut out).unwrap();
+        assert_eq!(len, THROUGHPUT_REPORT_SIZE);
+        assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), 7);
+        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(out[8..12].try_into().unwrap()), 11);
+        assert_eq!(u64::from_le_bytes(out[12..20].try_into().unwrap()), 4096);
+        assert_eq!(
+            u64::from_le_bytes(out[20..28].try_into().unwrap()),
+            2_000_000
+        );
+        assert_eq!(u64::from_le_bytes(out[28..36].try_into().unwrap()), 16_384);
     }
 
     #[test]
