@@ -1,59 +1,38 @@
 #![no_std]
 #![no_main]
 
+mod cdc_transport;
+mod config;
+mod handler;
+mod led;
+mod rng;
+mod stats;
+
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::rng::Rng;
 use embassy_stm32::usb::Driver;
-use embassy_stm32::{bind_interrupts, peripherals, rng, usb, Config};
-use embassy_time::{Duration, Timer};
+use embassy_stm32::{bind_interrupts, peripherals, rng as stm32_rng, usb, Config};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
-use embassy_usb::driver::EndpointError;
 use embassy_usb::Builder;
 use static_cell::StaticCell;
 
 use microfips_core::identity::{DEFAULT_PEER_PUB, DEFAULT_SECRET};
 use microfips_http_demo::DemoService;
 use microfips_protocol::fsp_handler::FspDualHandler;
-use microfips_protocol::node::{HandleResult, Node, NodeEvent, NodeHandler};
-use microfips_protocol::transport::Transport;
+use microfips_protocol::node::Node;
 use microfips_service::FspServiceAdapter;
 
-static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
-#[used]
-static _PANIC_LINE_KEEP: &AtomicU32 = &PANIC_LINE;
-
-#[used]
-static STAT_MSG1_TX: AtomicU32 = AtomicU32::new(0);
-#[used]
-static STAT_MSG2_RX: AtomicU32 = AtomicU32::new(0);
-#[used]
-static STAT_HB_TX: AtomicU32 = AtomicU32::new(0);
-#[used]
-static STAT_HB_RX: AtomicU32 = AtomicU32::new(0);
-#[used]
-static STAT_USB_ERR: AtomicU32 = AtomicU32::new(0);
-#[used]
-static STAT_STATE: AtomicU32 = AtomicU32::new(0);
-#[used]
-static STAT_RECV_PKT: AtomicU32 = AtomicU32::new(0);
-#[used]
-static STAT_DATA_RX: AtomicU32 = AtomicU32::new(0);
-#[used]
-static STAT_DATA_TX: AtomicU32 = AtomicU32::new(0);
-
-const S_BOOT: u32 = 0;
-const S_USB_READY: u32 = 1;
-const S_MSG1_SENT: u32 = 2;
-const S_HANDSHAKE_OK: u32 = 3;
-const S_HB_TX: u32 = 4;
-const S_HB_RX: u32 = 5;
-const S_ERR: u32 = 6;
-const S_DISCONNECTED: u32 = 7;
+use crate::cdc_transport::CdcTransport;
+use crate::config::*;
+use crate::handler::FipsHandler;
+use crate::led::Leds;
+use crate::rng::HwRng;
+use crate::stats::{PANIC_LINE, STAT_STATE};
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -69,247 +48,11 @@ fn panic(info: &PanicInfo) -> ! {
 
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
-    HASH_RNG => rng::InterruptHandler<peripherals::RNG>;
+    HASH_RNG => stm32_rng::InterruptHandler<peripherals::RNG>;
 });
-
-const CDC_PKT: usize = 64;
-const PANIC_BLINK_CYCLES: u32 = 500_000;
-const USB_DESC_BUF_SIZE: usize = 256;
-const USB_CTL_BUF_SIZE: usize = 64;
 
 static GLOBAL_RNG: StaticCell<Rng<'static, peripherals::RNG>> = StaticCell::new();
 static EP_OUT_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
-
-// ---------------------------------------------------------------------------
-// Transport adapter: wraps CDC ACM class for the protocol crate's Transport trait
-// ---------------------------------------------------------------------------
-
-struct CdcTransport<'d> {
-    class: &'d mut CdcAcmClass<'d, Driver<'d, peripherals::USB_OTG_FS>>,
-}
-
-impl Transport for CdcTransport<'_> {
-    type Error = EndpointError;
-
-    async fn wait_ready(&mut self) -> Result<(), Self::Error> {
-        self.class.wait_connection().await;
-        Ok(())
-    }
-
-    async fn send(&mut self, data: &[u8]) -> Result<(), Self::Error> {
-        let mut off = 0;
-        while off < data.len() {
-            let end = core::cmp::min(off + CDC_PKT, data.len());
-            match self.class.write_packet(&data[off..end]).await {
-                Ok(()) => {}
-                Err(e) => {
-                    STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
-                    return Err(e);
-                }
-            }
-            off = end;
-        }
-        if !data.is_empty() && data.len().is_multiple_of(CDC_PKT) {
-            self.class.write_packet(&[]).await.inspect_err(|_| {
-                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
-            })?;
-        }
-        Ok(())
-    }
-
-    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        match self.class.read_packet(buf).await {
-            Ok(n) => {
-                STAT_RECV_PKT.fetch_add(1, Ordering::Relaxed);
-                Ok(n)
-            }
-            Err(e) => {
-                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
-                Err(e)
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RNG adapter: wraps embassy hardware RNG for rand_core traits
-// ---------------------------------------------------------------------------
-
-struct HwRng(&'static mut Rng<'static, peripherals::RNG>);
-
-impl rand_core::RngCore for HwRng {
-    fn next_u32(&mut self) -> u32 {
-        let mut buf = [0u8; 4];
-        self.fill_bytes(&mut buf);
-        u32::from_le_bytes(buf)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut buf = [0u8; 8];
-        self.fill_bytes(&mut buf);
-        u64::from_le_bytes(buf)
-    }
-
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        self.0.fill_bytes(dest);
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
-}
-
-impl rand_core::CryptoRng for HwRng {}
-
-// ---------------------------------------------------------------------------
-// LED state machine (hardware-specific, kept in firmware)
-// ---------------------------------------------------------------------------
-
-struct Leds {
-    green: Output<'static>,
-    orange: Output<'static>,
-    red: Output<'static>,
-    blue: Output<'static>,
-}
-
-impl Leds {
-    fn set_state(&mut self, state: u32) {
-        STAT_STATE.store(state, Ordering::Relaxed);
-        match state {
-            S_BOOT => {
-                self.green.set_low();
-                self.orange.set_low();
-                self.red.set_low();
-                self.blue.set_low();
-            }
-            S_USB_READY => {
-                self.green.set_high();
-                self.orange.set_low();
-                self.red.set_low();
-                self.blue.set_low();
-            }
-            S_MSG1_SENT => {
-                self.green.set_high();
-                self.orange.set_high();
-                self.red.set_low();
-                self.blue.set_low();
-            }
-            S_HANDSHAKE_OK => {
-                self.green.set_high();
-                self.orange.set_high();
-                self.red.set_low();
-                self.blue.set_high();
-            }
-            S_HB_TX => {
-                self.green.set_high();
-                self.orange.set_high();
-                self.red.set_low();
-                self.blue.set_low();
-            }
-            S_HB_RX => {
-                self.green.set_high();
-                self.orange.set_high();
-                self.red.set_high();
-                self.blue.set_high();
-            }
-            S_ERR => {
-                self.green.set_low();
-                self.orange.set_low();
-                self.red.set_high();
-                self.blue.set_low();
-            }
-            S_DISCONNECTED => {
-                self.green.set_low();
-                self.orange.set_low();
-                self.red.set_low();
-                self.blue.set_low();
-            }
-            _ => {}
-        }
-    }
-
-    fn blink_green_once(&mut self) {
-        self.green.set_high();
-        cortex_m::asm::delay(8_000_000);
-        self.green.set_low();
-        cortex_m::asm::delay(8_000_000);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// NodeHandler: bridges protocol events to LEDs, stats, and app logic
-// ---------------------------------------------------------------------------
-
-struct FipsHandler<'a> {
-    leds: &'a mut Leds,
-    fsp: FspDualHandler<FspServiceAdapter<DemoService>>,
-}
-
-impl NodeHandler for FipsHandler<'_> {
-    async fn on_event(&mut self, event: NodeEvent) {
-        match event {
-            NodeEvent::Connected => {
-                self.leds.set_state(S_USB_READY);
-            }
-            NodeEvent::Msg1Sent => {
-                STAT_MSG1_TX.fetch_add(1, Ordering::Relaxed);
-                self.leds.set_state(S_MSG1_SENT);
-                embassy_futures::yield_now().await;
-            }
-            NodeEvent::HandshakeOk => {
-                STAT_MSG2_RX.fetch_add(1, Ordering::Relaxed);
-                self.leds.set_state(S_HANDSHAKE_OK);
-                self.fsp.on_event_default(event);
-                Timer::after(Duration::from_millis(500)).await;
-            }
-            NodeEvent::HeartbeatSent => {
-                STAT_HB_TX.fetch_add(1, Ordering::Relaxed);
-                self.leds.set_state(S_HB_TX);
-            }
-            NodeEvent::HeartbeatRecv => {
-                STAT_HB_RX.fetch_add(1, Ordering::Relaxed);
-                self.leds.set_state(S_HB_RX);
-            }
-            NodeEvent::Disconnected => {
-                self.leds.set_state(S_DISCONNECTED);
-            }
-            NodeEvent::Error => {
-                self.leds.set_state(S_ERR);
-            }
-        }
-    }
-
-    fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
-        if msg_type != 0x00 {
-            return HandleResult::None;
-        }
-        STAT_DATA_RX.fetch_add(1, Ordering::Relaxed);
-        let result = self.fsp.on_message(msg_type, payload, resp);
-        if let HandleResult::SendDatagram(_) = result {
-            STAT_DATA_TX.fetch_add(1, Ordering::Relaxed);
-        }
-        result
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Main entry point
-// ---------------------------------------------------------------------------
-
-/// ESP32 peer pubkey (ESP32_SECRET -> ecdh_pubkey -> compressed point).
-/// FIPS cross-reference: bd08505 src/node/handlers/session.rs:handle_session_setup()
-/// node_addr: 0135da2f8acf7b9e3090939432e47684
-const ESP32_PEER_PUB: [u8; 33] = [
-    0x02, 0xc6, 0x04, 0x7f, 0x94, 0x41, 0xed, 0x7d, 0x6d, 0x30, 0x45, 0x40, 0x6e, 0x95, 0xc0,
-    0x7c, 0xd8, 0x5c, 0x77, 0x8e, 0x4b, 0x8c, 0xef, 0x3c, 0xa7, 0xab, 0xac, 0x09, 0xb9, 0x5c,
-    0x70, 0x9e, 0xe5,
-];
-
-const ESP32_NODE_ADDR: [u8; 16] = [
-    0x01, 0x35, 0xda, 0x2f, 0x8a, 0xcf, 0x7b, 0x9e, 0x30, 0x90, 0x93, 0x94, 0x32, 0xe4, 0x76,
-    0x84,
-];
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -386,7 +129,6 @@ async fn main(_spawner: Spawner) {
     let mut node = Node::new(transport, hw_rng, DEFAULT_SECRET, DEFAULT_PEER_PUB);
     let mut handler = FipsHandler {
         leds: &mut leds,
-        // FIPS: bd08505 src/node/handlers/session.rs:handle_session_setup()
         fsp: FspDualHandler::new_dual(
             DEFAULT_SECRET,
             resp_eph,

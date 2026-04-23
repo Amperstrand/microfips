@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -13,6 +14,8 @@ use microfips_core::noise::{
     TAG_SIZE,
 };
 use pcap_file::pcap::PcapReader;
+
+const FIPS_PSM: u16 = 0x0085;
 
 struct UdpDatagram<'a> {
     src_port: u16,
@@ -38,57 +41,6 @@ struct KeyPair {
     name: String,
     k_send: [u8; 32],
     k_recv: [u8; 32],
-}
-
-#[derive(Debug, Parser)]
-#[command(name = "fips-decrypt")]
-#[command(about = "Read FIPS pcap captures and decode/decrypt FMP frames")]
-struct Cli {
-    #[arg(
-        long = "keys",
-        value_name = "HEX:HEX",
-        num_args = 1..,
-        help = "Space-separated transport key pairs as ksend:krecv (64hex:64hex)"
-    )]
-    keys: Vec<String>,
-
-    #[arg(
-        long = "node",
-        value_name = "NAME",
-        help = "Use node presets: sim-a, sim-b, stm32, esp32"
-    )]
-    node: Option<String>,
-
-    #[arg(long, help = "Show raw frame bytes for each decoded frame")]
-    verbose: bool,
-
-    #[arg(
-        long = "filter",
-        value_name = "PHASE",
-        help = "Only show frames with this phase (0=established, 1=msg1, 2=msg2)"
-    )]
-    filter: Option<u8>,
-
-    pcap_file: PathBuf,
-}
-
-fn phase_label(phase: u8) -> &'static str {
-    match phase {
-        PHASE_ESTABLISHED => "ESTABLISHED",
-        PHASE_MSG1 => "MSG1",
-        PHASE_MSG2 => "MSG2",
-        _ => "UNKNOWN",
-    }
-}
-
-fn msg_type_name(msg_type: u8) -> &'static str {
-    match msg_type {
-        0x00 => "HEARTBEAT",
-        0x01 => "PING",
-        0x02 => "PONG",
-        0x10 => "SESSION_DATAGRAM",
-        _ => "UNKNOWN",
-    }
 }
 
 fn derive_ik_transport(
@@ -184,6 +136,11 @@ fn build_candidate_keys(cli: &Cli) -> Result<Vec<KeyPair>, Box<dyn Error>> {
         return Ok(keys);
     }
 
+    // If --keys-file given, parse JSONL diagnostic dump
+    if let Some(ref path) = cli.keys_file {
+        return parse_keys_file(path);
+    }
+
     let nodes = [
         ("stm32", DEV_STM32_SECRET),
         ("esp32", DEV_ESP32_SECRET),
@@ -232,6 +189,472 @@ fn build_candidate_keys(cli: &Cli) -> Result<Vec<KeyPair>, Box<dyn Error>> {
         }
     }
     Ok(out)
+}
+
+/// Parse a JSONL diagnostic keys file produced by FIPS `--features diagnostic`.
+///
+/// Each line looks like:
+/// ```json
+/// {"fips_diagnostic":"transport_keys","role":"...","remote_static":"hex66","k_send":"hex64","k_recv":"hex64","handshake_hash":"hex64"}
+/// ```
+fn parse_keys_file(path: &PathBuf) -> Result<Vec<KeyPair>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut keys = Vec::new();
+
+    for (line_no, line_result) in reader.lines().enumerate() {
+        let line = line_result?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let val: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if val.get("fips_diagnostic").and_then(|v| v.as_str()) != Some("transport_keys") {
+            continue;
+        }
+
+        let k_send_hex = match val.get("k_send").and_then(|v| v.as_str()) {
+            Some(h) => h,
+            None => continue,
+        };
+        let k_recv_hex = match val.get("k_recv").and_then(|v| v.as_str()) {
+            Some(h) => h,
+            None => continue,
+        };
+
+        let k_send_bytes = hex::decode(k_send_hex)?;
+        let k_recv_bytes = hex::decode(k_recv_hex)?;
+        if k_send_bytes.len() != 32 || k_recv_bytes.len() != 32 {
+            eprintln!(
+                "Warning: keys_file line {} has wrong key length, skipping",
+                line_no + 1
+            );
+            continue;
+        }
+
+        let mut k_send = [0u8; 32];
+        let mut k_recv = [0u8; 32];
+        k_send.copy_from_slice(&k_send_bytes);
+        k_recv.copy_from_slice(&k_recv_bytes);
+
+        let role = val
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        keys.push(KeyPair {
+            name: format!("keys_file:{role}:{}", &k_send_hex[..8]),
+            k_send,
+            k_recv,
+        });
+    }
+
+    if keys.is_empty() {
+        return Err(format!("no transport_keys entries found in {}", path.display()).into());
+    }
+
+    Ok(keys)
+}
+
+#[derive(Debug)]
+enum InputFormat {
+    Pcap,
+    Btsnoop { #[allow(dead_code)] big_endian: bool },
+    Unknown,
+}
+
+const BTSNOOF_MAGIC_BE: [u8; 8] = [0x62, 0x74, 0x73, 0x6e, 0x6f, 0x6f, 0x70, 0x00];
+const BTSNOOF_MAGIC_LE: [u8; 8] = [0x00, 0x70, 0x6f, 0x6f, 0x6e, 0x73, 0x74, 0x62];
+const PCAP_MAGIC: [u8; 4] = [0xd4, 0xc3, 0xb2, 0xa1];
+
+fn detect_format(header: &[u8]) -> InputFormat {
+    if header.len() < 8 {
+        return InputFormat::Unknown;
+    }
+
+    if &header[..8] == BTSNOOF_MAGIC_BE {
+        return InputFormat::Btsnoop { big_endian: true };
+    }
+    if &header[..8] == BTSNOOF_MAGIC_LE {
+        return InputFormat::Btsnoop {
+            big_endian: false,
+        };
+    }
+
+    if header.len() >= 4 && &header[..4] == PCAP_MAGIC {
+        return InputFormat::Pcap;
+    }
+
+    InputFormat::Unknown
+}
+
+/// btsnoop record header: 24 bytes big-endian
+/// (orig_len, incl_len, flags, drops, timestamp_us)
+const BTSNOOP_RECORD_HEADER_SIZE: usize = 24;
+const BTSNOOP_FILE_HEADER_SIZE: usize = 16;
+
+struct BtsnoopRecord {
+    _orig_len: u32,
+    data: Vec<u8>,
+    _flags: u32,
+    _timestamp_us: u64,
+}
+
+fn read_btsnoop_u32_be(data: &[u8]) -> u32 {
+    u32::from_be_bytes([data[0], data[1], data[2], data[3]])
+}
+
+fn read_btsnoop_u64_be(data: &[u8]) -> u64 {
+    u64::from_be_bytes([
+        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+    ])
+}
+
+fn parse_btsnoop_records(data: &[u8]) -> Result<Vec<BtsnoopRecord>, Box<dyn Error>> {
+    if data.len() < BTSNOOP_FILE_HEADER_SIZE {
+        return Err("btsnoop file too short for header".into());
+    }
+
+    let _version = read_btsnoop_u32_be(&data[8..12]);
+    let _datalink = read_btsnoop_u32_be(&data[12..16]);
+
+    let mut records = Vec::new();
+    let mut offset = BTSNOOP_FILE_HEADER_SIZE;
+
+    while offset + BTSNOOP_RECORD_HEADER_SIZE <= data.len() {
+        let orig_len = read_btsnoop_u32_be(&data[offset..offset + 4]);
+        let incl_len = read_btsnoop_u32_be(&data[offset + 4..offset + 8]);
+        let flags = read_btsnoop_u32_be(&data[offset + 8..offset + 12]);
+        let _drops = read_btsnoop_u32_be(&data[offset + 12..offset + 16]);
+        let timestamp = read_btsnoop_u64_be(&data[offset + 16..offset + 24]);
+
+        let data_len = incl_len as usize;
+        if offset + BTSNOOP_RECORD_HEADER_SIZE + data_len > data.len() {
+            break;
+        }
+
+        let record_data = data[offset + BTSNOOP_RECORD_HEADER_SIZE
+            ..offset + BTSNOOP_RECORD_HEADER_SIZE + data_len]
+            .to_vec();
+
+        records.push(BtsnoopRecord {
+            _orig_len: orig_len,
+            data: record_data,
+            _flags: flags,
+            _timestamp_us: timestamp,
+        });
+
+        offset += BTSNOOP_RECORD_HEADER_SIZE + data_len;
+    }
+
+    Ok(records)
+}
+
+const HCI_ACL_DATA: u8 = 0x02;
+const L2CAP_SIGNALLING_CID: u16 = 0x0001;
+const L2CAP_CONN_REQ: u8 = 0x02;
+
+/// Extract FMP frames from an HCI H4 capture (btsnoop datalink 1001).
+/// Tracks L2CAP CoC on PSM 0x0085 to find the FIPS data CID,
+/// then strips the 2-byte BE BLE transport framing prefix.
+/// Falls back to scanning all ACL payloads for FMP-like data.
+fn extract_fmp_from_hci_h4(records: &[BtsnoopRecord]) -> Vec<Vec<u8>> {
+    let mut fips_cid: Option<u16> = None;
+    let mut fmp_frames = Vec::new();
+
+    for record in records {
+        let data = &record.data;
+        if data.is_empty() {
+            continue;
+        }
+
+        let h4_type = data[0];
+        if h4_type != HCI_ACL_DATA {
+            continue;
+        }
+
+        if data.len() < 5 {
+            continue;
+        }
+        let _acl_handle = u16::from_le_bytes([data[1], data[2]]);
+        let acl_len = u16::from_le_bytes([data[3], data[4]]) as usize;
+        if data.len() < 5 + acl_len {
+            continue;
+        }
+        let acl_payload = &data[5..5 + acl_len];
+
+        if acl_payload.len() < 4 {
+            continue;
+        }
+        let l2cap_len = u16::from_le_bytes([acl_payload[0], acl_payload[1]]) as usize;
+        let l2cap_cid = u16::from_le_bytes([acl_payload[2], acl_payload[3]]);
+        let l2cap_payload = &acl_payload[4..];
+        let l2cap_payload_len = l2cap_len.min(l2cap_payload.len());
+
+        if l2cap_cid == L2CAP_SIGNALLING_CID {
+            let mut sig_offset = 0;
+            while sig_offset + 4 <= l2cap_payload_len {
+                let code = l2cap_payload[sig_offset];
+                let _ident = l2cap_payload[sig_offset + 1];
+                let sig_len =
+                    u16::from_le_bytes([l2cap_payload[sig_offset + 2], l2cap_payload[sig_offset + 3]])
+                        as usize;
+                let sig_data_start = sig_offset + 4;
+
+                if code == L2CAP_CONN_REQ && sig_len >= 4 {
+                    let psm = u16::from_le_bytes([
+                        l2cap_payload[sig_data_start],
+                        l2cap_payload[sig_data_start + 1],
+                    ]);
+                    let scid = u16::from_le_bytes([
+                        l2cap_payload[sig_data_start + 2],
+                        l2cap_payload[sig_data_start + 3],
+                    ]);
+                    if psm == FIPS_PSM && scid > 0x003F {
+                        fips_cid = Some(scid);
+                    }
+                }
+
+                sig_offset = sig_data_start + sig_len;
+            }
+            continue;
+        }
+
+        let is_fips_channel = match fips_cid {
+            Some(cid) => l2cap_cid == cid,
+            None => false,
+        };
+
+        if is_fips_channel {
+            let payload = &l2cap_payload[..l2cap_payload_len];
+            if payload.len() < 2 {
+                continue;
+            }
+            let fmp_len = u16::from_be_bytes([payload[0], payload[1]]) as usize;
+            if fmp_len == 0 || payload.len() < 2 + fmp_len {
+                continue;
+            }
+            let fmp_data = &payload[2..2 + fmp_len];
+            if fmp_data.len() >= COMMON_PREFIX_SIZE && parse_prefix(fmp_data).is_some() {
+                fmp_frames.push(fmp_data.to_vec());
+            }
+        } else if fips_cid.is_none() {
+            let payload = &l2cap_payload[..l2cap_payload_len];
+            try_extract_fmp_from_payload(payload, &mut fmp_frames);
+        }
+    }
+
+    fmp_frames
+}
+
+/// Find FMP frames by looking for 2-byte BE length prefix followed by a valid FMP prefix.
+fn try_extract_fmp_from_payload(payload: &[u8], out: &mut Vec<Vec<u8>>) {
+    if payload.len() < 2 + COMMON_PREFIX_SIZE {
+        return;
+    }
+    let fmp_len = u16::from_be_bytes([payload[0], payload[1]]) as usize;
+    if fmp_len == 0 || payload.len() < 2 + fmp_len {
+        return;
+    }
+    let candidate = &payload[2..2 + fmp_len];
+    if let Some((phase, _, payload_len)) = parse_prefix(candidate) {
+        if matches!(phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2)
+            && payload_len > 0
+            && candidate.len() >= COMMON_PREFIX_SIZE + payload_len as usize
+            && parse_message(candidate).is_some()
+        {
+            out.push(candidate[..COMMON_PREFIX_SIZE + payload_len as usize].to_vec());
+        }
+    }
+}
+
+struct PcapWriter {
+    file: File,
+    seq: u16,
+}
+
+impl PcapWriter {
+    fn create(path: &PathBuf) -> Result<Self, Box<dyn Error>> {
+        let mut file = File::create(path)?;
+        let header: [u8; 24] = [
+            0xd4, 0xc3, 0xb2, 0xa1, 0x02, 0x00, 0x04, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff,
+            0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        ];
+        file.write_all(&header)?;
+        Ok(Self { file, seq: 0 })
+    }
+
+    fn write_udp_packet(&mut self, payload: &[u8], src_port: u16, dst_port: u16) -> Result<(), Box<dyn Error>> {
+        let udp_len = 8 + payload.len();
+        let ip_total_len = 20 + udp_len;
+
+        let mut pkt = Vec::with_capacity(14 + ip_total_len);
+
+        pkt.extend_from_slice(&[0x00; 6]);
+        pkt.extend_from_slice(&[0x00; 6]);
+        pkt.extend_from_slice(&[0x08, 0x00]);
+
+        pkt.push(0x45);
+        pkt.push(0x00);
+        pkt.extend_from_slice(&(ip_total_len as u16).to_be_bytes());
+        pkt.extend_from_slice(&self.seq.to_be_bytes());
+        self.seq = self.seq.wrapping_add(1);
+        pkt.extend_from_slice(&[0x40, 0x00]);
+        pkt.push(0x40);
+        pkt.push(0x11);
+        pkt.extend_from_slice(&[0x00, 0x00]);
+        pkt.extend_from_slice(&[10, 0, 0, 1]);
+        pkt.extend_from_slice(&[10, 0, 0, 2]);
+
+        pkt.extend_from_slice(&src_port.to_be_bytes());
+        pkt.extend_from_slice(&dst_port.to_be_bytes());
+        pkt.extend_from_slice(&(udp_len as u16).to_be_bytes());
+        pkt.extend_from_slice(&[0x00, 0x00]);
+
+        pkt.extend_from_slice(payload);
+
+        let pkt_len = pkt.len() as u32;
+        let rec_header: [u8; 16] = [
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+            (pkt_len & 0xff) as u8,
+            ((pkt_len >> 8) & 0xff) as u8,
+            ((pkt_len >> 16) & 0xff) as u8,
+            ((pkt_len >> 24) & 0xff) as u8,
+            (pkt_len & 0xff) as u8,
+            ((pkt_len >> 8) & 0xff) as u8,
+            ((pkt_len >> 16) & 0xff) as u8,
+            ((pkt_len >> 24) & 0xff) as u8,
+        ];
+        self.file.write_all(&rec_header)?;
+        self.file.write_all(&pkt)?;
+
+        Ok(())
+    }
+}
+
+fn phase_label(phase: u8) -> &'static str {
+    match phase {
+        PHASE_ESTABLISHED => "ESTABLISHED",
+        PHASE_MSG1 => "MSG1",
+        PHASE_MSG2 => "MSG2",
+        _ => "UNKNOWN",
+    }
+}
+
+fn msg_type_name(msg_type: u8) -> &'static str {
+    match msg_type {
+        0x00 => "HEARTBEAT",
+        0x01 => "PING",
+        0x02 => "PONG",
+        0x10 => "SESSION_DATAGRAM",
+        _ => "UNKNOWN",
+    }
+}
+
+fn decrypt_established(frame: &[u8], candidates: &[KeyPair]) -> Option<String> {
+    if frame.len() < ESTABLISHED_HEADER_SIZE + TAG_SIZE {
+        return Some("established payload too small".to_string());
+    }
+
+    let nonce_ctr = u64::from_le_bytes(frame[8..16].try_into().ok()?);
+    let aad = &frame[..ESTABLISHED_HEADER_SIZE];
+    let ciphertext = &frame[ESTABLISHED_HEADER_SIZE..];
+
+    for kp in candidates {
+        for (label, key) in [("k_send", kp.k_send), ("k_recv", kp.k_recv)] {
+            let mut out = vec![0u8; ciphertext.len().saturating_sub(TAG_SIZE)];
+            if let Ok(pt_len) = aead_decrypt(&key, nonce_ctr, aad, ciphertext, &mut out) {
+                if pt_len < 5 {
+                    continue;
+                }
+                let ts = u32::from_le_bytes(out[..4].try_into().ok()?);
+                let msg_type = out[4];
+                let payload = &out[5..pt_len];
+                return Some(format!(
+                    "decrypted by {} ({}) | ts={} msg_type=0x{msg_type:02x}({}) inner_payload={}",
+                    kp.name,
+                    label,
+                    ts,
+                    msg_type_name(msg_type),
+                    hex::encode(payload)
+                ));
+            }
+        }
+    }
+
+    Some("decrypt failed with all key candidates".to_string())
+}
+
+fn decode_frame_details(frame: &[u8], keys: &[KeyPair]) -> String {
+    match parse_message(frame) {
+        Some(FmpMessage::Msg1 {
+            sender_idx,
+            noise_payload,
+        }) => {
+            format!(
+                "sender_idx={} noise_payload_size={}B",
+                sender_idx,
+                noise_payload.len()
+            )
+        }
+        Some(FmpMessage::Msg2 {
+            sender_idx,
+            receiver_idx,
+            noise_payload,
+        }) => format!(
+            "sender_idx={} receiver_idx={} noise_payload_size={}B",
+            sender_idx,
+            receiver_idx,
+            noise_payload.len()
+        ),
+        Some(FmpMessage::Established {
+            receiver_idx,
+            counter,
+            encrypted,
+        }) => {
+            let mut line = format!(
+                "receiver_idx={} counter={} encrypted_size={}B",
+                receiver_idx,
+                counter,
+                encrypted.len()
+            );
+            if let Some(decrypt) = decrypt_established(frame, keys) {
+                line.push_str(" | ");
+                line.push_str(&decrypt);
+            }
+            line
+        }
+        None => "failed to parse message body".to_string(),
+    }
+}
+
+/// Try to decrypt an Established frame and return the plaintext if successful.
+fn decrypt_frame_to_payload(frame: &[u8], candidates: &[KeyPair]) -> Option<Vec<u8>> {
+    if frame.len() < ESTABLISHED_HEADER_SIZE + TAG_SIZE {
+        return None;
+    }
+
+    let nonce_ctr = u64::from_le_bytes(frame[8..16].try_into().ok()?);
+    let aad = &frame[..ESTABLISHED_HEADER_SIZE];
+    let ciphertext = &frame[ESTABLISHED_HEADER_SIZE..];
+
+    for kp in candidates {
+        for key in [kp.k_send, kp.k_recv] {
+            let mut out = vec![0u8; ciphertext.len().saturating_sub(TAG_SIZE)];
+            if let Ok(pt_len) = aead_decrypt(&key, nonce_ctr, aad, ciphertext, &mut out) {
+                if pt_len >= 5 {
+                    return Some(out[..pt_len].to_vec());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn find_fmp_frame(packet: &[u8]) -> Option<&[u8]> {
@@ -317,89 +740,60 @@ fn extract_udp_datagram(packet: &[u8]) -> Option<UdpDatagram<'_>> {
     None
 }
 
-fn decrypt_established(frame: &[u8], candidates: &[KeyPair]) -> Option<String> {
-    if frame.len() < ESTABLISHED_HEADER_SIZE + TAG_SIZE {
-        return Some("established payload too small".to_string());
-    }
+#[derive(Debug, Parser)]
+#[command(name = "fips-decrypt")]
+#[command(about = "Read FIPS pcap/btsnoop captures and decode/decrypt FMP frames")]
+struct Cli {
+    #[arg(
+        long = "keys",
+        value_name = "HEX:HEX",
+        num_args = 1..,
+        help = "Space-separated transport key pairs as ksend:krecv (64hex:64hex)"
+    )]
+    keys: Vec<String>,
 
-    let nonce_ctr = u64::from_le_bytes(frame[8..16].try_into().ok()?);
-    let aad = &frame[..ESTABLISHED_HEADER_SIZE];
-    let ciphertext = &frame[ESTABLISHED_HEADER_SIZE..];
+    #[arg(
+        long = "node",
+        value_name = "NAME",
+        help = "Use node presets: sim-a, sim-b, stm32, esp32"
+    )]
+    node: Option<String>,
 
-    for kp in candidates {
-        for (label, key) in [("k_send", kp.k_send), ("k_recv", kp.k_recv)] {
-            let mut out = vec![0u8; ciphertext.len().saturating_sub(TAG_SIZE)];
-            if let Ok(pt_len) = aead_decrypt(&key, nonce_ctr, aad, ciphertext, &mut out) {
-                if pt_len < 5 {
-                    continue;
-                }
-                let ts = u32::from_le_bytes(out[..4].try_into().ok()?);
-                let msg_type = out[4];
-                let payload = &out[5..pt_len];
-                return Some(format!(
-                    "decrypted by {} ({}) | ts={} msg_type=0x{msg_type:02x}({}) inner_payload={}",
-                    kp.name,
-                    label,
-                    ts,
-                    msg_type_name(msg_type),
-                    hex::encode(payload)
-                ));
-            }
-        }
-    }
+    #[arg(
+        long = "keys-file",
+        value_name = "PATH",
+        help = "Read transport keys from a JSONL diagnostic dump file"
+    )]
+    keys_file: Option<PathBuf>,
 
-    Some("decrypt failed with all key candidates".to_string())
+    #[arg(
+        long = "output",
+        value_name = "PATH",
+        help = "Write decrypted output as a pcap file (UDP-encapsulated on port 2121)"
+    )]
+    output: Option<PathBuf>,
+
+    #[arg(long, help = "Show raw frame bytes for each decoded frame")]
+    verbose: bool,
+
+    #[arg(
+        long = "filter",
+        value_name = "PHASE",
+        help = "Only show frames with this phase (0=established, 1=msg1, 2=msg2)"
+    )]
+    filter: Option<u8>,
+
+    pcap_file: PathBuf,
 }
 
-fn decode_frame_details(frame: &[u8], keys: &[KeyPair]) -> String {
-    match parse_message(frame) {
-        Some(FmpMessage::Msg1 {
-            sender_idx,
-            noise_payload,
-        }) => {
-            format!(
-                "sender_idx={} noise_payload_size={}B",
-                sender_idx,
-                noise_payload.len()
-            )
-        }
-        Some(FmpMessage::Msg2 {
-            sender_idx,
-            receiver_idx,
-            noise_payload,
-        }) => format!(
-            "sender_idx={} receiver_idx={} noise_payload_size={}B",
-            sender_idx,
-            receiver_idx,
-            noise_payload.len()
-        ),
-        Some(FmpMessage::Established {
-            receiver_idx,
-            counter,
-            encrypted,
-        }) => {
-            let mut line = format!(
-                "receiver_idx={} counter={} encrypted_size={}B",
-                receiver_idx,
-                counter,
-                encrypted.len()
-            );
-            if let Some(decrypt) = decrypt_established(frame, keys) {
-                line.push_str(" | ");
-                line.push_str(&decrypt);
-            }
-            line
-        }
-        None => "failed to parse message body".to_string(),
-    }
-}
-
-fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
-    let keys = build_candidate_keys(&cli)?;
-    eprintln!("Loaded {} key candidate pairs", keys.len());
-
+fn run_pcap(cli: &Cli, keys: &[KeyPair]) -> Result<(), Box<dyn Error>> {
     let file = File::open(&cli.pcap_file)?;
     let mut reader = PcapReader::new(file)?;
+
+    let mut pcap_writer = match &cli.output {
+        Some(path) => Some(PcapWriter::create(path)?),
+        None => None,
+    };
 
     let mut frame_no = 0usize;
     while let Some(pkt) = reader.next_packet() {
@@ -428,7 +822,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             "??"
         };
 
-        let details = decode_frame_details(frame, &keys);
+        let details = decode_frame_details(frame, keys);
         println!(
             "[frame#{frame_no}] {dir} {} {}B | flags=0x{flags:02x} payload_len={} | {}",
             phase_label(phase),
@@ -440,9 +834,121 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         if cli.verbose {
             println!("  raw={}", hex::encode(frame));
         }
+
+        if let Some(ref mut writer) = pcap_writer {
+            write_frame_to_pcap(writer, frame, phase, keys, dir);
+        }
     }
 
+    eprintln!("Processed {frame_no} FMP frames from pcap");
     Ok(())
+}
+
+fn run_btsnoop(cli: &Cli, keys: &[KeyPair]) -> Result<(), Box<dyn Error>> {
+    let mut file = File::open(&cli.pcap_file)?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+
+    let records = parse_btsnoop_records(&data)?;
+    eprintln!("Parsed {} btsnoop records", records.len());
+
+    let fmp_frames = extract_fmp_from_hci_h4(&records);
+    eprintln!("Extracted {} FMP frames from HCI/H4 capture", fmp_frames.len());
+
+    let mut pcap_writer = match &cli.output {
+        Some(path) => Some(PcapWriter::create(path)?),
+        None => None,
+    };
+
+    let mut frame_no = 0usize;
+    for frame in &fmp_frames {
+        let Some((phase, flags, payload_len)) = parse_prefix(frame) else {
+            continue;
+        };
+        if cli.filter.is_some() && cli.filter != Some(phase) {
+            continue;
+        }
+
+        frame_no += 1;
+        let dir = "->";
+
+        let details = decode_frame_details(frame, keys);
+        println!(
+            "[frame#{frame_no}] {dir} {} {}B | flags=0x{flags:02x} payload_len={} | {}",
+            phase_label(phase),
+            frame.len(),
+            payload_len,
+            details
+        );
+
+        if cli.verbose {
+            println!("  raw={}", hex::encode(frame));
+        }
+
+        if let Some(ref mut writer) = pcap_writer {
+            write_frame_to_pcap(writer, frame, phase, keys, dir);
+        }
+    }
+
+    eprintln!("Processed {frame_no} FMP frames from btsnoop");
+    Ok(())
+}
+
+/// Write a single FMP frame to the output pcap.
+/// For MSG1/MSG2 (handshake frames), write as-is (cleartext).
+/// For ESTABLISHED frames, write the decrypted payload if possible.
+fn write_frame_to_pcap(writer: &mut PcapWriter, frame: &[u8], phase: u8, keys: &[KeyPair], dir: &str) {
+    let (src_port, dst_port) = if dir == "<-" {
+        (2121u16, 9999u16)
+    } else {
+        (9999u16, 2121u16)
+    };
+
+    match phase {
+        PHASE_MSG1 | PHASE_MSG2 => {
+            let _ = writer.write_udp_packet(frame, src_port, dst_port);
+        }
+        PHASE_ESTABLISHED => {
+            if let Some(pt) = decrypt_frame_to_payload(frame, keys) {
+                let _ = writer.write_udp_packet(&pt, src_port, dst_port);
+            } else {
+                let _ = writer.write_udp_packet(frame, src_port, dst_port);
+            }
+        }
+        _ => {
+            let _ = writer.write_udp_packet(frame, src_port, dst_port);
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
+    let keys = build_candidate_keys(&cli)?;
+    eprintln!("Loaded {} key candidate pairs", keys.len());
+
+    let mut file = File::open(&cli.pcap_file)?;
+    let mut header = [0u8; 16];
+    let n = file.read(&mut header)?;
+    drop(file);
+
+    if n < 4 {
+        return Err("input file too short to detect format".into());
+    }
+
+    match detect_format(&header[..n]) {
+        InputFormat::Pcap => {
+            eprintln!("Detected pcap format");
+            run_pcap(&cli, &keys)
+        }
+        InputFormat::Btsnoop { .. } => {
+            eprintln!("Detected btsnoop format");
+            run_btsnoop(&cli, &keys)
+        }
+        InputFormat::Unknown => Err(format!(
+            "unknown input format (magic: {})",
+            hex::encode(&header[..n.min(8)])
+        )
+        .into()),
+    }
 }
 
 fn main() {
@@ -484,5 +990,189 @@ mod tests {
 
         assert_eq!(&out[..plen], plaintext);
         assert_eq!(plen, plaintext.len());
+    }
+
+    #[test]
+    fn btsnoop_detect_magic_be() {
+        let mut header = [0u8; 16];
+        header[..8].copy_from_slice(&BTSNOOF_MAGIC_BE);
+        header[8..12].copy_from_slice(&1u32.to_be_bytes());
+        header[12..16].copy_from_slice(&1001u32.to_be_bytes());
+
+        match detect_format(&header) {
+            InputFormat::Btsnoop { big_endian: true } => {}
+            other => panic!("expected Btsnoop BE, got {:?}", format!("{:?}", other).chars().take(40).collect::<String>()),
+        }
+    }
+
+    #[test]
+    fn btsnoop_detect_magic_le() {
+        let mut header = [0u8; 16];
+        header[..8].copy_from_slice(&BTSNOOF_MAGIC_LE);
+
+        match detect_format(&header) {
+            InputFormat::Btsnoop { big_endian: false } => {}
+            other => panic!("expected Btsnoop LE, got {:?}", format!("{:?}", other).chars().take(40).collect::<String>()),
+        }
+    }
+
+    #[test]
+    fn pcap_detect_magic() {
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(&PCAP_MAGIC);
+
+        match detect_format(&header) {
+            InputFormat::Pcap => {}
+            other => panic!("expected Pcap, got {:?}", format!("{:?}", other).chars().take(40).collect::<String>()),
+        }
+    }
+
+    #[test]
+    fn btsnoop_parse_empty_file() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&BTSNOOF_MAGIC_BE);
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(&1001u32.to_be_bytes());
+
+        let records = parse_btsnoop_records(&data).unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn btsnoop_parse_single_record() {
+        let payload = b"hello";
+        let mut data = Vec::new();
+
+        data.extend_from_slice(&BTSNOOF_MAGIC_BE);
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(&1001u32.to_be_bytes());
+
+        let len = payload.len() as u32;
+        data.extend_from_slice(&len.to_be_bytes());
+        data.extend_from_slice(&len.to_be_bytes());
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(&0u64.to_be_bytes());
+
+        data.extend_from_slice(payload);
+
+        let records = parse_btsnoop_records(&data).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(&records[0].data, b"hello");
+    }
+
+    #[test]
+    fn keys_file_parse_valid_jsonl() {
+        let dir = std::env::temp_dir().join("fips-decrypt-test-keys");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("keys.jsonl");
+
+        let k_send = "1111111111111111111111111111111111111111111111111111111111111111";
+        let k_recv = "2222222222222222222222222222222222222222222222222222222222222222";
+
+        let content = format!(
+            "{{\"fips_diagnostic\":\"transport_keys\",\"role\":\"initiator\",\"remote_static\":\"{}\",\"k_send\":\"{}\",\"k_recv\":\"{}\",\"handshake_hash\":\"{}\"}}\n",
+            "02".to_string() + &"66".repeat(32),
+            k_send,
+            k_recv,
+            "aa".repeat(32)
+        );
+
+        std::fs::write(&path, &content).unwrap();
+
+        let keys = parse_keys_file(&path).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].k_send, [0x11u8; 32]);
+        assert_eq!(keys[0].k_recv, [0x22u8; 32]);
+        assert!(keys[0].name.contains("initiator"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keys_file_skip_non_transport_lines() {
+        let dir = std::env::temp_dir().join("fips-decrypt-test-skip");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mixed.jsonl");
+
+        let k_send_hex = "aa".repeat(32);
+        let k_recv_hex = "bb".repeat(32);
+        let hash_hex = "cc".repeat(32);
+        let remote_static = "02".to_string() + &"66".repeat(32);
+        let line = format!(
+            "{{\"fips_diagnostic\":\"transport_keys\",\"role\":\"responder\",\
+             \"remote_static\":\"{}\",\"k_send\":\"{}\",\"k_recv\":\"{}\",\
+             \"handshake_hash\":\"{}\"}}",
+            remote_static, k_send_hex, k_recv_hex, hash_hex
+        );
+        let content = format!(
+            "{{\"fips_diagnostic\":\"other_event\",\"data\":\"something\"}}\n\
+             not json at all\n\
+             {}\n",
+            line
+        );
+        std::fs::write(&path, content).unwrap();
+
+        let keys = parse_keys_file(&path).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert!(keys[0].name.contains("responder"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keys_file_empty_produces_error() {
+        let dir = std::env::temp_dir().join("fips-decrypt-test-empty");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+
+        let result = parse_keys_file(&path);
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_fmp_from_acl_with_fallback() {
+        let noise_payload = [0xAAu8; 106];
+        let mut fmp_frame = [0u8; 256];
+        let fmp_len = microfips_core::fmp::build_msg1(0, &noise_payload, &mut fmp_frame).unwrap();
+
+        let mut ble_payload = Vec::new();
+        ble_payload.extend_from_slice(&(fmp_len as u16).to_be_bytes());
+        ble_payload.extend_from_slice(&fmp_frame[..fmp_len]);
+
+        let l2cap_payload_len = ble_payload.len() as u16;
+        let mut l2cap_frame = Vec::new();
+        l2cap_frame.extend_from_slice(&l2cap_payload_len.to_le_bytes());
+        l2cap_frame.extend_from_slice(&0x0040u16.to_le_bytes());
+        l2cap_frame.extend_from_slice(&ble_payload);
+
+        let acl_len = l2cap_frame.len() as u16;
+        let mut acl_packet = Vec::new();
+        acl_packet.push(HCI_ACL_DATA);
+        acl_packet.extend_from_slice(&0x0001u16.to_le_bytes());
+        acl_packet.extend_from_slice(&acl_len.to_le_bytes());
+        acl_packet.extend_from_slice(&l2cap_frame);
+
+        let mut btsnoop_data = Vec::new();
+        btsnoop_data.extend_from_slice(&BTSNOOF_MAGIC_BE);
+        btsnoop_data.extend_from_slice(&1u32.to_be_bytes());
+        btsnoop_data.extend_from_slice(&1001u32.to_be_bytes());
+
+        let rec_len = acl_packet.len() as u32;
+        btsnoop_data.extend_from_slice(&rec_len.to_be_bytes());
+        btsnoop_data.extend_from_slice(&rec_len.to_be_bytes());
+        btsnoop_data.extend_from_slice(&0u32.to_be_bytes());
+        btsnoop_data.extend_from_slice(&0u32.to_be_bytes());
+        btsnoop_data.extend_from_slice(&0u64.to_be_bytes());
+        btsnoop_data.extend_from_slice(&acl_packet);
+
+        let records = parse_btsnoop_records(&btsnoop_data).unwrap();
+        let fmp_frames = extract_fmp_from_hci_h4(&records);
+
+        assert_eq!(fmp_frames.len(), 1);
+        assert_eq!(&fmp_frames[0], &fmp_frame[..fmp_len]);
     }
 }

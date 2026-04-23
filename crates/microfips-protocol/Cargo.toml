@@ -20,3 +20,4 @@ k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
 [features]
 default = []
 std = ["microfips-core/std", "embassy-time/std", "dep:log"]
+log = ["dep:log"]

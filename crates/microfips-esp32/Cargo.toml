@@ -2,17 +2,42 @@
 name = "microfips-esp32"
 version = "0.1.0"
 edition = "2021"
-description = "Minimal FIPS leaf node on ESP32 via UART"
+description = "Minimal FIPS leaf node on ESP32"
+
+[lib]
+name = "microfips_esp32"
 
 [features]
 default = []
-ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
-l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println"]
+ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
+l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
+wifi = ["dep:esp-radio", "dep:esp-alloc", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
+
+[[bin]]
+name = "microfips-esp32"
+path = "src/bin/uart.rs"
+
+[[bin]]
+name = "microfips-esp32-ble"
+path = "src/bin/ble.rs"
+required-features = ["ble"]
+
+[[bin]]
+name = "microfips-esp32-l2cap"
+path = "src/bin/l2cap.rs"
+required-features = ["l2cap"]
+
+[[bin]]
+name = "microfips-esp32-wifi"
+path = "src/bin/wifi.rs"
+required-features = ["wifi"]
 
 [dependencies]
-microfips-core = { path = "../microfips-core" }
+microfips-core = { path = "../microfips-core", features = ["log"] }
+microfips-esp-common = { path = "../microfips-esp-common" }
+microfips-esp-transport = { path = "../microfips-esp-transport", features = ["esp32"] }
 microfips-http-demo = { path = "../microfips-http-demo" }
-microfips-protocol = { path = "../microfips-protocol" }
+microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
 rand_core = { version = "0.6", default-features = false }
 esp-hal = { version = "1.0.0", features = ["esp32", "unstable"] }
@@ -25,9 +50,10 @@ embassy-sync = "0.7.2"
 embedded-io-async = "0.7"
 heapless = "0.9"
 static_cell = "2"
-esp-radio = { version = "0.17.0", default-features = false, features = ["esp32", "ble", "unstable"], optional = true }
+esp-radio = { version = "0.17.0", default-features = false, features = ["esp32", "ble", "wifi", "unstable"], optional = true }
 trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "scan"], optional = true }
 esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }
 esp-println = { version = "0.16.1", features = ["esp32"], optional = true }
+log = { version = "0.4", optional = true }

@@ -11,71 +11,36 @@ ESP32 also supports direct BLE L2CAP connection to a local FIPS daemon.
 
 ## Current Status
 
-**M8 DONE — Sim-to-MCU FSP ping proven end-to-end (2026-03-31)**
+All core milestones (M0 through M9, M11) are complete. The project has proven end-to-end
+encrypted communication across every supported transport: USB CDC serial, BLE GATT,
+BLE L2CAP, WiFi, and host-side UDP simulators.
 
-A software simulator (SIM-B) successfully sent an encrypted FSP PING to the physical
-STM32 through the live FIPS VPS and received a PONG back. The full path is:
+### Build Matrix (all compile-tested)
 
-```
-SIM-B (host) → UDP → FIPS (VPS) → UDP → serial bridge → STM32 (hardware)
-                                                    ← PONG ←
-```
+| Transport | ESP32-D0WD | ESP32-S3 | Hardware verified |
+|-----------|-----------|----------|-------------------|
+| UART | ✅ | ✅ | STM32 UART verified |
+| BLE GATT | ✅ | ✅ | D0WD BLE bridge verified |
+| BLE L2CAP | ✅ | ✅ | Both→FIPS verified |
+| WiFi | ✅ | ✅ | Both verified |
 
-**ESP32 BLE transport proven (2026-04-01)**
+Capabilities:
+- **Noise_IK/XK handshakes** with live FIPS VPS on both STM32 and ESP32
+- **FSP session protocol** with encrypted PING/PONG between any two peers (sim-to-sim, sim-to-MCU, MCU-to-MCU)
+- **Dual FSP mode** on both MCUs (initiator + responder targeting each other)
+- **ESP32 BLE GATT transport** (Python bridge, feature-gated behind `--features ble`)
+- **ESP32 BLE L2CAP transport** (direct to local FIPS daemon, PSM 133, feature-gated behind `--features l2cap`)
+- **ESP32 WiFi transport** (direct UDP to FIPS, feature-gated behind `--features wifi`)
+- **Bridge auto-reconnect** on serial port failure for both STM32 (USB CDC) and ESP32 (CP210x)
+- **ESP32 control interface** over UART0 (BLE/L2CAP/WiFi variants) with `show_status`, `show_peers`, `show_stats`, `help`, `version`, `reset`
+- **Shared ESP32 crates** (`microfips-esp-common` + `microfips-esp-transport`) eliminate code duplication between D0WD and S3
+- **Both ESP32s hardware-verified** over L2CAP to local FIPS daemon (D0WD via peripheral, S3 via central)
+- **CI pipeline** with unit tests, lint, firmware cross-build, sim-to-sim ping E2E, FIPS integration, and ESP32 builds
 
-ESP32 connects to FIPS VPS via BLE GATT (trouble v0.6.0) instead of UART serial.
-Full Noise IK handshake + sustained heartbeats over BLE, with Python bridge (`bleak`).
-UART0 repurposed for debug output when BLE is active. Feature-gated behind `--features ble`.
-
-**ESP32 L2CAP direct transport proven (2026-04-05)**
-
-ESP32 connects directly to local FIPS daemon via BLE L2CAP CoC (PSM 0x0085). No Python
-bridge, no UDP hop. Full Noise IK handshake + sustained heartbeats over L2CAP. ESP32
-supports both central (scan+connect) and peripheral (advertise+accept) roles. Feature-gated
-behind `--features l2cap`.
-
-**What works:**
-- 169 unit tests pass (90 core + 21 error injection + 22 compatibility + 17 wire format + 13 FSP edge cases + 6 FSP integration + 46 protocol)
-- **Sim-to-sim FSP ping through FIPS** — SIM-B → FIPS → SIM-A, full XK handshake + PING/PONG
-- **Sim-to-MCU FSP ping through FIPS** — SIM-B → FIPS → physical STM32, proven on hardware
-- **Dual-MCU simultaneous handshake** — both MCUs sustain heartbeat with VPS concurrently
-- Sim-to-MCU ping test passes with `--test-ping` flag (exit 0 on PONG received)
-- Host-side handshake test (`microfips-link`) proven against live VPS
-- USB CDC ACM enumeration with upstream embassy crates.io v0.6.0
-- **STM32 completes IK handshake with live VPS** — MSG1 sent, MSG2 received, heartbeat sustained
-- **ESP32 completes IK handshake with live VPS** — UART transport via CP210x USB-serial
-- **ESP32 BLE transport** — BLE GATT bridge to VPS, alternative to UART serial
-- **ESP32 L2CAP direct** — ESP32 to BLE L2CAP to FIPS daemon, Noise IK + heartbeats, no bridge
-- FIPS forwards SessionDatagrams between any two authenticated peers (no tree_peer needed)
-- 4-LED state machine on STM32 for visual debugging, single LED on ESP32
-- FIPS cross-reference annotations normalized to canonical format (`// FIPS: bd08505 ...`)
-- Structured logging with `[SIM-A → FIPS]` labels in simulator and link tools
-- CI: unit tests, lint, firmware cross-build, sim-ping E2E test, FIPS integration
-
-**What doesn't work yet:**
-
-| Issue | Description | Root Cause |
-|-------|-------------|------------|
-| USB timing | STM32 sends 5 MSG1 retries before handshake succeeds | Bridge must open serial port before MCU `wait_connection()` returns |
-
-**Key bugs found and fixed across all sessions:**
-
-| # | Bug | Impact | Fix |
-|---|-----|--------|-----|
-| 1 | recv_frame infinite loop | STM32 hung forever on MSG2 | Fall through to read, never `continue` without I/O |
-| 2 | Handshake discarded non-Msg2 | Stale FIPS data killed session | Loop recv_frame until Msg2 |
-| 3 | `fmp_raw_frame_size()` truncation | All FIPS-originated frames truncated | Use full UDP datagram for established frames |
-| 4 | SIM-B k_send/k_recv swap | Initiator couldn't decrypt responses | Use k_recv for decryption |
-| 5 | ESP32 k_send/k_recv swap | Same as #4 on ESP32 | Same fix |
-| 6 | AwaitingMsg3 no timeout | FSP responder stuck forever on stale state | Reset session on InvalidState, retry |
-| 7 | Bridge thread race | Two readers split TCP data on reconnect | Stop both threads before reconnect |
-| 8 | Bridge CPU spin | GIL starvation under Python | `time.sleep(0.001)` in idle path |
-| 9 | Stale ESP32 NodeAddr constants | ESP32 targeted wrong MCU | Updated to match current deterministic keys |
-| 10 | Sim hardcoded wrong FSP target pubkey | Sim used SIM-A pubkey for STM32 target | Added NodeAddr-to-pubkey mapping |
-
-**Fork issue resolved (2026-03-28):**
-The `Amperstrand/embassy` fork (commit `c0289d7a8`) breaks USB enumeration on STM32F469.
-Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
+### Known Issues
+- ESP32-D0WD L2CAP scan does not find Linux FIPS daemon (connects via peripheral path instead — FIPS scans and connects to D0WD)
+- ESP32-S3 WiFi steady state: connects but heartbeat cycle fails (link-dead after 30s)
+- Embassy task files (ble_host, l2cap_host, control) still duplicated between chip crates (~2400 lines remaining)
 
 ## Architecture
 
@@ -101,13 +66,21 @@ Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
   | Noise_IK       |<-->|                   |<-->   |
   | FMP + FSP      |    +-------------------+       |
   +----------------+                                  v
-                                               +------------------+
+                                                +------------------+
   ESP32-D0WD (L2CAP)                            | FIPS daemon      |
   +----------------+                            | port 2121        |
   | microfips-esp32|                            |                  |
   | FIPS protocol  |BLE                         +------------------+
   | Noise_IK       |L2CAP  FIPS daemon (local)
-  | FMP + FSP      |<----> PSM 0x0085
+  | FMP + FSP      |<----> PSM 133
+  +----------------+
+
+  ESP32-D0WD / ESP32-S3 (WiFi)
+  +----------------+
+  | microfips-esp32|     WiFi STA ----+
+  | FIPS protocol  |     DHCP + DNS   |
+  | Noise_IK       |<------------------ UDP ---> FIPS VPS (port 2121)
+  | FMP + FSP      |
   +----------------+
 
   Simulator (host)                             | FIPS daemon      |
@@ -118,19 +91,20 @@ Switching all embassy deps to upstream crates.io v0.6.0 fixed it immediately.
   +----------------+    +-------------------+
 ```
 
-Two transport options:
-- **Single-hop bridge** (recommended): `serial_udp_bridge.py` sends UDP directly to FIPS
+Transport options:
+- **Serial bridge** (recommended): `serial_udp_bridge.py` sends UDP directly to FIPS
   from the host. No SSH tunnel or VPS-side bridge needed.
+- **ESP32 WiFi** (direct): ESP32 connects directly to FIPS VPS via WiFi + UDP. Feature-gated
+  behind `--features wifi`. Requires external antenna on D0WD. See AGENTS.md for full WiFi instructions.
 - **ESP32 BLE bridge**: `ble_udp_bridge.py` bridges ESP32 BLE GATT to UDP. Feature-gated
-  behind `--features ble`. See AGENTS.md "ESP32 BLE Transport" section.
+  behind `--features ble`. See AGENTS.md for full BLE instructions.
 - **ESP32 L2CAP direct**: ESP32 connects directly to local FIPS daemon via BLE L2CAP CoC.
-  Feature-gated behind `--features l2cap`. No bridge needed. See AGENTS.md "ESP32 L2CAP Transport" section.
-- **Legacy 3-hop** (deprecated): serial → TCP proxy → SSH tunnel → VPS bridge → FIPS
+  Feature-gated behind `--features l2cap`. No bridge needed. See AGENTS.md for full L2CAP instructions.
+- **Legacy 3-hop** (deprecated): serial -> TCP proxy -> SSH tunnel -> VPS bridge -> FIPS
 
 Each MCU runs the same FIPS stack (Noise_IK/XK, FMP, FSP) and connects through a
-single-hop bridge — no SSH tunnel or VPS-side bridge needed.
-ESP32 supports UART (`serial_udp_bridge`), BLE GATT (`ble_udp_bridge`, feature-gated),
-and direct BLE L2CAP to a local FIPS daemon (feature-gated).
+single-hop bridge. ESP32 additionally supports BLE GATT (`ble_udp_bridge`), BLE L2CAP
+direct, and WiFi (direct UDP) transports.
 Host-side simulators connect via direct UDP with no bridge at all.
 
 Above the protocol/runtime crates, `microfips-service` provides a compact byte-oriented
@@ -139,6 +113,14 @@ request/response boundary for downstream apps. HTTP stays optional in the separa
 
 All serial data uses **length-prefixed frames**: `[2-byte LE length][payload]`.
 FIPS UDP transport uses **raw frames** (no length prefix).
+
+### Bridge auto-reconnect
+
+Both `serial_udp_bridge.py` and `serial_tcp_proxy.py` reconnect automatically on serial
+port failure. The ESP32's CP210x USB-serial chip stays enumerated during CPU resets,
+so the bridge survives transparently and continues forwarding once the ESP32 finishes
+booting. STM32's USB CDC disappears on reset; the bridge detects ENODEV and reconnects
+when the STM32 re-enumerates.
 
 ## Node Identities (deterministic pattern keys)
 
@@ -157,29 +139,89 @@ All keys are deterministic: 31 zero bytes + last byte N (secp256k1 generator * N
 ### Unit tests (no hardware)
 
 ```sh
-cargo test -p microfips-core                    # 123 tests: Noise, FMP, FSP, identity, error injection, compatibility
+cargo test -p microfips-core                    # core protocol tests
 cargo test -p microfips-core -- --nocapture     # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # 46 tests: framing, transport, node
+cargo test -p microfips-protocol --features std -- --test-threads=1  # protocol tests
+cargo test -p microfips-service                 # service layer tests
+cargo test -p microfips-http-demo --features http  # HTTP demo tests
 ```
 
-### Key generation
+### Key generation and VPS handshake (no hardware)
 
 ```sh
-cargo run -p microfips-link -- --keygen
-# Output:
-#   FIPS_SECRET=<64 hex chars>
-#   FIPS_PUB=<66 hex chars>
-```
-
-### Host-side VPS handshake (no hardware, raw UDP)
-
-```sh
-cargo run -p microfips-link                     # sends MSG1 to VPS via UDP (default keys)
-
-# With custom keys (override via environment):
+cargo run -p microfips-link -- --keygen              # generate keys
+cargo run -p microfips-link                           # MSG1 to VPS via UDP (default keys)
 FIPS_SECRET=<hex> FIPS_PEER_PUB=<hex> cargo run -p microfips-link -- 127.0.0.1:2121
-# Exit 0 = success, 1 = timeout (expected from unconfigured IP), 2 = error
+# Exit 0 = success, 1 = timeout, 2 = error
 ```
+
+### Sim-to-sim FSP ping through FIPS (no hardware)
+
+Requires both sims to connect to the live FIPS VPS. SIM-A acts as FSP responder,
+SIM-B as initiator. FIPS forwards SessionDatagrams between them.
+
+```sh
+# Terminal 1: SIM-A (responder)
+cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-a
+
+# Terminal 2: SIM-B (initiator, exits on PONG)
+cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-b --test-ping
+```
+
+### Sim-to-MCU FSP ping (hardware: STM32 required)
+
+STM32 must be connected via serial bridge (see AGENTS.md for hardware setup).
+
+```sh
+st-flash --connect-under-reset reset && sleep 8
+python3 tools/serial_udp_bridge.py --serial /dev/ttyACM1 --udp-host orangeclaw.dns4sats.xyz &
+
+FIPS_SECRET=0303030303030303030303030303030303030303030303030303030303030303 \
+  cargo run -p microfips-sim --release -- \
+  --udp orangeclaw.dns4sats.xyz:2121 --initiator --target 132f39a98c31baaddba6525f5d43f295 --test-ping
+# Expected: "*** PONG received from target! ***" (exit 0)
+```
+
+### Hardware tests
+
+See AGENTS.md for full hardware test procedures, flash commands, and the LED state machine.
+
+```sh
+# STM32 flash
+arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabi/release/microfips microfips.bin
+st-flash --connect-under-reset write microfips.bin 0x08000000
+
+# ESP32 flash (UART variant)
+kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  espflash flash -p /dev/ttyUSB0 --chip esp32 \
+  target/xtensa-esp32-none-elf/release/microfips-esp32
+
+# ESP32 BLE variant
+espflash flash -p /dev/ttyUSB0 --chip esp32 \
+  target/xtensa-esp32-none-elf/release/microfips-esp32-ble
+
+# ESP32 L2CAP variant
+espflash flash -p /dev/ttyUSB0 --chip esp32 \
+  target/xtensa-esp32-none-elf/release/microfips-esp32-l2cap
+```
+
+## ESP32 Control Interface (BLE and L2CAP variants)
+
+When BLE or L2CAP transport is active, UART0 exposes a FIPS-compatible control interface
+for runtime inspection. Send line-delimited commands, receive JSON responses.
+
+| Command | Description |
+|---------|-------------|
+| `show_status` | Node address, npub, connection state, uptime, transport type |
+| `show_peers` | Peer node address and pubkey (error if no peer) |
+| `show_stats` | Protocol counters: msg1_tx, msg2_rx, hb_tx, hb_rx, data_tx, data_rx |
+| `help` | List of available commands |
+| `version` | Firmware version string |
+| `reset` | Software reset via RTC_CNTL SW_SYS_RST |
+
+Response format: `{"status":"ok","data":{...}}` or `{"status":"error","message":"..."}`.
+See `tools/test_control.py` for automated testing and AGENTS.md for full details.
 
 ## Observability
 
@@ -202,85 +244,10 @@ Capture FIPS traffic with tcpdump:
 
 A reference capture from a sim-to-sim test is at `tools/reference.pcap`.
 
-### Sim-to-sim FSP ping through FIPS (no hardware)
+### ESP32 Structured Logging (BLE/L2CAP variants)
 
-Requires both sims to connect to the live FIPS VPS. SIM-A acts as FSP responder,
-SIM-B as initiator. FIPS forwards SessionDatagrams between them.
-
-```sh
-# Terminal 1: SIM-A (responder)
-cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-a
-
-# Terminal 2: SIM-B (initiator, targets SIM-A, exits on PONG)
-cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-b --test-ping
-# Expected: "FSP ACK received" → "FSP established! Sending MSG3" → "*** PONG received from target! ***"
-```
-
-### Sim-to-MCU FSP ping through FIPS (hardware: STM32 required)
-
-The simulator sends an encrypted FSP PING to the physical STM32 through FIPS.
-STM32 must be connected via serial bridge (see AGENTS.md for hardware setup).
-
-```sh
-# 1. Flash and reset STM32, wait for USB enumeration
-st-flash --connect-under-reset reset
-sleep 8
-
-# 2. Start serial bridge (auto-detects MCU by VID:PID c0de:cafe)
-python3 tools/serial_udp_bridge.py --serial /dev/ttyACM1 --udp-host orangeclaw.dns4sats.xyz &
-
-# 3. Run SIM-B targeting STM32's NodeAddr (exit 0 on PONG)
-FIPS_SECRET=0303030303030303030303030303030303030303030303030303030303030303 \
-  cargo run -p microfips-sim --release -- \
-  --udp orangeclaw.dns4sats.xyz:2121 \
-  --initiator --target 132f39a98c31baaddba6525f5d43f295 \
-  --test-ping
-# Expected: "*** PONG received from target! ***" (exit 0)
-```
-
-### Host-side simulator (general)
-
-```sh
-# Responder mode (default)
-cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-a
-
-# Initiator mode with custom identity and target
-FIPS_SECRET=<hex> cargo run -p microfips-sim --release -- \
-  --udp orangeclaw.dns4sats.xyz:2121 --initiator --target <16-byte-hex-nodeaddr>
-
-# Enable debug logging from core crates
-RUST_LOG=debug cargo run -p microfips-sim --release -- --udp orangeclaw.dns4sats.xyz:2121 --sim-a
-```
-
-### Hardware (STM32F469)
-
-See AGENTS.md for the full hardware test procedure and LED state machine.
-
-```sh
-# Flash (use st-flash, NOT probe-rs — see AGENTS.md)
-arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabi/release/microfips microfips.bin
-st-flash --connect-under-reset write microfips.bin 0x08000000
-```
-
-### Hardware (ESP32)
-
-```sh
-# Kill stale processes holding serial port
-kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
-
-# Flash (same command for UART and BLE variants)
-. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
-  espflash flash -p /dev/ttyUSB0 --chip esp32 \
-  target/xtensa-esp32-none-elf/release/microfips-esp32
-```
-
-- **Note:** ESP32 now uses `microfips-protocol::Node` plus `FspDualHandler::new_dual()`,
-  matching STM32's protocol/runtime structure. Default builds use UART; `--features ble`
-  switches the transport to BLE while keeping the same service/FSP wiring.
-- **BLE variant:** Flash same way, build with `--features ble`. Uses `ble_udp_bridge.py` instead
-  of serial bridge. UART0 repurposed for debug output. See AGENTS.md for full BLE instructions.
-- **L2CAP variant:** Build with `--features l2cap`. Connects directly to local FIPS daemon
-  via BLE L2CAP CoC. No bridge needed. See AGENTS.md for full L2CAP instructions.
+BLE and L2CAP firmware variants use the `log` crate with FIPS-compatible format on UART0:
+`[LEVEL module_path] message`. Log output is interleaved with control interface responses.
 
 ## Build
 
@@ -298,44 +265,31 @@ cargo build -p microfips --release --target thumbv7em-none-eabi
 Requires Espressif Rust toolchain (installed via `espup`, activated with `RUSTUP_TOOLCHAIN=esp`):
 
 ```sh
+# UART variant (default) -> microfips-esp32
+# BLE variant (--features ble) -> microfips-esp32-ble
+# L2CAP variant (--features l2cap) -> microfips-esp32-l2cap
+# WiFi variant (--features wifi) -> microfips-esp32-wifi
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
   cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
-# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
+# Add --features ble, --features l2cap, or --features wifi for alternate transports
 ```
 
-#### BLE variant (feature-gated)
-
-```sh
-. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
-  cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
-# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
-# Same binary, BLE transport instead of UART. UART0 used for debug output.
-```
-
-#### L2CAP variant (feature-gated, direct FIPS connection)
-
-```sh
-. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
-  cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
-# Output: target/xtensa-esp32-none-elf/release/microfips-esp32
-# L2CAP transport to local FIPS daemon. No bridge needed. UART0 used for debug output.
-```
+Each variant outputs to its own binary. No build order dependency between variants.
 
 ## CI
 
-GitHub Actions runs on push/PR to main, all on `ubuntu-latest`:
-- **Unit Tests** — 90 tests in `microfips-core`, 46 tests in `microfips-protocol`
-- **Error Injection** — 21 tests in `microfips-core`
-- **Compatibility** — 22 FIPS comparison tests in `microfips-core`
-- **Wire Format Tests** — 17 FMP format tests in `microfips-core`
-- **FSP Integration** — 6 FSP session tests in `microfips-core`
-- **FSP Edge Cases** — 13 FSP protocol edge cases in `microfips-core`
-- **Build Host Tools** — `microfips-link` + `microfips-sim` + `microfips-http-test` + `microfips-http-demo` release binaries
-- **Lint & Format** — clippy + rustfmt on all host crates
-- **Sim Ping E2E** — SIM-B → FIPS → SIM-A FSP PING/PONG test (must pass)
-- **FIPS Handshake Integration** — local Noise IK handshake (must pass) + public VPS (best-effort)
-- **Build Firmware** — STM32 (`thumbv7em-none-eabi`) + ESP32 (`xtensa-esp32-none-elf`)
-- **Summary** — aggregate status table
+GitHub Actions runs on push/PR to main. See `.github/workflows/ci.yml` for full job definitions.
+
+- **Unit Tests** -- `cargo test` across core, protocol, service, and http-demo crates
+- **Golden Vectors** -- drift check against upstream FIPS reference + `cargo test --test golden_vectors`
+- **Noise Compliance** -- deviation documentation checks, specific protocol tests, 10-round stability checks for IK/XK transport keys and FSP handshakes
+- **Build Host Tools** -- `microfips-link`, `microfips-sim`, `microfips-http-test`, `microfips-http-demo` release binaries
+- **Lint & Format** -- clippy + rustfmt on all host crates
+- **Sim Smoke** -- verify simulator starts and exits cleanly on EOF
+- **Sim-to-Sim Ping** -- SIM-B -> FIPS -> SIM-A FSP PING/PONG (must pass)
+- **FIPS Handshake Integration** -- local Noise IK handshake (must pass) + public VPS (continue-on-error)
+- **Build Firmware** -- STM32 (`thumbv7em-none-eabi`) + ESP32 UART + ESP32 BLE variants
+- **Summary** -- aggregate status table
 
 ### Environment variables for key override
 
@@ -352,21 +306,43 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 
 ### STM32F469I-DISCO
 - **MCU:** STM32F469NI (Cortex-M4F, 180 MHz, 1 MB Flash, 384 KB SRAM)
-- **USB OTG FS:** PA11 (DM), PA12 (DP) — CDC ACM
-- **LEDs:** PG6 (green), PD4 (orange), PD5 (red), PK3 (blue) — active high
-- **RNG:** HASH_RNG interrupt — hardware TRNG
+- **USB OTG FS:** PA11 (DM), PA12 (DP) -- CDC ACM
+- **LEDs:** PG6 (green), PD4 (orange), PD5 (red), PK3 (blue) -- active high
+- **RNG:** HASH_RNG interrupt -- hardware TRNG
 - **Debug:** ST-LINK/V2.1 (PA13 SWDIO, PA14 SWCLK)
-- **Clocks:** HSI 16 MHz + PLL → 168 MHz sys, 48 MHz USB (HSE bypass hangs)
+- **Clocks:** HSI 16 MHz + PLL -> 168 MHz sys, 48 MHz USB (HSE bypass hangs)
 - **USB VID:PID:** `c0de:cafe` (CDC ACM, detected as `/dev/ttyACM*`)
 - **Flash:** `st-flash --connect-under-reset write` (NOT probe-rs during USB testing)
 
 ### ESP32-D0WD
 - **MCU:** ESP32-D0WD (Xtensa LX6, 240 MHz, 4 MB Flash)
-- **UART:** GPIO1 (TX), GPIO3 (RX) — CP210x USB-serial
+- **UART:** GPIO1 (TX), GPIO3 (RX) -- CP210x USB-serial
+- **WiFi:** 802.11 b/g/n 2.4 GHz (requires external antenna)
+- **BLE:** Internal esp-radio BLE controller (antenna on-board)
 - **LED:** GPIO2 (blue onboard, active high)
 - **USB VID:PID:** `10c4:ea60` (Silicon Labs CP210x, detected as `/dev/ttyUSB*`)
 - **Flash:** `espflash flash -p /dev/ttyUSB0 --chip esp32` (NOT probe-rs)
-- **Note:** Runs the same FIPS protocol stack as STM32 (Noise_IK, FMP, FSP dual mode).
+- Runs the same FIPS protocol stack as STM32 (Noise_IK, FMP, FSP dual mode).
+
+### ESP32-S3 (TiLDAGON)
+- **MCU:** ESP32-S3, 8 MB Flash
+- **WiFi:** 802.11 b/g/n 2.4 GHz (requires external antenna)
+- **Serial:** USB Serial JTAG (VID:PID `303a:1001`, detected as `/dev/ttyACM*`)
+- **Flash:** `espflash flash -p /dev/ttyACM<N> --chip esp32s3` (NOT esptool --no-stub)
+- Uses `microfips-esp32` crate with shared `microfips-esp-common` (DNS, config, stats)
+- Separate node identity from D0WD (secret `0x05` vs `0x02`)
+
+### Shared ESP32 code
+- **`microfips-esp-common`** — chip-agnostic shared crate: DNS resolver, config constants,
+  stats counters, node info (no esp-hal dependency)
+- Both `microfips-esp32` (D0WD) and `microfips-esp32s3` (S3) depend on it
+
+## Known Issues
+
+| Issue | Description | Status |
+|-------|-------------|--------|
+| ESP32-S3 steady state | WiFi connects and DNS resolves, but `HandshakeOk` → `Disconnected` cycle. S3 never sends heartbeats back to FIPS. FIPS drops link after 30s. Under investigation — likely a timing or transport issue in the steady-state loop. | Open |
+| WiFi control interface | Control interface (`show_status` etc.) not responding on WiFi variant. Logger and control share UART0 TX — RX path may need separate initialization. | Open |
 
 ## Milestones
 
@@ -380,42 +356,16 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 | M5 | Host-side full lifecycle simulator (`microfips-sim`) | Done |
 | M6 | MCU full lifecycle (handshake + heartbeat exchange) | Done |
 | M7 | FSP session protocol (XK handshake + encrypted data) | Done |
-| M8 | Sim-to-MCU FSP ping through FIPS | **Done** — SIM-B → FIPS → physical STM32 PING/PONG |
-| M9 | MCU-to-MCU ping (STM32 ↔ ESP32 through FIPS) | **Done** — MCU-to-MCU FSP PING/PONG + HTTP through FIPS proven on hardware (2026-04-01) |
+| M8 | Sim-to-MCU FSP ping through FIPS | Done |
+| M9 | MCU-to-MCU ping (STM32 <-> ESP32 through FIPS) | Done |
 | M10 | FIPS DNS resolution (`.fips` names) | Future |
-| M11 | ESP32 L2CAP direct transport to FIPS daemon | **Done** — ESP32 to FIPS daemon via L2CAP CoC, Noise IK + heartbeats, central+peripheral roles (2026-04-05) |
-
-### M8 sub-milestones (all done)
-
-| ID | Description | Status |
-|----|-------------|--------|
-| M8.1 | Sim-to-sim FSP handshake through FIPS | Done |
-| M8.2 | Sim-to-sim FSP PING/PONG through FIPS | Done |
-| M8.3 | Sim-to-STM32 FSP handshake through FIPS | Done |
-| M8.4 | Sim-to-STM32 FSP PING/PONG through FIPS | Done |
-| M8.5 | FIPS forwards SessionDatagrams between authenticated peers | Verified — no tree_peer needed |
-
-### M9 blockers (resolved)
-
-All blockers are resolved:
-- STM32 now uses `FspDualHandler::new_dual()` targeting ESP32 (dual mode: initiator + responder)
-- ESP32 already uses `FspDualHandler::new_dual()` targeting STM32 (since commit `c7da1c2`)
-- FIPS routes SessionDatagrams between direct peers via `find_next_hop()` — no `tree_peer` needed
-
-### M9 sub-milestones
-
-| ID | Description | Status |
-|----|-------------|--------|
-| M9.1 | STM32 FSP dual mode (initiator+responder targeting ESP32) | Done |
-| M9.2 | ESP32 FSP dual mode (already done, commit c7da1c2) | Done |
-| M9.3 | Sim-to-MCU HTTP-over-FSP test | Done |
-| M9.4 | MCU-to-MCU FSP PING/PONG through FIPS (hardware E2E) | Done |
+| M11 | ESP32 L2CAP direct transport to FIPS daemon | Done |
 
 ## Project Layout
 
 ```
 microfips/
-  Cargo.toml                    # Workspace: core, link, sim, protocol, esp32 (firmware excluded for CI)
+  Cargo.toml                    # Workspace: core, protocol, service, link, sim, esp32, etc.
   AGENTS.md                     # Build/flash/test/debug reference (authoritative)
   rust-toolchain.toml           # Nightly Rust (no pinned date)
   crates/
@@ -423,23 +373,45 @@ microfips/
       build.rs                  # Linker flags: --nmagic, -Tlink.x
       .cargo/config.toml        # probe-rs runner config (local debug only)
       src/main.rs               # FIPS leaf node firmware (4-LED state machine, uses Node)
-    microfips-esp32/            # ESP32 firmware (package name: microfips-esp32)
-      src/main.rs               # FIPS leaf node (1-LED, UART + BLE + L2CAP transport)
+    microfips-esp32/            # ESP32-D0WD firmware (package name: microfips-esp32)
+      src/lib.rs                # Re-exports from esp-transport + chip-specific config/tasks
+      src/config.rs             # D0WD secret, register addresses, BLE/L2CAP constants
+      src/{ble,l2cap}_host.rs   # Embassy tasks (chip-specific statics + secret refs)
+      src/control.rs            # UART control interface (chip-specific register addresses)
+      src/bin/{uart,ble,l2cap,wifi}.rs  # Binary entry points (chip-specific GPIO/pins)
+    microfips-esp32s3/          # ESP32-S3 variant (package name: microfips-esp32s3)
+    microfips-esp-transport/    # Shared ESP32 transport code (led, rng, stats, handlers, etc.)
+    microfips-esp-common/       # Chip-agnostic ESP32 code (DNS, config, UDP transport)
     microfips-core/             # no_std FIPS protocol: Noise IK/XK, FMP, FSP, identity
+    microfips-protocol/         # no_std FIPS protocol state machine: Transport trait, framing, Node
+    microfips-service/          # Transport-neutral request/response layer
+    microfips-http-demo/        # Optional HTTP adapter and demo service
     microfips-link/             # Host-side handshake test (UDP, --keygen, env var keys)
     microfips-sim/              # Host-side simulator using Node from microfips-protocol
     microfips-http-test/        # FIPS responder for integration tests (UDP, env var keys)
-    microfips-protocol/         # no_std FIPS protocol state machine: Transport trait, framing, Node
+    fips-decrypt/               # FIPS decrypt tool
   tools/
-    serial_udp_bridge.py        # Single-hop serial↔UDP bridge (recommended)
-    ble_udp_bridge.py           # Single-hop BLE↔UDP bridge (ESP32, feature-gated)
-    serial_tcp_proxy.py         # Serial↔TCP proxy (legacy 3-hop pipeline)
-    fips_bridge.py              # TCP↔UDP bridge (runs on VPS, legacy)
+    serial_udp_bridge.py        # Single-hop serial<->UDP bridge (recommended)
+    ble_udp_bridge.py           # Single-hop BLE<->UDP bridge (ESP32, feature-gated)
+    serial_tcp_proxy.py         # Serial<->TCP proxy (legacy 3-hop pipeline)
+    fips_bridge.py              # TCP<->UDP bridge (runs on VPS, legacy)
+    fips_dissector.lua          # Wireshark Lua dissector for FMP frames
+    capture_fips.sh             # PCAP capture helper
+    reference.pcap              # Reference capture from sim-to-sim FSP PING test
+    test_control.py             # ESP32 control interface test tool
+    test_ble_bridge.py          # BLE bridge test tool
+    test_sim_vps.sh             # Sim-to-VPS test helper
   scripts/
-    test_hw_handshake.sh        # Automated hardware test with cleanup + assertions
+    test_hw_handshake.sh        # Automated hardware handshake test
+    test_mcu_to_mcu_fsp.sh      # MCU-to-MCU FSP E2E test
+    test_dual_mcu.sh            # Dual-MCU simultaneous test
+    setup-vps-peer.sh           # VPS peer configuration
+    install-fips-service.sh     # FIPS systemd service installation
+    start-fips.sh               # FIPS daemon startup helper
+    ci-fips-node.sh             # CI FIPS node setup
   docs/
     architecture.md             # Protocol and transport details
-    milestones.md               # M0-M10 tracking
+    milestones.md               # M0-M11 tracking
     adr/                        # Architecture decision records
 ```
 

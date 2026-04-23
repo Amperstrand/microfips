@@ -53,8 +53,14 @@ class SerialUdpBridge:
     def __init__(self, serial_port, baud, udp_host, udp_port, bind_addr, bind_port):
         self.udp_peer = (udp_host, udp_port)
         self.stop_event = threading.Event()
+        self.ser = None
         self.serial_buf = b""
         self.lock = threading.Lock()
+        self.reconnect_lock = threading.Lock()
+
+        self._baud = baud
+        self._product_match = self._get_product_match(serial_port)
+        self.reconnects = 0
 
         self.cdc_rx_bytes = 0
         self.cdc_tx_bytes = 0
@@ -75,11 +81,27 @@ class SerialUdpBridge:
                 break
         if is_esp32:
             self._reset_esp32()
+        else:
+            self._wait_for_boot()
 
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sock.bind((bind_addr, bind_port))
         self.udp_sock.settimeout(30)
+
+    def _get_product_match(self, serial_port):
+        try:
+            for pi in serial.tools.list_ports.grep(serial_port):
+                vid_hex = f"{pi.vid:04x}" if pi.vid else ""
+                pid_hex = f"{pi.pid:04x}" if pi.pid else ""
+                vid_pid = f"{vid_hex}/{pid_hex}"
+                if vid_pid in (PRODUCT_MCU, PRODUCT_ESP32):
+                    return vid_pid
+        except Exception:
+            pass
+        if serial_port.startswith("/dev/ttyUSB"):
+            return PRODUCT_ESP32
+        return PRODUCT_MCU
 
     def _open_serial(self, port, baud):
         for attempt in range(40):
@@ -96,23 +118,92 @@ class SerialUdpBridge:
         raise RuntimeError(f"Failed to open {port}")
 
     def _reset_esp32(self):
-        self.ser.dtr = False
-        self.ser.rts = True
+        ser = self.ser
+        if ser is None:
+            return
+
+        ser.dtr = False
+        ser.rts = True
         time.sleep(0.1)
-        self.ser.rts = False
+        ser.rts = False
         time.sleep(0.1)
-        self.ser.dtr = True
+        ser.dtr = True
         time.sleep(1.0)
         junk = b""
         while True:
-            n = self.ser.in_waiting
+            n = ser.in_waiting
             if n == 0:
                 break
-            junk += self.ser.read(n)
+            junk += ser.read(n)
         if junk:
             print(f"{ts()} ESP32 reset, drained {len(junk)}B", file=sys.stderr)
         else:
             print(f"{ts()} ESP32 reset", file=sys.stderr)
+
+    def _wait_for_boot(self):
+        ser = self.ser
+        if ser is None:
+            return
+        junk = b""
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            n = ser.in_waiting
+            if n > 0:
+                junk += ser.read(n)
+                deadline = time.time() + 1.5
+            else:
+                time.sleep(0.05)
+        if junk:
+            print(f"{ts()} Boot output {len(junk)}B (data lost, node will resend)", file=sys.stderr)
+        else:
+            print(f"{ts()} No boot output", file=sys.stderr)
+
+    def _reconnect_serial(self):
+        with self.reconnect_lock:
+            if self.stop_event.is_set():
+                return False
+
+            print(f"{ts()} SERIAL disconnected, waiting for re-enumeration...", file=sys.stderr)
+            if self.ser:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+                self.ser = None
+
+            with self.lock:
+                self.serial_buf = b""
+
+            for _ in range(240):
+                if self.stop_event.is_set():
+                    return False
+
+                port = find_port(self._product_match)
+                if port:
+                    try:
+                        self.ser = serial.Serial(
+                            port,
+                            self._baud,
+                            timeout=0,
+                            dsrdtr=False,
+                            rtscts=False,
+                        )
+                        with self.lock:
+                            self.serial_buf = b""
+                        self.reconnects += 1
+                        print(
+                            f"{ts()} SERIAL reconnected: {port} (reconnect #{self.reconnects})",
+                            file=sys.stderr,
+                        )
+                        return True
+                    except (serial.SerialException, FileNotFoundError, OSError):
+                        pass
+
+                time.sleep(0.5)
+
+            print(f"{ts()} SERIAL reconnection timed out after 120s", file=sys.stderr)
+            self.stop_event.set()
+            return False
 
     def _parse_frames(self):
         frames = []
@@ -133,8 +224,13 @@ class SerialUdpBridge:
         last_alive = time.time()
         while not self.stop_event.is_set():
             try:
-                if self.ser.in_waiting:
-                    data = self.ser.read(self.ser.in_waiting)
+                ser = self.ser
+                if ser is None:
+                    time.sleep(0.001)
+                    continue
+
+                if ser.in_waiting:
+                    data = ser.read(ser.in_waiting)
                     if data:
                         self.cdc_rx_bytes += len(data)
                         with self.lock:
@@ -160,12 +256,12 @@ class SerialUdpBridge:
                     time.sleep(0.001)
             except serial.SerialException as e:
                 print(f"{ts()} >> SERIAL disconnected: {e}", file=sys.stderr)
-                self.stop_event.set()
-                break
+                if not self._reconnect_serial():
+                    break
             except OSError as e:
                 print(f"{ts()} >> SERIAL error: {e}", file=sys.stderr)
-                self.stop_event.set()
-                break
+                if not self._reconnect_serial():
+                    break
 
     def udp_to_serial(self):
         frame_count = 0
@@ -176,10 +272,14 @@ class SerialUdpBridge:
                 frame_count += 1
                 self.udp_to_cdc_frames += 1
                 self.udp_rx_bytes += len(data)
-                self.cdc_tx_bytes += len(data) + 2
+                ser = self.ser
+                if ser is None:
+                    print(f"{ts()} << SERIAL unavailable during reconnect, dropping {len(data)}B", file=sys.stderr)
+                    continue
                 hdr = struct.pack("<H", len(data))
-                self.ser.write(hdr + data)
-                self.ser.flush()
+                ser.write(hdr + data)
+                ser.flush()
+                self.cdc_tx_bytes += len(data) + 2
                 first_bytes = data[:8].hex() if len(data) >= 8 else data.hex()
                 print(
                     f"{ts()} << UDP->CDC: frame#{frame_count} {len(data)}B from {addr} hex={first_bytes}",
@@ -195,12 +295,12 @@ class SerialUdpBridge:
                 continue
             except serial.SerialException as e:
                 print(f"{ts()} << SERIAL write error: {e}", file=sys.stderr)
-                self.stop_event.set()
-                break
+                if not self._reconnect_serial():
+                    break
             except OSError as e:
                 print(f"{ts()} << error: {e}", file=sys.stderr)
-                self.stop_event.set()
-                break
+                if not self._reconnect_serial():
+                    break
 
     def run(self):
         t1 = threading.Thread(target=self.serial_to_udp, daemon=True)
@@ -208,8 +308,9 @@ class SerialUdpBridge:
         t1.start()
         t2.start()
         try:
-            while t1.is_alive() and t2.is_alive():
+            while t1.is_alive() or t2.is_alive():
                 t1.join(timeout=30)
+                t2.join(timeout=30)
         except KeyboardInterrupt:
             print(f"\n{ts()} Interrupted", file=sys.stderr)
             self.stop_event.set()
@@ -220,7 +321,8 @@ class SerialUdpBridge:
     def stop(self):
         self.stop_event.set()
         try:
-            self.ser.close()
+            if self.ser:
+                self.ser.close()
         except Exception:
             pass
         self.udp_sock.close()
@@ -229,7 +331,8 @@ class SerialUdpBridge:
         return (
             f"CDC_RX={self.cdc_rx_bytes}B CDC_TX={self.cdc_tx_bytes}B "
             f"UDP_TX={self.udp_tx_bytes}B UDP_RX={self.udp_rx_bytes}B "
-            f"frames: >>{self.cdc_to_udp_frames} <<{self.udp_to_cdc_frames}"
+            f"frames: >>{self.cdc_to_udp_frames} <<{self.udp_to_cdc_frames} "
+            f"reconnects: {self.reconnects}"
         )
 
 

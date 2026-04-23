@@ -32,13 +32,17 @@ def elapsed():
     return f"+{int(time.time()*1000 - EPOCH_MS)}ms"
 
 
-def find_mcu_port():
+def find_port(product_match):
     for p in serial.tools.list_ports.comports():
         vid_hex = f"{p.vid:04x}" if p.vid else ""
         pid_hex = f"{p.pid:04x}" if p.pid else ""
-        if f"{vid_hex}/{pid_hex}" == PRODUCT_MATCH:
+        if f"{vid_hex}/{pid_hex}" == product_match:
             return p.device
     return None
+
+
+def find_mcu_port():
+    return find_port(PRODUCT_MATCH)
 
 
 class SerialBridge:
@@ -47,19 +51,35 @@ class SerialBridge:
         self.ser = None
         self.serial_buf = b""
         self.lock = threading.Lock()
+        self.reconnect_lock = threading.Lock()
         self.tcp_conn = None
         self.stop_event = threading.Event()
         self.cdc_rx_bytes = 0
         self.tcp_tx_bytes = 0
         self.tcp_rx_bytes = 0
         self.serial_tx_bytes = 0
+        self.reconnects = 0
+        self._baud = 115200
+        self._product_match = self._get_product_match(port_name)
         self._open_serial()
+
+    def _get_product_match(self, port_name):
+        try:
+            for pi in serial.tools.list_ports.grep(port_name):
+                vid_hex = f"{pi.vid:04x}" if pi.vid else ""
+                pid_hex = f"{pi.pid:04x}" if pi.pid else ""
+                vid_pid = f"{vid_hex}/{pid_hex}"
+                if vid_pid:
+                    return vid_pid
+        except Exception:
+            pass
+        return PRODUCT_MATCH
 
     def _open_serial(self):
         for attempt in range(40):
             try:
                 self.ser = serial.Serial(
-                    self.port_name, 115200, timeout=0, dsrdtr=False, rtscts=False
+                    self.port_name, self._baud, timeout=0, dsrdtr=False, rtscts=False
                 )
                 print(f"{ts()} SERIAL opened: {self.port_name}", file=sys.stderr)
                 return
@@ -69,11 +89,64 @@ class SerialBridge:
                 time.sleep(0.25)
         raise RuntimeError(f"Failed to open {self.port_name}")
 
+    def _reconnect_serial(self):
+        with self.reconnect_lock:
+            if self.stop_event.is_set():
+                return False
+
+            print(f"{ts()} SERIAL disconnected, waiting for re-enumeration...", file=sys.stderr)
+            if self.ser:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+                self.ser = None
+
+            with self.lock:
+                self.serial_buf = b""
+
+            for _ in range(240):
+                if self.stop_event.is_set():
+                    return False
+
+                port = find_port(self._product_match)
+                if port:
+                    try:
+                        self.ser = serial.Serial(
+                            port,
+                            self._baud,
+                            timeout=0,
+                            dsrdtr=False,
+                            rtscts=False,
+                        )
+                        self.port_name = port
+                        with self.lock:
+                            self.serial_buf = b""
+                        self.reconnects += 1
+                        print(
+                            f"{ts()} SERIAL reconnected: {port} (reconnect #{self.reconnects})",
+                            file=sys.stderr,
+                        )
+                        return True
+                    except (serial.SerialException, FileNotFoundError, OSError):
+                        pass
+
+                time.sleep(0.5)
+
+            print(f"{ts()} SERIAL reconnection timed out after 120s", file=sys.stderr)
+            self.stop_event.set()
+            return False
+
     def serial_reader(self):
         while not self.stop_event.is_set():
             try:
-                if self.ser.in_waiting:
-                    data = self.ser.read(self.ser.in_waiting)
+                ser = self.ser
+                if ser is None:
+                    time.sleep(0.001)
+                    continue
+
+                if ser.in_waiting:
+                    data = ser.read(ser.in_waiting)
                     if data:
                         self.cdc_rx_bytes += len(data)
                         with self.lock:
@@ -88,12 +161,12 @@ class SerialBridge:
                     time.sleep(0.001)
             except serial.SerialException as e:
                 print(f"{ts()} SERIAL disconnected: {e}", file=sys.stderr)
-                self.stop_event.set()
-                break
+                if not self._reconnect_serial():
+                    break
             except OSError as e:
                 print(f"{ts()} SERIAL error: {e}", file=sys.stderr)
-                self.stop_event.set()
-                break
+                if not self._reconnect_serial():
+                    break
 
     def _flush_to_tcp(self):
         if self.tcp_conn and self.serial_buf:
@@ -134,8 +207,25 @@ class SerialBridge:
                             print(f"{ts()} TCP EOF from {peer}", file=sys.stderr)
                             break
                         self.tcp_rx_bytes += len(data)
-                        self.ser.write(data)
-                        self.ser.flush()
+                        ser = self.ser
+                        if ser is None:
+                            print(
+                                f"{ts()} SERIAL unavailable during reconnect, dropping {len(data)}B from TCP",
+                                file=sys.stderr,
+                            )
+                            continue
+                        try:
+                            ser.write(data)
+                            ser.flush()
+                        except (serial.SerialException, OSError) as e:
+                            print(f"{ts()} SERIAL write error: {e}", file=sys.stderr)
+                            if not self._reconnect_serial():
+                                break
+                            print(
+                                f"{ts()} SERIAL unavailable during reconnect, dropping {len(data)}B from TCP",
+                                file=sys.stderr,
+                            )
+                            continue
                         self.serial_tx_bytes += len(data)
                         if len(data) <= 128:
                             print(
@@ -215,7 +305,7 @@ def main():
     except KeyboardInterrupt:
         print(f"\n{ts()} Interrupted", file=sys.stderr)
     finally:
-        print(f"{ts()} Summary: CDC_RX={bridge.cdc_rx_bytes} TCP_TX={bridge.tcp_tx_bytes} TCP_RX={bridge.tcp_rx_bytes} SERIAL_TX={bridge.serial_tx_bytes}", file=sys.stderr)
+        print(f"{ts()} Summary: CDC_RX={bridge.cdc_rx_bytes} TCP_TX={bridge.tcp_tx_bytes} TCP_RX={bridge.tcp_rx_bytes} SERIAL_TX={bridge.serial_tx_bytes} reconnects: {bridge.reconnects}", file=sys.stderr)
         bridge.stop()
         srv.close()
 
