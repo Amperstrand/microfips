@@ -16,7 +16,8 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::config::{
-    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, FIPS_SERVICE_UUID_LE, RECV_RETRY_DELAY_MS,
+    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, ESP32_SECRET, FIPS_SERVICE_UUID_LE,
+    RECV_RETRY_DELAY_MS,
 };
 use crate::stats::{STAT_BLE_CONNECT, STAT_BLE_DISCONNECT, STAT_BLE_RX, STAT_BLE_TX};
 
@@ -28,6 +29,9 @@ static BLE_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRA
 static BLE_CONNECTED_SIG: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static BLE_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static BLE_LINK_UP: AtomicBool = AtomicBool::new(false);
+/// Set to true once the GATT client has enabled notifications (CCCD write).
+/// Until then, notify() failures are expected and must not trigger a disconnect.
+static BLE_NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
@@ -156,7 +160,14 @@ pub async fn ble_host_task() {
         ExternalController::new(BleHciTransport::new(connector));
     let resources = HOST_RESOURCES.init(HostResources::new());
     let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]));
+        .set_random_address(Address::random([
+            0xff,
+            ESP32_SECRET[27],
+            ESP32_SECRET[28],
+            ESP32_SECRET[29],
+            ESP32_SECRET[30],
+            ESP32_SECRET[31],
+        ]));
 
     let Host {
         mut peripheral,
@@ -175,7 +186,7 @@ pub async fn ble_host_task() {
     };
 
     let _ = embassy_futures::join::join(runner.run(), async {
-        esp_println::println!("[ble_task] starting advertising loop");
+        log::info!("starting advertising loop");
         loop {
             let mut adv_data = [0u8; 31];
             let Ok(adv_len) = AdStructure::encode_slice(
@@ -185,7 +196,7 @@ pub async fn ble_host_task() {
                 ],
                 &mut adv_data,
             ) else {
-                esp_println::println!("[ble_task] adv_data encode failed");
+                log::error!("adv_data encode failed");
                 continue;
             };
 
@@ -194,7 +205,7 @@ pub async fn ble_host_task() {
                 &[AdStructure::ServiceUuids128(&FIPS_SERVICE_UUID_LE)],
                 &mut scan_data,
             ) else {
-                esp_println::println!("[ble_task] scan_data encode failed");
+                log::error!("scan_data encode failed");
                 continue;
             };
 
@@ -210,7 +221,7 @@ pub async fn ble_host_task() {
             {
                 Ok(a) => a,
                 Err(e) => {
-                    esp_println::println!("[ble_task] advertise() error: {:?}", e);
+                    log::error!("advertise() error: {:?}", e);
                     continue;
                 }
             };
@@ -219,17 +230,18 @@ pub async fn ble_host_task() {
                 Ok(c) => match c.with_attribute_server(&server) {
                     Ok(conn) => conn,
                     Err(e) => {
-                        esp_println::println!("[ble_task] with_attribute_server error: {:?}", e);
+                        log::error!("with_attribute_server error: {:?}", e);
                         continue;
                     }
                 },
                 Err(e) => {
-                    esp_println::println!("[ble_task] accept() error: {:?}", e);
+                    log::error!("accept() error: {:?}", e);
                     continue;
                 }
             };
 
             BLE_LINK_UP.store(true, Ordering::Relaxed);
+            BLE_NOTIFICATIONS_ENABLED.store(false, Ordering::Relaxed);
             STAT_BLE_CONNECT.fetch_add(1, Ordering::Relaxed);
             BLE_CONNECTED_SIG.signal(());
 
@@ -246,8 +258,8 @@ pub async fn ble_host_task() {
                         GattEvent::Write(e) => {
                             if e.handle() == server.fips_service.rx_data.handle {
                                 if e.data().len() > BLE_MAX_FRAME {
-                                    esp_println::println!(
-                                        "[ble_task] RX write dropped: {}B > max {}B",
+                                    log::warn!(
+                                        "RX write dropped: {}B > max {}B",
                                         e.data().len(),
                                         BLE_MAX_FRAME
                                     );
@@ -278,7 +290,16 @@ pub async fn ble_host_task() {
                             .await
                             .is_err()
                         {
+                            if !BLE_NOTIFICATIONS_ENABLED.load(Ordering::Relaxed) {
+                                BLE_TX_CH.send(frame).await;
+                                embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                                    RECV_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
                             BLE_LINK_UP.store(false, Ordering::Relaxed);
+                            BLE_NOTIFICATIONS_ENABLED.store(false, Ordering::Relaxed);
                             STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
                             while BLE_RX_CH.try_receive().is_ok() {}
                             while BLE_TX_CH.try_receive().is_ok() {}

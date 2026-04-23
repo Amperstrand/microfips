@@ -8,10 +8,11 @@ session handling. Above that runtime, `microfips-service` provides a compact req
 response boundary that downstream apps can reuse without depending on HTTP.
 
 Both MCUs connect to a VPS running stock FIPS through host-side bridges that translate
-length-prefixed serial or BLE frames into UDP. HTTP remains optional and lives in the
-demo-only `microfips-http-demo` crate.
+length-prefixed serial or BLE frames into UDP. The ESP32 can also connect directly to a
+local FIPS daemon via BLE L2CAP, with no bridge or UDP hop at all. HTTP remains optional
+and lives in the demo-only `microfips-http-demo` crate.
 - **STM32F469I-DISCO:** USB CDC ACM transport (embassy-usb, 64B packets)
-- **ESP32-D0WD:** UART transport (CP210x USB-serial, 115200 baud) or BLE transport (`--features ble`)
+- **ESP32-D0WD:** UART transport (CP210x USB-serial, 115200 baud), BLE GATT transport (`--features ble`), or BLE L2CAP direct transport (`--features l2cap`)
 
 ## Layer Stack
 
@@ -19,7 +20,7 @@ demo-only `microfips-http-demo` crate.
 
 ```
 +---------------------------+
-|  FIPS session (FSP)       |  End-to-end encrypted sessions  [PLANNED]
+|  FIPS session (FSP)       |  End-to-end encrypted sessions  [DONE]
 +---------------------------+
 |  FIPS mesh (FMP)          |  Noise IK, single peer, no transit  [DONE]
 +---------------------------+
@@ -31,17 +32,33 @@ demo-only `microfips-http-demo` crate.
 +---------------------------+
 ```
 
-### ESP32-D0WD (UART / BLE)
+### ESP32-D0WD (UART / BLE GATT)
 
 ```
 +---------------------------+
-|  FIPS session (FSP)       |  End-to-end encrypted sessions  [PLANNED]
+|  FIPS session (FSP)       |  End-to-end encrypted sessions  [DONE]
 +---------------------------+
 |  FIPS mesh (FMP)          |  Noise IK, single peer, no transit  [DONE]
 +---------------------------+
 |  Length-prefixed framing  |  2-byte LE length + payload     [DONE]
 +---------------------------+
 |  UART or BLE transport    |  esp-hal / trouble-host         [DONE]
++---------------------------+
+|  ESP32-D0WD               |  esp-hal v1.0.0 + esp-rtos     [DONE]
++---------------------------+
+```
+
+### ESP32-D0WD (BLE L2CAP direct)
+
+```
++---------------------------+
+|  FIPS session (FSP)       |  End-to-end encrypted sessions  [DONE]
++---------------------------+
+|  FIPS mesh (FMP)          |  Noise IK, single peer, no transit  [DONE]
++---------------------------+
+|  Raw FMP frames           |  No length prefix (SeqPacket)  [DONE]
++---------------------------+
+|  BLE L2CAP CoC            |  trouble-host, PSM 0x0085      [DONE]
 +---------------------------+
 |  ESP32-D0WD               |  esp-hal v1.0.0 + esp-rtos     [DONE]
 +---------------------------+
@@ -96,6 +113,43 @@ thin composition roots.
 
 The current bridge layout is single-hop: the host bridge sends UDP directly to FIPS.
 There is no SSH tunnel or VPS-side bridge in the normal path anymore.
+
+### ESP32-D0WD (BLE L2CAP direct)
+
+```
+   ESP32-D0WD (L2CAP)          FIPS daemon (local)
+   +----------------+           +------------------+
+   | microfips-esp32|           | FIPS daemon      |
+   | Node + service |BLE        | :2121            |
+   | dual FSP mode  |L2CAP      | forwards peers   |
+   +----------------+<---->     +------------------+
+                           PSM 0x0085
+```
+
+The L2CAP path skips the host bridge and UDP entirely. The ESP32 connects over BLE
+L2CAP Connection-Oriented Channels directly to a FIPS daemon on the same host or LAN.
+
+**Role arbitration:** The ESP32 builds both a BLE central and peripheral. It advertises
+as peripheral for 3 seconds (bounded window), then falls back to scanning as central.
+If a FIPS peer connects during the peripheral window, the ESP32 accepts the inbound
+L2CAP channel. If no peer is found, the ESP32 scans for the FIPS service UUID and
+initiates an outbound L2CAP connection as central.
+
+**Readiness contract:** Protocol startup is gated on a single signal (`L2CAP_READY_SIG`)
+that carries the peer's 33-byte compressed public key. The signal fires only after both
+the L2CAP channel (accept or create) and the pre-handshake pubkey exchange are complete.
+The `L2capTransport` holds the peer pubkey as instance state, so the protocol layer
+never starts before the peer identity is available.
+
+**Pre-handshake pubkey exchange:** After the L2CAP channel opens, both sides exchange
+33-byte messages: `[0x00][32B x-only secp256k1 pubkey]`. The leading `0x00` prefix
+byte distinguishes this from FMP frames. Each side has a 5-second timeout for the
+exchange. Once complete, `L2CAP_READY_SIG` fires and the Noise IK handshake begins
+over the same channel.
+
+**Framing difference:** L2CAP CoC with SeqPacket semantics preserves message boundaries,
+so raw FMP frames are sent without the 2-byte LE length prefix used by serial transports.
+The framing layer in the L2CAP variant passes frames through directly.
 
 ### Startup sequence
 
@@ -215,13 +269,15 @@ VPS peer entry: alias "microfips-esp32", local port 31338.
 
 ## What's Proven
 
-### Protocol (71 tests in microfips-core)
+### Protocol (169 tests: 90 core + 21 error injection + 22 compatibility + 17 wire format + 13 FSP edge cases + 6 FSP integration + 46 protocol)
 
 - Noise IK full handshake simulation (initiator + test responder)
 - FMP MSG1/MSG2/ESTABLISHED build and parse roundtrips
 - AEAD encrypt/decrypt with correct and wrong keys/nonce/AAD
 - ECDH keypair derivation, SLIP encode/decode, identity derivation
 - `finalize()` / `split()` produces correct transport keys matching FIPS
+- FSP session protocol (XK handshake + encrypted data transfer)
+- FSP edge cases: invalid state transitions, duplicate session IDs, truncated frames
 
 ### Sim-to-VPS (microfips-sim, host-side)
 
@@ -249,6 +305,20 @@ VPS peer entry: alias "microfips-esp32", local port 31338.
 - Bridge receives MSG2 from VPS FIPS, writes to tunnel → proxy → MCU
 - Full exchange confirmed: `CDC->UDP: 114B` (MSG1) and `UDP->CDC: 69B` (MSG2)
 - Sim heartbeat exchange confirmed through bridge: 7 heartbeats sent, 22 ESTABLISHED received
+
+### ESP32 BLE L2CAP direct transport
+
+- ESP32 connects directly to local FIPS daemon via BLE L2CAP CoC (PSM 0x0085)
+- No Python bridge, no UDP hop in the data path
+- Full Noise IK handshake + sustained heartbeats over L2CAP
+- Role arbitration: peripheral advertise (3s) then central scan fallback
+- Pre-handshake pubkey exchange with 5-second timeout
+- Raw FMP frames (no length prefix) over L2CAP SeqPacket
+
+### Dual-MCU simultaneous handshake
+
+- Both STM32 and ESP32 sustain heartbeat with VPS concurrently
+- MCU-to-MCU FSP PING/PONG through FIPS proven on hardware (STM32 to ESP32 and back)
 
 ## Known Issues and Risks
 
@@ -313,17 +383,22 @@ microfips/
       build.rs                  # Linker flags: --nmagic, -Tlink.x, -Tdefmt.x
       src/main.rs               # FIPS leaf node firmware
     microfips-esp32/            # ESP32 MCU firmware (package name: microfips-esp32)
-      src/main.rs               # FIPS leaf node firmware (UART transport)
+      src/main.rs               # FIPS leaf node firmware (UART / BLE / L2CAP transport)
     microfips-core/             # no_std FIPS protocol: Noise, FMP, FSP, identity
+    microfips-protocol/         # no_std protocol state machine: Transport trait, framing, Node
+    microfips-service/          # Transport-agnostic request/response layer
+    microfips-http-demo/        # Optional demo HTTP adapter and demo service
     microfips-link/             # Host-side handshake test (UDP, proven against VPS)
     microfips-sim/              # Host-side full lifecycle simulator (stdio framing)
   tools/
+    serial_udp_bridge.py        # Single-hop serial <-> UDP bridge (recommended)
+    ble_udp_bridge.py           # Single-hop BLE <-> UDP bridge (ESP32 BLE GATT)
     fips_bridge.py              # CDC/TCP <-> UDP bridge (runs on VPS)
     serial_tcp_proxy.py         # Serial <-> TCP proxy (runs on host)
     test_sim_vps.sh             # VPS integration test for microfips-sim
   docs/
     architecture.md             # This file
-    milestones.md               # M0-M7 tracking
+    milestones.md               # M0-M11 tracking
     adr/                        # Architecture decision records
 ```
 
@@ -333,13 +408,24 @@ microfips/
 
 | Crate | Version | Notes |
 |-------|---------|-------|
-| `embassy-*` | fork | `Amperstrand/embassy` at `c0289d7a8` — 4 patches for STM32F4 USB OTG |
+| `embassy-stm32` | 0.6.0 | Upstream crates.io (NOT the Amperstrand fork, which breaks USB) |
+| `embassy-usb` | 0.6.0 | CDC ACM class |
+| `embassy-usb-synopsys-otg` | 0.3.2 | USB OTG FS driver for STM32F4 |
+| `embassy-executor` | 0.10.0 | Thread + interrupt executor |
+| `embassy-time` | 0.5.1 | Tick timer (32.768 kHz) |
+| `embassy-sync` | 0.8.0 | Channel, signal, mutex |
 | `stm32-metapac` | generated | Chip register definitions via `stm32-data-generated` |
 
 ### ESP32-D0WD
 
 | Crate | Version | Notes |
 |-------|---------|-------|
-| `esp-hal` | v1.0.0 | Espressif HAL (NOT embassy-usb-synopsys) |
+| `esp-hal` | v1.0.0 | Espressif HAL |
 | `esp-rtos` | v0.2.0 | RTOS support for async executor |
-| `embassy-*` | upstream | crates.io v0.6.0 (executor, time only — no USB) |
+| `esp-radio` | v0.17.0 | BLE controller (optional, `ble` / `l2cap` features) |
+| `trouble-host` | v0.6.0 | Pure Rust BLE host stack (optional, `ble` / `l2cap` features) |
+| `bt-hci` | v0.8 | HCI types with UUID support (optional) |
+| `embassy-executor` | 0.9.1 | Thread executor |
+| `embassy-time` | 0.5.1 | Tick timer |
+| `embassy-sync` | 0.7.2 | Channel, signal, mutex |
+| `embassy-futures` | 0.1.2 | `join!`, `select!` combinators |
