@@ -3,9 +3,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use k256::SecretKey;
-use microfips_core::fmp;
 use microfips_core::identity::{load_peer_pub, load_secret};
 use microfips_core::noise;
+use microfips_core::wire;
 use rand::RngCore;
 
 fn keygen() -> ExitCode {
@@ -16,7 +16,7 @@ fn keygen() -> ExitCode {
     let _ =
         SecretKey::from_slice(&secret).expect("generated invalid key (astronomically unlikely)");
     let pubkey = noise::ecdh_pubkey(&secret).expect("pubkey derivation failed");
-    println!("FIPS_SECRET={}", hex::encode(secret));
+    println!("FIPS_NSEC={}", hex::encode(secret));
     println!("FIPS_PUB={}", hex::encode(pubkey));
     ExitCode::SUCCESS
 }
@@ -96,7 +96,12 @@ fn main() -> ExitCode {
     };
 
     let mut fmp_msg1 = [0u8; 256];
-    let fmp_len = fmp::build_msg1(0, &noise_msg1[..noise_len], &mut fmp_msg1).unwrap();
+    let fmp_len = wire::build_msg1(
+        wire::SessionIndex::new(0),
+        &noise_msg1[..noise_len],
+        &mut fmp_msg1,
+    )
+    .unwrap();
     log::debug!("[LINK → FIPS] MSG1 frame ready: {}B", fmp_len);
 
     if let Err(e) = socket.send_to(&fmp_msg1[..fmp_len], target) {
@@ -110,9 +115,9 @@ fn main() -> ExitCode {
         Ok((len, addr)) => {
             log::info!("[FIPS → LINK] RX {}B from {}", len, addr);
 
-            match fmp::parse_message(&recv_buf[..len]) {
+            match wire::parse_message(&recv_buf[..len]) {
                 Some(msg) => match msg {
-                    fmp::FmpMessage::Msg2 {
+                    wire::FmpMessage::Msg2 {
                         sender_idx,
                         receiver_idx,
                         noise_payload,
@@ -141,11 +146,11 @@ fn main() -> ExitCode {
                             }
                         }
                     }
-                    fmp::FmpMessage::Msg1 { .. } => {
+                    wire::FmpMessage::Msg1 { .. } => {
                         log::error!("[FIPS → LINK] received MSG1 (expected MSG2)");
                         ExitCode::from(2)
                     }
-                    fmp::FmpMessage::Established { .. } => {
+                    wire::FmpMessage::Established { .. } => {
                         log::error!("[FIPS → LINK] received Established (expected MSG2)");
                         ExitCode::from(2)
                     }

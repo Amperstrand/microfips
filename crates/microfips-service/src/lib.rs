@@ -364,6 +364,14 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
             return FspAppResult::None;
         }
 
+        if payload == b"PING" && response.len() >= 4 {
+            response[..4].copy_from_slice(b"PONG");
+            return FspAppResult::Reply {
+                msg_type: FSP_MSG_DATA,
+                len: 4,
+            };
+        }
+
         match dispatch_request(&mut self.inner, payload, response) {
             Ok(len) => FspAppResult::Reply {
                 msg_type: FSP_MSG_DATA,
@@ -392,13 +400,13 @@ pub fn route_suffix<'a>(route: &'a str, prefix: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microfips_core::fmp;
     use microfips_core::fsp::{
         build_fsp_data_message, build_session_datagram_body, FspInitiatorSession,
         FspInitiatorState, SESSION_DATAGRAM_BODY_SIZE,
     };
     use microfips_core::identity::NodeAddr;
     use microfips_core::noise::{aead_decrypt, ecdh_pubkey, parity_normalize};
+    use microfips_core::wire;
     use microfips_protocol::fsp_handler::FspDualHandler;
     use microfips_protocol::node::{HandleResult, NodeHandler};
 
@@ -504,6 +512,7 @@ mod tests {
         let mut responder: FspDualHandler<_, 256> = FspDualHandler::new_responder(
             resp_secret,
             [0x33; 32],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
             FspServiceAdapter::new(Router::new(&routes)),
         );
         let mut initiator = FspInitiatorSession::new(&init_secret, &[0x44; 32], &resp_pub).unwrap();
@@ -522,7 +531,7 @@ mod tests {
 
         let mut ack = [0u8; 512];
         let ack_len = match responder.on_message(
-            fmp::MSG_SESSION_DATAGRAM,
+            wire::MSG_SESSION_DATAGRAM,
             &setup_payload[..SESSION_DATAGRAM_BODY_SIZE + setup_len],
             &mut ack,
         ) {
@@ -535,7 +544,7 @@ mod tests {
 
         let mut msg3 = [0u8; 512];
         let msg3_len = initiator
-            .build_msg3(&[0x02, 0, 0, 0, 0, 0, 0, 0], &mut msg3)
+            .build_msg3(&responder.fsp_epoch, &mut msg3)
             .unwrap();
         let mut msg3_payload = [0u8; 512];
         msg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
@@ -546,7 +555,7 @@ mod tests {
             .copy_from_slice(&msg3[..msg3_len]);
         assert_eq!(
             responder.on_message(
-                fmp::MSG_SESSION_DATAGRAM,
+                wire::MSG_SESSION_DATAGRAM,
                 &msg3_payload[..SESSION_DATAGRAM_BODY_SIZE + msg3_len],
                 &mut ack,
             ),
@@ -576,7 +585,7 @@ mod tests {
 
         let mut response_payload = [0u8; 512];
         let response_len = match responder.on_message(
-            fmp::MSG_SESSION_DATAGRAM,
+            wire::MSG_SESSION_DATAGRAM,
             &request_payload[..SESSION_DATAGRAM_BODY_SIZE + fsp_len],
             &mut response_payload,
         ) {

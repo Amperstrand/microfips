@@ -7,7 +7,11 @@ pub mod error;
 pub mod framing;
 pub mod fsp_handler;
 pub mod node;
+pub mod peer_policy;
 pub mod transport;
+
+#[cfg(feature = "mmp")]
+pub mod mmp;
 
 #[cfg(test)]
 pub mod test_helpers {

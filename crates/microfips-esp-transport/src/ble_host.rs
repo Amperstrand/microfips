@@ -16,10 +16,10 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::config::{
-    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, ESP32S3_SECRET, FIPS_SERVICE_UUID_LE,
+    ble_uuids, BLE_DEVICE_NAME, BLE_MAX_FRAME, DEVICE_NSEC, FIPS_SERVICE_UUID_LE,
     RECV_RETRY_DELAY_MS,
 };
-use crate::stats::{STAT_BLE_CONNECT, STAT_BLE_DISCONNECT, STAT_BLE_RX, STAT_BLE_TX};
+use crate::stats::BLE_STATS;
 
 static HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2>> = StaticCell::new();
 static BLE_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> =
@@ -159,15 +159,14 @@ pub async fn ble_host_task() {
     let controller: ExternalController<_, 20> =
         ExternalController::new(BleHciTransport::new(connector));
     let resources = HOST_RESOURCES.init(HostResources::new());
-    let stack = trouble_host::new(controller, resources)
-        .set_random_address(Address::random([
-            0xff,
-            ESP32S3_SECRET[27],
-            ESP32S3_SECRET[28],
-            ESP32S3_SECRET[29],
-            ESP32S3_SECRET[30],
-            ESP32S3_SECRET[31],
-        ]));
+    let stack = trouble_host::new(controller, resources).set_random_address(Address::random([
+        0xff,
+        DEVICE_NSEC[27],
+        DEVICE_NSEC[28],
+        DEVICE_NSEC[29],
+        DEVICE_NSEC[30],
+        DEVICE_NSEC[31],
+    ]));
 
     let Host {
         mut peripheral,
@@ -242,14 +241,14 @@ pub async fn ble_host_task() {
 
             BLE_LINK_UP.store(true, Ordering::Relaxed);
             BLE_NOTIFICATIONS_ENABLED.store(false, Ordering::Relaxed);
-            STAT_BLE_CONNECT.fetch_add(1, Ordering::Relaxed);
+            BLE_STATS.connect.fetch_add(1, Ordering::Relaxed);
             BLE_CONNECTED_SIG.signal(());
 
             loop {
                 match select(conn.next(), BLE_TX_CH.receive()).await {
                     Either::First(GattConnectionEvent::Disconnected { .. }) => {
                         BLE_LINK_UP.store(false, Ordering::Relaxed);
-                        STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                        BLE_STATS.disconnect.fetch_add(1, Ordering::Relaxed);
                         while BLE_RX_CH.try_receive().is_ok() {}
                         while BLE_TX_CH.try_receive().is_ok() {}
                         break;
@@ -267,7 +266,7 @@ pub async fn ble_host_task() {
                                     let mut frame = heapless::Vec::<u8, BLE_MAX_FRAME>::new();
                                     if frame.extend_from_slice(e.data()).is_ok() {
                                         BLE_RX_CH.send(frame).await;
-                                        STAT_BLE_RX.fetch_add(1, Ordering::Relaxed);
+                                        BLE_STATS.rx.fetch_add(1, Ordering::Relaxed);
                                     }
                                 }
                             }
@@ -283,7 +282,13 @@ pub async fn ble_host_task() {
                     },
                     Either::First(_) => {}
                     Either::Second(frame) => {
-                        if server.fips_service.tx_data.notify(&conn, &frame).await.is_err() {
+                        if server
+                            .fips_service
+                            .tx_data
+                            .notify(&conn, &frame)
+                            .await
+                            .is_err()
+                        {
                             if !BLE_NOTIFICATIONS_ENABLED.load(Ordering::Relaxed) {
                                 BLE_TX_CH.send(frame).await;
                                 embassy_time::Timer::after(embassy_time::Duration::from_millis(
@@ -294,12 +299,12 @@ pub async fn ble_host_task() {
                             }
                             BLE_LINK_UP.store(false, Ordering::Relaxed);
                             BLE_NOTIFICATIONS_ENABLED.store(false, Ordering::Relaxed);
-                            STAT_BLE_DISCONNECT.fetch_add(1, Ordering::Relaxed);
+                            BLE_STATS.disconnect.fetch_add(1, Ordering::Relaxed);
                             while BLE_RX_CH.try_receive().is_ok() {}
                             while BLE_TX_CH.try_receive().is_ok() {}
                             break;
                         }
-                        STAT_BLE_TX.fetch_add(1, Ordering::Relaxed);
+                        BLE_STATS.tx.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }

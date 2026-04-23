@@ -2,10 +2,10 @@ use std::net::UdpSocket;
 use std::time::Duration;
 
 use k256::SecretKey;
-use microfips_core::fmp;
 use microfips_core::fsp::{self, SESSION_DATAGRAM_BODY_SIZE};
 use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
+use microfips_core::wire;
 use microfips_service::{decode_response, encode_request, ServiceMethod};
 use rand::RngCore;
 
@@ -17,6 +17,32 @@ fn make_session_datagram_body(src: &[u8; 16], dst: &[u8; 16]) -> [u8; SESSION_DA
     body[3..19].copy_from_slice(src);
     body[19..35].copy_from_slice(dst);
     body
+}
+
+fn build_established_frame(
+    receiver_idx: wire::SessionIndex,
+    counter: u64,
+    timestamp: u32,
+    payload: &[u8],
+    key: &[u8; 32],
+    out: &mut [u8],
+) -> usize {
+    let msg_end = 1 + payload.len();
+    let mut msg_buf = [0u8; 2048];
+    msg_buf[0] = wire::MSG_SESSION_DATAGRAM;
+    msg_buf[1..msg_end].copy_from_slice(payload);
+    let mut inner_buf = [0u8; 2048];
+    let inner_len =
+        wire::prepend_inner_header(timestamp, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+    wire::encrypt_and_assemble(
+        receiver_idx,
+        counter,
+        0x00,
+        &inner_buf[..inner_len],
+        key,
+        out,
+    )
+    .unwrap()
 }
 
 fn build_fsp_established_msg(
@@ -64,8 +90,8 @@ fn main() {
     let (len, peer) = sock.recv_from(&mut buf).expect("recv MSG1");
     println!("Received {len} bytes from {peer}");
 
-    let msg1 = match fmp::parse_message(&buf[..len]) {
-        Some(fmp::FmpMessage::Msg1 {
+    let msg1 = match wire::parse_message(&buf[..len]) {
+        Some(wire::FmpMessage::Msg1 {
             sender_idx,
             noise_payload,
         }) => {
@@ -103,7 +129,7 @@ fn main() {
         .expect("write_message2 failed");
 
     let mut fmp_msg2 = [0u8; 256];
-    let fmp_len = fmp::build_msg2(
+    let fmp_len = wire::build_msg2(
         sender_idx,
         sender_idx,
         &noise_msg2[..noise_len],
@@ -155,16 +181,14 @@ fn main() {
     dg_payload[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&setup_out[..setup_len]);
 
     let mut fmp_out = [0u8; 1024];
-    let fsp_setup_fmp_len = fmp::build_established(
+    let fsp_setup_fmp_len = build_established_frame(
         sender_idx,
         fmp_ctr,
-        fmp::MSG_SESSION_DATAGRAM,
         ts,
         &dg_payload,
         &ik_k_send,
         &mut fmp_out,
-    )
-    .expect("build_established failed for FSP setup");
+    );
     fmp_ctr += 1;
     println!(
         "  Sending FSP SessionSetup: {}B (FMP Established)",
@@ -218,16 +242,14 @@ fn main() {
     dg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
     dg3_payload[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&msg3_fsp[..msg3_fsp_len]);
 
-    let fsp_msg3_fmp_len = fmp::build_established(
+    let fsp_msg3_fmp_len = build_established_frame(
         sender_idx,
         fmp_ctr,
-        fmp::MSG_SESSION_DATAGRAM,
         ts,
         &dg3_payload,
         &ik_k_send,
         &mut fmp_out,
-    )
-    .expect("build_established failed for FSP msg3");
+    );
     fmp_ctr += 1;
     println!(
         "  Sending FSP Msg3: {}B (FMP Established)",
@@ -254,16 +276,8 @@ fn main() {
     dg_http[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
     dg_http[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&fsp_encrypted);
 
-    let fsp_http_fmp_len = fmp::build_established(
-        sender_idx,
-        fmp_ctr,
-        fmp::MSG_SESSION_DATAGRAM,
-        ts,
-        &dg_http,
-        &ik_k_send,
-        &mut fmp_out,
-    )
-    .expect("build_established failed for service request");
+    let fsp_http_fmp_len =
+        build_established_frame(sender_idx, fmp_ctr, ts, &dg_http, &ik_k_send, &mut fmp_out);
     println!(
         "  Sending service request: {}B (FMP Established)",
         fsp_http_fmp_len
@@ -365,28 +379,28 @@ fn recv_established_datagram(
 ) -> RecvResult {
     match sock.recv_from(buf) {
         Ok((len, _addr)) => {
-            let msg = match fmp::parse_message(&buf[..len]) {
+            let msg = match wire::parse_message(&buf[..len]) {
                 Some(m) => m,
                 None => return RecvResult::Other,
             };
             match msg {
-                fmp::FmpMessage::Established {
+                wire::FmpMessage::Established {
                     counter: rx_ctr,
                     encrypted,
                     ..
                 } => {
-                    let hdr = &buf[..fmp::ESTABLISHED_HEADER_SIZE];
+                    let hdr = &buf[..wire::ESTABLISHED_HEADER_SIZE];
                     let mut dec = [0u8; 2048];
                     match noise::aead_decrypt(k_recv, rx_ctr, hdr, encrypted, &mut dec) {
                         Ok(dl) => {
-                            if dl < fmp::INNER_HEADER_SIZE {
+                            if dl < wire::INNER_HEADER_SIZE {
                                 return RecvResult::Other;
                             }
                             let msg_type = dec[4];
                             match msg_type {
-                                fmp::MSG_HEARTBEAT => RecvResult::Heartbeat(rx_ctr),
-                                fmp::MSG_SESSION_DATAGRAM => {
-                                    RecvResult::Datagram(dec[fmp::INNER_HEADER_SIZE..dl].to_vec())
+                                wire::MSG_HEARTBEAT => RecvResult::Heartbeat(rx_ctr),
+                                wire::MSG_SESSION_DATAGRAM => {
+                                    RecvResult::Datagram(dec[wire::INNER_HEADER_SIZE..dl].to_vec())
                                 }
                                 _ => RecvResult::Other,
                             }
@@ -394,7 +408,7 @@ fn recv_established_datagram(
                         Err(_) => RecvResult::Other,
                     }
                 }
-                fmp::FmpMessage::Msg1 { .. } => RecvResult::Other,
+                wire::FmpMessage::Msg1 { .. } => RecvResult::Other,
                 _ => RecvResult::Other,
             }
         }

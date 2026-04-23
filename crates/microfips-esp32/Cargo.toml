@@ -51,9 +51,12 @@ embedded-io-async = "0.7"
 heapless = "0.9"
 static_cell = "2"
 esp-radio = { version = "0.17.0", default-features = false, features = ["esp32", "ble", "wifi", "unstable"], optional = true }
-trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "scan"], optional = true }
+trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "scan", "central"], optional = true }
 esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }
-esp-println = { version = "0.16.1", features = ["esp32"], optional = true }
+esp-println = { version = "0.16.1", default-features = false, features = ["esp32", "auto"], optional = true }
 log = { version = "0.4", optional = true }
+
+[build-dependencies]
+microfips-build = { path = "../microfips-build" }
