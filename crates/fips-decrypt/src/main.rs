@@ -1129,7 +1129,7 @@ mod tests {
     fn extract_fmp_from_acl_with_fallback() {
         let noise_payload = [0xAAu8; 106];
         let mut fmp_frame = [0u8; 256];
-        let fmp_len = microfips_core::fmp::build_msg1(0, &noise_payload, &mut fmp_frame).unwrap();
+        let fmp_len = microfips_core::wire::build_msg1(microfips_core::wire::SessionIndex(0), &noise_payload, &mut fmp_frame).unwrap();
 
         let mut ble_payload = Vec::new();
         ble_payload.extend_from_slice(&(fmp_len as u16).to_be_bytes());
