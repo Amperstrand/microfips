@@ -4,14 +4,14 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
-use microfips_core::fmp::{
-    parse_message, parse_prefix, FmpMessage, COMMON_PREFIX_SIZE, ESTABLISHED_HEADER_SIZE,
-    PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
-};
 use microfips_core::identity::sha256;
 use microfips_core::noise::{
     aead_decrypt, ecdh_pubkey, NoiseIkInitiator, NoiseIkResponder, EPOCH_SIZE, PUBKEY_SIZE,
     TAG_SIZE,
+};
+use microfips_core::wire::{
+    parse_message, parse_prefix, FmpMessage, COMMON_PREFIX_SIZE, ESTABLISHED_HEADER_SIZE,
+    PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
 use pcap_file::pcap::PcapReader;
 
@@ -23,18 +23,10 @@ struct UdpDatagram<'a> {
     payload: &'a [u8],
 }
 
-const DEV_STM32_SECRET: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-];
-const DEV_ESP32_SECRET: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
-];
-const DEV_SIM_A_SECRET: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
-];
-const DEV_SIM_B_SECRET: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
-];
+const DEV_STM32_NSEC: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_stm32"));
+const DEV_ESP32_NSEC: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_esp32"));
+const DEV_SIM_A_NSEC: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_sim-a"));
+const DEV_SIM_B_NSEC: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_sim-b"));
 
 #[derive(Debug, Clone)]
 struct KeyPair {
@@ -117,10 +109,10 @@ fn parse_key_pair(spec: &str) -> Result<KeyPair, Box<dyn Error>> {
 
 fn preset_secret(node: &str) -> Option<[u8; 32]> {
     match node {
-        "stm32" => Some(DEV_STM32_SECRET),
-        "esp32" => Some(DEV_ESP32_SECRET),
-        "sim-a" => Some(DEV_SIM_A_SECRET),
-        "sim-b" => Some(DEV_SIM_B_SECRET),
+        "stm32" => Some(DEV_STM32_NSEC),
+        "esp32" => Some(DEV_ESP32_NSEC),
+        "sim-a" => Some(DEV_SIM_A_NSEC),
+        "sim-b" => Some(DEV_SIM_B_NSEC),
         _ => None,
     }
 }
@@ -142,10 +134,10 @@ fn build_candidate_keys(cli: &Cli) -> Result<Vec<KeyPair>, Box<dyn Error>> {
     }
 
     let nodes = [
-        ("stm32", DEV_STM32_SECRET),
-        ("esp32", DEV_ESP32_SECRET),
-        ("sim-a", DEV_SIM_A_SECRET),
-        ("sim-b", DEV_SIM_B_SECRET),
+        ("stm32", DEV_STM32_NSEC),
+        ("esp32", DEV_ESP32_NSEC),
+        ("sim-a", DEV_SIM_A_NSEC),
+        ("sim-b", DEV_SIM_B_NSEC),
     ];
 
     if let Some(node) = cli.node.as_deref() {
@@ -172,10 +164,10 @@ fn build_candidate_keys(cli: &Cli) -> Result<Vec<KeyPair>, Box<dyn Error>> {
     let mut out = Vec::new();
     for (init_name, init_secret) in nodes {
         for (peer_name, peer_secret) in [
-            ("stm32", DEV_STM32_SECRET),
-            ("esp32", DEV_ESP32_SECRET),
-            ("sim-a", DEV_SIM_A_SECRET),
-            ("sim-b", DEV_SIM_B_SECRET),
+            ("stm32", DEV_STM32_NSEC),
+            ("esp32", DEV_ESP32_NSEC),
+            ("sim-a", DEV_SIM_A_NSEC),
+            ("sim-b", DEV_SIM_B_NSEC),
         ] {
             if init_name == peer_name {
                 continue;
@@ -961,8 +953,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microfips_core::fmp::{build_prefix, PHASE_MSG1};
     use microfips_core::noise::aead_encrypt;
+    use microfips_core::wire::{build_prefix, PHASE_MSG1};
 
     #[test]
     fn parses_known_fmp_prefix() {

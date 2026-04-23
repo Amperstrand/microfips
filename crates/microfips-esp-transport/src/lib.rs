@@ -2,7 +2,11 @@
 
 extern crate alloc;
 
-#[cfg(all(feature = "esp32", feature = "esp32s3", any(target_arch = "xtensa", target_arch = "riscv32")))]
+#[cfg(all(
+    feature = "esp32",
+    feature = "esp32s3",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
 compile_error!("features \"esp32\" and \"esp32s3\" are mutually exclusive");
 
 pub mod config;
@@ -20,10 +24,16 @@ pub mod usb_transport;
 pub mod wifi_transport;
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+pub mod control;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 pub mod logger;
 
 #[cfg(feature = "ble")]
+pub mod ble_host;
+#[cfg(feature = "ble")]
 pub mod ble_transport;
 
+#[cfg(feature = "l2cap")]
+pub mod l2cap_host;
 #[cfg(feature = "l2cap")]
 pub mod l2cap_transport;

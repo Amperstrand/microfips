@@ -10,3 +10,6 @@ log = "0.4"
 microfips-core = { path = "../microfips-core", features = ["std"] }
 pcap-file = "2"
 serde_json = "1"
+
+[build-dependencies]
+microfips-build = { path = "../microfips-build" }

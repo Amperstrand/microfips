@@ -5,6 +5,9 @@ edition = "2021"
 description = "FIPS protocol core: SLIP, identity, Noise, wire format (no_std)"
 autotests = false
 
+[build-dependencies]
+microfips-build = { path = "../microfips-build" }
+
 [dependencies]
 sha2 = { version = "0.10", default-features = false, features = ["oid"] }
 k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
@@ -44,6 +47,10 @@ path = "tests/fsp_over_fmp.rs"
 [[test]]
 name = "golden_vectors"
 path = "tests/golden_vectors.rs"
+
+[[test]]
+name = "pcap_regression"
+path = "tests/pcap_regression.rs"
 
 [features]
 default = []

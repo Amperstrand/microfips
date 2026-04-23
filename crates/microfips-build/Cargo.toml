@@ -1,0 +1,8 @@
+[package]
+name = "microfips-build"
+version = "0.1.0"
+edition = "2021"
+description = "Build script helper: reads keys.json and emits compile-time env vars"
+
+[dependencies]
+serde_json = "1"

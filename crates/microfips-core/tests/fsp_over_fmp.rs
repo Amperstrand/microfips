@@ -1,17 +1,17 @@
-use microfips_core::fmp;
 use microfips_core::fsp::{
     self, build_fsp_encrypted, build_fsp_header, build_session_datagram_body, build_session_msg3,
     build_session_setup, fsp_prepend_inner_header, handle_fsp_datagram, parse_session_ack,
     FspInitiatorSession, FspSession, FSP_HEADER_SIZE, FSP_MSG_DATA, SESSION_DATAGRAM_BODY_SIZE,
 };
-use microfips_core::identity::{NodeAddr, DEFAULT_SECRET};
+use microfips_core::identity::{NodeAddr, STM32_NSEC};
 use microfips_core::noise::{
     aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseIkInitiator, NoiseIkResponder,
     NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE,
 };
+use microfips_core::wire;
 use rand::RngCore;
 
-const INIT_SECRET: [u8; 32] = DEFAULT_SECRET;
+const INIT_SECRET: [u8; 32] = STM32_NSEC;
 const RESP_SECRET: [u8; 32] = [0x22; 32];
 
 fn gen_key() -> [u8; 32] {
@@ -51,45 +51,51 @@ fn resp_addr() -> NodeAddr {
 fn session_datagram_body(src: &NodeAddr, dst: &NodeAddr) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
     let mut body = [0u8; SESSION_DATAGRAM_BODY_SIZE];
     body[0] = 64;
-    body[1..3].copy_from_slice(&1400u16.to_le_bytes());
+    body[1..3].copy_from_slice(&u16::MAX.to_le_bytes());
     body[3..19].copy_from_slice(src.as_bytes());
     body[19..35].copy_from_slice(dst.as_bytes());
     body
 }
 
 fn build_fmp_established_datagram(
-    receiver_idx: u32,
+    receiver_idx: wire::SessionIndex,
     counter: u64,
     timestamp: u32,
     payload: &[u8],
     key: &[u8; 32],
     out: &mut [u8],
 ) -> Option<usize> {
-    fmp::build_established(
+    let msg_end = 1 + payload.len();
+    let mut msg_buf = [0u8; 512];
+    msg_buf[0] = wire::MSG_SESSION_DATAGRAM;
+    msg_buf[1..msg_end].copy_from_slice(payload);
+    let mut inner_buf = [0u8; 512];
+    let inner_len =
+        wire::prepend_inner_header(timestamp, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+    wire::encrypt_and_assemble(
         receiver_idx,
         counter,
-        fmp::MSG_SESSION_DATAGRAM,
-        timestamp,
-        payload,
+        0x00,
+        &inner_buf[..inner_len],
         key,
         out,
     )
 }
 
 fn decrypt_fmp_established(data: &[u8], key: &[u8; 32]) -> Option<(u64, u8, Vec<u8>)> {
-    let msg = fmp::parse_message(data)?;
+    let msg = wire::parse_message(data)?;
     match msg {
-        fmp::FmpMessage::Established {
+        wire::FmpMessage::Established {
             counter, encrypted, ..
         } => {
-            let hdr = &data[..fmp::ESTABLISHED_HEADER_SIZE];
+            let hdr = &data[..wire::ESTABLISHED_HEADER_SIZE];
             let mut dec = [0u8; 2048];
             let dl = aead_decrypt(key, counter, hdr, encrypted, &mut dec).ok()?;
-            if dl < fmp::INNER_HEADER_SIZE {
+            if dl < wire::INNER_HEADER_SIZE {
                 return None;
             }
             let msg_type = dec[4];
-            let payload = dec[fmp::INNER_HEADER_SIZE..dl].to_vec();
+            let payload = dec[wire::INNER_HEADER_SIZE..dl].to_vec();
             Some((counter, msg_type, payload))
         }
         _ => None,
@@ -118,7 +124,7 @@ fn do_ik_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
     let msg1_len = initiator
         .write_message1(&init_pub, &epoch, &mut msg1)
         .unwrap();
-    assert_eq!(msg1_len, fmp::HANDSHAKE_MSG1_SIZE);
+    assert_eq!(msg1_len, wire::HANDSHAKE_MSG1_SIZE);
 
     let e_init: [u8; PUBKEY_SIZE] = msg1[..PUBKEY_SIZE].try_into().unwrap();
     let mut responder = NoiseIkResponder::new(&RESP_SECRET, &e_init).unwrap();
@@ -132,7 +138,7 @@ fn do_ik_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
     let msg2_len = responder
         .write_message2(&resp_eph, &epoch, &mut msg2_noise)
         .unwrap();
-    assert_eq!(msg2_len, fmp::HANDSHAKE_MSG2_SIZE);
+    assert_eq!(msg2_len, wire::HANDSHAKE_MSG2_SIZE);
 
     initiator.read_message2(&msg2_noise[..msg2_len]).unwrap();
 
@@ -164,7 +170,7 @@ fn test_session_datagram_body_format() {
 
     assert_eq!(body[0], 64, "TTL should be 64");
     let mtu = u16::from_le_bytes([body[1], body[2]]);
-    assert_eq!(mtu, 1400, "MTU should be 1400");
+    assert_eq!(mtu, u16::MAX, "MTU should be u16::MAX");
     assert_eq!(&body[3..19], src.as_bytes(), "src addr at bytes 3-18");
     assert_eq!(&body[19..35], dst.as_bytes(), "dst addr at bytes 19-34");
     assert_eq!(body.len(), SESSION_DATAGRAM_BODY_SIZE);
@@ -313,15 +319,21 @@ fn test_fsp_setup_over_fmp_roundtrip() {
     dg_payload[SESSION_DATAGRAM_BODY_SIZE..].copy_from_slice(&setup_buf[..setup_len]);
 
     let mut fmp_out = [0u8; 1024];
-    let fmp_len =
-        build_fmp_established_datagram(0, 0, 1000, &dg_payload, &resp_k_send, &mut fmp_out)
-            .unwrap();
+    let fmp_len = build_fmp_established_datagram(
+        wire::SessionIndex::new(0),
+        0,
+        1000,
+        &dg_payload,
+        &resp_k_send,
+        &mut fmp_out,
+    )
+    .unwrap();
     assert!(fmp_len > 0);
 
     let (ctr, msg_type, payload) =
         decrypt_fmp_established(&fmp_out[..fmp_len], &init_k_recv).unwrap();
     assert_eq!(ctr, 0);
-    assert_eq!(msg_type, fmp::MSG_SESSION_DATAGRAM);
+    assert_eq!(msg_type, wire::MSG_SESSION_DATAGRAM);
     assert_eq!(payload.len(), dg_payload.len());
 
     let mut fsp_session = FspSession::new();
@@ -355,7 +367,7 @@ fn test_build_session_datagram_body_matches_manual() {
     assert_eq!(body.len(), SESSION_DATAGRAM_BODY_SIZE);
     assert_eq!(body[0], 64);
     let mtu = u16::from_le_bytes([body[1], body[2]]);
-    assert_eq!(mtu, 1400);
+    assert_eq!(mtu, u16::MAX);
     assert_eq!(&body[3..19], src.as_bytes());
     assert_eq!(&body[19..35], dst.as_bytes());
 }

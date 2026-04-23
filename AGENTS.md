@@ -226,8 +226,8 @@ Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
 | L2CAP MTU | 2048 bytes |
 | PacketPool MTU | 2054 bytes (configured via `.cargo/config.toml`) |
 | Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey]` (33 bytes, 5s timeout) |
-| Framing | Raw FMP (no length prefix — L2CAP SeqPacket preserves boundaries) |
-| BLE address | Random static (`FF:E4:05:1A:8F:FF`) |
+| Framing | 2-byte BE length prefix on all frames (matches FIPS `BluerStream` on `linux-ble-stability-v2`) |
+| BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_NSEC[27..32]` + `0xFF` prefix, MSB-first |
 | Advertising name | `microfips-l2cap` |
 
 **Build L2CAP firmware:**
@@ -249,13 +249,14 @@ kill $(fuser /dev/ttyUSB0 2>/dev/null) 2>/dev/null; sleep 1
    RUST_LOG=debug /home/ubuntu/src2/fips/target/release/fips --config /tmp/fips-local-ble.yaml > /tmp/fips-local.log 2>&1 &
    ```
 
-2. FIPS config requires `disable_tiebreaker: true` for leaf peers:
+2. FIPS config for BLE transport:
    ```yaml
    transports:
      ble:
        adapter: hci0
-       disable_tiebreaker: true
    ```
+   Role negotiation is handled via capability flags in the BLE pubkey exchange
+   (FIPS commit `8c388cf`). No manual tiebreaker configuration needed.
 
 3. Flash ESP32:
    ```bash
@@ -315,22 +316,22 @@ Response format matches FIPS control protocol: `{"status":"ok","data":{...}}` or
 `{"status":"error","message":"..."}`.
 
 **Troubleshooting:**
-- **No FIPS connection:** Ensure `disable_tiebreaker: true` in FIPS config. Check BLE
-  adapter: `hciconfig hci0` (must show UP RUNNING). Restart FIPS daemon.
+- **No FIPS connection:** Check BLE adapter: `hciconfig hci0` (must show UP RUNNING).
+  Restart FIPS daemon. Role negotiation is automatic via capability flags.
 - **`bad prefix 0x01` in FIPS logs:** Stale L2CAP channels from previous connection.
   ESP32 drains channels on reconnect (fixed in commit `8ed21cb`).
 - **`BLE probe connect timeout`:** Check BLE address type — FIPS must use `LeRandom` for
   ESP32's random static address (fixed in FIPS commit `9779672`).
 - **Wrong firmware flashed:** Each variant has its own binary: `microfips-esp32` (UART),
   `microfips-esp32-ble` (BLE), `microfips-esp32-l2cap` (L2CAP). No build order dependency.
-- **Tie-breaker deadlock:** Both sides try to be central simultaneously. Set
-  `disable_tiebreaker: true` in FIPS config (commit `adb63cf`).
+- **Tie-breaker deadlock:** Both sides try to be central simultaneously. Resolved via
+  capability-based role negotiation (FIPS commit `8c388cf`). No manual config needed.
 
 **Key differences from BLE GATT:**
 - No Python bridge needed — ESP32 talks to FIPS daemon directly over BLE L2CAP
 - No UDP hop — pure BLE L2CAP connection to local FIPS daemon
 - No GATT characteristics — uses L2CAP CoC channel on PSM 0x0085
-- No FMP length prefix — L2CAP SeqPacket preserves message boundaries
+- 2-byte BE length prefix on all L2CAP frames (matches FIPS `BluerStream` on `linux-ble-stability-v2`)
 
 ### ESP32 WiFi Transport
 
@@ -417,10 +418,10 @@ MSG2 received), sustained heartbeats.
 
 ### ESP32-S3 (TiLDAGON)
 
-The ESP32-S3 TiLDAGON uses WiFi transport via `microfips-esp32s3` crate with shared
-`microfips-esp-common` for DNS, config, and stats.
+The ESP32-S3 TiLDAGON supports WiFi and BLE L2CAP transports via `microfips-esp32s3` crate
+with shared `microfips-esp-common` for DNS, config, and stats.
 
-**Build:**
+**Build (WiFi):**
 ```bash
 export $(grep -v '^#' .env | xargs) \
   && . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
@@ -429,17 +430,66 @@ export $(grep -v '^#' .env | xargs) \
 # Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
 ```
 
+**Build (BLE L2CAP):**
+```bash
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc --features l2cap
+# Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-l2cap
+```
+
+**IMPORTANT:** After any change to `keys.json` or identity code, MUST run
+`cargo clean -p microfips-esp32s3` before rebuild to avoid stale compiled-in keys.
+
 **Flash:**
 ```bash
+# Detect S3 port (currently /dev/ttyACM1)
+for p in /dev/ttyACM*; do vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2); [ "$vid" = "303a/1001/101" ] && echo "S3 on $p"; done
+
+# Flash WiFi variant
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyACM<N> --chip esp32s3 \
   target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
+
+# Flash L2CAP variant
+. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyACM<N> --chip esp32s3 \
+  target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-l2cap
 ```
 
 **Serial port:** USB Serial JTAG (VID:PID `303a:1001`, `/dev/ttyACM*`), NOT CP210x.
 Auto-reset works via DTR/RTS, no button pressing needed.
+**Current mapping:** `/dev/ttyACM1` (detect at runtime — never hardcode).
+
+**Monitor serial output:**
+```bash
+python3 -c "
+import serial, time
+s = serial.Serial('/dev/ttyACM1', 115200, timeout=2)
+deadline = time.time() + 30
+while time.time() < deadline:
+    line = s.readline().decode(errors='replace').strip()
+    if line: print(line, flush=True)
+s.close()
+"
+```
 
 **CRITICAL: Do NOT use `esptool --no-stub`** — it overwrites the partition table and bricks
 the board. Always use `espflash`.
+
+**Serial logging note:** `esp-println` on S3 outputs to UART0 (GPIO43/44) by default, NOT the
+USB JTAG serial port (`/dev/ttyACM*`). To see logs through USB JTAG, add `"jtag-serial"` feature
+to `esp-println` in `crates/microfips-esp32s3/Cargo.toml`:
+```toml
+esp-println = { version = "0.16.1", default-features = false, features = ["esp32s3", "jtag-serial"], optional = true }
+```
+Without `jtag-serial`, use `espflash flash --monitor` to see bootloader output only (no app logs).
+
+**BLE status (2026-04-19):** S3 L2CAP firmware boots successfully with `esp-radio` BLE init,
+advertises as peripheral, and connects to FIPS via central role. The 0-frame disconnect
+(tie-breaker yield) and peripheral fallback both work correctly. FIPS must have a free BLE
+connection slot — the Mac peer can occupy the slot and block S3 connections.
+
+**TiLDAGON USB device mapping:** Serial `64:E8:33:72:01:24`, always verify with `lsusb` or
+the detection script above. The M5 Stack (`0403:6001`, `/dev/ttyUSB0`) is a separate device.
 
 **Recovery from bricked state:**
 1. Hold boop (back button) while plugging USB
@@ -792,6 +842,19 @@ recv hot path adds latency with no visual benefit (the LED is already on from st
    before rebuilding. This is a Cargo feature unification cache issue, not a nightly
    or crate version incompatibility.
 
+7. **BLE address type must match remote device.** When constructing a targeted BLE
+   connect (e.g. trouble-host `Central::connect()` with `filter_accept_list`), the
+   address kind (PUBLIC vs RANDOM) must match what the remote device actually advertises.
+   `Address::random(bytes)` hardcodes `AddrKind::RANDOM` -- if the target has a PUBLIC
+   address (check with `hciconfig hci0`), use `AddrKind::PUBLIC` explicitly. A mismatch
+   causes silent connect failure. See issue #81.
+
+8. **BLE disconnect settle delay.** After a BLE L2CAP disconnect, the HCI controller
+   needs time to clean up before accepting a new connection. The firmware uses a
+   500ms settle delay (`BLE_DISCONNECT_SETTLE_MS`) between disconnect and the next
+   connect attempt. Reducing this risks "Connection Already Exists" errors from the
+   controller.
+
 ## DANGER: Do NOT erase flash via probe-rs
 
 ```bash
@@ -885,16 +948,45 @@ for p in /dev/ttyACM*; do
 done
 ```
 
-## ESP32 Serial Port
+## ESP32 Serial Ports (D0WD + S3)
 
-The ESP32 connects via CP210x USB-serial with VID:PID `10c4:ea60`. The ttyUSB number varies.
-Always detect by VID/PID:
+Two ESP32 devices are connected simultaneously. **Never assume a fixed tty number** — always detect by VID/PID.
+
+### ESP32-D0WD (CP210x UART)
+
+VID:PID `10c4:ea60`, appears as `/dev/ttyUSB*`:
 
 ```bash
 for p in /dev/ttyUSB*; do
     vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2)
-    [ "$vid" = "10c4/ea60/100" ] && echo "ESP32 on $p"
+    [ "$vid" = "10c4/ea60/100" ] && echo "ESP32-D0WD on $p"
 done
+```
+
+### ESP32-S3 TiLDAGON (USB Serial JTAG)
+
+VID:PID `303a:1001`, appears as `/dev/ttyACM*` (NOT ttyUSB). Uses Espressif USB JTAG/serial, NOT CP210x:
+
+```bash
+for p in /dev/ttyACM*; do
+    vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2)
+    [ "$vid" = "303a/1001/101" ] && echo "ESP32-S3 on $p"
+done
+```
+
+**IMPORTANT:** The S3's `/dev/ttyACM*` port is distinct from the STM32's ST-Link (`0483:374b`) and the MCU CDC (`c0de:cafe`). All three appear as ttyACM — always match by VID/PID.
+
+### Quick detection script (all devices)
+
+```bash
+echo "=== STM32 ST-Link ==="
+for p in /dev/ttyACM*; do vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2); [ "$vid" = "483/374b/100" ] && echo "  ST-Link on $p"; done
+echo "=== STM32 MCU (c0de:cafe) ==="
+for p in /dev/ttyACM*; do prod=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2); [ "$prod" = "c0de/cafe/10" ] && echo "  MCU on $p"; done
+echo "=== ESP32-D0WD (CP210x) ==="
+for p in /dev/ttyUSB*; do vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2); [ "$vid" = "10c4/ea60/100" ] && echo "  D0WD on $p"; done
+echo "=== ESP32-S3 (USB JTAG) ==="
+for p in /dev/ttyACM*; do vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2); [ "$vid" = "303a/1001/101" ] && echo "  S3 on $p"; done
 ```
 
 ## Nightly Toolchain
@@ -903,14 +995,17 @@ Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` wit
 
 ## Actual MCU Keys (verified 2026-03-30)
 
-| MCU | Source | Pubkey (x-only, hex) | npub |
-|-----|--------|----------------------|------|
-| STM32 | `DEFAULT_SECRET` | `635696dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842` | `npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf` |
-| ESP32 | running firmware | TBD (differs from `ESP32_SECRET` in code) | `npub1nqppng4kga6luldsu3s95hyayh8vl5gpvvvje0h8z422l6zegflqd8942y` |
-| VPS | — | `020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d` | `npub1peaqmgq6y4wduyr2yqh0fatnvah0ncj0rjqhd5p6aqaz5wsr05ssu0cnha` |
+| MCU | Source | Pubkey (x-only, hex) | npub | NodeAddr |
+|-----|--------|----------------------|------|-----------|
+| STM32 | `keys.json` stm32, nsec=`...01` | `79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798` | `npub10xlxvlh...` | `132f39a9...` |
+| ESP32-D0WD | `keys.json` esp32, nsec=`...02` | `c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5` | `npub1ccz8l9z...` | `0135da2f...` |
+| ESP32-S3 | `keys.json` esp32s3, nsec=`...05` | `2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4` | `npub1lycg5qv...` | `6bef476b...` |
+| VPS | `/etc/fips/fips.pub` on VPS | `0e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21` | `npub1peaqmgq6y4wduyr2yqh0fatnvah0ncj0rjqhd5p6aqaz5wsr05ssu0cnha` | — |
+| Linux FIPS | `/etc/fips/fips.pub` on this machine | `b3989043c68d9c2d3c8f949d73e61cae27997993432c3dbbd8498117d92d95bb` | `npub1979azcrp...` | `8b5844e7...` |
 
-STM32 pubkey verified via `cargo run -p microfips-link --release` output.
-ESP32 pubkey derived from FIPS peer authentication log.
+All MCU keys are deterministic (secp256k1 generator × N). See `keys.json` for full hex values.
+ESP32-D0WD pubkey verified via FIPS peer authentication log.
+ESP32-S3 pubkey from `keys.json` (verified 2026-04-10, NodeAddr `6bef476b391177c1d587c40344ddcab1`).
 
 ## CI Pipeline
 
@@ -925,9 +1020,10 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 
 ### Environment variables for CI key override
 
-All host tools accept `FIPS_SECRET` (64 hex chars) to override the identity secret key.
-`FIPS_PEER_PUB` (66 hex chars) overrides the peer's public key (used by `fips-handshake` and `microfips-sim`).
-When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubkey).
+All host tools accept `FIPS_NSEC` (64 hex chars) to override the identity secret key.
+`FIPS_PEER_NPUB` (66 hex chars) overrides the peer's public key (used by `fips-handshake` and `microfips-sim`).
+`FIPS_SECRET` and `FIPS_PEER_PUB` are accepted as deprecated fallbacks (with a warning printed to stderr).
+When not set, tools panic — no default device identity is allowed.
 
 ## Open Issues
 
@@ -935,3 +1031,62 @@ When not set, tools fall back to hardcoded defaults (MCU dev identity / VPS pubk
 |---|-------|----------|-------|
 | #12 | M7: HTTP status page over FIPS | feature | Firmware has HTTP handler; needs E2E test |
 | #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
+| #81 | BLE address type mismatch pitfall | pitfall | `Address::random()` hardcodes RANDOM kind — must match target. Current code correct. |
+| #89 | ESP32 BLE L2CAP packet loss | resolved | Root cause: fipsctl echo client timeout, not relay. Relay drops=0 confirmed. |
+
+## BLE Address Type Pitfall (Issue #81)
+
+When constructing a targeted BLE connect (e.g. trouble-host `Central::connect()` with
+`filter_accept_list`), the address kind (PUBLIC vs RANDOM) must match what the remote
+device actually advertises. A mismatch causes silent connect failure.
+
+- ESP32-D0WD and ESP32-S3 both use random static BLE addresses (`USE_PUBLIC_BLE_ADDRESS = false`)
+- The FIPS Linux daemon has a PUBLIC address on hci0
+- Current code uses `AddrKind::PUBLIC` in the filter_accept_list for FIPS — correct
+- FIPS (commit 9c6507e) uses `resolve_addr_type()` to dynamically detect remote address type
+- **NEVER use `Address::random(bytes)` for the FIPS target** — it hardcodes `AddrKind::RANDOM`
+
+## Upstream FIPS Compatibility
+
+**Upstream FIPS source:** `/home/ubuntu/src/fips` (NOT `/home/ubuntu/src2/fips.rm` which is stale/abandoned).
+Use `/home/ubuntu/src/fips` for any FIPS source code reference, diff, or API lookup.
+
+### Current State (as of 2026-04-11)
+
+- **FIPS master** has merged macOS BLE (bluest crate) and Windows ports
+- **`linux-ble-stability-v2`** branch (our test branch) has diverged from master — contains leaf-proxy and BLE framing fixes not yet in master
+- **`next` branch** (0.4.0-dev, jmcorgan/next) contains breaking changes: Noise IK/XK → XX, FMP v0 → v1, version negotiation, profile negotiation
+- microfips needs to **rebase off latest master** before next development cycle
+
+### Noise Protocol Design Choices
+
+FIPS implements Noise directly (not via a spec-compliant Noise library), following only the
+cryptographic primitives and ordering from the Noise spec. Custom payloads (startup epoch,
+capability flags, negotiation) are attached to handshake messages. Same approach as Lightning Network.
+
+Confirmed by FIPS maintainer (2026-04-11): these are deliberate design choices, not bugs.
+
+| # | Choice | Description | Rationale |
+|---|--------|-------------|-----------|
+| D1 | Empty AAD during handshake | `AEAD_ENCRYPT(k, n, b"", plaintext)` instead of passing `h` as AAD | Custom Noise implementation with own payloads; transport keys bind via `ck` |
+| D2 | IK `se` token ordering | Initiator computes `DH(e,rs)` not `DH(s,re)` | Part of custom IK. Eliminated in 0.4.0-dev by switching to Noise XX. |
+| D3 | x-only ECDH | `SHA256(x_coordinate)` instead of raw ECDH shared secret | Required for Nostr npub compatibility. Same technique as BIP-340. |
+
+microfips matches all three for interoperability. Golden vectors (FIPS issue #1) validate cross-implementation compatibility.
+
+### ESPHome Integration
+
+FIPS has a `leaf_proxies` config feature that supports ESPHome devices via identity derivation:
+`SHA256("esphome:fips_ble:" + identity_seed)` → secp256k1 keypair. This is a FIPS-side TCP
+proxy pattern, not a standalone ESPHome component. microfips takes a different approach: direct
+BLE L2CAP from ESP32 to FIPS, implementing the FIPS protocol stack natively. Both can coexist.
+
+### Upcoming Breaking Changes (0.4.0-dev)
+
+When the `next` branch ships, microfips will need:
+
+1. **Noise XX migration** — rewrite `microfips-core/src/noise.rs` for 3-message XX handshake (both link and session layers)
+2. **FMP v1 wire format** — new msg3 header, version negotiation payload
+3. **Version negotiation** — min/max version range, 64-bit feature bitfield, TLV extensions
+4. **Profile negotiation** — new concept, requirements TBD
+5. **Golden vector regeneration** — XX handshake vectors needed for validation

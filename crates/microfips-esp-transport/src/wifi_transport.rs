@@ -45,7 +45,7 @@ pub async fn build_wifi_transport(
     wifi_ssid: &str,
     wifi_password: &str,
 ) -> WifiTransport {
-    esp_alloc::heap_allocator!(size: 72_000);
+    esp_alloc::heap_allocator!(#[link_section = ".dram2_uninit"] size: 72_000);
 
     static RADIO: StaticCell<esp_radio::Controller> = StaticCell::new();
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
@@ -77,7 +77,19 @@ pub async fn build_wifi_transport(
         .set_config(&ModeConfig::Client(client_config))
         .expect("set wifi client config");
     wifi_controller.start().expect("wifi start");
-    wifi_controller.connect().expect("wifi connect");
+
+    Timer::after(Duration::from_secs(2)).await;
+    match with_timeout(Duration::from_secs(30), wifi_controller.connect_async()).await {
+        Ok(Ok(())) => log::info!("WiFi connected"),
+        Ok(Err(e)) => {
+            log::error!("WiFi connect failed: {:?}", e);
+            panic!("WiFi connect failed: {:?}", e);
+        }
+        Err(_) => {
+            log::error!("WiFi connect timed out after 30s");
+            panic!("WiFi connect timed out after 30s");
+        }
+    }
 
     let config_v4 = match with_timeout(Duration::from_secs(WIFI_DHCP_TIMEOUT_SECS), async {
         loop {

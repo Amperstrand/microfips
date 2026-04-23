@@ -5,9 +5,9 @@
 //! parse layer (returning `None` or `Option`) or the Noise layer (returning
 //! `Err(NoiseError)`). No test uses `#[should_panic]`.
 
-use microfips_core::fmp;
 use microfips_core::noise;
 use microfips_core::noise::{NoiseError, NoiseIkInitiator, NoiseIkResponder};
+use microfips_core::wire;
 
 // ---- Helpers ----
 
@@ -25,10 +25,15 @@ fn build_valid_msg1() -> ([u8; 256], usize) {
     let noise_len = initiator
         .write_message1(&init_pub, &epoch, &mut noise_out)
         .unwrap();
-    assert_eq!(noise_len, fmp::HANDSHAKE_MSG1_SIZE);
+    assert_eq!(noise_len, wire::HANDSHAKE_MSG1_SIZE);
 
     let mut out = [0u8; 256];
-    let len = fmp::build_msg1(0x0001, &noise_out[..noise_len], &mut out).unwrap();
+    let len = wire::build_msg1(
+        wire::SessionIndex::new(0x0001),
+        &noise_out[..noise_len],
+        &mut out,
+    )
+    .unwrap();
     (out, len)
 }
 
@@ -59,7 +64,7 @@ fn build_valid_noise_msg2(msg1_noise: &[u8]) -> ([u8; 128], usize) {
 fn test_fmp_prefix_invalid_version_byte() {
     // byte0 = (version=1 << 4) | phase=0x01 → 0x11
     let data = [0x11u8, 0x00, 0x00, 0x00, 0x00, 0x00];
-    let result = fmp::parse_prefix(&data);
+    let result = wire::parse_prefix(&data);
     assert!(result.is_none(), "version≠0 must be rejected");
 }
 
@@ -74,7 +79,7 @@ fn test_fmp_parse_message_unknown_phase_0x03() {
     data[1] = 0x00; // flags
     data[2] = 0x08; // payload_len low
     data[3] = 0x00; // payload_len high
-    let result = fmp::parse_message(&data);
+    let result = wire::parse_message(&data);
     assert!(result.is_none(), "unknown phase 0x03 must be rejected");
 }
 
@@ -87,7 +92,7 @@ fn test_fmp_parse_message_unknown_phase_0xff() {
     data[1] = 0x00;
     data[2] = 0x08;
     data[3] = 0x00;
-    let result = fmp::parse_message(&data);
+    let result = wire::parse_message(&data);
     assert!(result.is_none(), "unknown phase 0x0F must be rejected");
 }
 
@@ -97,14 +102,18 @@ fn test_fmp_parse_message_unknown_phase_0xff() {
 fn test_fmp_prefix_wrong_payload_length_zero() {
     // Build a valid MSG1 then overwrite payload_len with 0
     let mut frame = [0u8; 256];
-    fmp::build_msg1(0x0001, &[0u8; fmp::HANDSHAKE_MSG1_SIZE], &mut frame);
+    wire::build_msg1(
+        wire::SessionIndex::new(0x0001),
+        &[0u8; wire::HANDSHAKE_MSG1_SIZE],
+        &mut frame,
+    );
     // Force payload_len = 0 by zeroing bytes 2-3
     frame[2] = 0x00;
     frame[3] = 0x00;
 
     // parse_prefix itself will succeed (version and phase are fine),
     // but parse_message should return None because payload after prefix is empty (< IDX_SIZE).
-    let result = fmp::parse_message(&frame[..fmp::COMMON_PREFIX_SIZE]);
+    let result = wire::parse_message(&frame[..wire::COMMON_PREFIX_SIZE]);
     assert!(
         result.is_none(),
         "empty payload slice must be rejected by parse_message"
@@ -118,15 +127,15 @@ fn test_fmp_prefix_wrong_payload_length_zero() {
 fn test_fmp_truncated_msg1_50_bytes() {
     let (frame, _full_len) = build_valid_msg1();
     // Provide only 50 bytes (prefix is fine, but noise payload is truncated)
-    let result = fmp::parse_message(&frame[..50]);
+    let result = wire::parse_message(&frame[..50]);
     // parse_prefix will succeed, but noise_payload will be very short
     // The FMP layer itself doesn't validate Noise size — but the caller
     // would get a truncated noise_payload. Let's also verify the full
     // handshake fails when we try to use it.
-    if let Some(fmp::FmpMessage::Msg1 { noise_payload, .. }) = result {
+    if let Some(wire::FmpMessage::Msg1 { noise_payload, .. }) = result {
         // Noise payload is shorter than HANDSHAKE_MSG1_SIZE — read_message2 would fail
         assert!(
-            noise_payload.len() < fmp::HANDSHAKE_MSG1_SIZE,
+            noise_payload.len() < wire::HANDSHAKE_MSG1_SIZE,
             "truncated frame must yield short noise_payload"
         );
     } else {
@@ -141,15 +150,15 @@ fn test_fmp_truncated_msg1_50_bytes() {
 fn test_fmp_msg1_minimal_truncation_noise_layer_rejects() {
     // Build an FMP MSG1 frame but only give 8 bytes (4 prefix + 4 idx)
     let (frame, _) = build_valid_msg1();
-    let result = fmp::parse_message(&frame[..8]);
+    let result = wire::parse_message(&frame[..8]);
     match result {
-        Some(fmp::FmpMessage::Msg1 {
+        Some(wire::FmpMessage::Msg1 {
             noise_payload,
             sender_idx,
         }) => {
             // noise_payload is empty → initiator read_message2 would need exactly 57 bytes
             assert_eq!(noise_payload.len(), 0, "8-byte frame has no noise payload");
-            assert_eq!(sender_idx, 0x0001);
+            assert_eq!(sender_idx, wire::SessionIndex::new(0x0001));
             // Confirm that read_message2 would reject this empty payload
             let init_secret = [0x01u8; 32];
             let resp_pub = noise::ecdh_pubkey(&[0x02u8; 32]).unwrap();
@@ -179,18 +188,24 @@ fn test_fmp_msg1_minimal_truncation_noise_layer_rejects() {
 /// truncated noise_payload; either way Noise layer rejects it.
 #[test]
 fn test_fmp_truncated_msg2_30_bytes() {
-    let noise_payload = [0xBBu8; fmp::HANDSHAKE_MSG2_SIZE];
+    let noise_payload = [0xBBu8; wire::HANDSHAKE_MSG2_SIZE];
     let mut frame = [0u8; 256];
-    fmp::build_msg2(1, 2, &noise_payload, &mut frame).unwrap();
+    wire::build_msg2(
+        wire::SessionIndex::new(1),
+        wire::SessionIndex::new(2),
+        &noise_payload,
+        &mut frame,
+    )
+    .unwrap();
 
-    let result = fmp::parse_message(&frame[..30]);
+    let result = wire::parse_message(&frame[..30]);
     match result {
-        Some(fmp::FmpMessage::Msg2 {
+        Some(wire::FmpMessage::Msg2 {
             noise_payload: np, ..
         }) => {
             // If we got here, noise_payload is truncated (< 57 bytes)
             assert!(
-                np.len() < fmp::HANDSHAKE_MSG2_SIZE,
+                np.len() < wire::HANDSHAKE_MSG2_SIZE,
                 "truncated MSG2 must yield short noise_payload"
             );
         }
@@ -205,13 +220,19 @@ fn test_fmp_truncated_msg2_30_bytes() {
 /// If FMP parses it, noise_payload.len() < 57; read_message2 must return Err.
 #[test]
 fn test_fmp_msg2_minimal_truncation_noise_layer_rejects() {
-    let noise_payload_full = [0xBBu8; fmp::HANDSHAKE_MSG2_SIZE];
+    let noise_payload_full = [0xBBu8; wire::HANDSHAKE_MSG2_SIZE];
     let mut frame = [0u8; 256];
-    fmp::build_msg2(1, 2, &noise_payload_full, &mut frame).unwrap();
+    wire::build_msg2(
+        wire::SessionIndex::new(1),
+        wire::SessionIndex::new(2),
+        &noise_payload_full,
+        &mut frame,
+    )
+    .unwrap();
 
-    let result = fmp::parse_message(&frame[..12]);
+    let result = wire::parse_message(&frame[..12]);
     match result {
-        Some(fmp::FmpMessage::Msg2 { noise_payload, .. }) => {
+        Some(wire::FmpMessage::Msg2 { noise_payload, .. }) => {
             assert_eq!(
                 noise_payload.len(),
                 0,
@@ -249,7 +270,7 @@ fn test_fmp_msg2_minimal_truncation_noise_layer_rejects() {
 fn test_fmp_oversized_payload_claimed_65535() {
     // Craft a prefix that claims 65535 bytes of payload
     let mut data = [0u8; 8]; // only 8 bytes of actual data
-    data[0] = fmp::PHASE_MSG1; // version=0, phase=1
+    data[0] = wire::PHASE_MSG1; // version=0, phase=1
     data[1] = 0x00;
     data[2] = 0xFF; // payload_len = 65535 LE
     data[3] = 0xFF;
@@ -257,23 +278,23 @@ fn test_fmp_oversized_payload_claimed_65535() {
     data[4..8].copy_from_slice(&42u32.to_le_bytes());
 
     // parse_prefix reads the claimed length but doesn't validate it against actual data
-    let prefix_result = fmp::parse_prefix(&data);
+    let prefix_result = wire::parse_prefix(&data);
     assert!(prefix_result.is_some(), "parse_prefix only checks version");
     let (phase, _flags, payload_len) = prefix_result.unwrap();
-    assert_eq!(phase, fmp::PHASE_MSG1);
+    assert_eq!(phase, wire::PHASE_MSG1);
     assert_eq!(payload_len, 65535);
 
     // parse_message slices data[4..] which is only 4 bytes.
     // For MSG1, it needs at least IDX_SIZE=4 bytes. So it gets sender_idx=42,
     // and noise_payload will be empty (no bytes left after 4-byte idx).
-    let msg_result = fmp::parse_message(&data);
+    let msg_result = wire::parse_message(&data);
     match msg_result {
-        Some(fmp::FmpMessage::Msg1 {
+        Some(wire::FmpMessage::Msg1 {
             noise_payload,
             sender_idx,
         }) => {
             // No panic — safe handling, noise_payload is just very short
-            assert_eq!(sender_idx, 42);
+            assert_eq!(sender_idx, wire::SessionIndex::new(42));
             assert_eq!(
                 noise_payload.len(),
                 0,
@@ -293,27 +314,34 @@ fn test_fmp_oversized_payload_claimed_65535() {
 /// The protocol layer (not FMP) should detect this mismatch.
 #[test]
 fn test_fmp_msg2_mismatched_receiver_index() {
-    let noise_payload = [0x55u8; fmp::HANDSHAKE_MSG2_SIZE];
+    let noise_payload = [0x55u8; wire::HANDSHAKE_MSG2_SIZE];
     let mut frame = [0u8; 256];
     // sender_idx=0xAAAA, receiver_idx=0xBBBB (mismatch — we sent sender_idx=0x0001 in MSG1)
-    let len = fmp::build_msg2(0xAAAA, 0xBBBB, &noise_payload, &mut frame).unwrap();
+    let len = wire::build_msg2(
+        wire::SessionIndex::new(0xAAAA),
+        wire::SessionIndex::new(0xBBBB),
+        &noise_payload,
+        &mut frame,
+    )
+    .unwrap();
 
-    let result = fmp::parse_message(&frame[..len]).unwrap();
+    let result = wire::parse_message(&frame[..len]).unwrap();
     match result {
-        fmp::FmpMessage::Msg2 {
+        wire::FmpMessage::Msg2 {
             sender_idx,
             receiver_idx,
             noise_payload: np,
         } => {
-            assert_eq!(sender_idx, 0xAAAA);
-            assert_eq!(receiver_idx, 0xBBBB);
+            assert_eq!(sender_idx, wire::SessionIndex::new(0xAAAA));
+            assert_eq!(receiver_idx, wire::SessionIndex::new(0xBBBB));
             // Application must check receiver_idx == our_sender_idx; here we verify
             // it is detectable (0xBBBB ≠ 0x0001 which was in MSG1)
             assert_ne!(
-                receiver_idx, 0x0001,
+                receiver_idx,
+                wire::SessionIndex::new(0x0001),
                 "mismatched receiver_idx must be detectable"
             );
-            assert_eq!(np.len(), fmp::HANDSHAKE_MSG2_SIZE);
+            assert_eq!(np.len(), wire::HANDSHAKE_MSG2_SIZE);
         }
         _ => panic!("expected Msg2"),
     }
@@ -323,23 +351,29 @@ fn test_fmp_msg2_mismatched_receiver_index() {
 /// Both frames parse fine but the mismatch is detectable.
 #[test]
 fn test_fmp_msg1_msg2_index_mismatch_detectable() {
-    let noise1 = [0x11u8; fmp::HANDSHAKE_MSG1_SIZE];
-    let noise2 = [0x22u8; fmp::HANDSHAKE_MSG2_SIZE];
+    let noise1 = [0x11u8; wire::HANDSHAKE_MSG1_SIZE];
+    let noise2 = [0x22u8; wire::HANDSHAKE_MSG2_SIZE];
     let mut msg1_frame = [0u8; 256];
     let mut msg2_frame = [0u8; 256];
 
-    let len1 = fmp::build_msg1(0xDEAD, &noise1, &mut msg1_frame).unwrap();
-    let len2 = fmp::build_msg2(0xAAAA, 0xBEEF, &noise2, &mut msg2_frame).unwrap();
+    let len1 = wire::build_msg1(wire::SessionIndex::new(0xDEAD), &noise1, &mut msg1_frame).unwrap();
+    let len2 = wire::build_msg2(
+        wire::SessionIndex::new(0xAAAA),
+        wire::SessionIndex::new(0xBEEF),
+        &noise2,
+        &mut msg2_frame,
+    )
+    .unwrap();
 
-    let msg1 = fmp::parse_message(&msg1_frame[..len1]).unwrap();
-    let msg2 = fmp::parse_message(&msg2_frame[..len2]).unwrap();
+    let msg1 = wire::parse_message(&msg1_frame[..len1]).unwrap();
+    let msg2 = wire::parse_message(&msg2_frame[..len2]).unwrap();
 
     let sender_idx = match msg1 {
-        fmp::FmpMessage::Msg1 { sender_idx, .. } => sender_idx,
+        wire::FmpMessage::Msg1 { sender_idx, .. } => sender_idx,
         _ => panic!("expected Msg1"),
     };
     let receiver_idx = match msg2 {
-        fmp::FmpMessage::Msg2 { receiver_idx, .. } => receiver_idx,
+        wire::FmpMessage::Msg2 { receiver_idx, .. } => receiver_idx,
         _ => panic!("expected Msg2"),
     };
 
@@ -356,10 +390,10 @@ fn test_fmp_msg1_msg2_index_mismatch_detectable() {
 #[test]
 fn test_fmp_msg1_zero_length_payload() {
     // Build a prefix claiming phase=MSG1, payload_len=0, then just the 4-byte prefix
-    let prefix = fmp::build_prefix(fmp::PHASE_MSG1, 0x00, 0);
-    let result = fmp::parse_message(&prefix); // only 4 bytes, no payload at all
-                                              // After the 4-byte prefix, payload is empty (len=0 bytes).
-                                              // MSG1 needs at least IDX_SIZE=4 bytes after prefix, so parse_message must return None.
+    let prefix = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
+    let result = wire::parse_message(&prefix); // only 4 bytes, no payload at all
+                                               // After the 4-byte prefix, payload is empty (len=0 bytes).
+                                               // MSG1 needs at least IDX_SIZE=4 bytes after prefix, so parse_message must return None.
     assert!(result.is_none(), "zero-payload MSG1 must be rejected");
 }
 
@@ -368,7 +402,7 @@ fn test_fmp_msg1_zero_length_payload() {
 #[test]
 fn test_fmp_established_zero_length_encrypted() {
     // Build an established prefix with payload = receiver_idx(4) + counter(8) = 12 bytes, no encrypted
-    let prefix = fmp::build_prefix(fmp::PHASE_ESTABLISHED, 0x00, 12);
+    let prefix = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 12);
     let mut data = [0u8; 20];
     data[..4].copy_from_slice(&prefix);
     // receiver_idx = 7
@@ -377,14 +411,14 @@ fn test_fmp_established_zero_length_encrypted() {
     data[8..16].copy_from_slice(&0u64.to_le_bytes());
     // no encrypted bytes follow
 
-    let result = fmp::parse_message(&data[..16]);
+    let result = wire::parse_message(&data[..16]);
     match result {
-        Some(fmp::FmpMessage::Established {
+        Some(wire::FmpMessage::Established {
             receiver_idx,
             counter,
             encrypted,
         }) => {
-            assert_eq!(receiver_idx, 7);
+            assert_eq!(receiver_idx, wire::SessionIndex::new(7));
             assert_eq!(counter, 0);
             assert_eq!(encrypted.len(), 0, "no encrypted bytes in payload");
             // Trying to decrypt empty ciphertext with AEAD must fail (< TAG_SIZE)
@@ -429,7 +463,7 @@ fn test_noise_msg2_corrupted_ciphertext_returns_err() {
         0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
         0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31u8,
     ];
-    assert_eq!(corrupted_msg2.len(), fmp::HANDSHAKE_MSG2_SIZE);
+    assert_eq!(corrupted_msg2.len(), wire::HANDSHAKE_MSG2_SIZE);
 
     let result = initiator.read_message2(&corrupted_msg2);
     assert!(
@@ -489,14 +523,15 @@ fn test_fmp_msg1_replay_double_parse() {
     // MSG1 is stateless bytes — a replay attack sends the same MSG1 twice.
     // FMP parse is pure slice parsing; it will succeed both times.
     // The attack vector is: replaying MSG1 to get a fresh MSG2 from the responder.
-    let noise_payload = [0x77u8; fmp::HANDSHAKE_MSG1_SIZE];
+    let noise_payload = [0x77u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut frame = [0u8; 256];
-    let len = fmp::build_msg1(0x9999, &noise_payload, &mut frame).unwrap();
+    let len =
+        wire::build_msg1(wire::SessionIndex::new(0x9999), &noise_payload, &mut frame).unwrap();
 
     // First parse
-    let r1 = fmp::parse_message(&frame[..len]);
+    let r1 = wire::parse_message(&frame[..len]);
     // Second parse (replay)
-    let r2 = fmp::parse_message(&frame[..len]);
+    let r2 = wire::parse_message(&frame[..len]);
 
     // Both parses succeed — FMP has no state, replay is detected at higher layers
     assert!(r1.is_some(), "first MSG1 parse must succeed");
@@ -508,11 +543,11 @@ fn test_fmp_msg1_replay_double_parse() {
     // Both must yield identical data
     match (r1.unwrap(), r2.unwrap()) {
         (
-            fmp::FmpMessage::Msg1 {
+            wire::FmpMessage::Msg1 {
                 sender_idx: s1,
                 noise_payload: np1,
             },
-            fmp::FmpMessage::Msg1 {
+            wire::FmpMessage::Msg1 {
                 sender_idx: s2,
                 noise_payload: np2,
             },
@@ -572,11 +607,11 @@ fn test_noise_msg2_replay_to_wrong_initiator_fails() {
 fn test_fmp_empty_input_returns_none() {
     let empty: &[u8] = &[];
     assert!(
-        fmp::parse_prefix(empty).is_none(),
+        wire::parse_prefix(empty).is_none(),
         "empty input must yield None for parse_prefix"
     );
     assert!(
-        fmp::parse_message(empty).is_none(),
+        wire::parse_message(empty).is_none(),
         "empty input must yield None for parse_message"
     );
 }
@@ -586,11 +621,11 @@ fn test_fmp_empty_input_returns_none() {
 fn test_fmp_too_short_for_prefix() {
     let short = [0x01u8, 0x00, 0x00];
     assert!(
-        fmp::parse_prefix(&short).is_none(),
+        wire::parse_prefix(&short).is_none(),
         "3-byte input must be rejected"
     );
     assert!(
-        fmp::parse_message(&short).is_none(),
+        wire::parse_message(&short).is_none(),
         "3-byte input must be rejected by parse_message"
     );
 }

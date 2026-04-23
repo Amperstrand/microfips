@@ -13,7 +13,7 @@ pub trait L2capHostAdapter {
     fn link_up() -> bool;
     async fn spawn_host_task() -> Result<(), ()>;
     async fn wait_for_l2cap_ready() -> [u8; 33];
-    async fn send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>);
+    async fn send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) -> Result<(), ()>;
     async fn recv_frame() -> heapless::Vec<u8, L2CAP_FRAME_CAP>;
 }
 
@@ -42,10 +42,18 @@ impl<H> SharedL2capTransport<H> {
     }
 }
 
+impl<H: L2capHostAdapter> SharedL2capTransport<H> {
+    pub async fn wait_for_peer_pub(&mut self) -> Result<[u8; 33], L2capError> {
+        self.wait_ready().await?;
+        self.take_peer_pub().ok_or(L2capError::InitFailed)
+    }
+}
+
 impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
     type Error = L2capError;
 
     async fn wait_ready(&mut self) -> Result<(), L2capError> {
+        log::debug!("wait_ready: link_up={}", H::link_up());
         if !H::task_started().swap(true, Ordering::Relaxed) {
             H::spawn_host_task()
                 .await
@@ -53,11 +61,15 @@ impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
         }
 
         if H::link_up() {
+            log::debug!("wait_ready: link already up");
             return Ok(());
         }
 
+        self.peer_pub = None;
+
         loop {
-            self.peer_pub = Some(H::wait_for_l2cap_ready().await);
+            let pk = H::wait_for_l2cap_ready().await;
+            self.peer_pub = Some(pk);
             if H::link_up() {
                 return Ok(());
             }
@@ -76,7 +88,7 @@ impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
         frame
             .extend_from_slice(data)
             .map_err(|_| L2capError::FrameTooLarge)?;
-        H::send_frame(frame).await;
+        H::send_frame(frame).await.map_err(|_| L2capError::Disconnected)?;
         Ok(())
     }
 
@@ -111,3 +123,39 @@ impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
         }
     }
 }
+
+use crate::l2cap_host::{
+    l2cap_host_task, l2cap_link_up, l2cap_recv_frame, l2cap_send_frame, l2cap_task_started,
+    wait_for_l2cap_ready,
+};
+
+pub struct EspL2capHost;
+
+impl L2capHostAdapter for EspL2capHost {
+    fn task_started() -> &'static core::sync::atomic::AtomicBool {
+        l2cap_task_started()
+    }
+
+    fn link_up() -> bool {
+        l2cap_link_up()
+    }
+
+    async fn spawn_host_task() -> Result<(), ()> {
+        let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
+        spawner.spawn(l2cap_host_task()).map_err(|_| ())
+    }
+
+    async fn wait_for_l2cap_ready() -> [u8; 33] {
+        wait_for_l2cap_ready().await
+    }
+
+    async fn send_frame(frame: heapless::Vec<u8, L2CAP_FRAME_CAP>) -> Result<(), ()> {
+        l2cap_send_frame(frame).await
+    }
+
+    async fn recv_frame() -> heapless::Vec<u8, L2CAP_FRAME_CAP> {
+        l2cap_recv_frame().await
+    }
+}
+
+pub type L2capTransport = SharedL2capTransport<EspL2capHost>;

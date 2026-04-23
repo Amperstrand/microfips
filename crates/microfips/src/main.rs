@@ -21,7 +21,7 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::Builder;
 use static_cell::StaticCell;
 
-use microfips_core::identity::{DEFAULT_PEER_PUB, DEFAULT_SECRET};
+use microfips_core::identity::{STM32_NSEC, VPS_NPUB};
 use microfips_http_demo::DemoService;
 use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::Node;
@@ -126,15 +126,16 @@ async fn main(_spawner: Spawner) {
 
     let transport = CdcTransport { class: &mut class };
     let hw_rng = HwRng(rng);
-    let mut node = Node::new(transport, hw_rng, DEFAULT_SECRET, DEFAULT_PEER_PUB);
+    let mut node = Node::new(transport, hw_rng, STM32_NSEC, VPS_NPUB);
     let mut handler = FipsHandler {
         leds: &mut leds,
         fsp: FspDualHandler::new_dual(
-            DEFAULT_SECRET,
+            STM32_NSEC,
             resp_eph,
             init_eph,
-            &ESP32_PEER_PUB,
+            &ESP32_NPUB,
             ESP32_NODE_ADDR,
+            1u64.to_le_bytes(),
             FspServiceAdapter::new(DemoService::new()),
         ),
     };
