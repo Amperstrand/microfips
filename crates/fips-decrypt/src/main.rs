@@ -15,8 +15,6 @@ use microfips_core::wire::{
 };
 use pcap_file::pcap::PcapReader;
 
-const FIPS_PSM: u16 = 0x0085;
-
 struct UdpDatagram<'a> {
     src_port: u16,
     dst_port: u16,
@@ -291,11 +289,11 @@ const BTSNOOP_RECORD_HEADER_SIZE: usize = 24;
 const BTSNOOP_FILE_HEADER_SIZE: usize = 16;
 
 struct BtsnoopRecord {
-    _orig_len: u32,
     data: Vec<u8>,
-    _flags: u32,
-    _timestamp_us: u64,
+    flags: u32,
 }
+
+const BTSNOOP_DATALINK_MONITOR: u32 = 2001;
 
 fn read_btsnoop_u32_be(data: &[u8]) -> u32 {
     u32::from_be_bytes([data[0], data[1], data[2], data[3]])
@@ -307,13 +305,13 @@ fn read_btsnoop_u64_be(data: &[u8]) -> u64 {
     ])
 }
 
-fn parse_btsnoop_records(data: &[u8]) -> Result<Vec<BtsnoopRecord>, Box<dyn Error>> {
+fn parse_btsnoop_records(data: &[u8]) -> Result<(u32, Vec<BtsnoopRecord>), Box<dyn Error>> {
     if data.len() < BTSNOOP_FILE_HEADER_SIZE {
         return Err("btsnoop file too short for header".into());
     }
 
     let _version = read_btsnoop_u32_be(&data[8..12]);
-    let _datalink = read_btsnoop_u32_be(&data[12..16]);
+    let datalink = read_btsnoop_u32_be(&data[12..16]);
 
     let mut records = Vec::new();
     let mut offset = BTSNOOP_FILE_HEADER_SIZE;
@@ -323,10 +321,10 @@ fn parse_btsnoop_records(data: &[u8]) -> Result<Vec<BtsnoopRecord>, Box<dyn Erro
         let incl_len = read_btsnoop_u32_be(&data[offset + 4..offset + 8]);
         let flags = read_btsnoop_u32_be(&data[offset + 8..offset + 12]);
         let _drops = read_btsnoop_u32_be(&data[offset + 12..offset + 16]);
-        let timestamp = read_btsnoop_u64_be(&data[offset + 16..offset + 24]);
+        let _timestamp = read_btsnoop_u64_be(&data[offset + 16..offset + 24]);
 
         let data_len = incl_len as usize;
-        if offset + BTSNOOP_RECORD_HEADER_SIZE + data_len > data.len() {
+        if incl_len != orig_len || offset + BTSNOOP_RECORD_HEADER_SIZE + data_len > data.len() {
             break;
         }
 
@@ -335,28 +333,28 @@ fn parse_btsnoop_records(data: &[u8]) -> Result<Vec<BtsnoopRecord>, Box<dyn Erro
             .to_vec();
 
         records.push(BtsnoopRecord {
-            _orig_len: orig_len,
             data: record_data,
-            _flags: flags,
-            _timestamp_us: timestamp,
+            flags,
         });
 
         offset += BTSNOOP_RECORD_HEADER_SIZE + data_len;
     }
 
-    Ok(records)
+    Ok((datalink, records))
 }
 
 const HCI_ACL_DATA: u8 = 0x02;
 const L2CAP_SIGNALLING_CID: u16 = 0x0001;
+const L2CAP_LE_SIGNALLING_CID: u16 = 0x0005;
 const L2CAP_CONN_REQ: u8 = 0x02;
+const L2CAP_LE_CREDIT_BASED_CONN_REQ: u8 = 0x14;
 
 /// Extract FMP frames from an HCI H4 capture (btsnoop datalink 1001).
 /// Tracks L2CAP CoC on PSM 0x0085 to find the FIPS data CID,
 /// then strips the 2-byte BE BLE transport framing prefix.
 /// Falls back to scanning all ACL payloads for FMP-like data.
-fn extract_fmp_from_hci_h4(records: &[BtsnoopRecord]) -> Vec<Vec<u8>> {
-    let mut fips_cid: Option<u16> = None;
+fn extract_fmp_from_hci_h4(records: &[BtsnoopRecord], datalink: u32) -> Vec<Vec<u8>> {
+    let mut fips_cids: Vec<u16> = Vec::new();
     let mut fmp_frames = Vec::new();
 
     for record in records {
@@ -365,30 +363,37 @@ fn extract_fmp_from_hci_h4(records: &[BtsnoopRecord]) -> Vec<Vec<u8>> {
             continue;
         }
 
-        let h4_type = data[0];
-        if h4_type != HCI_ACL_DATA {
-            continue;
-        }
+        let acl_data = if datalink == BTSNOOP_DATALINK_MONITOR {
+            let pkt_type = (record.flags >> 16) & 0xff;
+            if pkt_type != 0x01 {
+                continue;
+            }
+            data.as_slice()
+        } else {
+            if data[0] != HCI_ACL_DATA {
+                continue;
+            }
+            &data[1..]
+        };
 
-        if data.len() < 5 {
+        if acl_data.len() < 4 {
             continue;
         }
-        let _acl_handle = u16::from_le_bytes([data[1], data[2]]);
-        let acl_len = u16::from_le_bytes([data[3], data[4]]) as usize;
-        if data.len() < 5 + acl_len {
+        let acl_len = u16::from_le_bytes([acl_data[2], acl_data[3]]) as usize;
+        if acl_data.len() < 4 + acl_len {
             continue;
         }
-        let acl_payload = &data[5..5 + acl_len];
+        let l2cap_data = &acl_data[4..4 + acl_len];
 
-        if acl_payload.len() < 4 {
+        if l2cap_data.len() < 4 {
             continue;
         }
-        let l2cap_len = u16::from_le_bytes([acl_payload[0], acl_payload[1]]) as usize;
-        let l2cap_cid = u16::from_le_bytes([acl_payload[2], acl_payload[3]]);
-        let l2cap_payload = &acl_payload[4..];
+        let l2cap_len = u16::from_le_bytes([l2cap_data[0], l2cap_data[1]]) as usize;
+        let l2cap_cid = u16::from_le_bytes([l2cap_data[2], l2cap_data[3]]);
+        let l2cap_payload = &l2cap_data[4..];
         let l2cap_payload_len = l2cap_len.min(l2cap_payload.len());
 
-        if l2cap_cid == L2CAP_SIGNALLING_CID {
+        if l2cap_cid == L2CAP_LE_SIGNALLING_CID || l2cap_cid == L2CAP_SIGNALLING_CID {
             let mut sig_offset = 0;
             while sig_offset + 4 <= l2cap_payload_len {
                 let code = l2cap_payload[sig_offset];
@@ -398,17 +403,23 @@ fn extract_fmp_from_hci_h4(records: &[BtsnoopRecord]) -> Vec<Vec<u8>> {
                         as usize;
                 let sig_data_start = sig_offset + 4;
 
-                if code == L2CAP_CONN_REQ && sig_len >= 4 {
-                    let psm = u16::from_le_bytes([
-                        l2cap_payload[sig_data_start],
-                        l2cap_payload[sig_data_start + 1],
-                    ]);
+                if code == L2CAP_LE_CREDIT_BASED_CONN_REQ && sig_len >= 6 {
                     let scid = u16::from_le_bytes([
                         l2cap_payload[sig_data_start + 2],
                         l2cap_payload[sig_data_start + 3],
                     ]);
-                    if psm == FIPS_PSM && scid > 0x003F {
-                        fips_cid = Some(scid);
+                    if scid > 0x003F && !fips_cids.contains(&scid) {
+                        fips_cids.push(scid);
+                    }
+                }
+
+                if code == L2CAP_CONN_REQ && sig_len >= 4 {
+                    let scid = u16::from_le_bytes([
+                        l2cap_payload[sig_data_start + 2],
+                        l2cap_payload[sig_data_start + 3],
+                    ]);
+                    if scid > 0x003F && !fips_cids.contains(&scid) {
+                        fips_cids.push(scid);
                     }
                 }
 
@@ -417,51 +428,68 @@ fn extract_fmp_from_hci_h4(records: &[BtsnoopRecord]) -> Vec<Vec<u8>> {
             continue;
         }
 
-        let is_fips_channel = match fips_cid {
-            Some(cid) => l2cap_cid == cid,
-            None => false,
-        };
+        if l2cap_cid <= 0x003F {
+            continue;
+        }
+
+        let payload = &l2cap_payload[..l2cap_payload_len];
+        let is_fips_channel = fips_cids.contains(&l2cap_cid);
 
         if is_fips_channel {
-            let payload = &l2cap_payload[..l2cap_payload_len];
-            if payload.len() < 2 {
-                continue;
+            extract_fmp_from_l2cap_coc(payload, &mut fmp_frames);
+        } else if fips_cids.is_empty() {
+            if try_extract_fmp_from_l2cap_coc_check(payload) {
+                fips_cids.push(l2cap_cid);
+                extract_fmp_from_l2cap_coc(payload, &mut fmp_frames);
             }
-            let fmp_len = u16::from_be_bytes([payload[0], payload[1]]) as usize;
-            if fmp_len == 0 || payload.len() < 2 + fmp_len {
-                continue;
-            }
-            let fmp_data = &payload[2..2 + fmp_len];
-            if fmp_data.len() >= COMMON_PREFIX_SIZE && parse_prefix(fmp_data).is_some() {
-                fmp_frames.push(fmp_data.to_vec());
-            }
-        } else if fips_cid.is_none() {
-            let payload = &l2cap_payload[..l2cap_payload_len];
-            try_extract_fmp_from_payload(payload, &mut fmp_frames);
         }
     }
 
     fmp_frames
 }
 
-/// Find FMP frames by looking for 2-byte BE length prefix followed by a valid FMP prefix.
-fn try_extract_fmp_from_payload(payload: &[u8], out: &mut Vec<Vec<u8>>) {
+fn try_extract_fmp_from_l2cap_coc_check(payload: &[u8]) -> bool {
+    if payload.len() < 2 + 2 + COMMON_PREFIX_SIZE {
+        return false;
+    }
+    let sdu_len = u16::from_le_bytes([payload[0], payload[1]]) as usize;
+    if sdu_len == 0 || payload.len() < 2 + sdu_len {
+        return false;
+    }
+    let inner = &payload[2..2 + sdu_len];
+    if inner.len() < 2 + COMMON_PREFIX_SIZE {
+        return false;
+    }
+    let fmp_len = u16::from_be_bytes([inner[0], inner[1]]) as usize;
+    if fmp_len == 0 || inner.len() < 2 + fmp_len {
+        return false;
+    }
+    let fmp_data = &inner[2..2 + fmp_len];
+    if let Some((phase, _, _)) = parse_prefix(fmp_data) {
+        return matches!(phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2);
+    }
+    false
+}
+
+fn extract_fmp_from_l2cap_coc(payload: &[u8], out: &mut Vec<Vec<u8>>) {
     if payload.len() < 2 + COMMON_PREFIX_SIZE {
         return;
     }
-    let fmp_len = u16::from_be_bytes([payload[0], payload[1]]) as usize;
-    if fmp_len == 0 || payload.len() < 2 + fmp_len {
+    let sdu_len = u16::from_le_bytes([payload[0], payload[1]]) as usize;
+    if sdu_len == 0 || payload.len() < 2 + sdu_len {
         return;
     }
-    let candidate = &payload[2..2 + fmp_len];
-    if let Some((phase, _, payload_len)) = parse_prefix(candidate) {
-        if matches!(phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2)
-            && payload_len > 0
-            && candidate.len() >= COMMON_PREFIX_SIZE + payload_len as usize
-            && parse_message(candidate).is_some()
-        {
-            out.push(candidate[..COMMON_PREFIX_SIZE + payload_len as usize].to_vec());
-        }
+    let inner = &payload[2..2 + sdu_len];
+    if inner.len() < 2 + COMMON_PREFIX_SIZE {
+        return;
+    }
+    let fmp_len = u16::from_be_bytes([inner[0], inner[1]]) as usize;
+    if fmp_len == 0 || inner.len() < 2 + fmp_len {
+        return;
+    }
+    let fmp_data = &inner[2..2 + fmp_len];
+    if fmp_data.len() >= COMMON_PREFIX_SIZE && parse_prefix(fmp_data).is_some() {
+        out.push(fmp_data.to_vec());
     }
 }
 
@@ -841,11 +869,11 @@ fn run_btsnoop(cli: &Cli, keys: &[KeyPair]) -> Result<(), Box<dyn Error>> {
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
 
-    let records = parse_btsnoop_records(&data)?;
-    eprintln!("Parsed {} btsnoop records", records.len());
+    let (datalink, records) = parse_btsnoop_records(&data)?;
+    eprintln!("Parsed {} btsnoop records (datalink={})", records.len(), datalink);
 
-    let fmp_frames = extract_fmp_from_hci_h4(&records);
-    eprintln!("Extracted {} FMP frames from HCI/H4 capture", fmp_frames.len());
+    let fmp_frames = extract_fmp_from_hci_h4(&records, datalink);
+    eprintln!("Extracted {} FMP frames from HCI capture", fmp_frames.len());
 
     let mut pcap_writer = match &cli.output {
         Some(path) => Some(PcapWriter::create(path)?),
@@ -1026,7 +1054,7 @@ mod tests {
         data.extend_from_slice(&1u32.to_be_bytes());
         data.extend_from_slice(&1001u32.to_be_bytes());
 
-        let records = parse_btsnoop_records(&data).unwrap();
+        let (_datalink, records) = parse_btsnoop_records(&data).unwrap();
         assert!(records.is_empty());
     }
 
@@ -1048,9 +1076,10 @@ mod tests {
 
         data.extend_from_slice(payload);
 
-        let records = parse_btsnoop_records(&data).unwrap();
+        let (datalink, records) = parse_btsnoop_records(&data).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(&records[0].data, b"hello");
+        assert_eq!(datalink, 1001);
     }
 
     #[test]
@@ -1135,11 +1164,16 @@ mod tests {
         ble_payload.extend_from_slice(&(fmp_len as u16).to_be_bytes());
         ble_payload.extend_from_slice(&fmp_frame[..fmp_len]);
 
-        let l2cap_payload_len = ble_payload.len() as u16;
+        let sdu_len = ble_payload.len() as u16;
+        let mut l2cap_payload = Vec::new();
+        l2cap_payload.extend_from_slice(&sdu_len.to_le_bytes());
+        l2cap_payload.extend_from_slice(&ble_payload);
+
+        let l2cap_frame_len = l2cap_payload.len() as u16;
         let mut l2cap_frame = Vec::new();
-        l2cap_frame.extend_from_slice(&l2cap_payload_len.to_le_bytes());
+        l2cap_frame.extend_from_slice(&l2cap_frame_len.to_le_bytes());
         l2cap_frame.extend_from_slice(&0x0040u16.to_le_bytes());
-        l2cap_frame.extend_from_slice(&ble_payload);
+        l2cap_frame.extend_from_slice(&l2cap_payload);
 
         let acl_len = l2cap_frame.len() as u16;
         let mut acl_packet = Vec::new();
@@ -1161,8 +1195,8 @@ mod tests {
         btsnoop_data.extend_from_slice(&0u64.to_be_bytes());
         btsnoop_data.extend_from_slice(&acl_packet);
 
-        let records = parse_btsnoop_records(&btsnoop_data).unwrap();
-        let fmp_frames = extract_fmp_from_hci_h4(&records);
+        let (_datalink, records) = parse_btsnoop_records(&btsnoop_data).unwrap();
+        let fmp_frames = extract_fmp_from_hci_h4(&records, 1001);
 
         assert_eq!(fmp_frames.len(), 1);
         assert_eq!(&fmp_frames[0], &fmp_frame[..fmp_len]);
