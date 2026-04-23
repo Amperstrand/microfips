@@ -28,11 +28,31 @@ sudo systemctl restart fips
 fips -c /etc/fips/fips.yaml
 ```
 
-btmon writes btsnoop format, which Wireshark opens natively. The FMP frames ride inside L2CAP CoC on PSM 0x0085 (decimal 133).
+btmon writes btsnoop format (datalink 2001, HCI monitor), which Wireshark opens natively. The FMP frames ride inside L2CAP CoC. Note: BlueZ may remap the FIPS PSM (e.g. 0x0085 → 0x00C0) — fips-decrypt discovers FIPS channels by tracking L2CAP signalling or heuristic FMP detection, so the actual PSM does not matter for decryption.
+
+### BLE L2CAP CoC framing (important for manual analysis)
+
+Each FMP frame in a btmon capture is wrapped in three layers of framing:
+
+```
+[L2CAP header: 2B length + 2B CID]
+  [L2CAP LE SDU: 2B LE SDU length]
+    [BLE transport: 2B BE length]
+      [FMP frame]
+```
+
+fips-decrypt strips all three layers automatically. If you are analyzing raw hex, strip the outer two length prefixes (4 bytes total) before the FMP frame.
+
+### btmon monitor format (datalink 2001)
+
+btmon uses the BlueZ monitor protocol, NOT raw HCI H4. Key differences:
+- No H4 type byte prefix on each record
+- Packet type is encoded in the record flags: `flags >> 16 & 0xff` (0x01 = ACL data)
+- Wireshark handles this natively; fips-decrypt handles it too when reading btsnoop files
 
 Tips:
 
-- In Wireshark, filter by `btatt` or the L2CAP CID to isolate FIPS traffic from other BLE activity.
+- In Wireshark, filter by the L2CAP CID to isolate FIPS traffic from other BLE activity.
 - Without the FIPS dissector installed, you will see raw L2CAP data. With it (see Section 5), you get decoded FMP framing.
 - Stop btmon with Ctrl-C when done. The btsnoop file is complete and ready for offline analysis.
 
@@ -70,7 +90,7 @@ If FIPS runs under systemd:
 journalctl -u fips -f | grep fips_diagnostic > /tmp/fips-keys.jsonl
 ```
 
-Each handshake produces one JSON line. The file accumulates keys from multiple sessions. You only need keys from one side of the connection to decrypt both directions.
+Each handshake produces one JSON line. The file accumulates keys from multiple sessions. You only need keys from one side of the connection to decrypt both directions (fips-decrypt tries both `k_send` and `k_recv` against each frame).
 
 Keys are ephemeral. A new handshake generates new transport keys. If the daemon restarts or the link drops and re-establishes, capture the new keys.
 
@@ -207,3 +227,37 @@ If the dissector is loaded, you will see FMP frame details in the protocol tree.
 wireshark -X lua_script:tools/fips_dissector.lua capture.pcap
 tshark -X lua_script:tools/fips_dissector.lua -r capture.pcap
 ```
+
+## 6. End-to-End Workflow Summary
+
+A complete capture-decrypt-inspect session:
+
+```bash
+# 1. Start btmon capture on Linux
+sudo btmon -w /tmp/fips-ble-capture.btsnoop &
+
+# 2. Start FIPS with diagnostic key logging
+fips -c /etc/fips/fips.yaml 2>/tmp/fips-keys.jsonl
+
+# 3. Wait for BLE connection (30-90 seconds), let traffic flow, then stop btmon
+kill %1
+
+# 4. Decrypt and analyze
+fips-decrypt --keys-file /tmp/fips-keys.jsonl /tmp/fips-ble-capture.btsnoop
+
+# 5. Generate decrypted pcap for Wireshark
+fips-decrypt --keys-file /tmp/fips-keys.jsonl --output /tmp/fips-ble-decrypted.pcap /tmp/fips-ble-capture.btsnoop
+
+# 6. Open in Wireshark
+wireshark /tmp/fips-ble-capture.btsnoop    # encrypted raw capture
+wireshark /tmp/fips-ble-decrypted.pcap     # decrypted plaintext
+```
+
+Expected output from a successful capture (real example):
+```
+Parsed 5965 btsnoop records (datalink=2001)
+Extracted 657 FMP frames from HCI capture
+[frame#1] -> ESTABLISHED ... | decrypted by keys_file:initiator (k_recv) | ...
+```
+
+Both files can be open simultaneously in Wireshark for side-by-side comparison.
