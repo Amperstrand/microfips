@@ -654,29 +654,6 @@ fn decode_frame_details(frame: &[u8], keys: &[KeyPair]) -> String {
     }
 }
 
-/// Try to decrypt an Established frame and return the plaintext if successful.
-fn decrypt_frame_to_payload(frame: &[u8], candidates: &[KeyPair]) -> Option<Vec<u8>> {
-    if frame.len() < ESTABLISHED_HEADER_SIZE + TAG_SIZE {
-        return None;
-    }
-
-    let nonce_ctr = u64::from_le_bytes(frame[8..16].try_into().ok()?);
-    let aad = &frame[..ESTABLISHED_HEADER_SIZE];
-    let ciphertext = &frame[ESTABLISHED_HEADER_SIZE..];
-
-    for kp in candidates {
-        for key in [kp.k_send, kp.k_recv] {
-            let mut out = vec![0u8; ciphertext.len().saturating_sub(TAG_SIZE)];
-            if let Ok(pt_len) = aead_decrypt(&key, nonce_ctr, aad, ciphertext, &mut out) {
-                if pt_len >= 5 {
-                    return Some(out[..pt_len].to_vec());
-                }
-            }
-        }
-    }
-    None
-}
-
 fn find_fmp_frame(packet: &[u8]) -> Option<&[u8]> {
     if packet.len() < COMMON_PREFIX_SIZE {
         return None;
@@ -915,30 +892,17 @@ fn run_btsnoop(cli: &Cli, keys: &[KeyPair]) -> Result<(), Box<dyn Error>> {
 }
 
 /// Write a single FMP frame to the output pcap.
-/// For MSG1/MSG2 (handshake frames), write as-is (cleartext).
-/// For ESTABLISHED frames, write the decrypted payload if possible.
-fn write_frame_to_pcap(writer: &mut PcapWriter, frame: &[u8], phase: u8, keys: &[KeyPair], dir: &str) {
+/// Always writes the original FMP frame (with FMP header) so the Wireshark
+/// dissector can parse it. Decrypted plaintext has no FMP framing and would
+/// confuse the dissector.
+fn write_frame_to_pcap(writer: &mut PcapWriter, frame: &[u8], _phase: u8, _keys: &[KeyPair], dir: &str) {
     let (src_port, dst_port) = if dir == "<-" {
         (2121u16, 9999u16)
     } else {
         (9999u16, 2121u16)
     };
 
-    match phase {
-        PHASE_MSG1 | PHASE_MSG2 => {
-            let _ = writer.write_udp_packet(frame, src_port, dst_port);
-        }
-        PHASE_ESTABLISHED => {
-            if let Some(pt) = decrypt_frame_to_payload(frame, keys) {
-                let _ = writer.write_udp_packet(&pt, src_port, dst_port);
-            } else {
-                let _ = writer.write_udp_packet(frame, src_port, dst_port);
-            }
-        }
-        _ => {
-            let _ = writer.write_udp_packet(frame, src_port, dst_port);
-        }
-    }
+    let _ = writer.write_udp_packet(frame, src_port, dst_port);
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
