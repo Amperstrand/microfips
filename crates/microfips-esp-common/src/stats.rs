@@ -14,6 +14,12 @@ pub struct NodeStats {
     pub boot_tick_ms: AtomicU32,
 }
 
+impl Default for NodeStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NodeStats {
     pub const fn new() -> Self {
         Self {

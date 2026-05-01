@@ -1,0 +1,13 @@
+[package]
+name = "microfips-l2cap-test"
+version = "0.1.0"
+edition = "2021"
+description = "Host-side BLE L2CAP protocol compatibility tests against FIPS daemon"
+
+[dependencies]
+microfips-core = { path = "../microfips-core" }
+microfips-protocol = { path = "../microfips-protocol", features = ["std"] }
+microfips-esp-common = { path = "../microfips-esp-common" }
+heapless = "0.9"
+embassy-sync = "0.7.2"
+embassy-futures = "0.1.2"

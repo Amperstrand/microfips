@@ -48,7 +48,7 @@ impl PeerPolicy {
             return PolicyVerdict::Allow;
         };
 
-        let elapsed_ms = now.as_millis().saturating_sub(last_connect.as_millis()) as u64;
+        let elapsed_ms = now.as_millis().saturating_sub(last_connect.as_millis());
 
         let failure_backoff_ms = if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
             MAX_RECONNECT_MS
@@ -73,7 +73,7 @@ impl PeerPolicy {
     pub fn check_frame_rate(&mut self, now: Instant) -> PolicyVerdict {
         let elapsed_ms = now
             .as_millis()
-            .saturating_sub(self.frame_window_start.as_millis()) as u64;
+            .saturating_sub(self.frame_window_start.as_millis());
 
         if elapsed_ms >= FRAME_RATE_WINDOW_MS {
             self.frame_window_start = now;

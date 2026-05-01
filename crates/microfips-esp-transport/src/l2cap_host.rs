@@ -666,7 +666,7 @@ where
             min_connection_interval: embassy_time::Duration::from_millis(20),
             max_connection_interval: embassy_time::Duration::from_millis(40),
             max_latency: 0,
-            supervision_timeout: embassy_time::Duration::from_millis(400),
+            supervision_timeout: embassy_time::Duration::from_millis(4000),
             min_event_length: embassy_time::Duration::from_millis(20),
             max_event_length: embassy_time::Duration::from_millis(40),
         },

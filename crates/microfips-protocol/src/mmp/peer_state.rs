@@ -9,6 +9,13 @@ pub struct MmpPeerState {
 }
 
 #[cfg(feature = "mmp")]
+impl Default for MmpPeerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "mmp")]
 impl MmpPeerState {
     pub fn new() -> Self {
         Self {

@@ -225,8 +225,10 @@ Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
 | FIPS Service UUID | `9c90b790-2cc5-42c0-9f87-c9cc40648f4c` |
 | L2CAP MTU | 2048 bytes |
 | PacketPool MTU | 2054 bytes (configured via `.cargo/config.toml`) |
-| Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey]` (33 bytes, 5s timeout) |
-| Framing | 2-byte BE length prefix on all frames (matches FIPS `BluerStream` on `linux-ble-stability-v2`) |
+| Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey][1B capability flags]` (34B payload, 36B wire with framing) |
+| Framing | 2-byte BE length prefix on all L2CAP frames, including pubkey exchange (matches FIPS `BluerStream` framing on all branches) |
+| Capability byte | `0x3C` (CAN_CENTRAL \| CAN_PERIPHERAL \| L2CAP_SUPPORTED \| PREFER_L2CAP) |
+| FRAME_CAP | 768 bytes (application-level frame buffer; MTU stays 2048) |
 | BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_NSEC[27..32]` + `0xFF` prefix, MSB-first |
 | Advertising name | `microfips-l2cap` |
 
@@ -331,7 +333,7 @@ Response format matches FIPS control protocol: `{"status":"ok","data":{...}}` or
 - No Python bridge needed — ESP32 talks to FIPS daemon directly over BLE L2CAP
 - No UDP hop — pure BLE L2CAP connection to local FIPS daemon
 - No GATT characteristics — uses L2CAP CoC channel on PSM 0x0085
-- 2-byte BE length prefix on all L2CAP frames (matches FIPS `BluerStream` on `linux-ble-stability-v2`)
+- 2-byte BE length prefix on all L2CAP frames (matches FIPS `BluerStream` framing — applies to pubkey exchange AND all subsequent data)
 
 ### ESP32 WiFi Transport
 
@@ -1032,7 +1034,24 @@ When not set, tools panic — no default device identity is allowed.
 | #12 | M7: HTTP status page over FIPS | feature | Firmware has HTTP handler; needs E2E test |
 | #14 | X25519 DH discussion | discussion | Requires FIPS maintainer decision |
 | #81 | BLE address type mismatch pitfall | pitfall | `Address::random()` hardcodes RANDOM kind — must match target. Current code correct. |
-| #89 | ESP32 BLE L2CAP packet loss | resolved | Root cause: fipsctl echo client timeout, not relay. Relay drops=0 confirmed. |
+| #90 | L2CAP RX channel capacity overflow | bug | Fixed: RX channel increased 5→16 slots (commit `dcf3dc8`). Needs hardware verification. |
+| #88 | FRAME_CAP vs FIPS MTU RAM tradeoff | analysis | Resolved: FRAME_CAP=768 (max that links on ESP32-D0WD DRAM budget). MTU stays 2048. |
+| #77 | Firmware DoS hardening | security | Reconnect limits, memory protection. See also FIPS #57 (packet loss degradation on ESP32-S3). |
+
+### FIPS Issues Affecting microfips
+
+Tracking upstream FIPS GitHub issues (Amperstrand/fips) that affect microfips:
+
+| FIPS # | Title | State | microfips Impact |
+|--------|-------|-------|------------------|
+| #57 | Monotonic packet loss degradation on ESP32-S3 | OPEN | **Monitor** — WiFi/BLE coexistence issue on S3. May affect D0WD. |
+| #58 | microfips compatibility vs 0.4.0-dev | OPEN | **P0 future** — Noise IK→XX, FMP v0→v1, version negotiation. Breaking changes. |
+| #73 | Privacy: cleartext pubkeys enable device tracking | OPEN | **Consider** — Ephemeral introduction keys for BLE pubkey exchange. |
+| #79 | PeerBackoff auto-denies legitimate ESP32 peers | CLOSED | **Verified fixed** — FIPS no longer counts tie-breaker yields as failures. |
+| #82 | FilterAnnounce exceeds L2CAP MTU | CLOSED | **Accepted** — Leaf nodes skip bloom filters. FRAME_CAP=768 < 1071B FilterAnnounce. |
+| #56 | 0-byte frame fatal disconnect | CLOSED | **Verified fixed** — FIPS now handles gracefully. ESP32 never sends 0-byte frames. |
+| #66 | ESP32-S3 MTU limitation and bloom filter skip | CLOSED | **Verified** — FIPS skips FilterAnnounce to MTU-limited peers. |
+| #55 | Dual-role tie-breaker deadlock | CLOSED | **Verified fixed** — FIPS adds disconnect+settle delay after yield. |
 
 ## BLE Address Type Pitfall (Issue #81)
 
@@ -1051,12 +1070,59 @@ device actually advertises. A mismatch causes silent connect failure.
 **Upstream FIPS source:** `/home/ubuntu/src/fips` (NOT `/home/ubuntu/src2/fips.rm` which is stale/abandoned).
 Use `/home/ubuntu/src/fips` for any FIPS source code reference, diff, or API lookup.
 
-### Current State (as of 2026-04-11)
+### Current State (as of 2026-05-02)
 
 - **FIPS master** has merged macOS BLE (bluest crate) and Windows ports
-- **`linux-ble-stability-v2`** branch (our test branch) has diverged from master — contains leaf-proxy and BLE framing fixes not yet in master
+- **`ble-transport-reliability`** branch (based on master at `cbc7809`) adds: Linux drain task with adaptive rate limiting, macOS BLE transport, GATT PSM re-discovery on reconnect, BLE config validation, TCP window clamping for BLE-tunneled TCP. **Wire protocol unchanged** — ESP32 needs no changes.
+- **`linux-ble-stability-v2`** branch (our previous test branch) has been superseded by `ble-transport-reliability`. All leaf-proxy and BLE framing fixes are now in the newer branch.
 - **`next` branch** (0.4.0-dev, jmcorgan/next) contains breaking changes: Noise IK/XK → XX, FMP v0 → v1, version negotiation, profile negotiation
 - microfips needs to **rebase off latest master** before next development cycle
+
+### FIPS `ble-transport-reliability` Branch (audited 2026-05-02)
+
+23 commits since branch-off from master. Key changes relevant to microfips:
+
+**No wire protocol changes.** All changes are Linux/macOS daemon-side implementation details transparent to an ESP32 L2CAP peer.
+
+**Linux drain task architecture:**
+- Each BLE connection has a background drain task that mediates all rate-limited sends
+- `send()` enqueues to a 32-slot channel, drain task applies rate limiting before L2CAP write
+- `send_urgent()` bypasses drain queue — used for MSG2 handshake responses and rekey MSG2
+- Rate limiter uses BBR-inspired AIMD: 15–80 Kbps, RTT <200ms → probe up, RTT >500ms → drain down
+- ESP32 observation: inbound frame timing is spaced by rate limiter, no backpressure signaling
+- **ESP32 doesn't need drain/pacer** — it writes directly to BLE at controller speed
+
+**macOS BLE transport:**
+- New `io_macos.rs` using bluest (central) and CoreBluetooth (peripheral)
+- Identical wire protocol to Linux: same PSM (0x0085), MTU (2048), framing (2-byte BE length prefix), pubkey exchange format
+- ESP32 works with both macOS and Linux FIPS daemons without modification
+
+**GATT PSM re-discovery (Linux + macOS):**
+- Retries GATT PSM characteristic read after 200ms on first failure
+- macOS: uses `discover_services_with_uuid()` to bypass stale cache
+- ESP32 impact: none — ESP32 advertises PSM, doesn't discover it
+
+**BLE config validation:**
+- `BleConfig::validate()` resets invalid fields to defaults instead of erroring
+- Defaults: PSM=0x0085, MTU=2048, max_connections=7, connect_timeout=10s, send_burst=2048
+- ESP32 impact: none — ESP32 uses compile-time constants
+
+**Key FIPS BLE constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `BLE_LINUX_QUEUE_DEPTH` | 32 | Drain queue capacity (frames) |
+| `BLE_SEND_TIMEOUT` | 15s | L2CAP write timeout |
+| `MIN_RATE_BPS` | 15,000 | Minimum send rate (AIMD) |
+| `MAX_RATE_BPS` | 80,000 | Maximum send rate (AIMD) |
+| `RTT_LOW_MS` | 200 | Uncongested threshold |
+| `RTT_HIGH_MS` | 500 | Congested threshold |
+| `PUBKEY_EXCHANGE_TIMEOUT_SECS` | 5 | Pubkey exchange timeout |
+
+**Pubkey exchange format (verified compatible):**
+- FIPS sends 34 bytes raw through `BleStream`, which adds 2-byte BE length prefix on the wire
+- microfips sends 36 bytes (2B prefix + 34B payload) matching the same format
+- Both sides agree: `[0x00][32B x-only pubkey][1B capabilities]` (34B payload)
+- `BluerStream::recv()` strips the 2-byte prefix before passing to `pubkey_exchange()`
 
 ### Noise Protocol Design Choices
 

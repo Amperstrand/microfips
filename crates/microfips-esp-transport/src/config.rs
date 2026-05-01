@@ -29,8 +29,14 @@ pub const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 #[cfg(feature = "l2cap")]
 pub const USE_PUBLIC_BLE_ADDRESS: bool = false;
 
+/// Maximum FMP frame size carried over L2CAP.
+/// 768 = 50% increase over previous 512. Covers all link-layer and FSP frames
+/// (MSG1=114B, heartbeat=37B, SessionSetup=148B). FilterAnnounce (~1071B)
+/// still exceeds this but LEAF_ONLY nodes don't need bloom-filter propagation.
+/// Values >=1024 overflow ESP32 DRAM (16×(cap+2) + 8×(cap+2) + 72KB heap +
+/// 32×2054B PacketPool ≈ 186KB > available DRAM).
 #[cfg(feature = "l2cap")]
-pub const L2CAP_FRAME_CAP: usize = 512;
+pub const L2CAP_FRAME_CAP: usize = 768;
 
 #[cfg(feature = "l2cap")]
 pub const L2CAP_PSM: u16 = 133;
@@ -78,8 +84,10 @@ pub mod peer_caps {
     pub const CAN_PERIPHERAL: u8 = 0x10;
     pub const L2CAP_SUPPORTED: u8 = 0x20;
 
-    /// Matches FIPS PeerCapabilities::linux_default() on linux-ble-stability-v2
-    /// (commit 87eed02). CAN_CENTRAL + CAN_PERIPHERAL + L2CAP_SUPPORTED + PREFER_L2CAP = 0x3C.
+    /// CAN_CENTRAL + CAN_PERIPHERAL + L2CAP_SUPPORTED + PREFER_L2CAP = 0x3C.
+    /// No GATT_SUPPORTED — ESP32 uses L2CAP only.
+    /// Matches FIPS PeerCapabilities bit layout (src/transport/ble/capabilities.rs)
+    /// on master and ble-transport-reliability branches.
     pub const ESP32_DEFAULT: u8 = CAN_CENTRAL | CAN_PERIPHERAL | L2CAP_SUPPORTED | PREFER_L2CAP;
 }
 

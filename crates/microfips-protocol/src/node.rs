@@ -450,7 +450,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
         let mut next_sr = embassy_time::Instant::now() + Duration::from_secs(HB_SECS / 2);
         let mut send_ctr: u64 = 0;
+        #[allow(unused_mut, unused_variables)]
         let mut sr_start_ctr: u64 = 0;
+        #[allow(unused_mut, unused_variables)]
         let mut sr_start_ts: u32 = embassy_time::Instant::now().as_millis() as u32;
 
         loop {
@@ -532,7 +534,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             FrameAction::SelfDC => {
                                 log_steady!("steady: self disconnect, exiting steady");
                                 let _ = self
-                                    .send_disconnect(ks, them, &mut send_ctr, wire::DISC_REASON_SHUTDOWN)
+                                    .send_disconnect(
+                                        ks,
+                                        them,
+                                        &mut send_ctr,
+                                        wire::DISC_REASON_SHUTDOWN,
+                                    )
                                     .await;
                                 return Ok(());
                             }
@@ -543,12 +550,20 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             }
                             FrameAction::SendLinkMessage { msg_type, len } => {
                                 self.policy.record_data_frame();
-                                log_steady!("steady: sending link msg type=0x{:02x} len={}", msg_type, len);
+                                log_steady!(
+                                    "steady: sending link msg type=0x{:02x} len={}",
+                                    msg_type,
+                                    len
+                                );
                                 self.send_link_message(them, &mut send_ctr, msg_type, len, ks)
                                     .await;
                             }
                             #[cfg(feature = "mmp")]
-                            FrameAction::MmpRecv { counter, sender_timestamp, frame_bytes } => {
+                            FrameAction::MmpRecv {
+                                counter,
+                                sender_timestamp,
+                                frame_bytes,
+                            } => {
                                 self.mmp.receiver.record_recv(
                                     counter,
                                     sender_timestamp,
@@ -558,7 +573,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 );
                             }
                             #[cfg(feature = "mmp")]
-                            FrameAction::MmpSenderReport { counter, sender_timestamp, frame_bytes, report: _ } => {
+                            FrameAction::MmpSenderReport {
+                                counter,
+                                sender_timestamp,
+                                frame_bytes,
+                                report: _,
+                            } => {
                                 let now = embassy_time::Instant::now();
                                 self.mmp.receiver.record_recv(
                                     counter,
@@ -584,12 +604,18 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 }
                             }
                             #[cfg(feature = "mmp")]
-                            FrameAction::MmpReceiverReport { counter: _, sender_timestamp: _, frame_bytes: _, report } => {
+                            FrameAction::MmpReceiverReport {
+                                counter: _,
+                                sender_timestamp: _,
+                                frame_bytes: _,
+                                report,
+                            } => {
                                 let now = embassy_time::Instant::now();
                                 let our_ts = now.as_millis() as u32;
-                                let _first_rtt = self.mmp.metrics.process_receiver_report(
-                                    &report, our_ts, now,
-                                );
+                                let _first_rtt = self
+                                    .mmp
+                                    .metrics
+                                    .process_receiver_report(&report, our_ts, now);
                                 if let Some(srtt_ms) = self.mmp.metrics.srtt_ms() {
                                     let srtt_us = (srtt_ms * 1000.0) as i64;
                                     self.mmp.sender.update_report_interval_from_srtt(srtt_us);
@@ -597,7 +623,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 }
                                 let our_recv = self.mmp.receiver.cumulative_packets_recv();
                                 let peer_highest = self.mmp.receiver.highest_counter();
-                                self.mmp.metrics.update_reverse_delivery(our_recv, peer_highest);
+                                self.mmp
+                                    .metrics
+                                    .update_reverse_delivery(our_recv, peer_highest);
                             }
                         }
                     }
@@ -620,8 +648,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             let encoded = sr.encode();
                             let body_len = encoded.len();
                             self.resp_buf[..body_len].copy_from_slice(&encoded);
-                            self.send_link_message(them, &mut send_ctr, wire::MSG_SENDER_REPORT, body_len, ks)
-                                .await;
+                            self.send_link_message(
+                                them,
+                                &mut send_ctr,
+                                wire::MSG_SENDER_REPORT,
+                                body_len,
+                                ks,
+                            )
+                            .await;
                         } else {
                             next_sr = now + self.mmp.sender.report_interval();
                         }
@@ -637,8 +671,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         sr[19..23].copy_from_slice(&sr_start_ts.to_le_bytes());
                         sr[23..27].copy_from_slice(&sr_end_ts.to_le_bytes());
                         self.resp_buf[..47].copy_from_slice(&sr);
-                        self.send_link_message(them, &mut send_ctr, wire::MSG_SENDER_REPORT, 47, ks)
-                            .await;
+                        self.send_link_message(
+                            them,
+                            &mut send_ctr,
+                            wire::MSG_SENDER_REPORT,
+                            47,
+                            ks,
+                        )
+                        .await;
                         sr_start_ctr = send_ctr;
                         sr_start_ts = sr_end_ts;
                     }
@@ -693,8 +733,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             let encoded = sr.encode();
                             let body_len = encoded.len();
                             self.resp_buf[..body_len].copy_from_slice(&encoded);
-                            self.send_link_message(them, &mut send_ctr, wire::MSG_SENDER_REPORT, body_len, ks)
-                                .await;
+                            self.send_link_message(
+                                them,
+                                &mut send_ctr,
+                                wire::MSG_SENDER_REPORT,
+                                body_len,
+                                ks,
+                            )
+                            .await;
                         } else {
                             next_sr = now + self.mmp.sender.report_interval();
                         }
@@ -709,8 +755,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         sr[19..23].copy_from_slice(&sr_start_ts.to_le_bytes());
                         sr[23..27].copy_from_slice(&sr_end_ts.to_le_bytes());
                         self.resp_buf[..47].copy_from_slice(&sr);
-                        self.send_link_message(them, &mut send_ctr, wire::MSG_SENDER_REPORT, 47, ks)
-                            .await;
+                        self.send_link_message(
+                            them,
+                            &mut send_ctr,
+                            wire::MSG_SENDER_REPORT,
+                            47,
+                            ks,
+                        )
+                        .await;
                         sr_start_ctr = send_ctr;
                         sr_start_ts = sr_end_ts;
                     }
@@ -832,8 +884,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let inner_len =
             wire::prepend_inner_header(ts, &[wire::MSG_DISCONNECT, reason], &mut inner_buf)
                 .unwrap();
-        let fl =
-            wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
+        let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             let _ = self.send_frame(&out[..fl]).await;
             #[cfg(feature = "mmp")]
@@ -1082,7 +1133,8 @@ fn handle_frame_inner<H: NodeHandler>(
                 wire::MSG_RECEIVER_REPORT => {
                     #[cfg(feature = "mmp")]
                     {
-                        if let Some(rr) = microfips_core::mmp::ReceiverReport::decode(inner_payload) {
+                        if let Some(rr) = microfips_core::mmp::ReceiverReport::decode(inner_payload)
+                        {
                             FrameAction::MmpReceiverReport {
                                 counter: enc.counter,
                                 sender_timestamp: timestamp,
@@ -1099,9 +1151,9 @@ fn handle_frame_inner<H: NodeHandler>(
                 wire::MSG_ECHO_REQUEST => {
                     if let Some((send_ts, seq, payload)) = wire::parse_echo_request(inner_payload) {
                         let now_us = Instant::now().as_micros();
-                        if let Some(resp_len) = wire::build_echo_response(
-                            send_ts, now_us, seq, payload, resp,
-                        ) {
+                        if let Some(resp_len) =
+                            wire::build_echo_response(send_ts, now_us, seq, payload, resp)
+                        {
                             FrameAction::SendLinkMessage {
                                 msg_type: wire::MSG_ECHO_RESPONSE,
                                 len: resp_len,
@@ -1149,7 +1201,9 @@ fn handle_frame_inner<H: NodeHandler>(
                         .bytes_recv
                         .saturating_add(inner_payload.len() as u64);
 
-                    let elapsed_us = Instant::now().as_micros().saturating_sub(throughput.start_us);
+                    let elapsed_us = Instant::now()
+                        .as_micros()
+                        .saturating_sub(throughput.start_us);
                     let target_duration_us = u64::from(throughput.duration_secs) * 1_000_000;
                     if elapsed_us < target_duration_us {
                         return FrameAction::Continue;
@@ -1157,11 +1211,12 @@ fn handle_frame_inner<H: NodeHandler>(
 
                     let report = *throughput;
                     throughput.active = false;
-                    let achieved_bps = if elapsed_us > 0 {
-                        report.bytes_recv.saturating_mul(8).saturating_mul(1_000_000) / elapsed_us
-                    } else {
-                        0
-                    };
+                    let achieved_bps = report
+                        .bytes_recv
+                        .saturating_mul(8)
+                        .saturating_mul(1_000_000)
+                        .checked_div(elapsed_us)
+                        .unwrap_or(0);
 
                     if let Some(resp_len) = wire::build_throughput_report(
                         report.test_id,
@@ -1265,11 +1320,15 @@ fn frame_is_policy_good(kr: &[u8; 32], data: &[u8]) -> bool {
 #[derive(Debug, PartialEq)]
 enum FrameAction {
     Continue,
+    #[allow(dead_code)]
     HeartbeatRecv,
     PeerDC,
     SelfDC,
     SendDatagram(usize),
-    SendLinkMessage { msg_type: u8, len: usize },
+    SendLinkMessage {
+        msg_type: u8,
+        len: usize,
+    },
     #[cfg(feature = "mmp")]
     MmpRecv {
         counter: u64,
@@ -1549,10 +1608,7 @@ mod tests {
         out[..fl].to_vec()
     }
 
-    fn decrypt_test_frame(
-        key: &[u8; 32],
-        frame: &[u8],
-    ) -> (u8, std::vec::Vec<u8>) {
+    fn decrypt_test_frame(key: &[u8; 32], frame: &[u8]) -> (u8, std::vec::Vec<u8>) {
         use microfips_core::wire;
 
         let enc = wire::EncryptedHeader::parse(frame).expect("encrypted header");
@@ -1753,7 +1809,9 @@ mod tests {
         use microfips_core::wire;
 
         let key: [u8; 32] = [0x42; 32];
-        let body = [0x78, 0x56, 0x34, 0x12, 0x00, 0x01, 0x00, 0x04, 0x00, 0x65, 0xcd, 0x1d];
+        let body = [
+            0x78, 0x56, 0x34, 0x12, 0x00, 0x01, 0x00, 0x04, 0x00, 0x65, 0xcd, 0x1d,
+        ];
         let frame = build_test_frame(
             wire::SessionIndex::new(0),
             6,
@@ -1765,7 +1823,13 @@ mod tests {
 
         let mut throughput = ThroughputState::default();
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &frame, &mut throughput, &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(
+            &key,
+            &frame,
+            &mut throughput,
+            &mut NoopTestHandler,
+            &mut resp,
+        );
         assert_eq!(result, FrameAction::Continue);
         assert!(throughput.active);
         assert_eq!(throughput.test_id, 0x12345678);
@@ -1777,7 +1841,9 @@ mod tests {
         use microfips_core::wire;
 
         let key: [u8; 32] = [0x42; 32];
-        let payload = [0x78, 0x56, 0x34, 0x12, 0x01, 0x00, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd];
+        let payload = [
+            0x78, 0x56, 0x34, 0x12, 0x01, 0x00, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd,
+        ];
         let frame = build_test_frame(
             wire::SessionIndex::new(0),
             7,
@@ -1796,7 +1862,13 @@ mod tests {
             active: true,
         };
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(&key, &frame, &mut throughput, &mut NoopTestHandler, &mut resp);
+        let result = handle_frame_inner(
+            &key,
+            &frame,
+            &mut throughput,
+            &mut NoopTestHandler,
+            &mut resp,
+        );
         assert!(matches!(
             result,
             FrameAction::SendLinkMessage {
@@ -1805,10 +1877,16 @@ mod tests {
             }
         ));
         assert!(!throughput.active);
-        assert_eq!(u32::from_le_bytes(resp[0..4].try_into().unwrap()), 0x12345678);
+        assert_eq!(
+            u32::from_le_bytes(resp[0..4].try_into().unwrap()),
+            0x12345678
+        );
         assert_eq!(u32::from_le_bytes(resp[4..8].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(resp[8..12].try_into().unwrap()), 1);
-        assert_eq!(u64::from_le_bytes(resp[12..20].try_into().unwrap()), payload.len() as u64);
+        assert_eq!(
+            u64::from_le_bytes(resp[12..20].try_into().unwrap()),
+            payload.len() as u64
+        );
     }
 
     // NOTE: test_handshake_with_mock_responder requires refactoring handshake()
@@ -2224,7 +2302,7 @@ mod tests {
 
             let policy_verdict = node.policy.check_reconnect(Instant::now());
             match policy_verdict {
-                PolicyVerdict::Allow => {},
+                PolicyVerdict::Allow => {}
                 other => panic!(
                     "expected Allow after {}s backoff, got {:?}",
                     backoff_secs, other
@@ -2244,7 +2322,12 @@ mod tests {
         impl NodeHandler for PongHandler {
             async fn on_event(&mut self, _event: NodeEvent) {}
 
-            fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
+            fn on_message(
+                &mut self,
+                msg_type: u8,
+                payload: &[u8],
+                resp: &mut [u8],
+            ) -> HandleResult {
                 if msg_type == wire::MSG_SESSION_DATAGRAM && payload == b"ping" {
                     resp[..4].copy_from_slice(b"pong");
                     HandleResult::SendDatagram(4)
@@ -2261,20 +2344,15 @@ mod tests {
         block_on(async move {
             let peer_task = async move {
                 for counter in 0..110u64 {
-                    let frame = build_test_frame(them, counter, wire::MSG_HEARTBEAT, 1000, &[], &key);
+                    let frame =
+                        build_test_frame(them, counter, wire::MSG_HEARTBEAT, 1000, &[], &key);
                     send_test_frame(&mut peer, &frame).await;
                 }
 
                 Timer::after(Duration::from_millis(FRAME_RATE_WINDOW_MS + 50)).await;
 
-                let ping = build_test_frame(
-                    them,
-                    200,
-                    wire::MSG_SESSION_DATAGRAM,
-                    2000,
-                    b"ping",
-                    &key,
-                );
+                let ping =
+                    build_test_frame(them, 200, wire::MSG_SESSION_DATAGRAM, 2000, b"ping", &key);
                 send_test_frame(&mut peer, &ping).await;
 
                 let response = recv_test_frame(&mut peer).await;
@@ -2282,7 +2360,8 @@ mod tests {
                 assert_eq!(msg_type, wire::MSG_SESSION_DATAGRAM);
                 assert_eq!(payload, b"pong");
 
-                let disconnect = build_test_frame(them, 201, wire::MSG_DISCONNECT, 3000, &[0x00], &key);
+                let disconnect =
+                    build_test_frame(them, 201, wire::MSG_DISCONNECT, 3000, &[0x00], &key);
                 send_test_frame(&mut peer, &disconnect).await;
             };
 

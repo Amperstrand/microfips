@@ -33,6 +33,7 @@ jobs:
 
       - run: cargo test -p microfips-protocol --features std -- --test-threads=1
       - run: cargo test -p microfips-service
+      - run: cargo test -p microfips-l2cap-test
       # http-demo tests disabled: nightly SocketAddr::ToString regression
       # - run: cargo test -p microfips-http-demo --features http
 
@@ -191,10 +192,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -- --check
+        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -p microfips-l2cap-test -- --check
 
       - name: Run clippy
-        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -- -D warnings
+        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -p microfips-l2cap-test -- -D warnings
 
   sim-smoke:
     name: Simulator Smoke Test
