@@ -1926,7 +1926,9 @@ mod responder_tests {
 
         let mut responder = NoiseXkResponder::new(&SECRET_B, &initiator_eph_pub).unwrap();
         let mut msg2 = [0u8; crate::fsp::XK_HANDSHAKE_MSG2_SIZE];
-        let msg2_len = responder.write_message2(&SECRET_B, &epoch2, &mut msg2).unwrap();
+        let msg2_len = responder
+            .write_message2(&SECRET_B, &epoch2, &mut msg2)
+            .unwrap();
         assert_eq!(msg2_len, crate::fsp::XK_HANDSHAKE_MSG2_SIZE);
         assert_eq!(initiator.read_message2(&msg2).unwrap(), epoch2);
 
@@ -2060,6 +2062,9 @@ mod responder_tests {
         .unwrap();
         assert_eq!(enc_epoch_len, EPOCH_SIZE + TAG_SIZE);
 
-        assert_eq!(responder.read_message3(&msg3), Err(NoiseError::InvalidState));
+        assert_eq!(
+            responder.read_message3(&msg3),
+            Err(NoiseError::InvalidState)
+        );
     }
 }

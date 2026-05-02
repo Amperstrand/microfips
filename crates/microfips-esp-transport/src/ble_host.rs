@@ -36,6 +36,9 @@ static BLE_NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(false);
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
     static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+    // SAFETY: HEAP is a static mut accessed once during initialization before any allocation.
+    // The pointer (&raw mut HEAP) has 'static lifetime. esp_alloc requires the region to
+    // remain valid for the program duration — satisfied because HEAP is static.
     unsafe {
         esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
             &raw mut HEAP as *mut u8,
@@ -78,7 +81,15 @@ struct BleHciTransport<'d> {
     connector: core::cell::UnsafeCell<BleConnector<'d>>,
 }
 
+// SAFETY: BleHciTransport wraps UnsafeCell<BleConnector> for interior mutability.
+// It is constructed once as a singleton (via StaticCell) and shared between embassy
+// executor read/write paths. Embassy's cooperative scheduling guarantees read() and
+// write() are not called concurrently on the same transport instance.
 unsafe impl Sync for BleHciTransport<'_> {}
+
+// SAFETY: BleHciTransport can be sent between threads because the UnsafeCell
+// is only accessed through &self methods with embassy's cooperative scheduling
+// guaranteeing no concurrent access. See Sync impl above.
 unsafe impl Send for BleHciTransport<'_> {}
 
 impl<'d> BleHciTransport<'d> {
@@ -100,6 +111,9 @@ impl bt_hci::transport::Transport for BleHciTransport<'_> {
                 embassy_futures::yield_now().await;
                 continue;
             }
+            // SAFETY: Obtaining a mutable reference from the UnsafeCell. This is safe because
+            // embassy's cooperative async model guarantees read() and write() are not called
+            // concurrently — the trouble runner serializes HCI packet processing.
             let connector = unsafe { &mut *self.connector.get() };
             let len = connector.next(rx).map_err(|_| BleHciError::Io)?;
             if len > 0 {
@@ -115,6 +129,8 @@ impl bt_hci::transport::Transport for BleHciTransport<'_> {
         let wi = bt_hci::transport::WithIndicator::new(val);
         let len = wi.size();
         wi.write_hci(&mut buf[..len]).map_err(|_| BleHciError::Io)?;
+        // SAFETY: Same justification as read() above — UnsafeCell deref is safe because
+        // embassy cooperative scheduling prevents concurrent access.
         let connector = unsafe { &mut *self.connector.get() };
         connector
             .write(&buf[..len])
@@ -148,6 +164,9 @@ pub async fn ble_host_task() {
         }
     };
 
+    // SAFETY: Peripherals::steal() is called once during BLE host task initialization.
+    // The BT peripheral is not consumed by esp_hal::init() in the binary entry point —
+    // it is only needed here for the BLE radio. No other code accesses BT.
     let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
     let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
         loop {

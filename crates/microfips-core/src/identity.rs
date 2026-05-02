@@ -214,6 +214,7 @@ mod tests {
 
         fn remove(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
+            // SAFETY: env var tests run single-threaded (--test-threads=1)
             unsafe { std::env::remove_var(key) };
             Self { key, prev }
         }
@@ -223,7 +224,9 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.prev {
+                // SAFETY: env var tests run single-threaded (--test-threads=1)
                 Some(v) => unsafe { std::env::set_var(self.key, v) },
+                // SAFETY: env var tests run single-threaded (--test-threads=1)
                 None => unsafe { std::env::remove_var(self.key) },
             }
         }

@@ -30,6 +30,9 @@ const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
 
 #[cfg(feature = "esp32")]
 fn init_rx() {
+    // SAFETY: Writing to GPIO_FUNC_IN_SEL_BASE+4*44 to route UART0 RX through GPIO44's
+    // GPIO matrix input select. Fixed memory-mapped address per ESP32 TRM §4.2.
+    // Called once during init before control_task reads from UART.
     unsafe {
         let gpio_in_sel = (GPIO_FUNC_IN_SEL_BASE + 4 * 44) as *mut u32;
         write_volatile(gpio_in_sel, 3u32 | (1 << 7));
@@ -38,12 +41,16 @@ fn init_rx() {
 
 #[cfg(feature = "esp32")]
 fn rx_available() -> bool {
+    // SAFETY: Reading from UART_STATUS_REG, a fixed memory-mapped address (ESP32 TRM §13).
+    // 32-bit aligned read is atomic. control_task has exclusive access to UART0 RX.
     let status = unsafe { read_volatile(UART_STATUS_REG) };
     (status & 0xFF) != 0
 }
 
 #[cfg(feature = "esp32")]
 fn read_byte() -> u8 {
+    // SAFETY: Reading from UART_FIFO_REG, a fixed memory-mapped address (ESP32 TRM §13).
+    // 32-bit aligned read is atomic. control_task has exclusive access to UART0 RX.
     (unsafe { read_volatile(UART_FIFO_REG) } & 0xFF) as u8
 }
 
@@ -62,6 +69,9 @@ fn init_rx() {}
 
 #[cfg(feature = "esp32s3")]
 fn rx_available() -> bool {
+    // SAFETY: Reading from USB_SERIAL_JTAG_IN_EP1_ST_REG, a fixed memory-mapped address
+    // (ESP32-S3 TRM §28). 32-bit aligned read is atomic. control_task has exclusive access
+    // to the USB Serial JTAG RX path.
     unsafe {
         let st = read_volatile(USB_SERIAL_JTAG_IN_EP1_ST_REG);
         (st & 0x04) != 0
@@ -70,6 +80,9 @@ fn rx_available() -> bool {
 
 #[cfg(feature = "esp32s3")]
 fn read_byte() -> u8 {
+    // SAFETY: Reading from USB_SERIAL_JTAG_EP1_REG and writing to USB_SERIAL_JTAG_EP1_CONF_REG,
+    // fixed memory-mapped addresses (ESP32-S3 TRM §28). 32-bit aligned accesses are atomic.
+    // control_task has exclusive access to the USB Serial JTAG RX path.
     unsafe {
         let val = read_volatile(USB_SERIAL_JTAG_EP1_REG) & 0xFF;
         // Clear EP1 done by writing bit 0 of EP1_CONF (wr_done)
@@ -124,6 +137,10 @@ fn node_identity() -> Option<&'static NodeIdentity> {
     if ptr.is_null() {
         return None;
     }
+    // SAFETY: The pointer was set via StaticCell::init() which returns &'static T, then
+    // stored via AtomicPtr with Release ordering. The Acquire load above pairs with that
+    // Release store, ensuring the pointer and data are visible. The null check above
+    // guarantees the pointer is valid.
     Some(unsafe { &*ptr })
 }
 
@@ -135,6 +152,9 @@ fn transport_type() -> &'static str {
     if ptr.is_null() {
         return "unknown";
     }
+    // SAFETY: Same pattern as node_identity(): pointer set via StaticCell::init() + Release
+    // store, loaded with Acquire, null-checked above. &'static str is Copy, so *ptr copies
+    // the reference (not the string data).
     unsafe { *ptr }
 }
 
@@ -146,6 +166,8 @@ fn peer_pub() -> Option<&'static [u8; 33]> {
     if ptr.is_null() {
         return None;
     }
+    // SAFETY: Same pattern as node_identity(): pointer set via StaticCell::init() + Release
+    // store, loaded with Acquire, null-checked above.
     Some(unsafe { &*ptr })
 }
 
@@ -266,6 +288,9 @@ fn handle_reset() {
     for _ in 0..1_000_000 {
         core::hint::spin_loop();
     }
+    // SAFETY: Writing to RTC_CNTL_OPTIONS0_REG (SW_SYS_RST bit) triggers software reset.
+    // Standard ESP32 reset mechanism. After this write the CPU resets immediately —
+    // no subsequent code executes.
     unsafe {
         core::ptr::write_volatile(RESET_REGISTER as *mut u32, 1 << 31);
     }
