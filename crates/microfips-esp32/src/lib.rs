@@ -1,3 +1,5 @@
+//! ESP32-D0WD firmware: chip-specific config, BLE/L2CAP/UART/WiFi tasks, and binary entry points.
+
 #![no_std]
 
 pub mod config;

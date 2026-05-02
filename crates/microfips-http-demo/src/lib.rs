@@ -1,3 +1,5 @@
+//! Optional HTTP adapter and demo service for FIPS applications.
+
 #![no_std]
 
 use microfips_service::{

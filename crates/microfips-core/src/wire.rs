@@ -905,6 +905,12 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_message_unknown_phase() {
+        let prefix = build_prefix(0x05, 0x00, 0);
+        assert!(parse_message(&prefix).is_none());
+    }
+
+    #[test]
     fn msg1_sender_idx_zero_for_initiator() {
         // Initiator sends sender_idx=0 (hasn't received an index from responder yet)
         let noise_payload = [0u8; 106];

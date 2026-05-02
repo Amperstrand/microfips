@@ -1,3 +1,5 @@
+//! Transport-neutral request/response service layer for FIPS applications.
+
 #![no_std]
 
 use core::str;
@@ -11,6 +13,7 @@ pub const SERVICE_KIND_RESPONSE: u8 = 2;
 pub const SERVICE_REQUEST_HEADER_LEN: usize = 8;
 pub const SERVICE_RESPONSE_HEADER_LEN: usize = 8;
 
+/// HTTP-like methods for service requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ServiceMethod {
@@ -36,6 +39,7 @@ impl ServiceMethod {
     }
 }
 
+/// Content types for service request/response payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ContentType {
@@ -59,6 +63,7 @@ impl ContentType {
     }
 }
 
+/// HTTP-like status codes for service responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceStatus(u16);
 
@@ -76,6 +81,7 @@ impl ServiceStatus {
     }
 }
 
+/// A service request containing method, route, and payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceRequest<'a> {
     pub method: ServiceMethod,
@@ -83,6 +89,7 @@ pub struct ServiceRequest<'a> {
     pub payload: &'a [u8],
 }
 
+/// A service response containing status, content type, and body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceResponse<'a> {
     pub status: ServiceStatus,
@@ -90,6 +97,7 @@ pub struct ServiceResponse<'a> {
     pub body: &'a [u8],
 }
 
+/// Handler return value with status, content type, and body length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceReply {
     pub status: ServiceStatus,
@@ -97,6 +105,7 @@ pub struct ServiceReply {
     pub body_len: usize,
 }
 
+/// Errors that can occur during service request handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceError {
     BufferTooSmall,
@@ -137,7 +146,9 @@ impl ServiceError {
     }
 }
 
+/// Trait for handling service requests and producing responses.
 pub trait ServiceHandler {
+    /// Handles a service request and writes the response to the provided buffer.
     fn handle(
         &mut self,
         request: ServiceRequest<'_>,
@@ -145,6 +156,7 @@ pub trait ServiceHandler {
     ) -> Result<ServiceReply, ServiceError>;
 }
 
+/// Route matching strategy: exact string match or prefix match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteMatch {
     Exact(&'static str),
@@ -160,8 +172,10 @@ impl RouteMatch {
     }
 }
 
+/// Function type for route handlers.
 pub type RouteHandler = fn(ServiceRequest<'_>, &mut [u8]) -> Result<ServiceReply, ServiceError>;
 
+/// A route definition with method, matcher, and handler.
 #[derive(Debug, Clone, Copy)]
 pub struct Route {
     pub method: ServiceMethod,
@@ -169,12 +183,14 @@ pub struct Route {
     pub handler: RouteHandler,
 }
 
+/// Routes requests to matching handlers based on method and path.
 #[derive(Debug, Clone, Copy)]
 pub struct Router<'a> {
     routes: &'a [Route],
 }
 
 impl<'a> Router<'a> {
+    /// Creates a new router from a static slice of routes.
     pub const fn new(routes: &'a [Route]) -> Self {
         Self { routes }
     }
@@ -204,6 +220,7 @@ impl ServiceHandler for Router<'_> {
     }
 }
 
+/// Encodes a service request into the wire format.
 pub fn encode_request(
     method: ServiceMethod,
     route: &str,
@@ -231,6 +248,7 @@ pub fn encode_request(
     Ok(total)
 }
 
+/// Decodes a service request from wire format bytes.
 pub fn decode_request(data: &[u8]) -> Result<ServiceRequest<'_>, ServiceError> {
     if data.len() < SERVICE_REQUEST_HEADER_LEN {
         return Err(ServiceError::InvalidEnvelope);
@@ -258,6 +276,7 @@ pub fn decode_request(data: &[u8]) -> Result<ServiceRequest<'_>, ServiceError> {
     })
 }
 
+/// Encodes a service response into the wire format.
 pub fn encode_response(
     status: ServiceStatus,
     content_type: ContentType,
@@ -279,6 +298,7 @@ pub fn encode_response(
     Ok(total)
 }
 
+/// Decodes a service response from wire format bytes.
 pub fn decode_response(data: &[u8]) -> Result<ServiceResponse<'_>, ServiceError> {
     if data.len() < SERVICE_RESPONSE_HEADER_LEN {
         return Err(ServiceError::InvalidEnvelope);
@@ -303,6 +323,7 @@ pub fn decode_response(data: &[u8]) -> Result<ServiceResponse<'_>, ServiceError>
     })
 }
 
+/// Decodes a request, dispatches it to a handler, and encodes the response.
 pub fn dispatch_request<H: ServiceHandler>(
     handler: &mut H,
     request_bytes: &[u8],
@@ -393,6 +414,7 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
     }
 }
 
+/// Extracts the suffix of a route after a given prefix.
 pub fn route_suffix<'a>(route: &'a str, prefix: &str) -> Option<&'a str> {
     route.strip_prefix(prefix)
 }

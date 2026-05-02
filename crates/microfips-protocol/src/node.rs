@@ -533,14 +533,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             }
                             FrameAction::SelfDC => {
                                 log_steady!("steady: self disconnect, exiting steady");
-                                let _ = self
-                                    .send_disconnect(
-                                        ks,
-                                        them,
-                                        &mut send_ctr,
-                                        wire::DISC_REASON_SHUTDOWN,
-                                    )
-                                    .await;
+                                self.send_disconnect(
+                                    ks,
+                                    them,
+                                    &mut send_ctr,
+                                    wire::DISC_REASON_SHUTDOWN,
+                                )
+                                .await;
                                 return Ok(());
                             }
                             FrameAction::SendDatagram(len) => {
@@ -696,14 +695,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 Either::First(Err(e)) => {
                     log_steady!("steady: recv error, disconnecting: {:?}", e);
                     let _ = e;
-                    let _ = self
-                        .send_disconnect(
-                            ks,
-                            them,
-                            &mut send_ctr,
-                            wire::DISC_REASON_TRANSPORT_FAILURE,
-                        )
-                        .await;
+                    self.send_disconnect(
+                        ks,
+                        them,
+                        &mut send_ctr,
+                        wire::DISC_REASON_TRANSPORT_FAILURE,
+                    )
+                    .await;
                     return Err(ProtocolError::Disconnected);
                 }
                 Either::Second(()) => {
@@ -806,7 +804,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf).unwrap();
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
-            let _ = self.send_frame(&out[..fl]).await;
+            if let Err(e) = self.send_frame(&out[..fl]).await {
+                log::warn!("send failed: {:?}", e);
+            }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
         }
@@ -834,7 +834,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf).unwrap();
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
-            let _ = self.send_frame(&out[..fl]).await;
+            if let Err(e) = self.send_frame(&out[..fl]).await {
+                log::warn!("send failed: {:?}", e);
+            }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
         }
@@ -861,7 +863,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
 
         if let Some(fl) = fl {
-            let _ = self.send_frame(&out[..fl]).await;
+            if let Err(e) = self.send_frame(&out[..fl]).await {
+                log::warn!("send failed: {:?}", e);
+            }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
         }
@@ -886,7 +890,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 .unwrap();
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
-            let _ = self.send_frame(&out[..fl]).await;
+            if let Err(e) = self.send_frame(&out[..fl]).await {
+                log::warn!("send failed: {:?}", e);
+            }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
         }

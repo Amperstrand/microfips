@@ -407,6 +407,78 @@ mod tests {
     }
 
     #[test]
+    fn test_srtt_negative_rtt() {
+        let mut srtt = SrttEstimator::new();
+        srtt.update(0);
+        assert!(srtt.initialized());
+        assert_eq!(srtt.srtt_us(), 0);
+        assert!(srtt.rttvar_us >= 0);
+    }
+
+    #[test]
+    fn test_srtt_very_large_rtt() {
+        let mut srtt = SrttEstimator::new();
+        srtt.update(i64::MAX / 2);
+        assert!(srtt.initialized());
+        assert!(srtt.srtt_us() > 0);
+    }
+
+    #[test]
+    fn test_jitter_zero_transit_delta() {
+        let mut jitter = JitterEstimator::new();
+        jitter.update(0);
+        jitter.update(0);
+        assert_eq!(jitter.jitter_us(), 0);
+    }
+
+    #[test]
+    fn test_jitter_very_large_values() {
+        let mut jitter = JitterEstimator::new();
+        jitter.update(i32::MAX);
+        jitter.update(i32::MIN + 1);
+        assert!(jitter.jitter_us() > 0);
+    }
+
+    #[test]
+    fn test_dual_ewma_identical_values() {
+        let mut ewma = DualEwma::new();
+        for _ in 0..256 {
+            ewma.update(42.5);
+        }
+        assert!((ewma.short() - 42.5).abs() < f64::EPSILON);
+        assert!((ewma.long() - 42.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_owd_trend_all_same_values() {
+        let mut detector = OwdTrendDetector::new();
+        for i in 0..16 {
+            detector.push(i, 123_456);
+        }
+        assert_eq!(detector.trend_us_per_sec(), 0);
+    }
+
+    #[test]
+    fn test_owd_trend_with_capacity() {
+        let mut detector = OwdTrendDetector::with_capacity(8);
+        for i in 0..16 {
+            detector.push(i, (i as i64) * 10);
+        }
+        assert_eq!(detector.len(), 8);
+        assert!(detector.trend_us_per_sec() > 0);
+    }
+
+    #[test]
+    fn test_compute_etx_edge_cases() {
+        assert!((compute_etx(1.0, 1.0) - 1.0).abs() < f64::EPSILON);
+        assert_eq!(compute_etx(0.0, 1.0), 100.0);
+        assert_eq!(compute_etx(1.0, 0.0), 100.0);
+
+        let etx_half = compute_etx(0.5, 0.5);
+        assert!((etx_half - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn gap_tracker_no_loss() {
         let mut gaps = GapTracker::new();
         gaps.observe(1);

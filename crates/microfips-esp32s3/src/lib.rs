@@ -1,3 +1,5 @@
+//! ESP32-S3 (TiLDAGON) firmware: chip-specific config, BLE/L2CAP/UART/WiFi tasks, and binary entry points.
+
 #![no_std]
 
 pub mod config;

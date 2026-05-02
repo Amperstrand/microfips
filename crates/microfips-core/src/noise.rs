@@ -1907,4 +1907,159 @@ mod responder_tests {
         assert_eq!(k_send_i, k_send_r, "final k_send");
         assert_eq!(k_recv_i, k_recv_r, "final k_recv");
     }
+
+    #[test]
+    fn test_xk_initiator_responder_full_handshake() {
+        const SECRET_A: [u8; 32] = [0xAA; 32];
+        const SECRET_B: [u8; 32] = [0xBB; 32];
+
+        let responder_static_pub = ecdh_pubkey(&SECRET_B).unwrap();
+        let initiator_static_pub = ecdh_pubkey(&SECRET_A).unwrap();
+        let epoch2 = [0x11; EPOCH_SIZE];
+        let epoch3 = [0x22; EPOCH_SIZE];
+
+        let (mut initiator, initiator_eph_pub) =
+            NoiseXkInitiator::new(&SECRET_A, &SECRET_A, &responder_static_pub).unwrap();
+        let mut msg1 = [0u8; crate::fsp::XK_HANDSHAKE_MSG1_SIZE];
+        let msg1_len = initiator.write_message1(&mut msg1).unwrap();
+        assert_eq!(msg1_len, crate::fsp::XK_HANDSHAKE_MSG1_SIZE);
+
+        let mut responder = NoiseXkResponder::new(&SECRET_B, &initiator_eph_pub).unwrap();
+        let mut msg2 = [0u8; crate::fsp::XK_HANDSHAKE_MSG2_SIZE];
+        let msg2_len = responder.write_message2(&SECRET_B, &epoch2, &mut msg2).unwrap();
+        assert_eq!(msg2_len, crate::fsp::XK_HANDSHAKE_MSG2_SIZE);
+        assert_eq!(initiator.read_message2(&msg2).unwrap(), epoch2);
+
+        let mut msg3 = [0u8; crate::fsp::XK_HANDSHAKE_MSG3_SIZE];
+        let msg3_len = initiator
+            .write_message3(&initiator_static_pub, &epoch3, &mut msg3)
+            .unwrap();
+        assert_eq!(msg3_len, crate::fsp::XK_HANDSHAKE_MSG3_SIZE);
+
+        let (received_static, received_epoch) = responder.read_message3(&msg3).unwrap();
+        assert_eq!(received_static, initiator_static_pub);
+        assert_eq!(received_epoch, epoch3);
+
+        let (k_send_i, k_recv_i) = initiator.finalize();
+        let (k_recv_r, k_send_r) = responder.finalize();
+        assert_eq!(k_send_i, k_recv_r);
+        assert_eq!(k_recv_i, k_send_r);
+    }
+
+    #[test]
+    fn test_xk_message_sizes() {
+        const SECRET_A: [u8; 32] = [0xAA; 32];
+        const SECRET_B: [u8; 32] = [0xBB; 32];
+
+        let responder_static_pub = ecdh_pubkey(&SECRET_B).unwrap();
+        let initiator_static_pub = ecdh_pubkey(&SECRET_A).unwrap();
+
+        let (mut initiator, initiator_eph_pub) =
+            NoiseXkInitiator::new(&SECRET_A, &SECRET_A, &responder_static_pub).unwrap();
+
+        let mut msg1 = [0u8; crate::fsp::XK_HANDSHAKE_MSG1_SIZE];
+        let msg1_len = initiator.write_message1(&mut msg1).unwrap();
+        assert_eq!(msg1_len, crate::fsp::XK_HANDSHAKE_MSG1_SIZE);
+        assert_eq!(msg1_len, 33);
+
+        let mut responder = NoiseXkResponder::new(&SECRET_B, &initiator_eph_pub).unwrap();
+        let mut msg2 = [0u8; crate::fsp::XK_HANDSHAKE_MSG2_SIZE];
+        let msg2_len = responder
+            .write_message2(&SECRET_B, &[0x33; EPOCH_SIZE], &mut msg2)
+            .unwrap();
+        assert_eq!(msg2_len, crate::fsp::XK_HANDSHAKE_MSG2_SIZE);
+        assert_eq!(msg2_len, 57);
+
+        initiator.read_message2(&msg2).unwrap();
+        let mut msg3 = [0u8; crate::fsp::XK_HANDSHAKE_MSG3_SIZE];
+        let msg3_len = initiator
+            .write_message3(&initiator_static_pub, &[0x44; EPOCH_SIZE], &mut msg3)
+            .unwrap();
+        assert_eq!(msg3_len, crate::fsp::XK_HANDSHAKE_MSG3_SIZE);
+        assert_eq!(msg3_len, 73);
+    }
+
+    #[test]
+    fn test_xk_wrong_remote_key() {
+        const SECRET_A: [u8; 32] = [0xAA; 32];
+        const SECRET_B: [u8; 32] = [0xBB; 32];
+        const SECRET_C: [u8; 32] = [0xCC; 32];
+
+        let wrong_responder_pub = ecdh_pubkey(&SECRET_C).unwrap();
+        let (mut initiator, initiator_eph_pub) =
+            NoiseXkInitiator::new(&SECRET_A, &SECRET_A, &wrong_responder_pub).unwrap();
+
+        let mut msg1 = [0u8; crate::fsp::XK_HANDSHAKE_MSG1_SIZE];
+        initiator.write_message1(&mut msg1).unwrap();
+
+        let mut responder = NoiseXkResponder::new(&SECRET_B, &initiator_eph_pub).unwrap();
+        let mut msg2 = [0u8; crate::fsp::XK_HANDSHAKE_MSG2_SIZE];
+        responder
+            .write_message2(&SECRET_B, &[0x55; EPOCH_SIZE], &mut msg2)
+            .unwrap();
+
+        assert!(initiator.read_message2(&msg2).is_err());
+    }
+
+    #[test]
+    fn test_xk_replay_msg1() {
+        const SECRET_A: [u8; 32] = [0xAA; 32];
+        const SECRET_B: [u8; 32] = [0xBB; 32];
+
+        let responder_static_pub = ecdh_pubkey(&SECRET_B).unwrap();
+        let initiator_static_pub = ecdh_pubkey(&SECRET_A).unwrap();
+
+        let (mut initiator, initiator_eph_pub) =
+            NoiseXkInitiator::new(&SECRET_A, &SECRET_A, &responder_static_pub).unwrap();
+        let mut msg1 = [0u8; crate::fsp::XK_HANDSHAKE_MSG1_SIZE];
+        initiator.write_message1(&mut msg1).unwrap();
+
+        let mut responder = NoiseXkResponder::new(&SECRET_B, &initiator_eph_pub).unwrap();
+        let mut msg2 = [0u8; crate::fsp::XK_HANDSHAKE_MSG2_SIZE];
+        responder
+            .write_message2(&SECRET_B, &[0x66; EPOCH_SIZE], &mut msg2)
+            .unwrap();
+        initiator.read_message2(&msg2).unwrap();
+
+        let mut msg3 = [0u8; crate::fsp::XK_HANDSHAKE_MSG3_SIZE];
+        initiator
+            .write_message3(&initiator_static_pub, &[0x77; EPOCH_SIZE], &mut msg3)
+            .unwrap();
+
+        assert!(responder.read_message3(&msg3).is_ok());
+        assert!(responder.read_message3(&msg3).is_err());
+    }
+
+    #[test]
+    fn test_xk_wrong_order() {
+        const SECRET_A: [u8; 32] = [0xAA; 32];
+        const SECRET_B: [u8; 32] = [0xBB; 32];
+
+        let initiator_eph_pub = ecdh_pubkey(&SECRET_A).unwrap();
+        let mut responder = NoiseXkResponder::new(&SECRET_B, &initiator_eph_pub).unwrap();
+        let initiator_static_pub = ecdh_pubkey(&SECRET_A).unwrap();
+        let mut msg3 = [0u8; crate::fsp::XK_HANDSHAKE_MSG3_SIZE];
+
+        let enc_static_len = aead_encrypt(
+            responder.k.as_ref().unwrap(),
+            0,
+            &[],
+            &initiator_static_pub,
+            &mut msg3,
+        )
+        .unwrap();
+        assert_eq!(enc_static_len, PUBKEY_SIZE + TAG_SIZE);
+
+        let enc_epoch_len = aead_encrypt(
+            responder.k.as_ref().unwrap(),
+            1,
+            &[],
+            &[0x99; EPOCH_SIZE],
+            &mut msg3[enc_static_len..],
+        )
+        .unwrap();
+        assert_eq!(enc_epoch_len, EPOCH_SIZE + TAG_SIZE);
+
+        assert_eq!(responder.read_message3(&msg3), Err(NoiseError::InvalidState));
+    }
 }
