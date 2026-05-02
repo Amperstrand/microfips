@@ -21,8 +21,8 @@ use trouble_host::prelude::{
 };
 
 use crate::config::{
-    DEVICE_NSEC, FIPS_ALLOWED_PUBKEYS, FIPS_BLE_ADDR, L2CAP_FIPS_SERVICE_UUID_LE,
-    L2CAP_FRAME_CAP, L2CAP_PSM, RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
+    DEVICE_NSEC, FIPS_ALLOWED_PUBKEYS, FIPS_BLE_ADDR, L2CAP_FIPS_SERVICE_UUID_LE, L2CAP_FRAME_CAP,
+    L2CAP_PSM, RECV_RETRY_DELAY_MS, USE_PUBLIC_BLE_ADDRESS,
 };
 
 const L2CAP_SDU_CAP: usize = L2CAP_FRAME_CAP + 2;
@@ -400,12 +400,7 @@ where
 
                 if rx_count <= 3 || rx_count % 100 == 0 {
                     let phase = frame.first().copied().unwrap_or(0xFF);
-                    log::info!(
-                        "RX #{}: {}B phase={:#04x}",
-                        rx_count,
-                        payload_len,
-                        phase
-                    );
+                    log::info!("RX #{}: {}B phase={:#04x}", rx_count, payload_len, phase);
                 }
 
                 if L2CAP_RX_CH.try_send(frame).is_err() {
@@ -451,12 +446,7 @@ where
 
                 if tx_count <= 3 || tx_count % 100 == 0 {
                     let phase = frame.first().copied().unwrap_or(0xFF);
-                    log::info!(
-                        "TX #{}: {}B phase={:#04x}",
-                        tx_count,
-                        len,
-                        phase
-                    );
+                    log::info!("TX #{}: {}B phase={:#04x}", tx_count, len, phase);
                 }
 
                 match embassy_time::with_timeout(
@@ -644,7 +634,11 @@ pub async fn l2cap_host_task() {
 async fn do_central_connect<'s, T, P>(
     stack: &'s Stack<'s, T, P>,
     central: &mut Central<'s, T, P>,
-) -> Option<(L2capChannelWriter<'s, P>, L2capChannelReader<'s, P>, [u8; 33])>
+) -> Option<(
+    L2capChannelWriter<'s, P>,
+    L2capChannelReader<'s, P>,
+    [u8; 33],
+)>
 where
     T: trouble_host::prelude::Controller,
     P: PacketPool,
@@ -757,8 +751,7 @@ where
         &mut adv_data,
     ) else {
         log::error!("adv_data encode failed");
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
-            .await;
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
         return DisconnectReason::DataExchanged;
     };
 
@@ -775,8 +768,7 @@ where
         &mut scan_data,
     ) else {
         log::error!("scan_data encode failed");
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
-            .await;
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
         return DisconnectReason::DataExchanged;
     };
 
@@ -839,8 +831,7 @@ where
     else {
         log::error!("pubkey exchange failed");
         drain_l2cap_channels();
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
-            .await;
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS)).await;
         return DisconnectReason::DataExchanged;
     };
 

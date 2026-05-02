@@ -192,10 +192,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -p microfips-l2cap-test -- --check
+        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -p microfips-l2cap-test -p microfips-build -p microfips-esp-common -p microfips-esp-transport -p microfips-http-demo -- --check
 
       - name: Run clippy
-        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -p microfips-l2cap-test -- -D warnings
+        # ESP crates (esp-common, esp-transport) require ESP toolchain — omit from host lint
+        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -p microfips-l2cap-test -p microfips-build -p microfips-http-demo -- -D warnings
 
   sim-smoke:
     name: Simulator Smoke Test
