@@ -1,3 +1,5 @@
+//! no_std FIPS protocol state machine: Transport trait, length-prefixed framing, Node runtime, FSP dual handler, and peer policy for leaf nodes.
+
 #![no_std]
 
 #[cfg(any(test, feature = "std"))]

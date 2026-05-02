@@ -302,6 +302,24 @@ mod tests {
 
     #[test]
     #[cfg(feature = "std")]
+    #[should_panic(expected = "FIPS_PEER_NPUB: invalid hex")]
+    fn test_load_peer_pub_malformed_hex() {
+        let _g1 = EnvGuard::set("FIPS_PEER_NPUB", "not_hex");
+        let _g2 = EnvGuard::remove("FIPS_PEER_PUB");
+        let _ = load_peer_pub();
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[should_panic(expected = "FIPS_PEER_NPUB: must be 33 bytes")]
+    fn test_load_peer_pub_wrong_length() {
+        let _g1 = EnvGuard::set("FIPS_PEER_NPUB", "00");
+        let _g2 = EnvGuard::remove("FIPS_PEER_PUB");
+        let _ = load_peer_pub();
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
     #[should_panic(expected = "FIPS_NSEC: invalid hex")]
     fn load_secret_panics_on_invalid_hex() {
         let _g1 = EnvGuard::set("FIPS_NSEC", "not_valid_hex!");

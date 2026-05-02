@@ -1,3 +1,5 @@
+//! Chip-agnostic ESP32 utilities: DNS resolver, config constants, UDP transport, node identity, and stats counters.
+
 #![no_std]
 
 extern crate alloc;

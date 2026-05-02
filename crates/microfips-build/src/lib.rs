@@ -1,3 +1,5 @@
+//! Build-time key loading from keys.json for firmware identity injection.
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;

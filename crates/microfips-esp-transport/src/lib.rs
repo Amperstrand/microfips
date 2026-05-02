@@ -1,3 +1,5 @@
+//! Shared ESP32 transport implementations: UART, USB CDC, BLE GATT, BLE L2CAP, WiFi, and common hardware abstractions.
+
 #![no_std]
 
 extern crate alloc;
