@@ -88,7 +88,9 @@ impl<H: L2capHostAdapter> Transport for SharedL2capTransport<H> {
         frame
             .extend_from_slice(data)
             .map_err(|_| L2capError::FrameTooLarge)?;
-        H::send_frame(frame).await.map_err(|_| L2capError::Disconnected)?;
+        H::send_frame(frame)
+            .await
+            .map_err(|_| L2capError::Disconnected)?;
         Ok(())
     }
 
