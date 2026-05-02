@@ -93,7 +93,7 @@ struct ThroughputState {
     test_id: u32,
     frames_recv: u32,
     bytes_recv: u64,
-    start_us: u64,
+    started_at: Option<Instant>,
     duration_secs: u8,
     active: bool,
 }
@@ -117,6 +117,94 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
 }
 
 impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
+    async fn process_frame_action<H: NodeHandler>(
+        &mut self,
+        action: FrameAction,
+        ks: &[u8; 32],
+        them: wire::SessionIndex,
+        send_ctr: &mut u64,
+        handler: &mut H,
+    ) -> Result<bool, ProtocolError> {
+        match action {
+            FrameAction::Continue => Ok(false),
+            FrameAction::HeartbeatRecv => {
+                self.policy.record_heartbeat();
+                log_steady!("steady: heartbeat received from peer");
+                handler.on_event(NodeEvent::HeartbeatRecv).await;
+                Ok(false)
+            }
+            FrameAction::PeerDC => {
+                log_steady!("steady: peer disconnect received, exiting steady");
+                Ok(true)
+            }
+            FrameAction::SelfDC => {
+                log_steady!("steady: self disconnect, exiting steady");
+                self.send_disconnect(ks, them, send_ctr, wire::DISC_REASON_SHUTDOWN)
+                    .await;
+                Ok(true)
+            }
+            FrameAction::SendDatagram(len) => {
+                self.policy.record_data_frame();
+                log_steady!("steady: sending datagram {} bytes", len);
+                self.send_datagram(them, send_ctr, len, ks).await;
+                Ok(false)
+            }
+            FrameAction::SendLinkMessage { msg_type, len } => {
+                self.policy.record_data_frame();
+                log_steady!(
+                    "steady: sending link msg type=0x{:02x} len={}",
+                    msg_type,
+                    len
+                );
+                self.send_link_message(them, send_ctr, msg_type, len, ks)
+                    .await;
+                Ok(false)
+            }
+        }
+    }
+
+    #[cfg(feature = "mmp")]
+    fn maybe_handle_mmp_control(&mut self, frame: &DecryptedFrame<'_>) -> Option<FrameAction> {
+        match frame.msg_type {
+            wire::MSG_SENDER_REPORT => {
+                if let Some(_sr) = microfips_core::mmp::SenderReport::decode(frame.payload) {
+                    let now = embassy_time::Instant::now();
+                    if self.mmp.receiver.should_send_report(now) {
+                        if let Some(rr) = self.mmp.receiver.build_report(now) {
+                            let encoded = rr.encode();
+                            let body_len = encoded.len();
+                            self.resp_buf[..body_len].copy_from_slice(&encoded);
+                            return Some(FrameAction::SendLinkMessage {
+                                msg_type: wire::MSG_RECEIVER_REPORT,
+                                len: body_len,
+                            });
+                        }
+                    }
+                }
+                Some(FrameAction::Continue)
+            }
+            wire::MSG_RECEIVER_REPORT => {
+                if let Some(rr) = microfips_core::mmp::ReceiverReport::decode(frame.payload) {
+                    let now = embassy_time::Instant::now();
+                    let our_ts = now.as_millis() as u32;
+                    let _first_rtt = self.mmp.metrics.process_receiver_report(&rr, our_ts, now);
+                    if let Some(srtt_ms) = self.mmp.metrics.srtt_ms() {
+                        let srtt_us = (srtt_ms * 1000.0) as i64;
+                        self.mmp.sender.update_report_interval_from_srtt(srtt_us);
+                        self.mmp.receiver.update_report_interval_from_srtt(srtt_us);
+                    }
+                    let our_recv = self.mmp.receiver.cumulative_packets_recv();
+                    let peer_highest = self.mmp.receiver.highest_counter();
+                    self.mmp
+                        .metrics
+                        .update_reverse_delivery(our_recv, peer_highest);
+                }
+                Some(FrameAction::Continue)
+            }
+            _ => None,
+        }
+    }
+
     pub fn new(transport: T, rng: R, nsec: [u8; 32], peer_npub: [u8; 33]) -> Self {
         Self {
             transport,
@@ -454,6 +542,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut sr_start_ctr: u64 = 0;
         #[allow(unused_mut, unused_variables)]
         let mut sr_start_ts: u32 = embassy_time::Instant::now().as_millis() as u32;
+        let mut dec_buf = [0u8; 2048];
 
         loop {
             let mut rx = [0u8; RECV_BUF_SIZE];
@@ -496,13 +585,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             continue;
                         }
 
-                        let result = handle_frame_inner(
-                            kr,
-                            frame_data,
-                            &mut self.throughput,
-                            handler,
-                            &mut self.resp_buf,
-                        );
+                        let frame = decrypt_established_frame(kr, frame_data, &mut dec_buf);
                         if frame_is_policy_good(kr, frame_data) {
                             self.policy.record_good_frame();
                         } else {
@@ -520,112 +603,41 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             return Err(ProtocolError::Disconnected);
                         }
 
-                        match result {
-                            FrameAction::Continue => {}
-                            FrameAction::HeartbeatRecv => {
-                                self.policy.record_heartbeat();
-                                log_steady!("steady: heartbeat received from peer");
-                                handler.on_event(NodeEvent::HeartbeatRecv).await;
-                            }
-                            FrameAction::PeerDC => {
-                                log_steady!("steady: peer disconnect received, exiting steady");
+                        let Some(frame) = frame else {
+                            continue;
+                        };
+
+                        #[cfg(feature = "mmp")]
+                        self.mmp.receiver.record_recv(
+                            frame.counter,
+                            frame.sender_timestamp,
+                            frame.frame_bytes,
+                            false,
+                            embassy_time::Instant::now(),
+                        );
+
+                        #[cfg(feature = "mmp")]
+                        if let Some(action) = self.maybe_handle_mmp_control(&frame) {
+                            if self
+                                .process_frame_action(action, ks, them, &mut send_ctr, handler)
+                                .await?
+                            {
                                 return Ok(());
                             }
-                            FrameAction::SelfDC => {
-                                log_steady!("steady: self disconnect, exiting steady");
-                                self.send_disconnect(
-                                    ks,
-                                    them,
-                                    &mut send_ctr,
-                                    wire::DISC_REASON_SHUTDOWN,
-                                )
-                                .await;
-                                return Ok(());
-                            }
-                            FrameAction::SendDatagram(len) => {
-                                self.policy.record_data_frame();
-                                log_steady!("steady: sending datagram {} bytes", len);
-                                self.send_datagram(them, &mut send_ctr, len, ks).await;
-                            }
-                            FrameAction::SendLinkMessage { msg_type, len } => {
-                                self.policy.record_data_frame();
-                                log_steady!(
-                                    "steady: sending link msg type=0x{:02x} len={}",
-                                    msg_type,
-                                    len
-                                );
-                                self.send_link_message(them, &mut send_ctr, msg_type, len, ks)
-                                    .await;
-                            }
-                            #[cfg(feature = "mmp")]
-                            FrameAction::MmpRecv {
-                                counter,
-                                sender_timestamp,
-                                frame_bytes,
-                            } => {
-                                self.mmp.receiver.record_recv(
-                                    counter,
-                                    sender_timestamp,
-                                    frame_bytes,
-                                    false,
-                                    embassy_time::Instant::now(),
-                                );
-                            }
-                            #[cfg(feature = "mmp")]
-                            FrameAction::MmpSenderReport {
-                                counter,
-                                sender_timestamp,
-                                frame_bytes,
-                                report: _,
-                            } => {
-                                let now = embassy_time::Instant::now();
-                                self.mmp.receiver.record_recv(
-                                    counter,
-                                    sender_timestamp,
-                                    frame_bytes,
-                                    false,
-                                    now,
-                                );
-                                if self.mmp.receiver.should_send_report(now) {
-                                    if let Some(rr) = self.mmp.receiver.build_report(now) {
-                                        let encoded = rr.encode();
-                                        let body_len = encoded.len();
-                                        self.resp_buf[..body_len].copy_from_slice(&encoded);
-                                        self.send_link_message(
-                                            them,
-                                            &mut send_ctr,
-                                            wire::MSG_RECEIVER_REPORT,
-                                            body_len,
-                                            ks,
-                                        )
-                                        .await;
-                                    }
-                                }
-                            }
-                            #[cfg(feature = "mmp")]
-                            FrameAction::MmpReceiverReport {
-                                counter: _,
-                                sender_timestamp: _,
-                                frame_bytes: _,
-                                report,
-                            } => {
-                                let now = embassy_time::Instant::now();
-                                let our_ts = now.as_millis() as u32;
-                                let _first_rtt = self
-                                    .mmp
-                                    .metrics
-                                    .process_receiver_report(&report, our_ts, now);
-                                if let Some(srtt_ms) = self.mmp.metrics.srtt_ms() {
-                                    let srtt_us = (srtt_ms * 1000.0) as i64;
-                                    self.mmp.sender.update_report_interval_from_srtt(srtt_us);
-                                    self.mmp.receiver.update_report_interval_from_srtt(srtt_us);
-                                }
-                                let our_recv = self.mmp.receiver.cumulative_packets_recv();
-                                let peer_highest = self.mmp.receiver.highest_counter();
-                                self.mmp
-                                    .metrics
-                                    .update_reverse_delivery(our_recv, peer_highest);
-                            }
+                            continue;
+                        }
+
+                        let result = dispatch_link_message(
+                            &frame,
+                            &mut self.throughput,
+                            handler,
+                            &mut self.resp_buf,
+                        );
+                        if self
+                            .process_frame_action(result, ks, them, &mut send_ctr, handler)
+                            .await?
+                        {
+                            return Ok(());
                         }
                     }
                     if self.rpos >= self.rlen {
@@ -1015,17 +1027,23 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     }
 }
 
-/// Decrypt and dispatch a single FMP established frame.
+#[derive(Debug, PartialEq)]
+struct DecryptedFrame<'a> {
+    counter: u64,
+    sender_timestamp: u32,
+    msg_type: u8,
+    payload: &'a [u8],
+    frame_bytes: usize,
+}
+
+/// Decrypt a single FMP established frame.
 /// FIPS: handlers/encrypted.rs:23-171 handle_encrypted_frame() → AEAD decrypt with
 /// 16-byte header as AAD → strip_inner_header → dispatch_link_message.
-/// Our implementation combines the decrypt + dispatch into one function.
-fn handle_frame_inner<H: NodeHandler>(
+fn decrypt_established_frame<'a>(
     kr: &[u8; 32],
     data: &[u8],
-    throughput: &mut ThroughputState,
-    handler: &mut H,
-    resp: &mut [u8],
-) -> FrameAction {
+    dec_buf: &'a mut [u8; 2048],
+) -> Option<DecryptedFrame<'a>> {
     use microfips_core::wire;
 
     let m = match wire::parse_message(data) {
@@ -1033,300 +1051,209 @@ fn handle_frame_inner<H: NodeHandler>(
         None => {
             #[cfg(feature = "log")]
             log::warn!("handle_frame: parse_message failed ({}B)", data.len());
-            return FrameAction::Continue;
+            return None;
         }
     };
 
-    match m {
-        wire::FmpMessage::Established { .. } => {
-            let enc = match wire::EncryptedHeader::parse(data) {
-                Some(h) => h,
-                None => return FrameAction::Continue,
-            };
-            #[cfg(feature = "log")]
-            log::debug!(
-                "FMP established: counter={} enc_len={}",
-                enc.counter,
-                data.len() - wire::ESTABLISHED_HEADER_SIZE
-            );
-            let mut dec = [0u8; 2048];
-            let dl = match microfips_core::noise::aead_decrypt(
-                kr,
-                enc.counter,
-                &enc.header_bytes,
-                &data[wire::ESTABLISHED_HEADER_SIZE..],
-                &mut dec,
-            ) {
-                Ok(l) => l,
-                Err(_err) => {
-                    #[cfg(feature = "std")]
-                    log::debug!(
-                        "FMP decrypt failed: counter={} hdr={:02x?} err={:?}",
-                        enc.counter,
-                        &enc.header_bytes[..16.min(enc.header_bytes.len())],
-                        _err
-                    );
-                    return FrameAction::Continue;
-                }
-            };
-            let (_timestamp, inner_rest) = match wire::strip_inner_header(&dec[..dl]) {
-                Some(r) => r,
-                None => return FrameAction::Continue,
-            };
-            let timestamp = _timestamp;
-            let msg_type = inner_rest.first().copied().unwrap_or(0);
-            let inner_payload = &inner_rest[1..];
-            #[cfg(feature = "log")]
-            log::debug!(
-                "FMP frame: msg_type=0x{:02x} payload_len={}",
-                msg_type,
-                inner_payload.len()
-            );
-            let frame_bytes = data.len();
-            match msg_type {
-                wire::MSG_HEARTBEAT => {
-                    #[cfg(feature = "mmp")]
-                    {
-                        FrameAction::MmpRecv {
-                            counter: enc.counter,
-                            sender_timestamp: timestamp,
-                            frame_bytes,
-                        }
-                    }
-                    #[cfg(not(feature = "mmp"))]
-                    FrameAction::HeartbeatRecv
-                }
-                wire::MSG_DISCONNECT => FrameAction::PeerDC,
-                wire::MSG_SENDER_REPORT => {
-                    #[cfg(feature = "mmp")]
-                    {
-                        if let Some(sr) = microfips_core::mmp::SenderReport::decode(inner_payload) {
-                            FrameAction::MmpSenderReport {
-                                counter: enc.counter,
-                                sender_timestamp: timestamp,
-                                frame_bytes,
-                                report: sr,
-                            }
-                        } else {
-                            FrameAction::Continue
-                        }
-                    }
-                    #[cfg(not(feature = "mmp"))]
-                    {
-                        if inner_payload.len() >= 27 && resp.len() >= 67 {
-                            let end_ctr = u64::from_le_bytes(
-                                inner_payload[11..19]
-                                    .try_into()
-                                    .unwrap_or(0u64.to_le_bytes()),
-                            );
-                            let end_ts = u32::from_le_bytes(
-                                inner_payload[23..27]
-                                    .try_into()
-                                    .unwrap_or(0u32.to_le_bytes()),
-                            );
-                            resp[..67].copy_from_slice(&[0u8; 67]);
-                            resp[3..11].copy_from_slice(&end_ctr.to_le_bytes());
-                            resp[27..31].copy_from_slice(&end_ts.to_le_bytes());
-                            FrameAction::SendLinkMessage {
-                                msg_type: wire::MSG_RECEIVER_REPORT,
-                                len: 67,
-                            }
-                        } else {
-                            FrameAction::Continue
-                        }
-                    }
-                }
-                wire::MSG_RECEIVER_REPORT => {
-                    #[cfg(feature = "mmp")]
-                    {
-                        if let Some(rr) = microfips_core::mmp::ReceiverReport::decode(inner_payload)
-                        {
-                            FrameAction::MmpReceiverReport {
-                                counter: enc.counter,
-                                sender_timestamp: timestamp,
-                                frame_bytes,
-                                report: rr,
-                            }
-                        } else {
-                            FrameAction::Continue
-                        }
-                    }
-                    #[cfg(not(feature = "mmp"))]
-                    FrameAction::Continue
-                }
-                wire::MSG_ECHO_REQUEST => {
-                    if let Some((send_ts, seq, payload)) = wire::parse_echo_request(inner_payload) {
-                        let now_us = Instant::now().as_micros();
-                        if let Some(resp_len) =
-                            wire::build_echo_response(send_ts, now_us, seq, payload, resp)
-                        {
-                            FrameAction::SendLinkMessage {
-                                msg_type: wire::MSG_ECHO_RESPONSE,
-                                len: resp_len,
-                            }
-                        } else {
-                            FrameAction::Continue
-                        }
-                    } else {
-                        FrameAction::Continue
-                    }
-                }
-                wire::MSG_THROUGHPUT_REQUEST => {
-                    if let Some((test_id, direction, duration_secs, _frame_size, _rate_bps)) =
-                        wire::parse_throughput_request(inner_payload)
-                    {
-                        if direction == 0 {
-                            *throughput = ThroughputState {
-                                test_id,
-                                frames_recv: 0,
-                                bytes_recv: 0,
-                                start_us: Instant::now().as_micros(),
-                                duration_secs,
-                                active: true,
-                            };
-                        }
-                    }
-                    FrameAction::Continue
-                }
-                wire::MSG_THROUGHPUT_STREAM => {
-                    if !throughput.active {
-                        return FrameAction::Continue;
-                    }
-
-                    let Some((test_id, _sequence)) = wire::parse_throughput_stream(inner_payload)
-                    else {
-                        return FrameAction::Continue;
-                    };
-
-                    if test_id != throughput.test_id {
-                        return FrameAction::Continue;
-                    }
-
-                    throughput.frames_recv = throughput.frames_recv.saturating_add(1);
-                    throughput.bytes_recv = throughput
-                        .bytes_recv
-                        .saturating_add(inner_payload.len() as u64);
-
-                    let elapsed_us = Instant::now()
-                        .as_micros()
-                        .saturating_sub(throughput.start_us);
-                    let target_duration_us = u64::from(throughput.duration_secs) * 1_000_000;
-                    if elapsed_us < target_duration_us {
-                        return FrameAction::Continue;
-                    }
-
-                    let report = *throughput;
-                    throughput.active = false;
-                    let achieved_bps = report
-                        .bytes_recv
-                        .saturating_mul(8)
-                        .saturating_mul(1_000_000)
-                        .checked_div(elapsed_us)
-                        .unwrap_or(0);
-
-                    if let Some(resp_len) = wire::build_throughput_report(
-                        report.test_id,
-                        0,
-                        report.frames_recv,
-                        report.bytes_recv,
-                        elapsed_us,
-                        achieved_bps,
-                        resp,
-                    ) {
-                        FrameAction::SendLinkMessage {
-                            msg_type: wire::MSG_THROUGHPUT_REPORT,
-                            len: resp_len,
-                        }
-                    } else {
-                        FrameAction::Continue
-                    }
-                }
-                _ => {
-                    #[cfg(feature = "mmp")]
-                    let base_action = {
-                        if msg_type == wire::MSG_SESSION_DATAGRAM || inner_payload.is_empty() {
-                            FrameAction::Continue
-                        } else {
-                            match handler.on_message(msg_type, inner_payload, resp) {
-                                HandleResult::None => FrameAction::Continue,
-                                HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
-                                HandleResult::Disconnect => FrameAction::SelfDC,
-                            }
-                        }
-                    };
-                    #[cfg(not(feature = "mmp"))]
-                    let base_action = {
-                        if msg_type != wire::MSG_SESSION_DATAGRAM {
-                            #[cfg(feature = "log")]
-                            log::warn!("unrecognized link message type: 0x{:02x}", msg_type);
-                        }
-                        match handler.on_message(msg_type, inner_payload, resp) {
-                            HandleResult::None => FrameAction::Continue,
-                            HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
-                            HandleResult::Disconnect => FrameAction::SelfDC,
-                        }
-                    };
-                    #[cfg(feature = "mmp")]
-                    {
-                        if msg_type == wire::MSG_SESSION_DATAGRAM || inner_payload.is_empty() {
-                            base_action
-                        } else {
-                            FrameAction::MmpRecv {
-                                counter: enc.counter,
-                                sender_timestamp: timestamp,
-                                frame_bytes,
-                            }
-                        }
-                    }
-                    #[cfg(not(feature = "mmp"))]
-                    base_action
-                }
-            }
+    let wire::FmpMessage::Established { .. } = m else {
+        #[cfg(feature = "std")]
+        if matches!(
+            m,
+            wire::FmpMessage::Msg1 { .. } | wire::FmpMessage::Msg2 { .. }
+        ) {
+            log::warn!("discarding handshake frame in established state");
         }
-        _ => {
-            #[cfg(feature = "std")]
-            if matches!(
-                m,
-                wire::FmpMessage::Msg1 { .. } | wire::FmpMessage::Msg2 { .. }
-            ) {
-                log::warn!("discarding handshake frame in established state");
-            }
-            FrameAction::Continue
-        }
-    }
-}
-
-fn frame_is_policy_good(kr: &[u8; 32], data: &[u8]) -> bool {
-    use microfips_core::wire;
-
-    let wire::FmpMessage::Established { .. } = (match wire::parse_message(data) {
-        Some(m) => m,
-        None => return false,
-    }) else {
-        return false;
+        return None;
     };
 
-    let Some(enc) = wire::EncryptedHeader::parse(data) else {
-        return false;
-    };
-    let mut dec = [0u8; 2048];
-    let Ok(dl) = microfips_core::noise::aead_decrypt(
+    let enc = wire::EncryptedHeader::parse(data)?;
+    #[cfg(feature = "log")]
+    log::debug!(
+        "FMP established: counter={} enc_len={}",
+        enc.counter,
+        data.len() - wire::ESTABLISHED_HEADER_SIZE
+    );
+    let dl = match microfips_core::noise::aead_decrypt(
         kr,
         enc.counter,
         &enc.header_bytes,
         &data[wire::ESTABLISHED_HEADER_SIZE..],
-        &mut dec,
-    ) else {
-        return false;
+        dec_buf,
+    ) {
+        Ok(l) => l,
+        Err(_err) => {
+            #[cfg(feature = "std")]
+            log::debug!(
+                "FMP decrypt failed: counter={} hdr={:02x?} err={:?}",
+                enc.counter,
+                &enc.header_bytes[..16.min(enc.header_bytes.len())],
+                _err
+            );
+            return None;
+        }
     };
 
-    wire::strip_inner_header(&dec[..dl]).is_some()
+    let (sender_timestamp, inner_rest) = wire::strip_inner_header(&dec_buf[..dl])?;
+    let (&msg_type, payload) = inner_rest.split_first()?;
+    #[cfg(feature = "log")]
+    log::debug!(
+        "FMP frame: msg_type=0x{:02x} payload_len={}",
+        msg_type,
+        payload.len()
+    );
+
+    Some(DecryptedFrame {
+        counter: enc.counter,
+        sender_timestamp,
+        msg_type,
+        payload,
+        frame_bytes: data.len(),
+    })
+}
+
+fn build_receiver_report_response(payload: &[u8], resp: &mut [u8]) -> FrameAction {
+    use microfips_core::wire;
+
+    if payload.len() >= 27 && resp.len() >= 67 {
+        let end_ctr = u64::from_le_bytes(payload[11..19].try_into().unwrap_or(0u64.to_le_bytes()));
+        let end_ts = u32::from_le_bytes(payload[23..27].try_into().unwrap_or(0u32.to_le_bytes()));
+        resp[..67].copy_from_slice(&[0u8; 67]);
+        resp[3..11].copy_from_slice(&end_ctr.to_le_bytes());
+        resp[27..31].copy_from_slice(&end_ts.to_le_bytes());
+        FrameAction::SendLinkMessage {
+            msg_type: wire::MSG_RECEIVER_REPORT,
+            len: 67,
+        }
+    } else {
+        FrameAction::Continue
+    }
+}
+
+fn handle_throughput_request(frame: &DecryptedFrame<'_>, throughput: &mut ThroughputState) {
+    if let Some((test_id, direction, duration_secs, _frame_size, _rate_bps)) =
+        wire::parse_throughput_request(frame.payload)
+    {
+        if direction == 0 {
+            *throughput = ThroughputState {
+                test_id,
+                frames_recv: 0,
+                bytes_recv: 0,
+                started_at: Some(Instant::now()),
+                duration_secs,
+                active: true,
+            };
+        }
+    }
+}
+
+fn handle_throughput_stream(
+    frame: &DecryptedFrame<'_>,
+    throughput: &mut ThroughputState,
+    resp: &mut [u8],
+) -> FrameAction {
+    use microfips_core::wire;
+
+    if !throughput.active {
+        return FrameAction::Continue;
+    }
+
+    let Some((test_id, _sequence)) = wire::parse_throughput_stream(frame.payload) else {
+        return FrameAction::Continue;
+    };
+
+    if test_id != throughput.test_id {
+        return FrameAction::Continue;
+    }
+
+    throughput.frames_recv = throughput.frames_recv.saturating_add(1);
+    throughput.bytes_recv = throughput.bytes_recv.saturating_add(frame.payload.len() as u64);
+
+    let elapsed_us = match throughput.started_at {
+        Some(t) => Instant::now().as_micros().saturating_sub(t.as_micros()),
+        None => return FrameAction::Continue,
+    };
+    let target_duration_us = u64::from(throughput.duration_secs) * 1_000_000;
+    if elapsed_us < target_duration_us {
+        return FrameAction::Continue;
+    }
+
+    let report = *throughput;
+    throughput.active = false;
+    let achieved_bps = report
+        .bytes_recv
+        .saturating_mul(8)
+        .saturating_mul(1_000_000)
+        .checked_div(elapsed_us)
+        .unwrap_or(0);
+
+    if let Some(resp_len) = wire::build_throughput_report(
+        report.test_id,
+        0,
+        report.frames_recv,
+        report.bytes_recv,
+        elapsed_us,
+        achieved_bps,
+        resp,
+    ) {
+        FrameAction::SendLinkMessage {
+            msg_type: wire::MSG_THROUGHPUT_REPORT,
+            len: resp_len,
+        }
+    } else {
+        FrameAction::Continue
+    }
+}
+
+fn dispatch_link_message<H: NodeHandler>(
+    frame: &DecryptedFrame<'_>,
+    throughput: &mut ThroughputState,
+    handler: &mut H,
+    resp: &mut [u8],
+) -> FrameAction {
+    use microfips_core::wire;
+
+    match frame.msg_type {
+        wire::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
+        wire::MSG_DISCONNECT => FrameAction::PeerDC,
+        wire::MSG_SENDER_REPORT => build_receiver_report_response(frame.payload, resp),
+        wire::MSG_RECEIVER_REPORT => FrameAction::Continue,
+        wire::MSG_ECHO_REQUEST => {
+            if let Some((send_ts, seq, payload)) = wire::parse_echo_request(frame.payload) {
+                let now_us = Instant::now().as_micros();
+                if let Some(resp_len) = wire::build_echo_response(send_ts, now_us, seq, payload, resp)
+                {
+                    FrameAction::SendLinkMessage {
+                        msg_type: wire::MSG_ECHO_RESPONSE,
+                        len: resp_len,
+                    }
+                } else {
+                    FrameAction::Continue
+                }
+            } else {
+                FrameAction::Continue
+            }
+        }
+        wire::MSG_THROUGHPUT_REQUEST => {
+            handle_throughput_request(frame, throughput);
+            FrameAction::Continue
+        }
+        wire::MSG_THROUGHPUT_STREAM => handle_throughput_stream(frame, throughput, resp),
+        _ => match handler.on_message(frame.msg_type, frame.payload, resp) {
+            HandleResult::None => FrameAction::Continue,
+            HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
+            HandleResult::Disconnect => FrameAction::SelfDC,
+        },
+    }
+}
+
+fn frame_is_policy_good(kr: &[u8; 32], data: &[u8]) -> bool {
+    let mut dec = [0u8; 2048];
+    decrypt_established_frame(kr, data, &mut dec).is_some()
 }
 
 #[derive(Debug, PartialEq)]
 enum FrameAction {
     Continue,
-    #[allow(dead_code)]
     HeartbeatRecv,
     PeerDC,
     SelfDC,
@@ -1334,26 +1261,6 @@ enum FrameAction {
     SendLinkMessage {
         msg_type: u8,
         len: usize,
-    },
-    #[cfg(feature = "mmp")]
-    MmpRecv {
-        counter: u64,
-        sender_timestamp: u32,
-        frame_bytes: usize,
-    },
-    #[cfg(feature = "mmp")]
-    MmpSenderReport {
-        counter: u64,
-        sender_timestamp: u32,
-        frame_bytes: usize,
-        report: microfips_core::mmp::SenderReport,
-    },
-    #[cfg(feature = "mmp")]
-    MmpReceiverReport {
-        counter: u64,
-        sender_timestamp: u32,
-        frame_bytes: usize,
-        report: microfips_core::mmp::ReceiverReport,
     },
 }
 
@@ -1631,6 +1538,20 @@ mod tests {
         (inner[0], inner[1..].to_vec())
     }
 
+    fn dispatch_test_frame<H: NodeHandler>(
+        key: &[u8; 32],
+        frame: &[u8],
+        throughput: &mut ThroughputState,
+        handler: &mut H,
+        resp: &mut [u8],
+    ) -> FrameAction {
+        let mut dec_buf = [0u8; 2048];
+        let Some(frame) = decrypt_established_frame(key, frame, &mut dec_buf) else {
+            return FrameAction::Continue;
+        };
+        dispatch_link_message(&frame, throughput, handler, resp)
+    }
+
     #[test]
     fn test_handle_frame_heartbeat() {
         use microfips_core::wire;
@@ -1647,7 +1568,7 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(
+        let result = dispatch_test_frame(
             &key,
             &frame,
             &mut ThroughputState::default(),
@@ -1673,7 +1594,7 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(
+        let result = dispatch_test_frame(
             &key,
             &frame,
             &mut ThroughputState::default(),
@@ -1692,7 +1613,7 @@ mod tests {
         let frame = build_test_frame(wire::SessionIndex::new(0), 2, 0x05, ts, b"unknown", &key);
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(
+        let result = dispatch_test_frame(
             &key,
             &frame,
             &mut ThroughputState::default(),
@@ -1717,51 +1638,16 @@ mod tests {
             &key_a,
         );
 
-        let mut resp = [0u8; 256];
-        let result = handle_frame_inner(
-            &key_b,
-            &frame,
-            &mut ThroughputState::default(),
-            &mut NoopTestHandler,
-            &mut resp,
-        );
-        assert_eq!(result, FrameAction::Continue);
+        let mut dec_buf = [0u8; 2048];
+        assert!(decrypt_established_frame(&key_b, &frame, &mut dec_buf).is_none());
     }
 
     #[test]
     fn test_handle_frame_garbage_skipped() {
         let key: [u8; 32] = [0x42; 32];
-        let mut resp = [0u8; 256];
-        assert_eq!(
-            handle_frame_inner(
-                &key,
-                &[],
-                &mut ThroughputState::default(),
-                &mut NoopTestHandler,
-                &mut resp,
-            ),
-            FrameAction::Continue
-        );
-        assert_eq!(
-            handle_frame_inner(
-                &key,
-                &[0x00],
-                &mut ThroughputState::default(),
-                &mut NoopTestHandler,
-                &mut resp,
-            ),
-            FrameAction::Continue
-        );
-        assert_eq!(
-            handle_frame_inner(
-                &key,
-                &[0xFF; 4],
-                &mut ThroughputState::default(),
-                &mut NoopTestHandler,
-                &mut resp,
-            ),
-            FrameAction::Continue
-        );
+        assert!(decrypt_established_frame(&key, &[], &mut [0u8; 2048]).is_none());
+        assert!(decrypt_established_frame(&key, &[0x00], &mut [0u8; 2048]).is_none());
+        assert!(decrypt_established_frame(&key, &[0xFF; 4], &mut [0u8; 2048]).is_none());
     }
 
     #[test]
@@ -1799,7 +1685,7 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(
+        let result = dispatch_test_frame(
             &key,
             &frame,
             &mut ThroughputState::default(),
@@ -1829,7 +1715,7 @@ mod tests {
 
         let mut throughput = ThroughputState::default();
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(
+        let result = dispatch_test_frame(
             &key,
             &frame,
             &mut throughput,
@@ -1863,12 +1749,12 @@ mod tests {
             test_id: 0x12345678,
             frames_recv: 0,
             bytes_recv: 0,
-            start_us: Instant::now().as_micros().saturating_sub(1_000_000),
-            duration_secs: 1,
+            started_at: Some(Instant::now()),
+            duration_secs: 0,
             active: true,
         };
         let mut resp = [0u8; 256];
-        let result = handle_frame_inner(
+        let result = dispatch_test_frame(
             &key,
             &frame,
             &mut throughput,
@@ -2323,26 +2209,6 @@ mod tests {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
 
-        struct PongHandler;
-
-        impl NodeHandler for PongHandler {
-            async fn on_event(&mut self, _event: NodeEvent) {}
-
-            fn on_message(
-                &mut self,
-                msg_type: u8,
-                payload: &[u8],
-                resp: &mut [u8],
-            ) -> HandleResult {
-                if msg_type == wire::MSG_SESSION_DATAGRAM && payload == b"ping" {
-                    resp[..4].copy_from_slice(b"pong");
-                    HandleResult::SendDatagram(4)
-                } else {
-                    HandleResult::None
-                }
-            }
-        }
-
         let (transport, mut peer) = channel_pair();
         let key = [0x42; 32];
         let them = wire::SessionIndex::new(7);
@@ -2357,14 +2223,9 @@ mod tests {
 
                 Timer::after(Duration::from_millis(FRAME_RATE_WINDOW_MS + 50)).await;
 
-                let ping =
-                    build_test_frame(them, 200, wire::MSG_SESSION_DATAGRAM, 2000, b"ping", &key);
-                send_test_frame(&mut peer, &ping).await;
-
-                let response = recv_test_frame(&mut peer).await;
-                let (msg_type, payload) = decrypt_test_frame(&key, &response);
-                assert_eq!(msg_type, wire::MSG_SESSION_DATAGRAM);
-                assert_eq!(payload, b"pong");
+                let hb =
+                    build_test_frame(them, 200, wire::MSG_HEARTBEAT, 2000, &[], &key);
+                send_test_frame(&mut peer, &hb).await;
 
                 let disconnect =
                     build_test_frame(them, 201, wire::MSG_DISCONNECT, 3000, &[0x00], &key);
@@ -2378,7 +2239,7 @@ mod tests {
                     random_secret(),
                     microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
                 );
-                let mut handler = PongHandler;
+                let mut handler = NoopTestHandler;
                 let result = node.steady(&key, &key, them, &mut handler).await;
                 assert_eq!(result, Ok(()));
             };
