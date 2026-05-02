@@ -138,6 +138,9 @@ impl BleHostAdapter for EspBleHost {
     }
 
     async fn spawn_host_task() -> Result<(), ()> {
+        // SAFETY: for_current_executor() is called from within an async task spawned by
+        // the embassy executor (inside run_*_node() which is called from #[esp_rtos::main]).
+        // The executor is guaranteed to exist and be the current one.
         let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
         spawner.spawn(ble_host_task()).map_err(|_| ())
     }
