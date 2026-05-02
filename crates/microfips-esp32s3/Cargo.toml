@@ -46,7 +46,7 @@ microfips-service = { path = "../microfips-service" }
 rand_core = { version = "0.6", default-features = false }
 esp-hal = { version = "1.0.0", features = ["esp32s3", "unstable"] }
 esp-rtos = { version = "0.2.0", features = ["esp32s3", "embassy", "esp-alloc", "esp-radio"] }
-esp-bootloader-esp-idf = { version = "0.4", features = ["esp32s3"] }
+esp-bootloader-esp-idf = { version = "0.5", features = ["esp32s3"] }
 embassy-time = "0.5.1"
 embassy-futures = "0.1.2"
 embassy-executor = "0.9.1"
