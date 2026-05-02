@@ -254,7 +254,10 @@ fn parse_keys_file(path: &PathBuf) -> Result<Vec<KeyPair>, Box<dyn Error>> {
 #[derive(Debug)]
 enum InputFormat {
     Pcap,
-    Btsnoop { #[allow(dead_code)] big_endian: bool },
+    Btsnoop {
+        #[allow(dead_code)]
+        big_endian: bool,
+    },
     Unknown,
 }
 
@@ -267,16 +270,14 @@ fn detect_format(header: &[u8]) -> InputFormat {
         return InputFormat::Unknown;
     }
 
-    if &header[..8] == BTSNOOF_MAGIC_BE {
+    if header[..8] == BTSNOOF_MAGIC_BE {
         return InputFormat::Btsnoop { big_endian: true };
     }
-    if &header[..8] == BTSNOOF_MAGIC_LE {
-        return InputFormat::Btsnoop {
-            big_endian: false,
-        };
+    if header[..8] == BTSNOOF_MAGIC_LE {
+        return InputFormat::Btsnoop { big_endian: false };
     }
 
-    if header.len() >= 4 && &header[..4] == PCAP_MAGIC {
+    if header.len() >= 4 && header[..4] == PCAP_MAGIC {
         return InputFormat::Pcap;
     }
 
@@ -328,8 +329,8 @@ fn parse_btsnoop_records(data: &[u8]) -> Result<(u32, Vec<BtsnoopRecord>), Box<d
             break;
         }
 
-        let record_data = data[offset + BTSNOOP_RECORD_HEADER_SIZE
-            ..offset + BTSNOOP_RECORD_HEADER_SIZE + data_len]
+        let record_data = data
+            [offset + BTSNOOP_RECORD_HEADER_SIZE..offset + BTSNOOP_RECORD_HEADER_SIZE + data_len]
             .to_vec();
 
         records.push(BtsnoopRecord {
@@ -398,9 +399,10 @@ fn extract_fmp_from_hci_h4(records: &[BtsnoopRecord], datalink: u32) -> Vec<Vec<
             while sig_offset + 4 <= l2cap_payload_len {
                 let code = l2cap_payload[sig_offset];
                 let _ident = l2cap_payload[sig_offset + 1];
-                let sig_len =
-                    u16::from_le_bytes([l2cap_payload[sig_offset + 2], l2cap_payload[sig_offset + 3]])
-                        as usize;
+                let sig_len = u16::from_le_bytes([
+                    l2cap_payload[sig_offset + 2],
+                    l2cap_payload[sig_offset + 3],
+                ]) as usize;
                 let sig_data_start = sig_offset + 4;
 
                 if code == L2CAP_LE_CREDIT_BASED_CONN_REQ && sig_len >= 6 {
@@ -437,11 +439,9 @@ fn extract_fmp_from_hci_h4(records: &[BtsnoopRecord], datalink: u32) -> Vec<Vec<
 
         if is_fips_channel {
             extract_fmp_from_l2cap_coc(payload, &mut fmp_frames);
-        } else if fips_cids.is_empty() {
-            if try_extract_fmp_from_l2cap_coc_check(payload) {
-                fips_cids.push(l2cap_cid);
-                extract_fmp_from_l2cap_coc(payload, &mut fmp_frames);
-            }
+        } else if fips_cids.is_empty() && try_extract_fmp_from_l2cap_coc_check(payload) {
+            fips_cids.push(l2cap_cid);
+            extract_fmp_from_l2cap_coc(payload, &mut fmp_frames);
         }
     }
 
@@ -509,7 +509,12 @@ impl PcapWriter {
         Ok(Self { file, seq: 0 })
     }
 
-    fn write_udp_packet(&mut self, payload: &[u8], src_port: u16, dst_port: u16) -> Result<(), Box<dyn Error>> {
+    fn write_udp_packet(
+        &mut self,
+        payload: &[u8],
+        src_port: u16,
+        dst_port: u16,
+    ) -> Result<(), Box<dyn Error>> {
         let udp_len = 8 + payload.len();
         let ip_total_len = 20 + udp_len;
 
@@ -540,8 +545,14 @@ impl PcapWriter {
 
         let pkt_len = pkt.len() as u32;
         let rec_header: [u8; 16] = [
-            0, 0, 0, 0,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             (pkt_len & 0xff) as u8,
             ((pkt_len >> 8) & 0xff) as u8,
             ((pkt_len >> 16) & 0xff) as u8,
@@ -847,7 +858,11 @@ fn run_btsnoop(cli: &Cli, keys: &[KeyPair]) -> Result<(), Box<dyn Error>> {
     file.read_to_end(&mut data)?;
 
     let (datalink, records) = parse_btsnoop_records(&data)?;
-    eprintln!("Parsed {} btsnoop records (datalink={})", records.len(), datalink);
+    eprintln!(
+        "Parsed {} btsnoop records (datalink={})",
+        records.len(),
+        datalink
+    );
 
     let fmp_frames = extract_fmp_from_hci_h4(&records, datalink);
     eprintln!("Extracted {} FMP frames from HCI capture", fmp_frames.len());
@@ -895,7 +910,13 @@ fn run_btsnoop(cli: &Cli, keys: &[KeyPair]) -> Result<(), Box<dyn Error>> {
 /// Always writes the original FMP frame (with FMP header) so the Wireshark
 /// dissector can parse it. Decrypted plaintext has no FMP framing and would
 /// confuse the dissector.
-fn write_frame_to_pcap(writer: &mut PcapWriter, frame: &[u8], _phase: u8, _keys: &[KeyPair], dir: &str) {
+fn write_frame_to_pcap(
+    writer: &mut PcapWriter,
+    frame: &[u8],
+    _phase: u8,
+    _keys: &[KeyPair],
+    dir: &str,
+) {
     let (src_port, dst_port) = if dir == "<-" {
         (2121u16, 9999u16)
     } else {
@@ -985,7 +1006,10 @@ mod tests {
 
         match detect_format(&header) {
             InputFormat::Btsnoop { big_endian: true } => {}
-            other => panic!("expected Btsnoop BE, got {:?}", format!("{:?}", other).chars().take(40).collect::<String>()),
+            other => panic!(
+                "expected Btsnoop BE, got {:?}",
+                format!("{:?}", other).chars().take(40).collect::<String>()
+            ),
         }
     }
 
@@ -996,7 +1020,10 @@ mod tests {
 
         match detect_format(&header) {
             InputFormat::Btsnoop { big_endian: false } => {}
-            other => panic!("expected Btsnoop LE, got {:?}", format!("{:?}", other).chars().take(40).collect::<String>()),
+            other => panic!(
+                "expected Btsnoop LE, got {:?}",
+                format!("{:?}", other).chars().take(40).collect::<String>()
+            ),
         }
     }
 
@@ -1007,7 +1034,10 @@ mod tests {
 
         match detect_format(&header) {
             InputFormat::Pcap => {}
-            other => panic!("expected Pcap, got {:?}", format!("{:?}", other).chars().take(40).collect::<String>()),
+            other => panic!(
+                "expected Pcap, got {:?}",
+                format!("{:?}", other).chars().take(40).collect::<String>()
+            ),
         }
     }
 
@@ -1122,7 +1152,12 @@ mod tests {
     fn extract_fmp_from_acl_with_fallback() {
         let noise_payload = [0xAAu8; 106];
         let mut fmp_frame = [0u8; 256];
-        let fmp_len = microfips_core::wire::build_msg1(microfips_core::wire::SessionIndex(0), &noise_payload, &mut fmp_frame).unwrap();
+        let fmp_len = microfips_core::wire::build_msg1(
+            microfips_core::wire::SessionIndex(0),
+            &noise_payload,
+            &mut fmp_frame,
+        )
+        .unwrap();
 
         let mut ble_payload = Vec::new();
         ble_payload.extend_from_slice(&(fmp_len as u16).to_be_bytes());
