@@ -25,7 +25,7 @@ microfips-esp-common = { path = "../microfips-esp-common" }
 microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
-rand_core = { version = "0.6", default-features = false }
+rand_core = { version = "0.10", default-features = false }
 esp-hal = { version = "1.0.0", features = ["unstable"] }
 embassy-time = "0.5.1"
 embassy-futures = "0.1.2"
