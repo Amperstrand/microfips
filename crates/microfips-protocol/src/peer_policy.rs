@@ -1,16 +1,41 @@
 use embassy_time::{Duration, Instant};
 
-pub const MIN_RECONNECT_MS: u64 = 5_000;
-pub const MAX_RECONNECT_MS: u64 = 300_000;
-pub const RECONNECT_BACKOFF_BASE_MS: u64 = 5_000;
-pub const FRAME_RATE_WINDOW_MS: u64 = 1_000;
+pub const DEFAULT_RETRY_BASE_INTERVAL_SECS: u64 = 5;
+pub const DEFAULT_RETRY_MAX_BACKOFF_SECS: u64 = 300;
+pub const DEFAULT_FRAME_RATE_WINDOW_MS: u64 = 1_000;
+pub const DEFAULT_LINK_DEAD_TIMEOUT_SECS: u64 = 30;
+
+pub const MIN_RECONNECT_MS: u64 = DEFAULT_RETRY_BASE_INTERVAL_SECS * 1_000;
+pub const MAX_RECONNECT_MS: u64 = DEFAULT_RETRY_MAX_BACKOFF_SECS * 1_000;
+pub const RECONNECT_BACKOFF_BASE_MS: u64 = DEFAULT_RETRY_BASE_INTERVAL_SECS * 1_000;
+pub const FRAME_RATE_WINDOW_MS: u64 = DEFAULT_FRAME_RATE_WINDOW_MS;
 pub const FRAME_RATE_MAX: u16 = 100;
-pub const SILENT_PEER_SECS: u64 = 30;
+pub const SILENT_PEER_SECS: u64 = DEFAULT_LINK_DEAD_TIMEOUT_SECS;
 pub const SILENT_PEER_MIN_DATA_RATIO: u32 = 1;
 pub const MAX_CONSECUTIVE_BAD: u16 = 20;
 pub const MAX_CONSECUTIVE_FAILURES: u16 = 20;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PeerPolicyTiming {
+    pub retry_base_interval_secs: u64,
+    pub retry_max_backoff_secs: u64,
+    pub frame_rate_window_ms: u64,
+    pub link_dead_timeout_secs: u64,
+}
+
+impl Default for PeerPolicyTiming {
+    fn default() -> Self {
+        Self {
+            retry_base_interval_secs: DEFAULT_RETRY_BASE_INTERVAL_SECS,
+            retry_max_backoff_secs: DEFAULT_RETRY_MAX_BACKOFF_SECS,
+            frame_rate_window_ms: DEFAULT_FRAME_RATE_WINDOW_MS,
+            link_dead_timeout_secs: DEFAULT_LINK_DEAD_TIMEOUT_SECS,
+        }
+    }
+}
+
 pub struct PeerPolicy {
+    timing: PeerPolicyTiming,
     last_connect: Option<Instant>,
     consecutive_failures: u16,
     frame_count: u16,
@@ -30,8 +55,13 @@ pub enum PolicyVerdict {
 
 impl PeerPolicy {
     pub fn new() -> Self {
+        Self::with_timing(PeerPolicyTiming::default())
+    }
+
+    pub(crate) fn with_timing(timing: PeerPolicyTiming) -> Self {
         let now = Instant::now();
         Self {
+            timing,
             last_connect: None,
             consecutive_failures: 0,
             frame_count: 0,
@@ -49,19 +79,21 @@ impl PeerPolicy {
         };
 
         let elapsed_ms = now.as_millis().saturating_sub(last_connect.as_millis());
+        let base_interval_ms = self.timing.retry_base_interval_secs.saturating_mul(1_000);
+        let max_backoff_ms = self.timing.retry_max_backoff_secs.saturating_mul(1_000);
 
         let failure_backoff_ms = if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-            MAX_RECONNECT_MS
+            max_backoff_ms
         } else if self.consecutive_failures == 0 {
             0
         } else {
             let shift = (self.consecutive_failures - 1).min(15) as u32;
-            RECONNECT_BACKOFF_BASE_MS
+            base_interval_ms
                 .saturating_mul(1u64 << shift)
-                .min(MAX_RECONNECT_MS)
+                .min(max_backoff_ms)
         };
 
-        let required_ms = MIN_RECONNECT_MS.max(failure_backoff_ms);
+        let required_ms = base_interval_ms.max(failure_backoff_ms);
 
         if elapsed_ms < required_ms {
             PolicyVerdict::Backoff(Duration::from_millis(required_ms - elapsed_ms))
@@ -75,7 +107,7 @@ impl PeerPolicy {
             .as_millis()
             .saturating_sub(self.frame_window_start.as_millis());
 
-        if elapsed_ms >= FRAME_RATE_WINDOW_MS {
+        if elapsed_ms >= self.timing.frame_rate_window_ms {
             self.frame_window_start = now;
             self.frame_count = 0;
         }
@@ -129,7 +161,7 @@ impl PeerPolicy {
 
         let session_secs = now.as_secs().saturating_sub(session_start.as_secs());
 
-        if session_secs > SILENT_PEER_SECS
+        if session_secs > self.timing.link_dead_timeout_secs
             && self.data_frames_recv < SILENT_PEER_MIN_DATA_RATIO
             && self.heartbeats_recv > 0
         {
@@ -325,6 +357,42 @@ mod tests {
 
         let late = start + Duration::from_secs(SILENT_PEER_SECS + 1);
         assert_eq!(policy.check_silent_peer(late), PolicyVerdict::Allow);
+    }
+
+    #[test]
+    fn test_custom_timing_changes_reconnect_and_silent_peer_thresholds() {
+        let timing = PeerPolicyTiming {
+            retry_base_interval_secs: 2,
+            retry_max_backoff_secs: 9,
+            frame_rate_window_ms: 250,
+            link_dead_timeout_secs: 7,
+        };
+        let mut policy = PeerPolicy::with_timing(timing);
+        let start = Instant::now();
+
+        policy.record_connect_attempt(start);
+        assert_backoff(policy.check_reconnect(start), 2_000);
+
+        policy.record_handshake_ok(start);
+        policy.record_heartbeat();
+
+        assert_eq!(
+            policy.check_silent_peer(start + Duration::from_secs(6)),
+            PolicyVerdict::Allow
+        );
+        assert_eq!(
+            policy.check_silent_peer(start + Duration::from_secs(8)),
+            PolicyVerdict::Reject
+        );
+
+        for _ in 0..FRAME_RATE_MAX {
+            assert_eq!(policy.check_frame_rate(start), PolicyVerdict::Allow);
+        }
+        assert_eq!(policy.check_frame_rate(start), PolicyVerdict::Reject);
+        assert_eq!(
+            policy.check_frame_rate(start + Duration::from_millis(251)),
+            PolicyVerdict::Allow
+        );
     }
 
     #[test]
