@@ -314,6 +314,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         match self.handshake(epoch, handler).await {
             Ok((ks, kr, them)) => {
+                self.rpos = 0;
+                self.rlen = 0;
                 self.policy.record_handshake_ok(Instant::now());
                 log_steady!("session: handshake ok, entering steady");
                 handler.on_event(NodeEvent::HandshakeOk).await;
@@ -2888,5 +2890,482 @@ mod tests {
             initiator_pub_odd, peer_pub_even,
             "full comparison correctly differs when prefix differs"
         );
+    }
+
+    // --- ScriptedPeer test harness ---
+
+    struct ScriptedPeer {
+        transport: crate::transport::channel::ChannelTransport,
+        secret: [u8; 32],
+        peer_sender_idx: Option<wire::SessionIndex>,
+        epoch: Option<[u8; 8]>,
+        ks: Option<[u8; 32]>,
+        kr: Option<[u8; 32]>,
+        send_ctr: u64,
+    }
+
+    impl ScriptedPeer {
+        fn new(
+            transport: crate::transport::channel::ChannelTransport,
+            secret: [u8; 32],
+        ) -> Self {
+            Self {
+                transport,
+                secret,
+                peer_sender_idx: None,
+                epoch: None,
+                ks: None,
+                kr: None,
+                send_ctr: 0,
+            }
+        }
+
+        async fn recv_raw_frame(&mut self) -> std::vec::Vec<u8> {
+            recv_test_frame(&mut self.transport).await
+        }
+
+        async fn send_raw_frame(&mut self, frame: &[u8]) {
+            send_test_frame(&mut self.transport, frame).await
+        }
+
+        async fn complete_handshake(&mut self) -> wire::SessionIndex {
+            use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE};
+
+            let frame = self.recv_raw_frame().await;
+            let msg = wire::parse_message(&frame).expect("expected valid FMP message");
+            let (peer_sender_idx, noise_payload) = match msg {
+                wire::FmpMessage::Msg1 {
+                    sender_idx,
+                    noise_payload,
+                } => (sender_idx, noise_payload),
+                _ => panic!("expected Msg1, got {:?}", msg),
+            };
+
+            assert!(
+                noise_payload.len() >= PUBKEY_SIZE,
+                "MSG1 noise payload too short"
+            );
+
+            let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
+            let mut responder =
+                NoiseIkResponder::new(&self.secret, &ei_pub).expect("responder init failed");
+            let (_init_pub, epoch) = responder
+                .read_message1(&noise_payload[PUBKEY_SIZE..])
+                .expect("read_message1 failed");
+
+            let resp_eph = random_secret();
+            let mut msg2_noise = [0u8; 128];
+            let msg2_noise_len = responder
+                .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                .expect("write_message2 failed");
+
+            let our_index = wire::SessionIndex::new(0xCAFE_0001);
+            let mut msg2_buf = [0u8; 256];
+            let msg2_len = wire::build_msg2(
+                our_index,
+                peer_sender_idx,
+                &msg2_noise[..msg2_noise_len],
+                &mut msg2_buf,
+            )
+            .unwrap();
+
+            self.send_raw_frame(&msg2_buf[..msg2_len]).await;
+
+            let (k1, k2) = responder.finalize();
+            self.ks = Some(k2);
+            self.kr = Some(k1);
+            self.peer_sender_idx = Some(peer_sender_idx);
+            self.epoch = Some(epoch);
+
+            peer_sender_idx
+        }
+
+        async fn send_corrupted_msg2(&mut self) {
+            use microfips_core::wire;
+            let mut noise_payload = [0u8; 80];
+            {
+                use rand::RngCore;
+                rand::rng().fill_bytes(&mut noise_payload);
+            }
+            let mut msg2_buf = [0u8; 256];
+            let msg2_len = wire::build_msg2(
+                wire::SessionIndex::new(1),
+                wire::SessionIndex::new(1),
+                &noise_payload,
+                &mut msg2_buf,
+            )
+            .unwrap();
+            self.send_raw_frame(&msg2_buf[..msg2_len]).await;
+        }
+
+        async fn send_heartbeat(&mut self) {
+            let ks = self.ks.unwrap();
+            let them = self.peer_sender_idx.unwrap();
+            let frame = build_test_frame(
+                them,
+                self.send_ctr,
+                wire::MSG_HEARTBEAT,
+                embassy_time::Instant::now().as_millis() as u32,
+                &[],
+                &ks,
+            );
+            self.send_ctr += 1;
+            self.send_raw_frame(&frame).await;
+        }
+
+        async fn send_disconnect(&mut self, reason: u8) {
+            let ks = self.ks.unwrap();
+            let them = self.peer_sender_idx.unwrap();
+            let frame = build_test_frame(
+                them,
+                self.send_ctr,
+                wire::MSG_DISCONNECT,
+                embassy_time::Instant::now().as_millis() as u32,
+                &[reason],
+                &ks,
+            );
+            self.send_ctr += 1;
+            self.send_raw_frame(&frame).await;
+        }
+
+        async fn send_datagram(&mut self, payload: &[u8]) {
+            let ks = self.ks.unwrap();
+            let them = self.peer_sender_idx.unwrap();
+            let frame = build_test_frame(
+                them,
+                self.send_ctr,
+                wire::MSG_SESSION_DATAGRAM,
+                embassy_time::Instant::now().as_millis() as u32,
+                payload,
+                &ks,
+            );
+            self.send_ctr += 1;
+            self.send_raw_frame(&frame).await;
+        }
+
+        async fn send_garbage(&mut self) {
+            let payload: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
+            let mut frame = (payload.len() as u16).to_le_bytes().to_vec();
+            frame.extend_from_slice(payload);
+            self.send_raw_frame(&frame).await;
+        }
+
+        fn close(&mut self) {
+            self.transport.close();
+        }
+
+        async fn recv_decrypted_frame(&mut self) -> (u8, std::vec::Vec<u8>) {
+            let frame = self.recv_raw_frame().await;
+            let kr = self.kr.unwrap();
+            decrypt_test_frame(&kr, &frame)
+        }
+    }
+
+    // --- ScriptedPeer tests ---
+
+    #[test]
+    fn test_scripted_peer_full_session_handshake_heartbeat_disconnect() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+                Timer::after(Duration::from_millis(50)).await;
+                peer.send_heartbeat().await;
+                peer.send_disconnect(wire::DISC_REASON_SHUTDOWN).await;
+            };
+
+            let node_task = async {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = RecordingHandler::default();
+                let (ks, kr, them) = node.handshake(1u64.to_le_bytes(), &mut handler).await.unwrap();
+                node.rpos = 0;
+                node.rlen = 0;
+                let result = node.steady(&ks, &kr, them, &mut handler).await;
+                assert_eq!(result, Ok(()));
+                assert!(handler.events.contains(&NodeEvent::HeartbeatRecv));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_scripted_peer_corrupted_msg2_causes_handshake_failure() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                let _ = peer.recv_raw_frame().await;
+                peer.send_corrupted_msg2().await;
+            };
+
+            let node_task = async {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.session(&mut handler).await;
+                assert!(result.is_err());
+                assert!(handler.events.contains(&NodeEvent::Error));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_scripted_peer_silent_disconnect() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+                peer.send_heartbeat().await;
+                peer.close();
+            };
+
+            let node_task = async {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.session(&mut handler).await;
+                assert_eq!(result, Err(ProtocolError::Disconnected));
+                assert!(handler.events.contains(&NodeEvent::HandshakeOk));
+                assert!(handler.events.contains(&NodeEvent::Disconnected));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_scripted_peer_garbage_frame_ignored_in_steady() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+                Timer::after(Duration::from_millis(50)).await;
+                peer.send_garbage().await;
+                peer.send_heartbeat().await;
+                peer.send_disconnect(wire::DISC_REASON_OTHER).await;
+            };
+
+            let node_task = async {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                node.policy.record_handshake_ok(Instant::now());
+                node.policy.force_past_session_start();
+                let mut handler = RecordingHandler::default();
+
+                let (ks, kr, them) =
+                    node.handshake(1u64.to_le_bytes(), &mut handler).await.unwrap();
+                node.rpos = 0;
+                node.rlen = 0;
+
+                let result = node.steady(&ks, &kr, them, &mut handler).await;
+                assert_eq!(result, Ok(()));
+                assert!(handler.events.contains(&NodeEvent::HeartbeatRecv));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_scripted_peer_datagram_exchange() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        struct PingHandler;
+        impl NodeHandler for PingHandler {
+            async fn on_event(&mut self, _event: NodeEvent) {}
+            fn on_message(
+                &mut self,
+                msg_type: u8,
+                payload: &[u8],
+                resp: &mut [u8],
+            ) -> HandleResult {
+                if msg_type == wire::MSG_SESSION_DATAGRAM && payload == b"ping" {
+                    resp[..4].copy_from_slice(b"pong");
+                    HandleResult::SendDatagram(4)
+                } else {
+                    HandleResult::None
+                }
+            }
+        }
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+                Timer::after(Duration::from_millis(50)).await;
+                peer.send_heartbeat().await;
+                peer.send_datagram(b"ping").await;
+                let (msg_type, payload) = peer.recv_decrypted_frame().await;
+                assert_eq!(msg_type, wire::MSG_SESSION_DATAGRAM);
+                assert_eq!(payload, b"pong");
+                peer.send_disconnect(wire::DISC_REASON_SHUTDOWN).await;
+            };
+
+            let node_task = async {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = PingHandler;
+                let result = node.session(&mut handler).await;
+                assert_eq!(result, Ok(()));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_scripted_peer_no_response_causes_handshake_timeout() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                let _ = peer.recv_raw_frame().await;
+            };
+
+            let node_task = async {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = NoopTestHandler;
+                let epoch = node.advance_epoch();
+                let result = node.handshake(epoch, &mut handler).await;
+                assert_eq!(result, Err(ProtocolError::Timeout));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_scripted_peer_multiple_heartbeats_before_disconnect() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+                Timer::after(Duration::from_millis(50)).await;
+                for _ in 0..5 {
+                    peer.send_heartbeat().await;
+                }
+                peer.send_disconnect(wire::DISC_REASON_SHUTDOWN).await;
+            };
+
+            let node_task = async {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.session(&mut handler).await;
+                assert_eq!(result, Ok(()));
+
+                let hb_recv_count = handler
+                    .events
+                    .iter()
+                    .filter(|e| **e == NodeEvent::HeartbeatRecv)
+                    .count();
+                assert!(
+                    hb_recv_count >= 5,
+                    "expected at least 5 HeartbeatRecv, got {}",
+                    hb_recv_count
+                );
+            };
+
+            join(peer_task, node_task).await;
+        });
     }
 }
