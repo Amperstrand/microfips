@@ -2,6 +2,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use microfips_service::{
     route_suffix, ContentType, Route, RouteMatch, Router, ServiceError, ServiceHandler,
     ServiceMethod, ServiceReply, ServiceRequest, ServiceStatus,
