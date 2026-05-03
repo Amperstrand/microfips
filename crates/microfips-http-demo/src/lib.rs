@@ -2,6 +2,7 @@
 
 #![no_std]
 
+#[cfg(feature = "http")]
 extern crate alloc;
 
 use microfips_service::{
