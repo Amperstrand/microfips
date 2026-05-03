@@ -22,7 +22,7 @@ const LINE_BUF_SIZE: usize = 128;
 
 // --- ESP32-D0WD: UART0 register access ---
 #[cfg(feature = "esp32")]
-const UART_FIFO_REG: *mut u32 = (0x3FF4_0000 + 0x00) as *mut u32;
+const UART_FIFO_REG: *mut u32 = 0x3FF4_0000 as *mut u32;
 #[cfg(feature = "esp32")]
 const UART_STATUS_REG: *const u32 = (0x3FF4_0000 + 0x1C) as *const u32;
 #[cfg(feature = "esp32")]
@@ -227,9 +227,6 @@ fn handle_show_stats() {
 
     #[cfg(feature = "l2cap")]
     let l2cap = crate::l2cap_host::l2cap_stats_snapshot();
-    #[cfg(not(feature = "l2cap"))]
-    let l2cap = ();
-
     #[cfg(feature = "l2cap")]
     esp_println::println!(
         r#"{{"status":"ok","data":{{"msg1_tx":{},"msg2_rx":{},"hb_tx":{},"hb_rx":{},"data_tx":{},"data_rx":{},"srtt_ms":{},"loss_permil":{},"goodput_kbps":{},"jitter_us":{},"l2cap_zero_frame_disconnects":{},"l2cap_recv_timeouts":{},"l2cap_send_timeouts":{},"l2cap_send_errors":{},"l2cap_rx_drops":{},"l2cap_pubkey_ok":{},"l2cap_central_connects":{},"l2cap_peripheral_connects":{},"l2cap_last_role":{},"l2cap_last_reason":{}}}}}"#,

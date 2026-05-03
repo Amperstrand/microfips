@@ -11,9 +11,10 @@ name = "microfips_esp_transport"
 default = []
 esp32 = ["esp-hal/esp32", "esp-radio/esp32", "esp-println/esp32", "esp-println/auto"]
 esp32s3 = ["esp-hal/esp32s3", "esp-radio/esp32s3", "esp-println/esp32s3", "esp-println/jtag-serial"]
-ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
-l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log"]
-wifi = ["dep:esp-radio", "dep:esp-alloc", "dep:embassy-net", "dep:esp-println", "dep:log"]
+log = ["dep:log"]
+ble = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "log"]
+l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:esp-alloc", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "log"]
+wifi = ["dep:esp-radio", "dep:esp-alloc", "dep:embassy-net", "dep:esp-println", "log"]
 
 [build-dependencies]
 microfips-build = { path = "../microfips-build" }
