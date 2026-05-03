@@ -4,7 +4,7 @@ use microfips_core::wire;
 
 use crate::error::ProtocolError;
 use crate::framing;
-use crate::peer_policy::{PeerPolicy, PolicyVerdict};
+use crate::peer_policy::{PeerPolicy, PeerPolicyTiming, PolicyVerdict};
 use crate::transport::{CryptoRng, RngCore, Transport};
 
 macro_rules! log_steady {
@@ -14,15 +14,44 @@ macro_rules! log_steady {
     };
 }
 
-pub const HB_SECS: u64 = 10;
-pub const RECV_TIMEOUT_MS: u64 = 30_000;
-pub const RETRY_SECS: u64 = 3;
-pub const MSG1_RESEND_SECS: u64 = 3;
-pub const MSG1_RESEND_MAX: u32 = 10;
-pub const CONNECT_DELAY_MS: u64 = 500;
+pub const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 10;
+pub const DEFAULT_LINK_DEAD_TIMEOUT_SECS: u64 = 30;
+pub const DEFAULT_RETRY_BASE_INTERVAL_SECS: u64 = 5;
+pub const DEFAULT_RETRY_MAX_BACKOFF_SECS: u64 = 300;
+pub const DEFAULT_HANDSHAKE_RESEND_INTERVAL_MS: u64 = 3_000;
+pub const DEFAULT_HANDSHAKE_RESEND_BACKOFF: u64 = 1;
+pub const DEFAULT_HANDSHAKE_MAX_RESENDS: u32 = 10;
+pub const DEFAULT_CONNECT_DELAY_MS: u64 = 500;
 pub const MAX_COMPETING_MSG1: u32 = 3;
 
 pub const RECV_BUF_SIZE: usize = 1500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeTiming {
+    pub heartbeat_interval_secs: u64,
+    pub link_dead_timeout_secs: u64,
+    pub retry_base_interval_secs: u64,
+    pub retry_max_backoff_secs: u64,
+    pub handshake_resend_interval_ms: u64,
+    pub handshake_resend_backoff: u64,
+    pub handshake_max_resends: u32,
+    pub connect_delay_ms: u64,
+}
+
+impl Default for NodeTiming {
+    fn default() -> Self {
+        Self {
+            heartbeat_interval_secs: DEFAULT_HEARTBEAT_INTERVAL_SECS,
+            link_dead_timeout_secs: DEFAULT_LINK_DEAD_TIMEOUT_SECS,
+            retry_base_interval_secs: DEFAULT_RETRY_BASE_INTERVAL_SECS,
+            retry_max_backoff_secs: DEFAULT_RETRY_MAX_BACKOFF_SECS,
+            handshake_resend_interval_ms: DEFAULT_HANDSHAKE_RESEND_INTERVAL_MS,
+            handshake_resend_backoff: DEFAULT_HANDSHAKE_RESEND_BACKOFF,
+            handshake_max_resends: DEFAULT_HANDSHAKE_MAX_RESENDS,
+            connect_delay_ms: DEFAULT_CONNECT_DELAY_MS,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Protocol state events emitted to the handler.
@@ -100,6 +129,7 @@ struct ThroughputState {
 pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     transport: T,
     rng: R,
+    timing: NodeTiming,
     policy: PeerPolicy,
     nsec: [u8; 32],
     peer_npub: [u8; 33],
@@ -208,10 +238,26 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     }
 
     pub fn new(transport: T, rng: R, nsec: [u8; 32], peer_npub: [u8; 33]) -> Self {
+        Self::with_timing(transport, rng, nsec, peer_npub, NodeTiming::default())
+    }
+
+    pub fn with_timing(
+        transport: T,
+        rng: R,
+        nsec: [u8; 32],
+        peer_npub: [u8; 33],
+        timing: NodeTiming,
+    ) -> Self {
         Self {
             transport,
             rng,
-            policy: PeerPolicy::new(),
+            timing,
+            policy: PeerPolicy::with_timing(PeerPolicyTiming {
+                retry_base_interval_secs: timing.retry_base_interval_secs,
+                retry_max_backoff_secs: timing.retry_max_backoff_secs,
+                frame_rate_window_ms: crate::peer_policy::DEFAULT_FRAME_RATE_WINDOW_MS,
+                link_dead_timeout_secs: timing.link_dead_timeout_secs,
+            }),
             nsec,
             peer_npub,
             rbuf: [0u8; 2048],
@@ -290,7 +336,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 }
                 PolicyVerdict::Reject => {
                     log_steady!("policy: rejected: reconnect");
-                    Timer::after(Duration::from_secs(RETRY_SECS)).await;
+                    Timer::after(Duration::from_secs(self.timing.retry_base_interval_secs)).await;
                     continue;
                 }
             }
@@ -305,7 +351,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             .await
             .map_err(|_| ProtocolError::Disconnected)?;
         let epoch = self.advance_epoch();
-        Timer::after(Duration::from_millis(CONNECT_DELAY_MS)).await;
+        Timer::after(Duration::from_millis(self.timing.connect_delay_ms)).await;
         handler.on_event(NodeEvent::Connected).await;
 
         self.rpos = 0;
@@ -374,10 +420,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut competing_msg1_count: u32 = 0;
         let mut resend_count: u32 = 0;
         loop {
-            match self
-                .recv_frame(&mut mb, MSG1_RESEND_SECS as u32 * 1000)
-                .await
-            {
+            let recv_timeout_ms = self.current_handshake_resend_timeout_ms(resend_count);
+            match self.recv_frame(&mut mb, recv_timeout_ms).await {
                 Ok(ml) => {
                     resend_count = 0;
                     let m = wire::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
@@ -511,7 +555,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 }
                 Err(ProtocolError::Timeout) => {
                     resend_count += 1;
-                    if resend_count > MSG1_RESEND_MAX {
+                    if resend_count > self.timing.handshake_max_resends {
                         return Err(ProtocolError::Timeout);
                     }
                     self.send_frame(&f1[..f1len]).await?;
@@ -528,9 +572,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         them: wire::SessionIndex,
         handler: &mut H,
     ) -> Result<(), ProtocolError> {
-        log_steady!("steady: entered, next_hb in {}s", HB_SECS);
-        let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(HB_SECS);
-        let mut next_sr = embassy_time::Instant::now() + Duration::from_secs(HB_SECS / 2);
+        log_steady!(
+            "steady: entered, next_hb in {}s",
+            self.timing.heartbeat_interval_secs
+        );
+        let mut next_hb = embassy_time::Instant::now()
+            + Duration::from_secs(self.timing.heartbeat_interval_secs);
+        let mut next_sr = embassy_time::Instant::now()
+            + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
         let mut send_ctr: u64 = 0;
         #[allow(unused_mut, unused_variables)]
         let mut sr_start_ctr: u64 = 0;
@@ -668,7 +717,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     #[cfg(not(feature = "mmp"))]
                     if now >= next_sr {
                         log_steady!("steady: sending sender report (recv branch)");
-                        next_sr = now + Duration::from_secs(HB_SECS);
+                            next_sr =
+                                now + Duration::from_secs(self.timing.heartbeat_interval_secs);
                         let sr_end_ts = now.as_millis() as u32;
                         let mut sr = [0u8; microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE];
                         sr[3..11].copy_from_slice(&sr_start_ctr.to_le_bytes());
@@ -753,7 +803,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     }
                     #[cfg(not(feature = "mmp"))]
                     if now >= next_sr {
-                        next_sr = now + Duration::from_secs(HB_SECS);
+                        next_sr = now + Duration::from_secs(self.timing.heartbeat_interval_secs);
                         let sr_end_ts = now.as_millis() as u32;
                         let mut sr = [0u8; microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE];
                         sr[3..11].copy_from_slice(&sr_start_ctr.to_le_bytes());
@@ -885,7 +935,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let inner_len = match wire::prepend_inner_header(ts, &[wire::MSG_HEARTBEAT], &mut inner_buf)
         {
             Some(l) => l,
-            None => return embassy_time::Instant::now() + Duration::from_secs(HB_SECS),
+            None => return self.next_heartbeat_deadline(),
         };
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
 
@@ -898,7 +948,26 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             self.mmp.sender.record_sent(c, ts, fl);
         }
 
-        embassy_time::Instant::now() + Duration::from_secs(HB_SECS)
+        self.next_heartbeat_deadline()
+    }
+
+    fn next_heartbeat_deadline(&self) -> embassy_time::Instant {
+        embassy_time::Instant::now() + Duration::from_secs(self.timing.heartbeat_interval_secs)
+    }
+
+    fn current_handshake_resend_timeout_ms(&self, resend_count: u32) -> u32 {
+        let base = self.timing.handshake_resend_interval_ms;
+        if resend_count == 0 {
+            return base.min(u32::MAX as u64) as u32;
+        }
+
+        let factor = self.timing.handshake_resend_backoff.max(1);
+        let mut scaled = base;
+        for _ in 0..resend_count.min(15) {
+            scaled = scaled.saturating_mul(factor);
+        }
+
+        scaled.min(u32::MAX as u64) as u32
     }
 
     async fn send_disconnect(
@@ -1472,6 +1541,45 @@ mod tests {
             };
             assert_eq!(*tx, expected);
         });
+    }
+
+    #[test]
+    fn test_node_new_uses_fips_aligned_default_timing() {
+        let inner = fresh_inner();
+        let transport = crate::transport::mock::MockTransport::new(inner);
+
+        let node = Node::new(transport, TestRng::new(&[0u8; 32]), [0u8; 32], [0u8; 33]);
+
+        assert_eq!(node.timing, NodeTiming::default());
+    }
+
+    #[test]
+    fn test_node_with_timing_overrides_defaults() {
+        let inner = fresh_inner();
+        let transport = crate::transport::mock::MockTransport::new(inner);
+        let timing = NodeTiming {
+            heartbeat_interval_secs: 7,
+            link_dead_timeout_secs: 9,
+            retry_base_interval_secs: 2,
+            retry_max_backoff_secs: 11,
+            handshake_resend_interval_ms: 250,
+            handshake_resend_backoff: 3,
+            handshake_max_resends: 4,
+            connect_delay_ms: 42,
+        };
+
+        let node = Node::with_timing(
+            transport,
+            TestRng::new(&[0u8; 32]),
+            [0u8; 32],
+            [0u8; 33],
+            timing,
+        );
+
+        assert_eq!(node.timing, timing);
+        assert_eq!(node.current_handshake_resend_timeout_ms(0), 250);
+        assert_eq!(node.current_handshake_resend_timeout_ms(1), 750);
+        assert_eq!(node.current_handshake_resend_timeout_ms(2), 2_250);
     }
 
     #[test]
