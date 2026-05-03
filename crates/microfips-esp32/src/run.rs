@@ -63,6 +63,7 @@ pub async fn run_uart_node(
 
     node.run(&mut handler).await;
     #[allow(unreachable_code)]
+    #[allow(clippy::empty_loop)]
     loop {}
 }
 
@@ -233,7 +234,19 @@ pub async fn run_wifi_node(
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
-    let transport = build_wifi_transport(spawner, wifi, &mut trng, WIFI_SSID, WIFI_PASSWORD).await;
+    let transport = match build_wifi_transport(spawner, wifi, &mut trng, WIFI_SSID, WIFI_PASSWORD).await {
+        Ok(transport) => transport,
+        Err(err) => {
+            log::error!("WiFi: max retries exceeded, entering error state: {:?}", err);
+            led.set_state(microfips_esp_transport::config::LED_OFF);
+            loop {
+                led.set_state(microfips_esp_transport::config::LED_ON);
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+                led.set_state(microfips_esp_transport::config::LED_OFF);
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+            }
+        }
+    };
 
     let rng = EspRng(trng);
     let mut node = Node::new(transport, rng, ESP32_NSEC, VPS_NPUB);
@@ -249,5 +262,6 @@ pub async fn run_wifi_node(
     log::info!("Node running over WiFi...");
     node.run(&mut handler).await;
     #[allow(unreachable_code)]
+    #[allow(clippy::empty_loop)]
     loop {}
 }

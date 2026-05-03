@@ -1,5 +1,3 @@
-#![cfg(feature = "wifi")]
-
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Config, IpAddress, IpEndpoint, Runner, StackResources};
 use embassy_time::{with_timeout, Duration, Timer};
@@ -11,6 +9,14 @@ use microfips_esp_common::dns::resolve_vps_ipv4;
 use microfips_esp_common::udp_transport::UdpTransport;
 use microfips_protocol::transport::Transport;
 use static_cell::StaticCell;
+
+#[derive(Debug)]
+pub enum WifiInitError {
+    ConnectFailed,
+    ConnectTimeout,
+    DhcpTimeout,
+    DnsFailed,
+}
 
 pub struct WifiTransport {
     _wifi_controller: WifiController<'static>,
@@ -44,8 +50,11 @@ pub async fn build_wifi_transport(
     trng: &mut Trng,
     wifi_ssid: &str,
     wifi_password: &str,
-) -> WifiTransport {
+) -> Result<WifiTransport, WifiInitError> {
     esp_alloc::heap_allocator!(#[link_section = ".dram2_uninit"] size: 72_000);
+
+    const MAX_WIFI_RETRIES: u32 = 5;
+    const WIFI_RETRY_BASE_SECS: u64 = 5;
 
     static RADIO: StaticCell<esp_radio::Controller> = StaticCell::new();
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
@@ -79,35 +88,93 @@ pub async fn build_wifi_transport(
     wifi_controller.start().expect("wifi start");
 
     Timer::after(Duration::from_secs(2)).await;
-    match with_timeout(Duration::from_secs(30), wifi_controller.connect_async()).await {
-        Ok(Ok(())) => log::info!("WiFi connected"),
-        Ok(Err(e)) => {
-            log::error!("WiFi connect failed: {:?}", e);
-            panic!("WiFi connect failed: {:?}", e);
-        }
-        Err(_) => {
-            log::error!("WiFi connect timed out after 30s");
-            panic!("WiFi connect timed out after 30s");
-        }
-    }
-
-    let config_v4 = match with_timeout(Duration::from_secs(WIFI_DHCP_TIMEOUT_SECS), async {
+    let (_, vps_ip) = {
+        let mut retry = 0u32;
         loop {
-            if let Some(c) = stack.config_v4() {
-                break c;
+            let init_result: Result<_, WifiInitError> = match with_timeout(
+                Duration::from_secs(30),
+                wifi_controller.connect_async(),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    #[cfg(feature = "log")]
+                    log::info!("WiFi connected");
+
+                    let config_v4 = match with_timeout(
+                        Duration::from_secs(WIFI_DHCP_TIMEOUT_SECS),
+                        async {
+                            loop {
+                                if let Some(c) = stack.config_v4() {
+                                    break c;
+                                }
+                                Timer::after(Duration::from_millis(500)).await;
+                            }
+                        },
+                    )
+                    .await
+                    {
+                        Ok(config) => config,
+                        Err(_) => {
+                            #[cfg(feature = "log")]
+                            log::error!("WiFi DHCP timed out after {}s", WIFI_DHCP_TIMEOUT_SECS);
+                            let _ = wifi_controller.disconnect_async().await;
+                            Err(WifiInitError::DhcpTimeout)?
+                        }
+                    };
+
+                    #[cfg(feature = "log")]
+                    log::info!("IP: {} (target: {})", config_v4.address, VPS_HOST);
+
+                    let dns_server = config_v4.dns_servers[0];
+                    match resolve_vps_ipv4(stack, dns_server, VPS_HOST).await {
+                        Ok(vps_ip) => Ok((config_v4, vps_ip)),
+                        Err(e) => {
+                            #[cfg(feature = "log")]
+                            log::error!("DNS resolve failed for {}: {:?}", VPS_HOST, e);
+                            let _ = wifi_controller.disconnect_async().await;
+                            Err(WifiInitError::DnsFailed)
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    #[cfg(feature = "log")]
+                    log::error!("WiFi connect failed: {:?}", e);
+                    let _ = wifi_controller.disconnect_async().await;
+                    Err(WifiInitError::ConnectFailed)
+                }
+                Err(_) => {
+                    #[cfg(feature = "log")]
+                    log::error!("WiFi connect timed out after 30s");
+                    let _ = wifi_controller.disconnect_async().await;
+                    Err(WifiInitError::ConnectTimeout)
+                }
+            };
+
+            match init_result {
+                Ok(values) => break values,
+                Err(err) => {
+                    #[cfg(feature = "log")]
+                    log::error!(
+                        "WiFi init failed (attempt {}/{}): {:?}",
+                        retry + 1,
+                        MAX_WIFI_RETRIES,
+                        err
+                    );
+
+                    retry += 1;
+                    if retry >= MAX_WIFI_RETRIES {
+                        return Err(err);
+                    }
+
+                    let backoff = WIFI_RETRY_BASE_SECS * (1u64 << (retry - 1));
+                    #[cfg(feature = "log")]
+                    log::info!("Retrying WiFi init in {}s", backoff);
+                    Timer::after(Duration::from_secs(backoff)).await;
+                }
             }
-            Timer::after(Duration::from_millis(500)).await;
-        }
-    })
-    .await
-    {
-        Ok(config) => config,
-        Err(_) => {
-            log::error!("WiFi DHCP timed out after {}s", WIFI_DHCP_TIMEOUT_SECS);
-            panic!("WiFi DHCP timed out after {}s", WIFI_DHCP_TIMEOUT_SECS);
         }
     };
-    log::info!("IP: {} (target: {})", config_v4.address, VPS_HOST);
 
     let mut socket = UdpSocket::new(
         stack,
@@ -118,20 +185,14 @@ pub async fn build_wifi_transport(
     );
     socket.bind(0).expect("udp bind");
 
-    let dns_server = config_v4.dns_servers[0];
-    let vps_ip = resolve_vps_ipv4(stack, dns_server, VPS_HOST)
-        .await
-        .unwrap_or_else(|e| {
-            log::error!("DNS resolve failed for {}: {:?}", VPS_HOST, e);
-            panic!("DNS resolve failed for {}", VPS_HOST);
-        });
+    #[cfg(feature = "log")]
     log::info!("Resolved {} -> {}", VPS_HOST, vps_ip);
 
     let peer = IpEndpoint::new(IpAddress::Ipv4(vps_ip), VPS_PORT);
     let inner = UdpTransport { socket, peer };
 
-    WifiTransport {
+    Ok(WifiTransport {
         _wifi_controller: wifi_controller,
         inner,
-    }
+    })
 }
