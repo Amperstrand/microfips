@@ -1000,7 +1000,9 @@ pub fn handle_fsp_datagram(
             if session.state() != FspSessionState::Established {
                 return Ok(FspHandlerResult::None);
             }
-            let (k_recv, _k_send) = session.session_keys().unwrap();
+            let Some((k_recv, _k_send)) = session.session_keys() else {
+                return Ok(FspHandlerResult::None);
+            };
             let Some((flags, counter, header, encrypted)) = parse_fsp_encrypted_header(fsp_data)
             else {
                 return Ok(FspHandlerResult::None);
