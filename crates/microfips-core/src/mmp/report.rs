@@ -3,10 +3,12 @@
 //! Serialization and deserialization for the two report types exchanged
 //! between link-layer peers. Wire format follows the FIPS upstream layout.
 
+use crate::generated::fips_compat;
+
 pub const SENDER_REPORT_SIZE: usize = 48;
 pub const RECEIVER_REPORT_SIZE: usize = 68;
-pub const SENDER_REPORT_BODY_SIZE: usize = 47;
-pub const RECEIVER_REPORT_BODY_SIZE: usize = 67;
+pub const SENDER_REPORT_BODY_SIZE: usize = fips_compat::SENDER_REPORT_BODY_SIZE;
+pub const RECEIVER_REPORT_BODY_SIZE: usize = fips_compat::RECEIVER_REPORT_BODY_SIZE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SenderReport {

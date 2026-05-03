@@ -11,6 +11,8 @@
 //! | ~~N2~~ | `path_mtu` default | ~~hardcoded 1400~~ → now `u16::MAX` | `u16::MAX` | **Fixed**: matches FIPS default. FIPS caps during forwarding. |
 //! | ~~N3~~ | `session_flags` | ~~initiator sends 0x03~~ → now 0x00 | defaults to 0x00 | **Fixed**: matches FIPS default. FIPS doesn't validate flags. |
 
+use crate::generated::fips_compat;
+
 // FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const FMP_VERSION: u8 = 0;
 // FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
@@ -48,15 +50,15 @@ pub const PHASE_MSG2: u8 = 0x02;
 ///
 /// These occupy the same wire position as FMP `flags` in established frames
 /// but have a different semantic namespace. FIPS defines them in `session_wire.rs`.
-pub const MSG_HEARTBEAT: u8 = 0x51;
+pub const MSG_HEARTBEAT: u8 = fips_compat::LINK_MSG_HEARTBEAT;
 // FIPS: bd08505 node/link.rs:handle_session_datagram()
-pub const MSG_SESSION_DATAGRAM: u8 = 0x00;
+pub const MSG_SESSION_DATAGRAM: u8 = fips_compat::LINK_MSG_SESSION_DATAGRAM;
 // FIPS: bd08505 node/link.rs:handle_sender_report()
-pub const MSG_SENDER_REPORT: u8 = 0x01;
+pub const MSG_SENDER_REPORT: u8 = fips_compat::LINK_MSG_SENDER_REPORT;
 // FIPS: bd08505 node/link.rs:handle_receiver_report()
-pub const MSG_RECEIVER_REPORT: u8 = 0x02;
+pub const MSG_RECEIVER_REPORT: u8 = fips_compat::LINK_MSG_RECEIVER_REPORT;
 // FIPS: bd08505 node/link.rs:handle_disconnect()
-pub const MSG_DISCONNECT: u8 = 0x50;
+pub const MSG_DISCONNECT: u8 = fips_compat::LINK_MSG_DISCONNECT;
 
 // FIPS: protocol/link.rs — experimental benchmark (0xFB-0xFF), feature-gated
 pub const MSG_ECHO_REQUEST: u8 = 0xFF;
@@ -143,15 +145,15 @@ pub fn build_throughput_report(
 
 /// Disconnect reason codes (1-byte payload in Disconnect message).
 /// FIPS: protocol/link.rs DisconnectReason
-pub const DISC_REASON_SHUTDOWN: u8 = 0x00;
-pub const DISC_REASON_RESTART: u8 = 0x01;
-pub const DISC_REASON_PROTOCOL_ERROR: u8 = 0x02;
-pub const DISC_REASON_TRANSPORT_FAILURE: u8 = 0x03;
-pub const DISC_REASON_RESOURCE_EXHAUSTION: u8 = 0x04;
-pub const DISC_REASON_SECURITY_VIOLATION: u8 = 0x05;
-pub const DISC_REASON_CONFIGURATION_CHANGE: u8 = 0x06;
-pub const DISC_REASON_TIMEOUT: u8 = 0x07;
-pub const DISC_REASON_OTHER: u8 = 0xFF;
+pub const DISC_REASON_SHUTDOWN: u8 = fips_compat::DISC_REASON_SHUTDOWN;
+pub const DISC_REASON_RESTART: u8 = fips_compat::DISC_REASON_RESTART;
+pub const DISC_REASON_PROTOCOL_ERROR: u8 = fips_compat::DISC_REASON_PROTOCOL_ERROR;
+pub const DISC_REASON_TRANSPORT_FAILURE: u8 = fips_compat::DISC_REASON_TRANSPORT_FAILURE;
+pub const DISC_REASON_RESOURCE_EXHAUSTION: u8 = fips_compat::DISC_REASON_RESOURCE_EXHAUSTION;
+pub const DISC_REASON_SECURITY_VIOLATION: u8 = fips_compat::DISC_REASON_SECURITY_VIOLATION;
+pub const DISC_REASON_CONFIGURATION_CHANGE: u8 = fips_compat::DISC_REASON_CONFIGURATION_CHANGE;
+pub const DISC_REASON_TIMEOUT: u8 = fips_compat::DISC_REASON_TIMEOUT;
+pub const DISC_REASON_OTHER: u8 = fips_compat::DISC_REASON_OTHER;
 
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
 pub const FLAG_CE: u8 = 0x02;

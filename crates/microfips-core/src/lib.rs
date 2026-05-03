@@ -6,6 +6,7 @@
 extern crate std;
 
 pub mod fsp;
+pub mod generated;
 pub mod hex;
 pub mod identity;
 pub mod mmp;
