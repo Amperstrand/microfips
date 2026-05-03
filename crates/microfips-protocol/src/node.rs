@@ -821,14 +821,16 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let inner_len = match wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf) {
             Some(l) => l,
             None => {
+                #[cfg(feature = "log")]
                 log::warn!("send_session_datagram: prepend_inner_header failed");
                 return;
             }
         };
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
-            if let Err(e) = self.send_frame(&out[..fl]).await {
-                log::warn!("send failed: {:?}", e);
+            if let Err(_e) = self.send_frame(&out[..fl]).await {
+                #[cfg(feature = "log")]
+                log::warn!("send failed: {:?}", _e);
             }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
@@ -856,14 +858,16 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let inner_len = match wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf) {
             Some(l) => l,
             None => {
+                #[cfg(feature = "log")]
                 log::warn!("send_link_message: prepend_inner_header failed");
                 return;
             }
         };
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
-            if let Err(e) = self.send_frame(&out[..fl]).await {
-                log::warn!("send failed: {:?}", e);
+            if let Err(_e) = self.send_frame(&out[..fl]).await {
+                #[cfg(feature = "log")]
+                log::warn!("send failed: {:?}", _e);
             }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
@@ -894,8 +898,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
 
         if let Some(fl) = fl {
-            if let Err(e) = self.send_frame(&out[..fl]).await {
-                log::warn!("send failed: {:?}", e);
+            if let Err(_e) = self.send_frame(&out[..fl]).await {
+                #[cfg(feature = "log")]
+                log::warn!("send failed: {:?}", _e);
             }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
@@ -920,14 +925,16 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             match wire::prepend_inner_header(ts, &[wire::MSG_DISCONNECT, reason], &mut inner_buf) {
                 Some(l) => l,
                 None => {
+                    #[cfg(feature = "log")]
                     log::warn!("send_disconnect: prepend_inner_header failed");
                     return;
                 }
             };
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
-            if let Err(e) = self.send_frame(&out[..fl]).await {
-                log::warn!("send failed: {:?}", e);
+            if let Err(_e) = self.send_frame(&out[..fl]).await {
+                #[cfg(feature = "log")]
+                log::warn!("send failed: {:?}", _e);
             }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
