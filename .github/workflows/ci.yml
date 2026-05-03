@@ -354,20 +354,16 @@ jobs:
     name: Build ESP32 Firmware
     runs-on: ubuntu-latest
     env:
-      RUSTUP_TOOLCHAIN: esp
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ESP toolchain
-        run: |
-          cargo install espup --locked
-          espup install
-          echo "$HOME/.esp-rs/esptool" >> "$GITHUB_PATH"
-          . "$HOME/export-esp.sh"
-          echo "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" >> "$GITHUB_ENV"
-          echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> "$GITHUB_ENV"
-          echo "PATH=$PATH" >> "$GITHUB_ENV"
-          rustup toolchain list
+      - name: Install Xtensa toolchain
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32,esp32s3
+          ldproxy: false
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -377,29 +373,19 @@ jobs:
         run: rustup component add rust-src
 
       - name: Build ESP32 UART
-        run: |
-          . "$HOME/export-esp.sh"
-          cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
+        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
 
       - name: Build ESP32 BLE
-        run: |
-          . "$HOME/export-esp.sh"
-          cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
+        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
 
       - name: Build ESP32 L2CAP
-        run: |
-          . "$HOME/export-esp.sh"
-          cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
+        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
 
       - name: Build ESP32 WiFi
-        run: |
-          . "$HOME/export-esp.sh"
-          WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
 
       - name: Build ESP32-S3 WiFi
-        run: |
-          . "$HOME/export-esp.sh"
-          WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
 
   sim-ping:
     name: Sim-to-Sim Ping via FIPS
