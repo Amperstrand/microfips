@@ -133,8 +133,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 handler.on_event(NodeEvent::HeartbeatRecv).await;
                 Ok(false)
             }
-            FrameAction::PeerDC => {
-                log_steady!("steady: peer disconnect received, exiting steady");
+            FrameAction::PeerDC { reason: _reason } => {
+                log_steady!(
+                    "steady: peer disconnect received (reason={}), exiting steady",
+                    _reason
+                );
                 Ok(true)
             }
             FrameAction::SelfDC => {
@@ -146,7 +149,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             FrameAction::SendDatagram(len) => {
                 self.policy.record_data_frame();
                 log_steady!("steady: sending datagram {} bytes", len);
-                self.send_datagram(them, send_ctr, len, ks).await;
+                self.send_session_datagram(them, send_ctr, len, ks).await;
                 Ok(false)
             }
             FrameAction::SendLinkMessage { msg_type, len } => {
@@ -348,7 +351,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         use microfips_core::noise;
         use microfips_core::wire;
 
-        let my_pub = noise::ecdh_pubkey(&self.nsec).unwrap();
+        let my_pub = noise::ecdh_pubkey(&self.nsec)?;
         let my_x_only: [u8; 32] = my_pub[1..33].try_into().unwrap();
         let my_addr = NodeAddr::from_pubkey_x(&my_x_only);
         let peer_x_only: [u8; 32] = self.peer_npub[1..33].try_into().unwrap();
@@ -356,17 +359,15 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         let initiator_eph = self.generate_valid_eph();
         let (mut noise_st, _e_pub) =
-            noise::NoiseIkInitiator::new(&initiator_eph, &self.nsec, &self.peer_npub)
-                .expect("noise init");
+            noise::NoiseIkInitiator::new(&initiator_eph, &self.nsec, &self.peer_npub)?;
 
         let mut n1 = [0u8; 256];
-        let n1len = noise_st
-            .write_message1(&my_pub, &epoch, &mut n1)
-            .expect("write_message1");
+        let n1len = noise_st.write_message1(&my_pub, &epoch, &mut n1)?;
 
         let our_index = self.allocate_session_index();
         let mut f1 = [0u8; 256];
-        let f1len = wire::build_msg1(our_index, &n1[..n1len], &mut f1).unwrap();
+        let f1len = wire::build_msg1(our_index, &n1[..n1len], &mut f1)
+            .ok_or(ProtocolError::InvalidFrame)?;
 
         if !self.peer_sent_first {
             self.send_frame(&f1[..f1len]).await?;
@@ -586,7 +587,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         }
 
                         let frame = decrypt_established_frame(kr, frame_data, &mut dec_buf);
-                        if frame_is_policy_good(kr, frame_data) {
+                        if frame.is_some() {
                             self.policy.record_good_frame();
                         } else {
                             self.policy.record_bad_frame();
@@ -699,7 +700,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             if let HandleResult::SendDatagram(len) =
                                 handler.on_tick(&mut self.resp_buf)
                             {
-                                self.send_datagram(them, &mut send_ctr, len, ks).await;
+                                self.send_session_datagram(them, &mut send_ctr, len, ks)
+                                    .await;
                             }
                         }
                     }
@@ -782,7 +784,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             if let HandleResult::SendDatagram(len) =
                                 handler.on_tick(&mut self.resp_buf)
                             {
-                                self.send_datagram(them, &mut send_ctr, len, ks).await;
+                                self.send_session_datagram(them, &mut send_ctr, len, ks)
+                                    .await;
                             }
                         }
                     }
@@ -795,7 +798,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     /// FIPS: mod.rs:1578-1663 send_encrypted_link_message_with_ce() —
     /// prepend_inner_header(timestamp, plaintext) → build_established_header →
     /// encrypt_with_aad(header as AAD) → transport.send().
-    async fn send_datagram(
+    async fn send_session_datagram(
         &mut self,
         them: wire::SessionIndex,
         send_ctr: &mut u64,
@@ -812,8 +815,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         msg_buf[0] = wire::MSG_SESSION_DATAGRAM;
         msg_buf[1..msg_end].copy_from_slice(&self.resp_buf[..len]);
         let mut inner_buf = [0u8; 512];
-        let inner_len =
-            wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+        let inner_len = match wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf) {
+            Some(l) => l,
+            None => {
+                log::warn!("send_session_datagram: prepend_inner_header failed");
+                return;
+            }
+        };
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             if let Err(e) = self.send_frame(&out[..fl]).await {
@@ -842,8 +850,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         msg_buf[0] = msg_type;
         msg_buf[1..msg_end].copy_from_slice(&self.resp_buf[..len]);
         let mut inner_buf = [0u8; 512];
-        let inner_len =
-            wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf).unwrap();
+        let inner_len = match wire::prepend_inner_header(ts, &msg_buf[..msg_end], &mut inner_buf) {
+            Some(l) => l,
+            None => {
+                log::warn!("send_link_message: prepend_inner_header failed");
+                return;
+            }
+        };
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             if let Err(e) = self.send_frame(&out[..fl]).await {
@@ -855,7 +868,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     }
 
     /// Encrypt and send a heartbeat via FMP established frame.
-    /// FIPS: Same send path as send_datagram, with MSG_HEARTBEAT (0x51) and empty payload.
+    /// FIPS: Same send path as send_session_datagram, with MSG_HEARTBEAT (0x51) and empty payload.
     /// FIPS: dispatch.rs:54 traces "Received heartbeat" on rx.
     async fn send_heartbeat(
         &mut self,
@@ -870,8 +883,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let ts = embassy_time::Instant::now().as_millis() as u32;
         let mut out = [0u8; 256];
         let mut inner_buf = [0u8; 32];
-        let inner_len =
-            wire::prepend_inner_header(ts, &[wire::MSG_HEARTBEAT], &mut inner_buf).unwrap();
+        let inner_len = match wire::prepend_inner_header(ts, &[wire::MSG_HEARTBEAT], &mut inner_buf)
+        {
+            Some(l) => l,
+            None => return embassy_time::Instant::now() + Duration::from_secs(HB_SECS),
+        };
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
 
         if let Some(fl) = fl {
@@ -898,8 +914,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut out = [0u8; 256];
         let mut inner_buf = [0u8; 32];
         let inner_len =
-            wire::prepend_inner_header(ts, &[wire::MSG_DISCONNECT, reason], &mut inner_buf)
-                .unwrap();
+            match wire::prepend_inner_header(ts, &[wire::MSG_DISCONNECT, reason], &mut inner_buf) {
+                Some(l) => l,
+                None => {
+                    log::warn!("send_disconnect: prepend_inner_header failed");
+                    return;
+                }
+            };
         let fl = wire::encrypt_and_assemble(them, c, 0x00, &inner_buf[..inner_len], ks, &mut out);
         if let Some(fl) = fl {
             if let Err(e) = self.send_frame(&out[..fl]).await {
@@ -1166,7 +1187,9 @@ fn handle_throughput_stream(
     }
 
     throughput.frames_recv = throughput.frames_recv.saturating_add(1);
-    throughput.bytes_recv = throughput.bytes_recv.saturating_add(frame.payload.len() as u64);
+    throughput.bytes_recv = throughput
+        .bytes_recv
+        .saturating_add(frame.payload.len() as u64);
 
     let elapsed_us = match throughput.started_at {
         Some(t) => Instant::now().as_micros().saturating_sub(t.as_micros()),
@@ -1214,13 +1237,21 @@ fn dispatch_link_message<H: NodeHandler>(
 
     match frame.msg_type {
         wire::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
-        wire::MSG_DISCONNECT => FrameAction::PeerDC,
+        wire::MSG_DISCONNECT => {
+            let reason = frame
+                .payload
+                .first()
+                .copied()
+                .unwrap_or(wire::DISC_REASON_OTHER);
+            FrameAction::PeerDC { reason }
+        }
         wire::MSG_SENDER_REPORT => build_receiver_report_response(frame.payload, resp),
         wire::MSG_RECEIVER_REPORT => FrameAction::Continue,
         wire::MSG_ECHO_REQUEST => {
             if let Some((send_ts, seq, payload)) = wire::parse_echo_request(frame.payload) {
                 let now_us = Instant::now().as_micros();
-                if let Some(resp_len) = wire::build_echo_response(send_ts, now_us, seq, payload, resp)
+                if let Some(resp_len) =
+                    wire::build_echo_response(send_ts, now_us, seq, payload, resp)
                 {
                     FrameAction::SendLinkMessage {
                         msg_type: wire::MSG_ECHO_RESPONSE,
@@ -1246,22 +1277,14 @@ fn dispatch_link_message<H: NodeHandler>(
     }
 }
 
-fn frame_is_policy_good(kr: &[u8; 32], data: &[u8]) -> bool {
-    let mut dec = [0u8; 2048];
-    decrypt_established_frame(kr, data, &mut dec).is_some()
-}
-
 #[derive(Debug, PartialEq)]
 enum FrameAction {
     Continue,
     HeartbeatRecv,
-    PeerDC,
+    PeerDC { reason: u8 },
     SelfDC,
     SendDatagram(usize),
-    SendLinkMessage {
-        msg_type: u8,
-        len: usize,
-    },
+    SendLinkMessage { msg_type: u8, len: usize },
 }
 
 /// Determine the total wire size of a raw FMP frame from its 4-byte common prefix.
@@ -1601,7 +1624,12 @@ mod tests {
             &mut NoopTestHandler,
             &mut resp,
         );
-        assert_eq!(result, FrameAction::PeerDC);
+        assert_eq!(
+            result,
+            FrameAction::PeerDC {
+                reason: wire::DISC_REASON_OTHER
+            }
+        );
     }
 
     #[test]
@@ -2223,8 +2251,7 @@ mod tests {
 
                 Timer::after(Duration::from_millis(FRAME_RATE_WINDOW_MS + 50)).await;
 
-                let hb =
-                    build_test_frame(them, 200, wire::MSG_HEARTBEAT, 2000, &[], &key);
+                let hb = build_test_frame(them, 200, wire::MSG_HEARTBEAT, 2000, &[], &key);
                 send_test_frame(&mut peer, &hb).await;
 
                 let disconnect =
