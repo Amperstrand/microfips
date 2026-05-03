@@ -22,6 +22,7 @@ pub const MSG1_RESEND_SECS: u64 = 3;
 pub const MSG1_RESEND_MAX: u32 = 10;
 pub const CONNECT_DELAY_MS: u64 = 500;
 pub const MAX_COMPETING_MSG1: u32 = 3;
+pub const BACKOFF_MAX_EXPONENT: u32 = 4;
 
 pub const RECV_BUF_SIZE: usize = 1500;
 
@@ -303,7 +304,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             } else {
                 backoff = backoff.saturating_add(1);
             }
-            let delay = RETRY_SECS * (1u64 << backoff.min(4));
+            let delay = RETRY_SECS * (1u64 << backoff.min(BACKOFF_MAX_EXPONENT));
             Timer::after(Duration::from_secs(delay.min(BACKOFF_MAX_SECS))).await;
         }
     }
@@ -677,17 +678,18 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         log_steady!("steady: sending sender report (recv branch)");
                         next_sr = now + Duration::from_secs(HB_SECS);
                         let sr_end_ts = now.as_millis() as u32;
-                        let mut sr = [0u8; 47];
+                        let mut sr = [0u8; microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE];
                         sr[3..11].copy_from_slice(&sr_start_ctr.to_le_bytes());
                         sr[11..19].copy_from_slice(&send_ctr.to_le_bytes());
                         sr[19..23].copy_from_slice(&sr_start_ts.to_le_bytes());
                         sr[23..27].copy_from_slice(&sr_end_ts.to_le_bytes());
-                        self.resp_buf[..47].copy_from_slice(&sr);
+                        self.resp_buf[..microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE]
+                            .copy_from_slice(&sr);
                         self.send_link_message(
                             them,
                             &mut send_ctr,
                             wire::MSG_SENDER_REPORT,
-                            47,
+                            microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE,
                             ks,
                         )
                         .await;
@@ -761,17 +763,18 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     if now >= next_sr {
                         next_sr = now + Duration::from_secs(HB_SECS);
                         let sr_end_ts = now.as_millis() as u32;
-                        let mut sr = [0u8; 47];
+                        let mut sr = [0u8; microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE];
                         sr[3..11].copy_from_slice(&sr_start_ctr.to_le_bytes());
                         sr[11..19].copy_from_slice(&send_ctr.to_le_bytes());
                         sr[19..23].copy_from_slice(&sr_start_ts.to_le_bytes());
                         sr[23..27].copy_from_slice(&sr_end_ts.to_le_bytes());
-                        self.resp_buf[..47].copy_from_slice(&sr);
+                        self.resp_buf[..microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE]
+                            .copy_from_slice(&sr);
                         self.send_link_message(
                             them,
                             &mut send_ctr,
                             wire::MSG_SENDER_REPORT,
-                            47,
+                            microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE,
                             ks,
                         )
                         .await;
@@ -1135,15 +1138,16 @@ fn decrypt_established_frame<'a>(
 fn build_receiver_report_response(payload: &[u8], resp: &mut [u8]) -> FrameAction {
     use microfips_core::wire;
 
-    if payload.len() >= 27 && resp.len() >= 67 {
+    if payload.len() >= 27 && resp.len() >= microfips_core::mmp::report::RECEIVER_REPORT_BODY_SIZE {
         let end_ctr = u64::from_le_bytes(payload[11..19].try_into().unwrap_or(0u64.to_le_bytes()));
         let end_ts = u32::from_le_bytes(payload[23..27].try_into().unwrap_or(0u32.to_le_bytes()));
-        resp[..67].copy_from_slice(&[0u8; 67]);
+        resp[..microfips_core::mmp::report::RECEIVER_REPORT_BODY_SIZE]
+            .copy_from_slice(&[0u8; microfips_core::mmp::report::RECEIVER_REPORT_BODY_SIZE]);
         resp[3..11].copy_from_slice(&end_ctr.to_le_bytes());
         resp[27..31].copy_from_slice(&end_ts.to_le_bytes());
         FrameAction::SendLinkMessage {
             msg_type: wire::MSG_RECEIVER_REPORT,
-            len: 67,
+            len: microfips_core::mmp::report::RECEIVER_REPORT_BODY_SIZE,
         }
     } else {
         FrameAction::Continue
@@ -1722,6 +1726,137 @@ mod tests {
         );
         assert_eq!(result, FrameAction::SendDatagram(4));
         assert_eq!(&resp[..4], b"pong");
+    }
+
+    #[test]
+    fn test_handle_frame_echo_request() {
+        use microfips_core::wire;
+
+        let key: [u8; 32] = [0x42; 32];
+        let send_ts = 0x0102_0304_0506_0708u64;
+        let seq = 0x1122_3344u32;
+        let payload = b"echo-payload";
+        let mut echo_request = [0u8; wire::ECHO_REQUEST_MIN_SIZE + wire::ECHO_MAX_PAYLOAD];
+        echo_request[0..8].copy_from_slice(&send_ts.to_le_bytes());
+        echo_request[8..12].copy_from_slice(&seq.to_le_bytes());
+        echo_request[12..12 + payload.len()].copy_from_slice(payload);
+        let frame = build_test_frame(
+            wire::SessionIndex::new(0),
+            8,
+            wire::MSG_ECHO_REQUEST,
+            321,
+            &echo_request[..12 + payload.len()],
+            &key,
+        );
+
+        let mut resp = [0u8; 256];
+        let result = dispatch_test_frame(
+            &key,
+            &frame,
+            &mut ThroughputState::default(),
+            &mut NoopTestHandler,
+            &mut resp,
+        );
+
+        assert_eq!(
+            result,
+            FrameAction::SendLinkMessage {
+                msg_type: wire::MSG_ECHO_RESPONSE,
+                len: wire::ECHO_RESPONSE_MIN_SIZE + payload.len(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_handle_frame_receiver_report_skipped() {
+        use microfips_core::wire;
+
+        let key: [u8; 32] = [0x42; 32];
+        let frame = build_test_frame(
+            wire::SessionIndex::new(0),
+            9,
+            wire::MSG_RECEIVER_REPORT,
+            654,
+            &[0u8; 10],
+            &key,
+        );
+
+        let mut resp = [0u8; 256];
+        let result = dispatch_test_frame(
+            &key,
+            &frame,
+            &mut ThroughputState::default(),
+            &mut NoopTestHandler,
+            &mut resp,
+        );
+
+        assert_eq!(result, FrameAction::Continue);
+    }
+
+    #[test]
+    fn test_handle_frame_self_disconnect() {
+        use microfips_core::wire;
+
+        struct DisconnectHandler;
+
+        impl NodeHandler for DisconnectHandler {
+            async fn on_event(&mut self, _event: NodeEvent) {}
+
+            fn on_message(
+                &mut self,
+                msg_type: u8,
+                _payload: &[u8],
+                _resp: &mut [u8],
+            ) -> HandleResult {
+                if msg_type == 0xAA {
+                    HandleResult::Disconnect
+                } else {
+                    HandleResult::None
+                }
+            }
+        }
+
+        let key: [u8; 32] = [0x42; 32];
+        let frame = build_test_frame(wire::SessionIndex::new(0), 10, 0xAA, 987, b"bye", &key);
+
+        let mut resp = [0u8; 256];
+        let result = dispatch_test_frame(
+            &key,
+            &frame,
+            &mut ThroughputState::default(),
+            &mut DisconnectHandler,
+            &mut resp,
+        );
+
+        assert_eq!(result, FrameAction::SelfDC);
+    }
+
+    #[test]
+    fn test_decrypt_frame_field_validation() {
+        use microfips_core::wire;
+
+        let key: [u8; 32] = [0x42; 32];
+        let counter = 0x0102_0304_0506_0708u64;
+        let timestamp = 0x1122_3344u32;
+        let msg_type = wire::MSG_SESSION_DATAGRAM;
+        let payload = b"field-check";
+        let frame = build_test_frame(
+            wire::SessionIndex::new(0),
+            counter,
+            msg_type,
+            timestamp,
+            payload,
+            &key,
+        );
+
+        let mut dec_buf = [0u8; 2048];
+        let decrypted = decrypt_established_frame(&key, &frame, &mut dec_buf).unwrap();
+
+        assert_eq!(decrypted.counter, counter);
+        assert_eq!(decrypted.sender_timestamp, timestamp);
+        assert_eq!(decrypted.msg_type, msg_type);
+        assert_eq!(decrypted.payload, payload);
+        assert_eq!(decrypted.frame_bytes, frame.len());
     }
 
     #[test]

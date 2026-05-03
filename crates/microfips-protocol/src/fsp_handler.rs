@@ -11,6 +11,7 @@ use crate::node::{HandleResult, NodeEvent, NodeHandler};
 
 const FSP_START_DELAY_SECS: u64 = 5;
 const FSP_RETRY_SECS: u64 = 8;
+const FSP_MSG3_TIMEOUT_SECS: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspAppResult {
@@ -307,7 +308,8 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                             resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
                             resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
                                 .copy_from_slice(&msg3_buf[..msg3_len]);
-                            self.fsp_timer = Some(Instant::now() + Duration::from_secs(2));
+                            self.fsp_timer =
+                                Some(Instant::now() + Duration::from_secs(FSP_MSG3_TIMEOUT_SECS));
                             return HandleResult::SendDatagram(dg_len);
                         }
                     }
