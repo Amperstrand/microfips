@@ -17,12 +17,10 @@ macro_rules! log_steady {
 pub const HB_SECS: u64 = 10;
 pub const RECV_TIMEOUT_MS: u64 = 30_000;
 pub const RETRY_SECS: u64 = 3;
-pub const BACKOFF_MAX_SECS: u64 = 60;
 pub const MSG1_RESEND_SECS: u64 = 3;
 pub const MSG1_RESEND_MAX: u32 = 10;
 pub const CONNECT_DELAY_MS: u64 = 500;
 pub const MAX_COMPETING_MSG1: u32 = 3;
-pub const BACKOFF_MAX_EXPONENT: u32 = 4;
 
 pub const RECV_BUF_SIZE: usize = 1500;
 
@@ -283,7 +281,6 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     }
 
     pub async fn run<H: NodeHandler>(&mut self, handler: &mut H) -> ! {
-        let mut backoff: u32 = 0;
         loop {
             match self.policy.check_reconnect(Instant::now()) {
                 PolicyVerdict::Allow => {}
@@ -298,14 +295,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 }
             }
             self.policy.record_connect_attempt(Instant::now());
-            let result = self.session(handler).await;
-            if result.is_ok() {
-                backoff = 0;
-            } else {
-                backoff = backoff.saturating_add(1);
-            }
-            let delay = RETRY_SECS * (1u64 << backoff.min(BACKOFF_MAX_EXPONENT));
-            Timer::after(Duration::from_secs(delay.min(BACKOFF_MAX_SECS))).await;
+            let _ = self.session(handler).await;
         }
     }
 
