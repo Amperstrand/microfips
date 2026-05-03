@@ -142,6 +142,16 @@ jobs:
           done
           echo "FSP full handshake stable across 10 rounds"
 
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rustsec/audit-action@v2
+        with:
+          deny: warnings
+
   build-host:
     name: Build Host Tools
     runs-on: ubuntu-latest
