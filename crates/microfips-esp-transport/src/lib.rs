@@ -16,6 +16,7 @@ pub mod handler;
 pub mod led;
 pub mod node_info;
 pub mod rng;
+pub mod runner;
 pub mod stats;
 pub mod uart_transport;
 
