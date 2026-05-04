@@ -503,10 +503,6 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 && !self.peer_sent_first
                                 && my_addr.as_bytes() < peer_addr.as_bytes()
                             {
-                                #[cfg(feature = "log")]
-                                log::warn!(
-                                    "discarding MSG1 from configured peer (waiting for MSG2)"
-                                );
                                 continue;
                             }
 
@@ -1473,44 +1469,42 @@ mod tests {
     use std::vec;
 
     struct TestRng {
-        bytes: std::sync::Mutex<std::vec::Vec<u8>>,
+        inner: std::sync::Mutex<rand::rngs::StdRng>,
     }
 
     impl TestRng {
         fn new(data: &[u8]) -> Self {
+            use rand::SeedableRng;
+            let mut seed = [0u8; 32];
+            let copy_len = data.len().min(seed.len());
+            seed[..copy_len].copy_from_slice(&data[..copy_len]);
             Self {
-                bytes: std::sync::Mutex::new(data.to_vec()),
+                inner: std::sync::Mutex::new(rand::rngs::StdRng::from_seed(seed)),
             }
         }
 
-        /// Create a TestRng seeded with OS-level randomness, so each test
-        /// run exercises the protocol with different ephemeral key material.
         fn from_os_rng() -> Self {
-            use rand::RngCore;
-            let mut seed = [0u8; 64];
-            rand::rng().fill_bytes(&mut seed);
-            Self::new(&seed)
+            use rand::SeedableRng;
+            Self {
+                inner: std::sync::Mutex::new(rand::rngs::StdRng::from_os_rng()),
+            }
         }
     }
 
     impl rand_core::RngCore for TestRng {
         fn next_u32(&mut self) -> u32 {
-            let mut buf = [0u8; 4];
-            self.fill_bytes(&mut buf);
-            u32::from_le_bytes(buf)
+            use rand::RngCore;
+            self.inner.lock().unwrap().next_u32()
         }
 
         fn next_u64(&mut self) -> u64 {
-            let mut buf = [0u8; 8];
-            self.fill_bytes(&mut buf);
-            u64::from_le_bytes(buf)
+            use rand::RngCore;
+            self.inner.lock().unwrap().next_u64()
         }
 
         fn fill_bytes(&mut self, buf: &mut [u8]) {
-            let mut bytes = self.bytes.lock().unwrap();
-            let n = buf.len().min(bytes.len());
-            buf[..n].copy_from_slice(&bytes[..n]);
-            bytes.drain(..n);
+            use rand::RngCore;
+            self.inner.lock().unwrap().fill_bytes(buf)
         }
 
         fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
@@ -2724,7 +2718,7 @@ mod tests {
                             receiver_idx,
                             noise_payload,
                         } => {
-                            assert_eq!(sender_idx, wire::SessionIndex::new(0));
+                            assert!(sender_idx.as_u32() != 0, "sender_idx should be non-zero");
                             assert_eq!(receiver_idx, wire::SessionIndex::new(remote_sender_idx));
                             initiator.read_message2(noise_payload).unwrap();
                             return initiator.finalize();
@@ -2782,11 +2776,18 @@ mod tests {
             };
 
             let local = async move {
-                let mut node = Node::new(
+                let timing = NodeTiming {
+                    handshake_resend_interval_ms: 50,
+                    handshake_resend_backoff: 1,
+                    handshake_max_resends: 2,
+                    ..NodeTiming::default()
+                };
+                let mut node = Node::with_timing(
                     local_transport,
                     TestRng::from_os_rng(),
                     local_secret,
                     remote_pub,
+                    timing,
                 );
                 let mut handler = NoopTestHandler;
                 let epoch = node.advance_epoch();
