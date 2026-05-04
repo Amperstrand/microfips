@@ -6,3 +6,10 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "rand_core"
+        versions: [">=0.7"]
+      - dependency-name: "rand"
+        versions: [">=0.9"]
+      - dependency-name: "esp-radio"
+        versions: [">=0.18"]
