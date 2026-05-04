@@ -417,10 +417,6 @@ impl CommonPrefix {
 
 /// 16-byte established-frame header. Carries `header_bytes` for AEAD AAD.
 pub struct EncryptedHeader {
-    #[allow(dead_code)]
-    pub flags: u8,
-    #[allow(dead_code)]
-    pub payload_len: u16,
     pub receiver_idx: SessionIndex,
     pub counter: u64,
     pub header_bytes: [u8; ESTABLISHED_HEADER_SIZE],
@@ -431,7 +427,7 @@ impl EncryptedHeader {
         if data.len() < ESTABLISHED_HEADER_SIZE {
             return None;
         }
-        let (phase, _flags, payload_len) = parse_prefix(data)?;
+        let (phase, _, _) = parse_prefix(data)?;
         if phase != PHASE_ESTABLISHED {
             return None;
         }
@@ -440,8 +436,6 @@ impl EncryptedHeader {
         let mut header_bytes = [0u8; ESTABLISHED_HEADER_SIZE];
         header_bytes[..ESTABLISHED_HEADER_SIZE].copy_from_slice(&data[..ESTABLISHED_HEADER_SIZE]);
         Some(Self {
-            flags: _flags,
-            payload_len,
             receiver_idx,
             counter,
             header_bytes,
@@ -1070,7 +1064,6 @@ mod tests {
         let enc = EncryptedHeader::parse(&header).unwrap();
         assert_eq!(enc.receiver_idx, SessionIndex::new(42));
         assert_eq!(enc.counter, 99);
-        assert_eq!(enc.payload_len, 37);
         assert_eq!(enc.header_bytes, header);
     }
 
