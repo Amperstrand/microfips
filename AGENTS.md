@@ -4,7 +4,8 @@
 
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
 Both MCUs use length-prefixed framing → host bridge → UDP → VPS running stock FIPS.
-- **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py
+- **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
+- **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Same firmware binary as F469 — USB OTG FS and RNG peripherals are register-compatible. LED pins unverified on F746.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
 
 ## Workspace architecture
@@ -909,6 +910,19 @@ sudo uhubctl -l 1 -a cycle -f -d 5 -r 2
 | LED blue | PK3 | Active high |
 | RNG | HASH_RNG interrupt | Hardware TRNG |
 | ST-Link | PA13 (SWDIO), PA14 (SWCLK) | Debug probe |
+
+### STM32F746G-DISCO
+
+Same firmware binary as F469. USB OTG FS and RNG peripherals are register-compatible.
+LED pins may differ — not verified. FIPS handshake and heartbeat confirmed working.
+
+| Peripheral | Notes |
+|------------|-------|
+| USB OTG FS | Register-compatible with F469 (PA11/PA12) |
+| RNG | Register-compatible with F469 |
+| Flash | 1 MB (1024 KiB) |
+| SRAM | 320 KiB |
+| ST-Link | SWD on PA13/PA14 |
 
 ### ESP32-D0WD
 
