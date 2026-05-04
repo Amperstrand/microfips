@@ -80,6 +80,47 @@ async fn main(_spawner: Spawner) {
     board::configure_clocks(&mut config);
     let p = embassy_stm32::init(config);
 
+    // After a soft reset (SYSRESETREQ from st-flash), the USB OTG FS peripheral
+    // can retain stale PHY state that prevents re-enumeration. Cycling the RCC clock,
+    // asserting peripheral reset, performing a core soft reset (GRSTCTL.CSRST), and
+    // power-cycling the PHY (GCCFG.PWRDWN) ensures a clean start.
+    {
+        let rcc = embassy_stm32::pac::RCC;
+
+        rcc.ahb2enr().modify(|w| w.set_usb_otg_fsen(false));
+        cortex_m::asm::delay(100);
+        rcc.ahb2enr().modify(|w| w.set_usb_otg_fsen(true));
+
+        rcc.ahb2rstr().modify(|w| w.set_usb_otg_fsrst(true));
+        cortex_m::asm::delay(100);
+        rcc.ahb2rstr().modify(|w| w.set_usb_otg_fsrst(false));
+        cortex_m::asm::delay(100);
+
+        let otg_global = 0x5000_0000usize as *mut u32;
+        unsafe {
+            let mut timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & (1 << 31) == 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            otg_global.add(0x010 / 4).write_volatile(1);
+            timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & 1 != 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            otg_global.add(0x038 / 4).write_volatile(0);
+            cortex_m::asm::delay(100);
+            otg_global.add(0x038 / 4).write_volatile(1 << 16);
+        }
+    }
+
     // F746G-DISCO: PK3 = LCD_BL_CTRL. Drive LOW to turn off the LCD backlight.
     #[cfg(feature = "board-f746")]
     let _backlight = Output::new(p.PK3, Level::Low, Speed::Low);
