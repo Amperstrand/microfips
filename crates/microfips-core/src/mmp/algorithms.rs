@@ -214,88 +214,6 @@ pub fn compute_etx(d_forward: f64, d_reverse: f64) -> f64 {
     (1.0 / product).clamp(1.0, 100.0)
 }
 
-#[allow(dead_code)]
-struct GapTracker {
-    expected_next: Option<u64>,
-    in_burst: bool,
-    current_burst_len: u16,
-    burst_count: u32,
-    max_burst_len: u16,
-    total_burst_len: u64,
-}
-
-#[allow(dead_code)]
-impl GapTracker {
-    fn new() -> Self {
-        Self {
-            expected_next: None,
-            in_burst: false,
-            current_burst_len: 0,
-            burst_count: 0,
-            max_burst_len: 0,
-            total_burst_len: 0,
-        }
-    }
-
-    fn observe(&mut self, counter: u64) -> u64 {
-        let Some(expected) = self.expected_next else {
-            self.expected_next = Some(counter + 1);
-            return 0;
-        };
-
-        let lost = if counter > expected {
-            let gap = counter - expected;
-            if self.in_burst {
-                self.current_burst_len = self.current_burst_len.saturating_add(gap as u16);
-            } else {
-                self.in_burst = true;
-                self.current_burst_len = gap as u16;
-                self.burst_count += 1;
-            }
-            gap
-        } else {
-            if self.in_burst {
-                self.finish_burst();
-            }
-            0
-        };
-
-        if counter >= expected {
-            self.expected_next = Some(counter + 1);
-        }
-
-        lost
-    }
-
-    fn finish_burst(&mut self) {
-        if self.in_burst {
-            self.max_burst_len = self.max_burst_len.max(self.current_burst_len);
-            self.total_burst_len += self.current_burst_len as u64;
-            self.in_burst = false;
-            self.current_burst_len = 0;
-        }
-    }
-
-    fn take_interval_stats(&mut self) -> (u32, u16, u16) {
-        self.finish_burst();
-
-        let count = self.burst_count;
-        let max_len = self.max_burst_len;
-        let mean_len = if count > 0 {
-            let mean_f = (self.total_burst_len as f64) / (count as f64);
-            (mean_f * 256.0) as u16
-        } else {
-            0
-        };
-
-        self.burst_count = 0;
-        self.max_burst_len = 0;
-        self.total_burst_len = 0;
-
-        (count, max_len, mean_len)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,40 +394,5 @@ mod tests {
 
         let etx_half = compute_etx(0.5, 0.5);
         assert!((etx_half - 4.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn gap_tracker_no_loss() {
-        let mut gaps = GapTracker::new();
-        gaps.observe(1);
-        gaps.observe(2);
-        gaps.observe(3);
-        let (count, max, mean) = gaps.take_interval_stats();
-        assert_eq!((count, max, mean), (0, 0, 0));
-    }
-
-    #[test]
-    fn gap_tracker_single_burst() {
-        let mut gaps = GapTracker::new();
-        gaps.observe(1);
-        gaps.observe(4);
-        gaps.observe(5);
-        let (count, max, _mean) = gaps.take_interval_stats();
-        assert_eq!(count, 1);
-        assert_eq!(max, 2);
-    }
-
-    #[test]
-    fn gap_tracker_multiple_bursts() {
-        let mut gaps = GapTracker::new();
-        gaps.observe(1);
-        gaps.observe(4);
-        gaps.observe(5);
-        gaps.observe(8);
-        gaps.observe(9);
-        let (count, max, mean) = gaps.take_interval_stats();
-        assert_eq!(count, 2);
-        assert_eq!(max, 2);
-        assert_eq!(mean, 512);
     }
 }
