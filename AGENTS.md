@@ -10,14 +10,17 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 
 ## Workspace architecture
 
-- `microfips-core`: cryptographic/session primitives
-- `microfips-protocol`: `Node`, framing, transport trait, FSP runtime
+- `microfips-core`: cryptographic/session primitives, FIPS compat constants (auto-generated)
+- `microfips-protocol`: `Node`, framing, transport trait, FSP runtime, `ScriptedPeer` test harness
 - `microfips-service`: transport-neutral request/response layer above protocol
 - `microfips-http-demo`: optional demo-only HTTP adapter and demo service
+- `microfips-esp-transport`: shared ESP32 transport code (runner, LED, RNG, handlers, WiFi config)
+- `microfips-esp-common`: chip-agnostic ESP32 code (DNS, config, stats, UDP transport)
 
 STM32, ESP32, simulator, and host demo binaries are composition roots over those layers.
-ESP32 now uses `microfips-protocol::Node` and `FspDualHandler::new_dual()` just like the other
-targets; BLE is feature-gated transport plumbing, not a separate protocol stack.
+ESP32 D0WD and S3 share a `runner` module (`run_node()`, `make_led()`, `init_trng()`)
+from `microfips-esp-transport`; only WiFi stays per-chip due to TRNG borrow constraints.
+BLE is feature-gated transport plumbing, not a separate protocol stack.
 
 ## VPS Access
 
@@ -551,9 +554,9 @@ done
 
 ### Unit tests (no hardware)
 ```bash
-cargo test -p microfips-core          # 169 tests: Noise, FMP, FSP, identity
+cargo test -p microfips-core          # 234 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture  # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # 46 tests: framing, transport, node
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 130 tests: framing, transport, node, ScriptedPeer
 ```
 
 ### Host-side VPS handshake test (no MCU)
@@ -1067,7 +1070,7 @@ ESP32-S3 pubkey from `keys.json` (verified 2026-04-10, NodeAddr `6bef476b391177c
 ## CI Pipeline
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
-- **test**: `cargo test -p microfips-core` (89 tests) + `cargo test -p microfips-protocol --features std` (45 tests)
+- **test**: `cargo test -p microfips-core` (234 tests) + `cargo test -p microfips-protocol --features std` (130 tests)
 - **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
 - **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
 - **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
