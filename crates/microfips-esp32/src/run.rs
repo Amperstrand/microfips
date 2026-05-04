@@ -1,28 +1,8 @@
-//! Shared async entry-point logic for ESP32-D0WD binary variants.
-//!
-//! Each binary (uart, ble, l2cap, wifi) calls the corresponding `run_*_node`
-//! function after chip init and panic-handler setup. This keeps every bin file
-//! to ~20 lines (panic handler + one call here).
-
-use esp_hal::gpio::Level;
-use esp_hal::rng::{Trng, TrngSource};
-use rand_core::RngCore;
-
 use microfips_core::identity::VPS_NPUB;
 use microfips_esp_transport::config::{UART_BAUDRATE, UART_FIFO_THRESHOLD};
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
-use microfips_esp_transport::node_info::NodeIdentity;
-use microfips_protocol::node::Node;
+use microfips_esp_transport::runner::{self, NodeOpts};
+use microfips_esp_transport::uart_transport::UartTransport;
 
-use crate::config::ESP32_NSEC;
-use crate::handler::{build_demo_fsp_default as build_demo_fsp, EspHandler};
-use crate::led::Led;
-use crate::rng::EspRng;
-use crate::uart_transport::UartTransport;
-
-/// Run the UART transport node.
-///
-/// GPIO1 = UART0 TX, GPIO3 = UART0 RX, GPIO2 = LED (all D0WD-specific).
 pub async fn run_uart_node(
     gpio2: esp_hal::peripherals::GPIO2<'static>,
     uart0: esp_hal::peripherals::UART0<'static>,
@@ -31,19 +11,8 @@ pub async fn run_uart_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    let mut led = Led(esp_hal::gpio::Output::new(
-        gpio2,
-        Level::Low,
-        esp_hal::gpio::OutputConfig::default(),
-    ));
-
-    let _trng_source = TrngSource::new(rng_periph, adc1);
-    let mut trng = Trng::try_new().unwrap();
-
-    let mut resp_eph = [0u8; 32];
-    trng.fill_bytes(&mut resp_eph);
-    let mut init_eph = [0u8; 32];
-    trng.fill_bytes(&mut init_eph);
+    let mut led = runner::make_led(gpio2);
+    let trng = runner::init_trng(rng_periph, adc1);
 
     let uart_config = esp_hal::uart::Config::default()
         .with_rx(esp_hal::uart::RxConfig::default().with_fifo_full_threshold(UART_FIFO_THRESHOLD))
@@ -56,19 +25,9 @@ pub async fn run_uart_node(
     let (rx, tx) = uart.split();
     let transport = UartTransport { tx, rx };
 
-    let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, ESP32_NSEC, VPS_NPUB);
-
-    let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
-    let mut handler = EspHandler { led: &mut led, fsp };
-
-    node.run(&mut handler).await;
-    #[allow(unreachable_code)]
-    #[allow(clippy::empty_loop)]
-    loop {}
+    runner::run_node(transport, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
 }
 
-/// Run the BLE GATT transport node.
 #[cfg(feature = "ble")]
 pub async fn run_ble_node(
     spawner: embassy_executor::Spawner,
@@ -76,9 +35,9 @@ pub async fn run_ble_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use crate::ble_transport::BleTransport;
     use core::sync::atomic::Ordering;
     use microfips_esp_transport::config::BLE_DEVICE_NAME;
+    use microfips_esp_transport::node_info::NodeIdentity;
     use microfips_esp_transport::stats::STATS;
 
     crate::logger::init();
@@ -93,40 +52,18 @@ pub async fn run_ble_node(
 
     log::info!("BLE mode starting");
 
-    let mut led = Led(esp_hal::gpio::Output::new(
-        gpio2,
-        Level::Low,
-        esp_hal::gpio::OutputConfig::default(),
-    ));
-
-    let _trng_source = TrngSource::new(rng_periph, adc1);
-    let mut trng = Trng::try_new().unwrap();
+    let mut led = runner::make_led(gpio2);
+    let trng = runner::init_trng(rng_periph, adc1);
     log::info!("trng ready");
 
-    let mut resp_eph = [0u8; 32];
-    trng.fill_bytes(&mut resp_eph);
-    let mut init_eph = [0u8; 32];
-    trng.fill_bytes(&mut init_eph);
-
-    let transport = BleTransport::new();
+    let transport = crate::ble_transport::BleTransport::new();
     spawner.spawn(crate::control::control_task()).unwrap();
 
     log::info!("BLE advertising as '{}'", BLE_DEVICE_NAME);
 
-    let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, ESP32_NSEC, VPS_NPUB);
-
-    let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
-    let mut handler = EspHandler { led: &mut led, fsp };
-
-    log::info!("Node running...");
-    node.run(&mut handler).await;
-    #[allow(unreachable_code)]
-    #[allow(clippy::empty_loop)]
-    loop {}
+    runner::run_node(transport, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
 }
 
-/// Run the BLE L2CAP transport node.
 #[cfg(feature = "l2cap")]
 pub async fn run_l2cap_node(
     spawner: embassy_executor::Spawner,
@@ -134,9 +71,9 @@ pub async fn run_l2cap_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use crate::l2cap_transport::L2capTransport;
     use core::sync::atomic::Ordering;
     use microfips_esp_transport::config::RECV_RETRY_DELAY_MS;
+    use microfips_esp_transport::node_info::NodeIdentity;
     use microfips_esp_transport::stats::STATS;
 
     crate::logger::init();
@@ -150,23 +87,11 @@ pub async fn run_l2cap_node(
 
     log::info!("L2CAP mode starting");
 
-    let mut led = Led(esp_hal::gpio::Output::new(
-        gpio2,
-        Level::Low,
-        esp_hal::gpio::OutputConfig::default(),
-    ));
-
-    let _trng_source = TrngSource::new(rng_periph, adc1);
-    let mut trng = Trng::try_new().unwrap();
+    let mut led = runner::make_led(gpio2);
+    let trng = runner::init_trng(rng_periph, adc1);
     log::info!("trng ready");
 
-    let mut resp_eph = [0u8; 32];
-    trng.fill_bytes(&mut resp_eph);
-    let mut init_eph = [0u8; 32];
-    trng.fill_bytes(&mut init_eph);
-
-    let rng = EspRng(trng);
-    let mut transport = L2capTransport::new();
+    let mut transport = crate::l2cap_transport::L2capTransport::new();
 
     spawner.spawn(crate::control::control_task()).unwrap();
 
@@ -186,23 +111,19 @@ pub async fn run_l2cap_node(
     crate::control::set_peer_pub(peer_pub);
     log::info!("pubkey exchange complete; starting node");
 
-    let mut node = Node::new(transport, rng, ESP32_NSEC, peer_pub);
-    node.set_raw_framing(true);
-    // FIPS connects as BLE central and sends MSG1 first. As peripheral,
-    // we skip our own MSG1 and enter responder path to avoid cross-connection.
-    node.set_peer_sent_first(true);
-
-    let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
-    let mut handler = EspHandler { led: &mut led, fsp };
-
-    log::info!("Node starting (L2CAP)...");
-    node.run(&mut handler).await;
-    #[allow(unreachable_code)]
-    #[allow(clippy::empty_loop)]
-    loop {}
+    runner::run_node(
+        transport,
+        trng,
+        &mut led,
+        peer_pub,
+        NodeOpts {
+            raw_framing: true,
+            peer_sent_first: true,
+        },
+    )
+    .await
 }
 
-/// Run the WiFi transport node.
 #[cfg(feature = "wifi")]
 pub async fn run_wifi_node(
     spawner: embassy_executor::Spawner,
@@ -211,24 +132,22 @@ pub async fn run_wifi_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use crate::config::{WIFI_PASSWORD, WIFI_SSID};
+    use core::sync::atomic::Ordering;
+    use microfips_esp_transport::node_info::NodeIdentity;
+    use microfips_esp_transport::rng::EspRng;
+    use microfips_esp_transport::stats::STATS;
+    use microfips_esp_transport::config;
     use microfips_esp_transport::wifi_transport::build_wifi_transport;
+    use rand_core::RngCore;
 
-    let mut led = Led(esp_hal::gpio::Output::new(
-        gpio2,
-        Level::Low,
-        esp_hal::gpio::OutputConfig::default(),
-    ));
-
-    let _trng_source = TrngSource::new(rng_periph, adc1);
-    let mut trng = Trng::try_new().unwrap();
+    let mut led = runner::make_led(gpio2);
+    let mut trng = runner::init_trng(rng_periph, adc1);
 
     let identity = NodeIdentity::compute();
     crate::logger::init();
-    use microfips_esp_transport::stats::STATS;
     STATS.boot_tick_ms.store(
         embassy_time::Instant::now().as_millis() as u32,
-        core::sync::atomic::Ordering::Relaxed,
+        Ordering::Relaxed,
     );
     log::info!("WiFi mode starting");
 
@@ -237,7 +156,15 @@ pub async fn run_wifi_node(
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
-    let transport = match build_wifi_transport(spawner, wifi, &mut trng, WIFI_SSID, WIFI_PASSWORD).await {
+    let transport = match build_wifi_transport(
+        spawner,
+        wifi,
+        &mut trng,
+        config::WIFI_SSID,
+        config::WIFI_PASSWORD,
+    )
+    .await
+    {
         Ok(transport) => transport,
         Err(err) => {
             log::error!("WiFi: max retries exceeded, entering error state: {:?}", err);
@@ -251,12 +178,23 @@ pub async fn run_wifi_node(
         }
     };
 
+    use microfips_core::identity::{STM32_NODE_ADDR, STM32_NPUB};
+    use microfips_esp_transport::handler::{build_demo_fsp, SharedEspHandler};
+    use microfips_protocol::node::Node;
+
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, ESP32_NSEC, VPS_NPUB);
+    let mut node = Node::new(transport, rng, crate::config::ESP32_NSEC, VPS_NPUB);
     node.set_raw_framing(true);
 
-    let fsp = build_demo_fsp(resp_eph, init_eph, 1u64.to_le_bytes());
-    let mut handler = EspHandler { led: &mut led, fsp };
+    let fsp = build_demo_fsp(
+        &crate::config::ESP32_NSEC,
+        resp_eph,
+        init_eph,
+        &STM32_NPUB,
+        STM32_NODE_ADDR,
+        1u64.to_le_bytes(),
+    );
+    let mut handler = SharedEspHandler { led: &mut led, fsp };
 
     crate::control::init_control(&identity, "wifi");
     crate::control::set_peer_pub(VPS_NPUB);

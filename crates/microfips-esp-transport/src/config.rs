@@ -144,3 +144,14 @@ pub const RESET_REGISTER: usize = 0x3FF4_8000;
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32s3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
+
+#[cfg(feature = "wifi")]
+pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
+    Some(v) => v,
+    None => "",
+};
+#[cfg(feature = "wifi")]
+pub const WIFI_PASSWORD: &str = match option_env!("WIFI_PASSWORD") {
+    Some(v) => v,
+    None => "",
+};
