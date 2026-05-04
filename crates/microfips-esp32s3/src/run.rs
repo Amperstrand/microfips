@@ -161,6 +161,7 @@ pub async fn run_ble_node(
     log::info!("Node running...");
     node.run(&mut handler).await;
     #[allow(unreachable_code)]
+    #[allow(clippy::empty_loop)]
     loop {}
 }
 
@@ -224,8 +225,7 @@ pub async fn run_l2cap_node(
     crate::control::set_peer_pub(peer_pub);
     log::info!("pubkey exchange complete; starting node");
 
-    let rng2 = rng;
-    let mut node = Node::new(transport, rng2, ESP32S3_NSEC, peer_pub);
+    let mut node = Node::new(transport, rng, ESP32S3_NSEC, peer_pub);
     node.set_raw_framing(true);
     // FIPS connects as BLE central and sends MSG1 first. As peripheral,
     // we skip our own MSG1 and enter responder path to avoid cross-connection.
@@ -237,6 +237,7 @@ pub async fn run_l2cap_node(
     log::info!("Node running (L2CAP)...");
     node.run(&mut handler).await;
     #[allow(unreachable_code)]
+    #[allow(clippy::empty_loop)]
     loop {}
 }
 

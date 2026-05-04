@@ -10,6 +10,7 @@ use rand_core::RngCore;
 
 use microfips_core::identity::VPS_NPUB;
 use microfips_esp_transport::config::{UART_BAUDRATE, UART_FIFO_THRESHOLD};
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 use microfips_esp_transport::node_info::NodeIdentity;
 use microfips_protocol::node::Node;
 
@@ -121,6 +122,7 @@ pub async fn run_ble_node(
     log::info!("Node running...");
     node.run(&mut handler).await;
     #[allow(unreachable_code)]
+    #[allow(clippy::empty_loop)]
     loop {}
 }
 
@@ -171,7 +173,7 @@ pub async fn run_l2cap_node(
     let peer_pub = match transport.wait_for_peer_pub().await {
         Ok(pk) => pk,
         Err(_) => {
-            log::error!("ERROR: L2CAP transport init failed");
+            log::error!("ERROR: no peer pubkey from exchange");
             loop {
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(
                     RECV_RETRY_DELAY_MS,
@@ -196,6 +198,7 @@ pub async fn run_l2cap_node(
     log::info!("Node starting (L2CAP)...");
     node.run(&mut handler).await;
     #[allow(unreachable_code)]
+    #[allow(clippy::empty_loop)]
     loop {}
 }
 
