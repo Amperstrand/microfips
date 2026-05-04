@@ -31,13 +31,15 @@ pub fn make_led(gpio2: esp_hal::peripherals::GPIO2<'static>) -> Led {
 pub fn init_trng(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
-) -> Trng {
-    let _trng_source = TrngSource::new(rng_periph, adc1);
-    Trng::try_new().unwrap()
+) -> (TrngSource<'static>, Trng) {
+    let trng_source = TrngSource::new(rng_periph, adc1);
+    let trng = Trng::try_new().unwrap();
+    (trng_source, trng)
 }
 
 pub async fn run_node<T: microfips_protocol::transport::Transport>(
     transport: T,
+    _trng_source: TrngSource<'static>,
     mut trng: Trng,
     led: &mut Led,
     peer_pub: [u8; 33],

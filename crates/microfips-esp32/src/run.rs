@@ -12,7 +12,7 @@ pub async fn run_uart_node(
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
     let mut led = runner::make_led(gpio2);
-    let trng = runner::init_trng(rng_periph, adc1);
+    let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
 
     let uart_config = esp_hal::uart::Config::default()
         .with_rx(esp_hal::uart::RxConfig::default().with_fifo_full_threshold(UART_FIFO_THRESHOLD))
@@ -25,7 +25,7 @@ pub async fn run_uart_node(
     let (rx, tx) = uart.split();
     let transport = UartTransport { tx, rx };
 
-    runner::run_node(transport, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
+    runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
 }
 
 #[cfg(feature = "ble")]
@@ -53,7 +53,7 @@ pub async fn run_ble_node(
     log::info!("BLE mode starting");
 
     let mut led = runner::make_led(gpio2);
-    let trng = runner::init_trng(rng_periph, adc1);
+    let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
     log::info!("trng ready");
 
     let transport = crate::ble_transport::BleTransport::new();
@@ -61,7 +61,7 @@ pub async fn run_ble_node(
 
     log::info!("BLE advertising as '{}'", BLE_DEVICE_NAME);
 
-    runner::run_node(transport, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
+    runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
 }
 
 #[cfg(feature = "l2cap")]
@@ -88,7 +88,7 @@ pub async fn run_l2cap_node(
     log::info!("L2CAP mode starting");
 
     let mut led = runner::make_led(gpio2);
-    let trng = runner::init_trng(rng_periph, adc1);
+    let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
     log::info!("trng ready");
 
     let mut transport = crate::l2cap_transport::L2capTransport::new();
@@ -113,6 +113,7 @@ pub async fn run_l2cap_node(
 
     runner::run_node(
         transport,
+        trng_source,
         trng,
         &mut led,
         peer_pub,
@@ -141,7 +142,7 @@ pub async fn run_wifi_node(
     use rand_core::RngCore;
 
     let mut led = runner::make_led(gpio2);
-    let mut trng = runner::init_trng(rng_periph, adc1);
+    let (_trng_source, mut trng) = runner::init_trng(rng_periph, adc1);
 
     let identity = NodeIdentity::compute();
     crate::logger::init();
