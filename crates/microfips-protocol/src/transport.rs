@@ -236,6 +236,9 @@ pub mod mock {
     }
 }
 
+#[cfg(any(test, feature = "std"))]
+pub mod scripted;
+
 #[cfg(test)]
 pub mod channel {
     use std::sync::atomic::{AtomicBool, Ordering};
