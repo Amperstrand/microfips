@@ -573,8 +573,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             "steady: entered, next_hb in {}s",
             self.timing.heartbeat_interval_secs
         );
-        let mut next_hb = embassy_time::Instant::now()
-            + Duration::from_secs(self.timing.heartbeat_interval_secs);
+        let mut next_hb =
+            embassy_time::Instant::now() + Duration::from_secs(self.timing.heartbeat_interval_secs);
         let mut next_sr = embassy_time::Instant::now()
             + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
         let mut send_ctr: u64 = 0;
@@ -714,8 +714,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     #[cfg(not(feature = "mmp"))]
                     if now >= next_sr {
                         log_steady!("steady: sending sender report (recv branch)");
-                            next_sr =
-                                now + Duration::from_secs(self.timing.heartbeat_interval_secs);
+                        next_sr = now + Duration::from_secs(self.timing.heartbeat_interval_secs);
                         let sr_end_ts = now.as_millis() as u32;
                         let mut sr = [0u8; microfips_core::mmp::report::SENDER_REPORT_BODY_SIZE];
                         sr[3..11].copy_from_slice(&sr_start_ctr.to_le_bytes());
@@ -3015,10 +3014,7 @@ mod tests {
     }
 
     impl ScriptedPeer {
-        fn new(
-            transport: crate::transport::channel::ChannelTransport,
-            secret: [u8; 32],
-        ) -> Self {
+        fn new(transport: crate::transport::channel::ChannelTransport, secret: [u8; 32]) -> Self {
             Self {
                 transport,
                 secret,
@@ -3202,7 +3198,10 @@ mod tests {
                     responder_pub,
                 );
                 let mut handler = RecordingHandler::default();
-                let (ks, kr, them) = node.handshake(1u64.to_le_bytes(), &mut handler).await.unwrap();
+                let (ks, kr, them) = node
+                    .handshake(1u64.to_le_bytes(), &mut handler)
+                    .await
+                    .unwrap();
                 node.rpos = 0;
                 node.rlen = 0;
                 let result = node.steady(&ks, &kr, them, &mut handler).await;
@@ -3321,8 +3320,10 @@ mod tests {
                 node.policy.force_past_session_start();
                 let mut handler = RecordingHandler::default();
 
-                let (ks, kr, them) =
-                    node.handshake(1u64.to_le_bytes(), &mut handler).await.unwrap();
+                let (ks, kr, them) = node
+                    .handshake(1u64.to_le_bytes(), &mut handler)
+                    .await
+                    .unwrap();
                 node.rpos = 0;
                 node.rlen = 0;
 
