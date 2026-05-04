@@ -75,6 +75,52 @@ async fn main(_spawner: Spawner) {
     }
     let p = embassy_stm32::init(config);
 
+    // After a soft reset (SYSRESETREQ from st-flash), the USB OTG FS peripheral
+    // can be left in an inconsistent state where the PHY doesn't re-enumerate.
+    // Cycling the RCC clock + core soft reset + PHY power cycle ensures a clean
+    // start regardless of how we got here. See ccid-firmware-rs issue #15.
+    {
+        let rcc = embassy_stm32::pac::RCC;
+
+        rcc.ahb2enr().modify(|w| w.set_otgfsen(false));
+        cortex_m::asm::delay(100);
+        rcc.ahb2enr().modify(|w| w.set_otgfsen(true));
+
+        rcc.ahb2rstr().modify(|w| w.set_otgfsrst(true));
+        cortex_m::asm::delay(100);
+        rcc.ahb2rstr().modify(|w| w.set_otgfsrst(false));
+        cortex_m::asm::delay(100);
+
+        // USB_OTG_FS_GLOBAL base: 0x5000_0000
+        // GRSTCTL offset: 0x010, GCCFG offset: 0x038
+        let otg_global = 0x5000_0000usize as *mut u32;
+        unsafe {
+            // GRSTCTL.AHBIDL (bit 31) — wait for AHB idle before reset
+            let mut timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & (1 << 31) == 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            // GRSTCTL.CSRST (bit 0) — core soft reset, self-clearing
+            otg_global.add(0x010 / 4).write_volatile(1);
+            timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & 1 != 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            // GCCFG.PWRDWN (bit 16) — PHY power cycle
+            otg_global.add(0x038 / 4).write_volatile(0);
+            cortex_m::asm::delay(100);
+            otg_global.add(0x038 / 4).write_volatile(1 << 16);
+        }
+    }
+
     let mut leds = Leds {
         green: Output::new(p.PG6, Level::Low, Speed::Low),
         orange: Output::new(p.PD4, Level::Low, Speed::Low),
