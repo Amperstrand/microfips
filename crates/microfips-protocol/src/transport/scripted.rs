@@ -9,12 +9,15 @@ use embassy_time::{Duration, Timer};
 
 use crate::error::ProtocolError;
 
+/// Matcher function type for ExpectSend steps.
+type SendMatcher = Box<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>;
+
 /// A single step in a scripted sequence.
 pub enum Step {
     /// Expect send() to be called with data matching this pattern.
     /// `matcher` receives the sent data and returns Ok(()) if acceptable,
     /// or Err(description) if unexpected.
-    ExpectSend(Box<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>),
+    ExpectSend(SendMatcher),
     /// Provide data on the next recv() call.
     Recv(Vec<u8>),
     /// Delay before the next recv() returns (simulates network latency).
@@ -295,9 +298,12 @@ mod tests {
 
         let initiator_sender_idx = allocate_session_index(&mut rng);
         let mut msg1 = [0u8; 256];
-        let msg1_len =
-            wire::build_msg1(initiator_sender_idx, &msg1_noise[..msg1_noise_len], &mut msg1)
-                .unwrap();
+        let msg1_len = wire::build_msg1(
+            initiator_sender_idx,
+            &msg1_noise[..msg1_noise_len],
+            &mut msg1,
+        )
+        .unwrap();
 
         let wire::FmpMessage::Msg1 { noise_payload, .. } =
             wire::parse_message(&msg1[..msg1_len]).unwrap()
@@ -307,7 +313,9 @@ mod tests {
 
         let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
         let mut responder = NoiseIkResponder::new(&responder_secret, &ei_pub).unwrap();
-        let (_init_pub, parsed_epoch) = responder.read_message1(&noise_payload[PUBKEY_SIZE..]).unwrap();
+        let (_init_pub, parsed_epoch) = responder
+            .read_message1(&noise_payload[PUBKEY_SIZE..])
+            .unwrap();
         assert_eq!(parsed_epoch, epoch);
 
         let responder_eph = generate_valid_eph(&mut rng);
@@ -327,7 +335,9 @@ mod tests {
         .unwrap();
 
         let mut verify_initiator = initiator.clone();
-        verify_initiator.read_message2(&msg2_noise[..msg2_noise_len]).unwrap();
+        verify_initiator
+            .read_message2(&msg2_noise[..msg2_noise_len])
+            .unwrap();
         let (initiator_ks, initiator_kr) = verify_initiator.finalize();
         let (responder_kr, responder_ks) = responder.finalize();
         assert_eq!(initiator_ks, responder_kr);
@@ -355,8 +365,15 @@ mod tests {
         let mut msg = vec![msg_type];
         msg.extend_from_slice(payload);
         let inner_len = wire::prepend_inner_header(timestamp, &msg, &mut inner).unwrap();
-        let out_len = wire::encrypt_and_assemble(sender_idx, counter, 0x00, &inner[..inner_len], key, &mut out)
-            .unwrap();
+        let out_len = wire::encrypt_and_assemble(
+            sender_idx,
+            counter,
+            0x00,
+            &inner[..inner_len],
+            key,
+            &mut out,
+        )
+        .unwrap();
         out[..out_len].to_vec()
     }
 
@@ -423,7 +440,10 @@ mod tests {
 
         block_on(async move {
             let mut buf = [0u8; 8];
-            assert_eq!(transport.recv(&mut buf).await, Err(ProtocolError::Disconnected));
+            assert_eq!(
+                transport.recv(&mut buf).await,
+                Err(ProtocolError::Disconnected)
+            );
         });
     }
 
@@ -472,7 +492,8 @@ mod tests {
         let responder_secret = deterministic_secret(2);
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
         let seed = [0x11; 32];
-        let fixture = build_handshake_fixture(seed, initiator_secret, responder_secret, 1u64.to_le_bytes());
+        let fixture =
+            build_handshake_fixture(seed, initiator_secret, responder_secret, 1u64.to_le_bytes());
 
         let transport = ScriptedPeer::new()
             .expect_frame_send(&fixture.msg1)
@@ -494,7 +515,8 @@ mod tests {
             let outcome = select(
                 node.run(&mut handler),
                 wait_for_events(events.clone(), |seen| {
-                    seen.contains(&NodeEvent::HandshakeOk) && seen.contains(&NodeEvent::Disconnected)
+                    seen.contains(&NodeEvent::HandshakeOk)
+                        && seen.contains(&NodeEvent::Disconnected)
                 }),
             )
             .await;
@@ -514,7 +536,8 @@ mod tests {
         let responder_secret = deterministic_secret(4);
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
         let seed = [0x22; 32];
-        let fixture = build_handshake_fixture(seed, initiator_secret, responder_secret, 1u64.to_le_bytes());
+        let fixture =
+            build_handshake_fixture(seed, initiator_secret, responder_secret, 1u64.to_le_bytes());
         let peer_heartbeat = build_established_frame(
             fixture.responder_sender_idx,
             0,
@@ -572,7 +595,8 @@ mod tests {
         let responder_secret = deterministic_secret(6);
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
         let seed = [0x33; 32];
-        let fixture = build_handshake_fixture(seed, initiator_secret, responder_secret, 1u64.to_le_bytes());
+        let fixture =
+            build_handshake_fixture(seed, initiator_secret, responder_secret, 1u64.to_le_bytes());
 
         let transport = ScriptedPeer::new()
             .expect_frame_send(&fixture.msg1)
