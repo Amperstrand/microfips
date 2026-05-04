@@ -103,10 +103,9 @@ use sha2::{Digest, Sha256};
 
 use crate::identity::sha256;
 
-pub const TAG_SIZE: usize = 16;
-pub const EPOCH_SIZE: usize = 8;
+pub use crate::generated::fips_compat::{EPOCH_SIZE, PUBKEY_SIZE, TAG_SIZE};
+
 pub const NONCE_SIZE: usize = 12;
-pub const PUBKEY_SIZE: usize = 33;
 
 pub const PROTOCOL_NAME: &[u8] = b"Noise_IK_secp256k1_ChaChaPoly_SHA256";
 

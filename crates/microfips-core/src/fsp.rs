@@ -26,12 +26,10 @@ pub const FSP_ENCRYPTED_MIN_SIZE: usize = 28;
 // FIPS: bd08505 node/session_wire.rs:FspDatagram::parse()
 pub const FSP_PORT_IPV6_SHIM: u16 = 256;
 
-// FIPS: bd08505 noise/mod.rs:write_xk_message_1()
-pub const XK_HANDSHAKE_MSG1_SIZE: usize = 33;
-// FIPS: bd08505 noise/mod.rs:write_xk_message_2()
-pub const XK_HANDSHAKE_MSG2_SIZE: usize = 57;
-// FIPS: bd08505 noise/mod.rs:write_xk_message_3()
-pub const XK_HANDSHAKE_MSG3_SIZE: usize = 73;
+pub use crate::generated::fips_compat::{
+    SESSION_DATAGRAM_HEADER_SIZE, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,
+    XK_HANDSHAKE_MSG3_SIZE,
+};
 
 // FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const PHASE_ESTABLISHED: u8 = 0x00;
@@ -66,8 +64,6 @@ pub const NODE_ADDR_SIZE: usize = 16;
 
 // FIPS: bd08505 node/link.rs:SessionDatagram::encode()
 pub const SESSION_DATAGRAM_BODY_SIZE: usize = 35;
-// FIPS: bd08505 node/link.rs:SessionDatagram::encode()
-pub const SESSION_DATAGRAM_HEADER_SIZE: usize = 36;
 
 // FIPS: bd08505 node/link.rs:SessionDatagram::encode()
 pub fn build_session_datagram_body(
