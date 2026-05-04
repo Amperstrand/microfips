@@ -225,11 +225,10 @@ mod tests {
             Self::default()
         }
 
+        #[allow(dead_code)]
         fn events(&self) -> Vec<NodeEvent> {
             self.events.lock().unwrap().clone()
         }
-
-        #[allow(dead_code)]
     }
 
     impl NodeHandler for RecordingHandler {
