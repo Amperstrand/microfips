@@ -1,3 +1,5 @@
+use crate::node::MAX_FRAME_SIZE;
+
 use core::fmt::Debug;
 use core::future::Future;
 
@@ -53,7 +55,7 @@ impl<T: Transport> FrameWriter<T> {
 /// Wire format: `[2-byte LE length][payload]`.
 pub struct FrameReader<T: Transport> {
     transport: T,
-    rbuf: [u8; 2048],
+    rbuf: [u8; MAX_FRAME_SIZE],
     rpos: usize,
     rlen: usize,
 }
@@ -62,7 +64,7 @@ impl<T: Transport> FrameReader<T> {
     pub fn new(transport: T) -> Self {
         Self {
             transport,
-            rbuf: [0u8; 2048],
+            rbuf: [0u8; MAX_FRAME_SIZE],
             rpos: 0,
             rlen: 0,
         }
