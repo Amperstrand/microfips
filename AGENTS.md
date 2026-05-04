@@ -540,7 +540,7 @@ esptool --chip esp32 --port /dev/ttyUSB0 --before default-reset -b 460800 write-
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash monitor -p /dev/ttyUSB0 --chip esp32
 ```
 
-**ESP32 serial port:** `/dev/ttyUSB0` (CP210x USB-serial), NOT `/dev/ttyACM*`.
+ **ESP32 serial port:** CP210x USB-serial (VID:PID `10c4:ea60`), detect with the script above — do NOT hardcode `/dev/ttyUSB*`.
 Always detect by VID:PID `10c4:ea60` (Silicon Labs CP210x):
 
 ```bash
@@ -1010,7 +1010,9 @@ done
 
 ## ESP32 Serial Ports (D0WD + S3)
 
-Two ESP32 devices are connected simultaneously. **Never assume a fixed tty number** — always detect by VID/PID.
+**WARNING: tty numbers are NOT stable.** USB enumeration order changes across reboots, cable replugs, and hub power cycles. A device that was `ttyUSB1` may appear as `ttyUSB0` next boot. **Always detect by VID:PID, never hardcode tty numbers.** An M5 Stack (FTDI FT232, VID:PID `0403:6001`) is also connected and appears as `/dev/ttyUSB*` — do not flash or open that device.
+
+Two ESP32 devices are connected simultaneously, plus an M5 Stack on FTDI. All three appear as `/dev/ttyUSB*`. **Never assume a fixed tty number** — always detect by VID/PID.
 
 ### ESP32-D0WD (CP210x UART)
 
