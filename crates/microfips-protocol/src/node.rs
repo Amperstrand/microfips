@@ -25,6 +25,7 @@ pub const DEFAULT_CONNECT_DELAY_MS: u64 = 500;
 pub const MAX_COMPETING_MSG1: u32 = 3;
 
 pub const RECV_BUF_SIZE: usize = 1500;
+pub const MAX_FRAME_SIZE: usize = 2048;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeTiming {
@@ -133,7 +134,7 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     policy: PeerPolicy,
     nsec: [u8; 32],
     peer_npub: [u8; 33],
-    rbuf: [u8; 2048],
+    rbuf: [u8; MAX_FRAME_SIZE],
     rpos: usize,
     rlen: usize,
     resp_buf: [u8; 256],
@@ -260,7 +261,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             }),
             nsec,
             peer_npub,
-            rbuf: [0u8; 2048],
+            rbuf: [0u8; MAX_FRAME_SIZE],
             rpos: 0,
             rlen: 0,
             resp_buf: [0u8; 256],
@@ -416,7 +417,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             log::info!("peer sent MSG1 first, entering responder path");
         }
 
-        let mut mb = [0u8; 2048];
+        let mut mb = [0u8; MAX_FRAME_SIZE];
         let mut competing_msg1_count: u32 = 0;
         let mut resend_count: u32 = 0;
         loop {
@@ -585,7 +586,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut sr_start_ctr: u64 = 0;
         #[allow(unused_mut, unused_variables)]
         let mut sr_start_ts: u32 = embassy_time::Instant::now().as_millis() as u32;
-        let mut dec_buf = [0u8; 2048];
+        let mut dec_buf = [0u8; MAX_FRAME_SIZE];
 
         loop {
             let mut rx = [0u8; RECV_BUF_SIZE];
@@ -1134,7 +1135,7 @@ struct DecryptedFrame<'a> {
 fn decrypt_established_frame<'a>(
     kr: &[u8; 32],
     data: &[u8],
-    dec_buf: &'a mut [u8; 2048],
+    dec_buf: &'a mut [u8; MAX_FRAME_SIZE],
 ) -> Option<DecryptedFrame<'a>> {
     use microfips_core::wire;
 
@@ -1659,7 +1660,7 @@ mod tests {
         use microfips_core::wire;
 
         let enc = wire::EncryptedHeader::parse(frame).expect("encrypted header");
-        let mut dec = [0u8; 2048];
+        let mut dec = [0u8; MAX_FRAME_SIZE];
         let dl = microfips_core::noise::aead_decrypt(
             key,
             enc.counter,
@@ -1679,7 +1680,7 @@ mod tests {
         handler: &mut H,
         resp: &mut [u8],
     ) -> FrameAction {
-        let mut dec_buf = [0u8; 2048];
+        let mut dec_buf = [0u8; MAX_FRAME_SIZE];
         let Some(frame) = decrypt_established_frame(key, frame, &mut dec_buf) else {
             return FrameAction::Continue;
         };
@@ -1777,16 +1778,16 @@ mod tests {
             &key_a,
         );
 
-        let mut dec_buf = [0u8; 2048];
+        let mut dec_buf = [0u8; MAX_FRAME_SIZE];
         assert!(decrypt_established_frame(&key_b, &frame, &mut dec_buf).is_none());
     }
 
     #[test]
     fn test_handle_frame_garbage_skipped() {
         let key: [u8; 32] = [0x42; 32];
-        assert!(decrypt_established_frame(&key, &[], &mut [0u8; 2048]).is_none());
-        assert!(decrypt_established_frame(&key, &[0x00], &mut [0u8; 2048]).is_none());
-        assert!(decrypt_established_frame(&key, &[0xFF; 4], &mut [0u8; 2048]).is_none());
+        assert!(decrypt_established_frame(&key, &[], &mut [0u8; MAX_FRAME_SIZE]).is_none());
+        assert!(decrypt_established_frame(&key, &[0x00], &mut [0u8; MAX_FRAME_SIZE]).is_none());
+        assert!(decrypt_established_frame(&key, &[0xFF; 4], &mut [0u8; MAX_FRAME_SIZE]).is_none());
     }
 
     #[test]
@@ -1956,7 +1957,7 @@ mod tests {
             &key,
         );
 
-        let mut dec_buf = [0u8; 2048];
+        let mut dec_buf = [0u8; MAX_FRAME_SIZE];
         let decrypted = decrypt_established_frame(&key, &frame, &mut dec_buf).unwrap();
 
         assert_eq!(decrypted.counter, counter);
