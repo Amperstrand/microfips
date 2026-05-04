@@ -80,6 +80,10 @@ async fn main(_spawner: Spawner) {
     board::configure_clocks(&mut config);
     let p = embassy_stm32::init(config);
 
+    // F746G-DISCO: PK3 = LCD_BL_CTRL. Drive LOW to turn off the LCD backlight.
+    #[cfg(feature = "board-f746")]
+    let _backlight = Output::new(p.PK3, Level::Low, Speed::Low);
+
     #[cfg(feature = "board-f469")]
     let mut leds = Leds {
         green: Output::new(p.PG6, Level::Low, Speed::Low),
