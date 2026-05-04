@@ -35,6 +35,7 @@ static BLE_NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn init_heap() {
     const HEAP_SIZE: usize = 72 * 1024;
+    #[link_section = ".dram2_uninit"]
     static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
     // SAFETY: HEAP is a static mut accessed once during initialization before any allocation.
     // The pointer (&raw mut HEAP) has 'static lifetime. esp_alloc requires the region to
@@ -156,6 +157,7 @@ struct FipsService {
 #[embassy_executor::task]
 pub async fn ble_host_task() {
     init_heap();
+    log::info!("heap initialized");
 
     let Ok(radio) = esp_radio::init() else {
         loop {
