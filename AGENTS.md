@@ -5,7 +5,7 @@
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
 Both MCUs use length-prefixed framing → host bridge → UDP → VPS running stock FIPS.
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
-- **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Same firmware binary as F469 — USB OTG FS and RNG peripherals are register-compatible. LED pins unverified on F746.)
+- **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
 
 ## Workspace architecture
@@ -41,9 +41,18 @@ FIPS logs: `vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 30 -
 ### STM32F469
 
 ```bash
-cargo build --release --target thumbv7em-none-eabi
+cargo build -p microfips --release --target thumbv7em-none-eabi
 # Output: target/thumbv7em-none-eabi/release/microfips
 ```
+
+### STM32F746
+
+```bash
+cargo build -p microfips --release --target thumbv7em-none-eabi --no-default-features --features board-f746
+# Output: target/thumbv7em-none-eabi/release/microfips
+```
+
+Same firmware crate, different `board-*` feature. The default build targets F469.
 
 ### ESP32-D0WD
 
@@ -809,6 +818,12 @@ probe-rs read --chip STM32F469NIHx --connect-under-reset b32 <STAT_STATE_addr> 1
 The ESP32 has a single user LED on GPIO2 (blue onboard LED). State visibility is
 more limited than STM32's 4-LED display. Behavior is identical for UART, BLE, L2CAP, and WiFi transports.
 
+### STM32F746 LED State Machine
+
+The STM32F746G-DISCO has only 1 physical user LED on PI1 (Arduino D13).
+The firmware assigns PI1 as green, with PI2/PI3/PG6 as orange/red/blue (no physical LEDs on those pins).
+The state machine runs identically to F469 but only the green LED (PI1) is visible.
+
 | State | GPIO2 (Blue) | Meaning |
 |-------|:------------:|---------|
 | Boot / Disconnected | off | Firmware running or USB disconnected |
@@ -913,16 +928,23 @@ sudo uhubctl -l 1 -a cycle -f -d 5 -r 2
 
 ### STM32F746G-DISCO
 
-Same firmware binary as F469. USB OTG FS and RNG peripherals are register-compatible.
-LED pins may differ — not verified. FIPS handshake and heartbeat confirmed working.
+Separate build target (`--features board-f746`). Same firmware crate, same protocol stack.
+USB OTG FS and RNG peripherals are register-compatible. FIPS handshake + heartbeat hardware-verified 2026-05-04.
+Runs at 216 MHz (vs 168 MHz on F469). Only 1 physical user LED on this board.
 
-| Peripheral | Notes |
-|------------|-------|
-| USB OTG FS | Register-compatible with F469 (PA11/PA12) |
-| RNG | Register-compatible with F469 |
-| Flash | 1 MB (1024 KiB) |
-| SRAM | 320 KiB |
-| ST-Link | SWD on PA13/PA14 |
+| Peripheral | Pins | Notes |
+|------------|------|-------|
+| USB OTG FS | PA11 (DM), PA12 (DP) | Register-compatible with F469 |
+| LED green | PI1 | Arduino D13, only user LED on this board |
+| LED orange | PI2 | Arduino D8, no physical LED |
+| LED red | PI3 | Arduino D7, no physical LED |
+| LED blue | PG6 | Arduino D2, no physical LED |
+| RNG | `RNG` interrupt | Different interrupt name from F469 (`HASH_RNG`) |
+| HSE | 25 MHz (X2) | Firmware uses HSI (16 MHz) instead |
+| Flash | 1 MB (1024 KiB) | |
+| SRAM | 320 KiB | |
+| ST-Link | SWD on PA13/PA14 | |
+| Clock | 216 MHz sys, 48 MHz USB | HSI/8 * 216 /2 = 216 MHz, /9 = 48 MHz |
 
 ### ESP32-D0WD
 
@@ -946,6 +968,17 @@ HSI (16 MHz) → PLL → 168 MHz sysclk
 ```
 
 HSE bypass hangs on this board. Do NOT use HSE.
+
+### STM32F746
+
+```
+HSI (16 MHz) → PLL → 216 MHz sysclk
+                   → 48 MHz USB (PLL_Q, Clk48sel)
+                   → 54 MHz APB1
+                   → 108 MHz APB2
+```
+
+HSE is 25 MHz on F746G-DISCO but firmware uses HSI for consistency with F469.
 
 ### ESP32-D0WD
 
@@ -1030,7 +1063,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 - **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
 - **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
 - **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
-- **build-firmware**: STM32 `cargo build -p microfips --release --target thumbv7em-none-eabi` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` (UART default) + ESP32 BLE `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble` + ESP32 WiFi `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi` + ESP32-S3 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc` using upstream crates.io embassy v0.6.0
+- **build-firmware**: STM32 F469 `cargo build -p microfips --release --target thumbv7em-none-eabi` + STM32 F746 `--no-default-features --features board-f746` + ESP32 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc` (UART default) + ESP32 BLE `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble` + ESP32 WiFi `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi` + ESP32-S3 `. /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc` using upstream crates.io embassy v0.6.0
 - **fips-integration**: local keygen + Noise IK handshake test (must pass), public VPS handshake (continue-on-error)
 - **summary**: aggregate status table
 

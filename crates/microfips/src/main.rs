@@ -1,12 +1,25 @@
 #![no_std]
 #![no_main]
 
+#[cfg(all(feature = "board-f469", feature = "board-f746"))]
+compile_error!("Only one board feature can be enabled at a time");
+
 mod cdc_transport;
 mod config;
 mod handler;
 mod led;
 mod rng;
 mod stats;
+
+#[cfg(feature = "board-f469")]
+mod board_f469;
+#[cfg(feature = "board-f746")]
+mod board_f746;
+
+#[cfg(feature = "board-f469")]
+use board_f469 as board;
+#[cfg(feature = "board-f746")]
+use board_f746 as board;
 
 use core::panic::PanicInfo;
 use core::sync::atomic::Ordering;
@@ -46,9 +59,16 @@ fn panic(info: &PanicInfo) -> ! {
     }
 }
 
+#[cfg(feature = "board-f469")]
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
     HASH_RNG => stm32_rng::InterruptHandler<peripherals::RNG>;
+});
+
+#[cfg(feature = "board-f746")]
+bind_interrupts!(struct Irqs {
+    OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
+    RNG => stm32_rng::InterruptHandler<peripherals::RNG>;
 });
 
 static GLOBAL_RNG: StaticCell<Rng<'static, peripherals::RNG>> = StaticCell::new();
@@ -57,29 +77,23 @@ static EP_OUT_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let mut config = Config::default();
-    {
-        use embassy_stm32::rcc::*;
-        config.rcc.pll_src = PllSource::HSI;
-        config.rcc.pll = Some(Pll {
-            prediv: PllPreDiv::DIV8,
-            mul: PllMul::MUL168,
-            divp: Some(PllPDiv::DIV2),
-            divq: Some(PllQDiv::DIV7),
-            divr: None,
-        });
-        config.rcc.sys = Sysclk::PLL1_P;
-        config.rcc.ahb_pre = AHBPrescaler::DIV1;
-        config.rcc.apb1_pre = APBPrescaler::DIV4;
-        config.rcc.apb2_pre = APBPrescaler::DIV2;
-        config.rcc.mux.clk48sel = mux::Clk48sel::PLL1_Q;
-    }
+    board::configure_clocks(&mut config);
     let p = embassy_stm32::init(config);
 
+    #[cfg(feature = "board-f469")]
     let mut leds = Leds {
         green: Output::new(p.PG6, Level::Low, Speed::Low),
         orange: Output::new(p.PD4, Level::Low, Speed::Low),
         red: Output::new(p.PD5, Level::Low, Speed::Low),
         blue: Output::new(p.PK3, Level::Low, Speed::Low),
+    };
+
+    #[cfg(feature = "board-f746")]
+    let mut leds = Leds {
+        green: Output::new(p.PI1, Level::Low, Speed::Low),
+        orange: Output::new(p.PI2, Level::Low, Speed::Low),
+        red: Output::new(p.PI3, Level::Low, Speed::Low),
+        blue: Output::new(p.PG6, Level::Low, Speed::Low),
     };
 
     leds.blink_green_once();
@@ -103,7 +117,7 @@ async fn main(_spawner: Spawner) {
     let mut usb_cfg = embassy_usb::Config::new(0xc0de, 0xcafe);
     usb_cfg.manufacturer = Some("Amperstrand");
     usb_cfg.product = Some("microfips");
-    usb_cfg.serial_number = Some("stm32f469i-disc");
+    usb_cfg.serial_number = Some(board::USB_SERIAL);
 
     let mut cfg_desc = [0; USB_DESC_BUF_SIZE];
     let mut bos_desc = [0; USB_DESC_BUF_SIZE];

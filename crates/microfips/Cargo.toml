@@ -5,7 +5,9 @@ edition = "2021"
 description = "Minimal FIPS leaf node on STM32F469I-DISCO"
 
 [features]
-default = []
+default = ["board-f469"]
+board-f469 = ["embassy-stm32/stm32f469ni"]
+board-f746 = ["embassy-stm32/stm32f746ng"]
 defmt = [
     "dep:defmt",
     "dep:defmt-rtt",
@@ -26,7 +28,6 @@ microfips-protocol = { path = "../microfips-protocol" }
 microfips-service = { path = "../microfips-service" }
 rand_core = { version = "0.6", default-features = false }
 embassy-stm32 = { version = "0.6.0", features = [
-    "stm32f469ni",
     "unstable-pac",
     "memory-x",
     "time-driver-any",

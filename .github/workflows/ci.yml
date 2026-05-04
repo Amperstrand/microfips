@@ -386,6 +386,8 @@ jobs:
 
       - run: cargo build -p microfips --release --target thumbv7em-none-eabi
 
+      - run: cargo build -p microfips --release --target thumbv7em-none-eabi --no-default-features --features board-f746
+
       - name: Validate firmware binary
         run: |
           BINARY="target/thumbv7em-none-eabi/release/microfips"

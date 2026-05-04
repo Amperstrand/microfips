@@ -259,6 +259,15 @@ cargo build -p microfips --release --target thumbv7em-none-eabi
 # Output: target/thumbv7em-none-eabi/release/microfips
 ```
 
+### STM32F746
+
+```sh
+cargo build -p microfips --release --target thumbv7em-none-eabi --no-default-features --features board-f746
+# Output: target/thumbv7em-none-eabi/release/microfips
+```
+
+Same firmware crate, different `board-*` feature. The default build targets F469.
+
 ### ESP32-D0WD
 
 Requires Espressif Rust toolchain (installed via `espup`, activated with `RUSTUP_TOOLCHAIN=esp`):
@@ -287,7 +296,7 @@ GitHub Actions runs on push/PR to main. See `.github/workflows/ci.yml` for full 
 - **Sim Smoke** -- verify simulator starts and exits cleanly on EOF
 - **Sim-to-Sim Ping** -- SIM-B -> FIPS -> SIM-A FSP PING/PONG (must pass)
 - **FIPS Handshake Integration** -- local Noise IK handshake (must pass) + public VPS (continue-on-error)
-- **Build Firmware** -- STM32 (`thumbv7em-none-eabi`) + ESP32 UART + ESP32 BLE variants
+- **Build Firmware** -- STM32 F469 (`thumbv7em-none-eabi`) + STM32 F746 (`--features board-f746`) + ESP32 UART + ESP32 BLE variants
 - **Summary** -- aggregate status table
 
 ### Environment variables for key override
@@ -312,6 +321,18 @@ Host tools do not fall back to hardcoded identities anymore. Set both variables 
 - **Clocks:** HSI 16 MHz + PLL -> 168 MHz sys, 48 MHz USB (HSE bypass hangs)
 - **USB VID:PID:** `c0de:cafe` (CDC ACM, detected as `/dev/ttyACM*`)
 - **Flash:** `st-flash --connect-under-reset write` (NOT probe-rs during USB testing)
+
+### STM32F746G-DISCO
+- **MCU:** STM32F746NGH6 (Cortex-M7F, 216 MHz, 1 MB Flash, 320 KB SRAM)
+- **Build:** `cargo build -p microfips --release --target thumbv7em-none-eabi --no-default-features --features board-f746`
+- **USB OTG FS:** PA11 (DM), PA12 (DP) -- CDC ACM (register-compatible with F469)
+- **LED:** PI1 (green, Arduino D13) -- only user LED; orange/red/blue pins have no physical LEDs
+- **RNG:** `RNG` interrupt -- hardware TRNG (different interrupt name from F469)
+- **Debug:** ST-LINK/V2.1 (PA13 SWDIO, PA14 SWCLK)
+- **Clocks:** HSI 16 MHz + PLL -> 216 MHz sys, 48 MHz USB
+- **USB VID:PID:** `c0de:cafe` (CDC ACM, detected as `/dev/ttyACM*`)
+- **Flash:** `st-flash --connect-under-reset write` (NOT probe-rs during USB testing)
+- Hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes
 
 ### ESP32-D0WD
 - **MCU:** ESP32-D0WD (Xtensa LX6, 240 MHz, 4 MB Flash)
