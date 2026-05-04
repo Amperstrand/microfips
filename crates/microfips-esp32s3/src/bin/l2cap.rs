@@ -7,7 +7,8 @@ use core::panic::PanicInfo;
 use microfips_esp_transport::config::PANIC_BLINK_CYCLES;
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    esp_println::println!("PANIC: {}", info);
     // SAFETY: GPIO::PTR is a fixed memory-mapped address (ESP32-S3 TRM §4.2).
     // The panic handler has exclusive access — interrupts are disabled and no
     // other code runs during panic.

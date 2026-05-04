@@ -120,6 +120,14 @@ st-flash --connect-under-reset write microfips.bin 0x08000000
 st-flash --connect-under-reset reset
 ```
 
+### USB OTG FS PHY reset (automatic)
+
+The firmware performs an explicit USB PHY reset after `embassy_stm32::init()` to ensure
+reliable re-enumeration after `st-flash` soft resets (SYSRESETREQ without NRST). Without
+this, the USB PHY can retain stale state and the device won't appear as `/dev/ttyACM*`.
+
+No manual RESET button press is needed after flashing.
+
 ### When probe-rs IS acceptable
 
 - Initial bringup (no USB active yet)
