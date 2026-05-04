@@ -27,9 +27,9 @@ pub const INNER_HEADER_SIZE: usize = 5; // 4-byte timestamp + at least 1 byte ms
 pub const ENCRYPTED_MIN_SIZE: usize = 32;
 
 // FIPS: bd08505 noise/handshake.rs:write_message_1()
-pub const HANDSHAKE_MSG1_SIZE: usize = 106;
+pub use fips_compat::HANDSHAKE_MSG1_SIZE;
 // FIPS: bd08505 noise/handshake.rs:read_message_2()
-pub const HANDSHAKE_MSG2_SIZE: usize = 57;
+pub use fips_compat::HANDSHAKE_MSG2_SIZE;
 // FIPS: bd08505 noise/handshake.rs:write_message_1()
 pub const EPOCH_ENCRYPTED_SIZE: usize = 24;
 
