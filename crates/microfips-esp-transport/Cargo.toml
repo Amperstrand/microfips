@@ -26,19 +26,18 @@ microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
 rand_core = { version = "0.6", default-features = false }
-esp-hal = { version = "1.1.0", features = ["unstable"] }
+esp-hal = { version = "1.0.0", features = ["unstable"] }
 embassy-time = "0.5.1"
 embassy-futures = "0.1.2"
-embassy-executor = "0.10.0"
-embassy-sync = "0.8"
-embassy-sync-07 = { package = "embassy-sync", version = "0.7.2" }
+embassy-executor = "0.9.1"
+embassy-sync = "0.7.2"
 embedded-io-async = "0.7"
 heapless = "0.9"
 static_cell = "2"
 embassy-net = { version = "0.9.0", features = ["dhcpv4", "udp"], optional = true }
-esp-radio = { version = "0.18.0", default-features = false, features = ["ble", "wifi", "unstable"], optional = true }
+esp-radio = { version = "0.17.0", default-features = false, features = ["ble", "wifi", "unstable"], optional = true }
 trouble-host = { version = "0.6.0", features = ["default-packet-pool-mtu-255", "scan", "central"], optional = true }
-esp-alloc = { version = "0.10.0", optional = true }
+esp-alloc = { version = "0.9", optional = true }
 bt-hci = { version = "0.8", features = ["uuid"], optional = true }
 embedded-io = { version = "0.7", optional = true }
 esp-println = { version = "0.16.1", default-features = false, optional = true }
