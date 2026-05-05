@@ -3,6 +3,10 @@ use microfips_esp_transport::config::{UART_BAUDRATE, UART_FIFO_THRESHOLD};
 use microfips_esp_transport::runner::{self, NodeOpts};
 use microfips_esp_transport::uart_transport::UartTransport;
 
+pub fn init_heap() {
+    esp_alloc::heap_allocator!(size: 72 * 1024);
+}
+
 pub async fn run_uart_node(
     gpio2: esp_hal::peripherals::GPIO2<'static>,
     uart0: esp_hal::peripherals::UART0<'static>,
@@ -76,7 +80,7 @@ pub async fn run_ble_node(
     log::info!("trng ready");
 
     let transport = crate::ble_transport::BleTransport::new();
-    spawner.spawn(crate::control::control_task()).unwrap();
+    spawner.spawn(crate::control::control_task().expect("spawn control task"));
 
     log::info!("BLE advertising as '{}'", BLE_DEVICE_NAME);
 
@@ -112,7 +116,7 @@ pub async fn run_l2cap_node(
 
     let mut transport = crate::l2cap_transport::L2capTransport::new();
 
-    spawner.spawn(crate::control::control_task()).unwrap();
+    spawner.spawn(crate::control::control_task().expect("spawn control task"));
 
     let peer_pub = match transport.wait_for_peer_pub().await {
         Ok(pk) => pk,
@@ -218,7 +222,7 @@ pub async fn run_wifi_node(
 
     crate::control::init_control(&identity, "wifi");
     crate::control::set_peer_pub(VPS_NPUB);
-    spawner.spawn(crate::control::control_task()).ok();
+    spawner.spawn(crate::control::control_task().expect("spawn control task"));
 
     log::info!("Node running over WiFi...");
     node.run(&mut handler).await;

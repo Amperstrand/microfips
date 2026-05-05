@@ -1,9 +1,12 @@
+extern crate alloc;
+
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Config, IpAddress, IpEndpoint, Runner, StackResources};
 use embassy_time::{with_timeout, Duration, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Trng;
-use esp_radio::wifi::{ClientConfig, ModeConfig, WifiController, WifiDevice};
+use esp_radio::wifi::sta::StationConfig;
+use esp_radio::wifi::{Config as WifiConfig, WifiController};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
 use microfips_esp_common::dns::resolve_vps_ipv4;
 use microfips_esp_common::udp_transport::UdpTransport;
@@ -40,7 +43,7 @@ impl Transport for WifiTransport {
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+async fn net_task(mut runner: Runner<'static, esp_radio::wifi::Interface<'static>>) {
     runner.run().await;
 }
 
@@ -51,23 +54,18 @@ pub async fn build_wifi_transport(
     wifi_ssid: &str,
     wifi_password: &str,
 ) -> Result<WifiTransport, WifiInitError> {
-    esp_alloc::heap_allocator!(#[link_section = ".dram2_uninit"] size: 72_000);
-
     const MAX_WIFI_RETRIES: u32 = 5;
     const WIFI_RETRY_BASE_SECS: u64 = 5;
 
-    static RADIO: StaticCell<esp_radio::Controller> = StaticCell::new();
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
     static RX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static RX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
     static TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static TX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
 
-    let radio = RADIO.init(esp_radio::init().expect("esp_radio::init failed"));
     let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(radio, wifi, esp_radio::wifi::Config::default())
-            .expect("wifi::new failed");
-    let wifi_device = interfaces.sta;
+        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
+    let wifi_device = interfaces.station;
 
     let resources = RESOURCES.init(StackResources::new());
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
@@ -77,15 +75,14 @@ pub async fn build_wifi_transport(
         resources,
         seed,
     );
-    spawner.spawn(net_task(runner)).expect("spawn net task");
+    spawner.spawn(net_task(runner).expect("spawn net task"));
 
-    let client_config = ClientConfig::default()
-        .with_ssid(alloc::string::String::from(wifi_ssid))
+    let station_config = StationConfig::default()
+        .with_ssid(wifi_ssid)
         .with_password(alloc::string::String::from(wifi_password));
     wifi_controller
-        .set_config(&ModeConfig::Client(client_config))
-        .expect("set wifi client config");
-    wifi_controller.start().expect("wifi start");
+        .set_config(&WifiConfig::Station(station_config))
+        .expect("set wifi station config");
 
     Timer::after(Duration::from_secs(2)).await;
     let (_, vps_ip) = {
@@ -97,7 +94,7 @@ pub async fn build_wifi_transport(
             )
             .await
             {
-                Ok(Ok(())) => {
+                Ok(Ok(_)) => {
                     #[cfg(feature = "log")]
                     log::info!("WiFi connected");
 
