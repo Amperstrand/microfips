@@ -360,6 +360,7 @@ where
     let mut rx_count: u32 = 0;
     let mut rx_drop_total: u32 = 0;
     let mut first_frame_logged = false;
+    let mut last_heap_log = embassy_time::Instant::now();
 
     log::info!("relay starting (role context: {})", recv_disconnect_log);
 
@@ -504,6 +505,22 @@ where
                     }
                 }
             }
+        }
+
+        let now = embassy_time::Instant::now();
+        if now.duration_since(last_heap_log).as_secs() >= 30 {
+            #[cfg(feature = "l2cap")]
+            {
+                let free = esp_alloc::HEAP.free();
+                log::warn!(
+                    "HEAP: free={}B rx={} tx={} drops={}",
+                    free,
+                    rx_count,
+                    tx_count,
+                    rx_drop_total
+                );
+            }
+            last_heap_log = now;
         }
     }
 }
