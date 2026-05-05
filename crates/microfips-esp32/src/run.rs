@@ -119,7 +119,7 @@ pub async fn run_l2cap_node(
         peer_pub,
         NodeOpts {
             raw_framing: true,
-            peer_sent_first: true,
+            peer_sent_first: false,
         },
     )
     .await

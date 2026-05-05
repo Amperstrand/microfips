@@ -579,49 +579,11 @@ pub async fn l2cap_host_task() {
         async {
             loop {
                 mark_link_down();
-                let mut enter_peripheral = false;
 
-                let prefer_peripheral = should_prefer_peripheral();
-                if prefer_peripheral {
-                    log::info!("preferring peripheral role after clean yield");
-                    enter_peripheral = true;
-                } else if let Some((mut writer, mut reader, peer_pub)) =
-                    do_central_connect(&stack, &mut central).await
-                {
-                    drain_l2cap_channels();
-                    mark_link_ready(peer_pub);
-                    STAT_L2CAP_CENTRAL_OK.fetch_add(1, Ordering::Relaxed);
-                    let reason = relay_l2cap_frames(
-                        &stack,
-                        &mut writer,
-                        &mut reader,
-                        "central receive loop disconnected",
-                        "central send loop disconnected",
-                    )
-                    .await;
-                    set_last_disconnect(L2capRole::Central, reason);
-                    mark_link_down();
-                    drain_l2cap_channels();
-                    match reason {
-                        DisconnectReason::CleanYield => {
-                            log::info!(
-                                "central 0-frame disconnect (probe collision), retrying in {}ms",
-                                BLE_DISCONNECT_SETTLE_MS
-                            );
-                        }
-                        _ => log::info!("central disconnected, retrying"),
-                    }
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(
-                        BLE_DISCONNECT_SETTLE_MS,
-                    ))
-                    .await;
-                } else {
-                    enter_peripheral = true;
-                }
-
-                if !enter_peripheral {
-                    continue;
-                }
+                // Peripheral-only: central connect causes dual-L2CAP conflict
+                // (FIPS accept_loop + probe_loop both active on same BLE link).
+                // Peripheral-only means only FIPS probe_loop path is used.
+                let _ = &mut central;
 
                 log::info!("entering peripheral mode");
                 let reason = do_peripheral(&stack, &mut peripheral).await;
