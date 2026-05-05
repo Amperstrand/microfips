@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+use embassy_sync_07 as embassy_sync;
+
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use bt_hci::{
@@ -159,18 +161,11 @@ pub async fn ble_host_task() {
     init_heap();
     log::info!("heap initialized");
 
-    let Ok(radio) = esp_radio::init() else {
-        loop {
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
-                .await;
-        }
-    };
-
     // SAFETY: Peripherals::steal() is called once during BLE host task initialization.
     // The BT peripheral is not consumed by esp_hal::init() in the binary entry point —
     // it is only needed here for the BLE radio. No other code accesses BT.
     let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
-    let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
+    let Ok(connector) = BleConnector::new(bt, Default::default()) else {
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
                 .await;
