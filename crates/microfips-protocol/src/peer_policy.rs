@@ -1,3 +1,4 @@
+use core::cell::Cell;
 use embassy_time::{Duration, Instant};
 
 pub const DEFAULT_RETRY_BASE_INTERVAL_SECS: u64 = 5;
@@ -14,6 +15,9 @@ pub const SILENT_PEER_SECS: u64 = DEFAULT_LINK_DEAD_TIMEOUT_SECS;
 pub const SILENT_PEER_MIN_DATA_RATIO: u32 = 1;
 pub const MAX_CONSECUTIVE_BAD: u16 = 20;
 pub const MAX_CONSECUTIVE_FAILURES: u16 = 20;
+pub const MAX_TOTAL_RECONNECT_ATTEMPTS: u32 = 100;
+pub const FAILURE_RESET_WINDOW_SECS: u64 = 3600;
+pub const MAX_TOTAL_BAD_FRAMES: u32 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PeerPolicyTiming {
@@ -37,13 +41,16 @@ impl Default for PeerPolicyTiming {
 pub struct PeerPolicy {
     timing: PeerPolicyTiming,
     last_connect: Option<Instant>,
-    consecutive_failures: u16,
+    consecutive_failures: Cell<u16>,
+    total_reconnect_attempts: u32,
+    first_failure_time: Cell<Option<Instant>>,
     frame_count: u16,
     frame_window_start: Instant,
     data_frames_recv: u32,
     heartbeats_recv: u32,
     session_start: Option<Instant>,
     consecutive_bad_frames: u16,
+    total_bad_frames: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,31 +70,50 @@ impl PeerPolicy {
         Self {
             timing,
             last_connect: None,
-            consecutive_failures: 0,
+            consecutive_failures: Cell::new(0),
+            total_reconnect_attempts: 0,
+            first_failure_time: Cell::new(None),
             frame_count: 0,
             frame_window_start: now,
             data_frames_recv: 0,
             heartbeats_recv: 0,
             session_start: None,
             consecutive_bad_frames: 0,
+            total_bad_frames: 0,
         }
     }
 
     pub fn check_reconnect(&self, now: Instant) -> PolicyVerdict {
+        if self.total_reconnect_attempts >= MAX_TOTAL_RECONNECT_ATTEMPTS {
+            return PolicyVerdict::Reject;
+        }
+
+        if let Some(first_failure_time) = self.first_failure_time.get() {
+            let failure_window_secs = now
+                .as_secs()
+                .saturating_sub(first_failure_time.as_secs());
+            if failure_window_secs > FAILURE_RESET_WINDOW_SECS {
+                self.consecutive_failures.set(0);
+                self.first_failure_time.set(None);
+            }
+        }
+
         let Some(last_connect) = self.last_connect else {
             return PolicyVerdict::Allow;
         };
+
+        let consecutive_failures = self.consecutive_failures.get();
 
         let elapsed_ms = now.as_millis().saturating_sub(last_connect.as_millis());
         let base_interval_ms = self.timing.retry_base_interval_secs.saturating_mul(1_000);
         let max_backoff_ms = self.timing.retry_max_backoff_secs.saturating_mul(1_000);
 
-        let failure_backoff_ms = if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+        let failure_backoff_ms = if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
             max_backoff_ms
-        } else if self.consecutive_failures == 0 {
+        } else if consecutive_failures == 0 {
             0
         } else {
-            let shift = (self.consecutive_failures - 1).min(15) as u32;
+            let shift = (consecutive_failures - 1).min(15) as u32;
             base_interval_ms
                 .saturating_mul(1u64 << shift)
                 .min(max_backoff_ms)
@@ -123,14 +149,21 @@ impl PeerPolicy {
     }
 
     pub fn record_handshake_ok(&mut self, now: Instant) {
-        self.consecutive_failures = 0;
+        self.consecutive_failures.set(0);
+        self.total_reconnect_attempts = 0;
+        self.first_failure_time.set(None);
         self.last_connect = None;
         self.reset_session();
         self.session_start = Some(now);
     }
 
     pub fn record_handshake_failure(&mut self, now: Instant) {
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.consecutive_failures
+            .set(self.consecutive_failures.get().saturating_add(1));
+        self.total_reconnect_attempts = self.total_reconnect_attempts.saturating_add(1);
+        if self.first_failure_time.get().is_none() {
+            self.first_failure_time.set(Some(now));
+        }
         self.last_connect = Some(now);
     }
 
@@ -148,6 +181,7 @@ impl PeerPolicy {
 
     pub fn record_bad_frame(&mut self) {
         self.consecutive_bad_frames = self.consecutive_bad_frames.saturating_add(1);
+        self.total_bad_frames = self.total_bad_frames.saturating_add(1);
     }
 
     pub fn record_good_frame(&mut self) {
@@ -179,11 +213,20 @@ impl PeerPolicy {
         }
     }
 
+    pub fn check_total_bad_frame_limit(&self) -> PolicyVerdict {
+        if self.total_bad_frames >= MAX_TOTAL_BAD_FRAMES {
+            PolicyVerdict::Reject
+        } else {
+            PolicyVerdict::Allow
+        }
+    }
+
     pub fn reset_session(&mut self) {
         self.data_frames_recv = 0;
         self.heartbeats_recv = 0;
         self.session_start = None;
         self.consecutive_bad_frames = 0;
+        self.total_bad_frames = 0;
     }
 
     pub fn set_session_start(&mut self, instant: Instant) {
@@ -287,6 +330,34 @@ mod tests {
             policy.check_reconnect(ok_at + Duration::from_millis(MIN_RECONNECT_MS)),
             PolicyVerdict::Allow
         );
+    }
+
+    #[test]
+    fn test_reconnect_rejected_after_total_failure_limit() {
+        let mut policy = PeerPolicy::new();
+        let start = Instant::now();
+
+        for attempt in 0..MAX_TOTAL_RECONNECT_ATTEMPTS {
+            policy.record_handshake_failure(start + Duration::from_secs(attempt as u64));
+        }
+
+        let after_backoff = start + Duration::from_millis(MAX_RECONNECT_MS + 1);
+        assert_eq!(policy.check_reconnect(after_backoff), PolicyVerdict::Reject);
+    }
+
+    #[test]
+    fn test_failure_window_resets_consecutive_failures() {
+        let mut policy = PeerPolicy::new();
+        let start = Instant::now();
+
+        for failure in 0..3 {
+            policy.record_handshake_failure(start + Duration::from_secs(failure));
+        }
+
+        let after_window = start + Duration::from_secs(FAILURE_RESET_WINDOW_SECS + 1);
+        assert_eq!(policy.check_reconnect(after_window), PolicyVerdict::Allow);
+        assert_eq!(policy.consecutive_failures.get(), 0);
+        assert_eq!(policy.first_failure_time.get(), None);
     }
 
     #[test]
@@ -416,6 +487,26 @@ mod tests {
         policy.record_good_frame();
 
         assert_eq!(policy.check_bad_frame_limit(), PolicyVerdict::Allow);
+    }
+
+    #[test]
+    fn test_total_bad_frame_limit_rejects_non_consecutive_attack() {
+        let mut policy = PeerPolicy::new();
+
+        for _ in 0..(MAX_TOTAL_BAD_FRAMES / (MAX_CONSECUTIVE_BAD as u32 - 1)) {
+            for _ in 0..(MAX_CONSECUTIVE_BAD - 1) {
+                policy.record_bad_frame();
+                assert_eq!(policy.check_bad_frame_limit(), PolicyVerdict::Allow);
+            }
+            policy.record_good_frame();
+        }
+
+        for _ in 0..(MAX_TOTAL_BAD_FRAMES % (MAX_CONSECUTIVE_BAD as u32 - 1)) {
+            policy.record_bad_frame();
+            assert_eq!(policy.check_bad_frame_limit(), PolicyVerdict::Allow);
+        }
+
+        assert_eq!(policy.check_total_bad_frame_limit(), PolicyVerdict::Reject);
     }
 
     #[test]
