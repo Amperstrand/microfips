@@ -90,15 +90,13 @@ pub mod peer_caps {
     pub const CAN_PERIPHERAL: u8 = 0x10;
     pub const L2CAP_SUPPORTED: u8 = 0x20;
 
-    /// CAN_PERIPHERAL + L2CAP_SUPPORTED + PREFER_L2CAP = 0x34.
-    /// CAN_CENTRAL intentionally omitted: advertising it triggers FIPS deterministic
-    /// NodeAddr tie-breaker (scan_probe_loop line ~1228) which always yields to
-    /// ESP32's small NodeAddr (0x0135...), creating an infinite disconnect loop.
-    /// The firmware still falls back to central connect when peripheral fails —
-    /// this flag only controls what we *advertise* to the peer.
-    /// Matches FIPS PeerCapabilities bit layout (src/transport/ble/capabilities.rs)
-    /// on master and ble-transport-reliability branches.
-    pub const ESP32_DEFAULT: u8 = CAN_PERIPHERAL | L2CAP_SUPPORTED | PREFER_L2CAP;
+    /// Full capabilities: CAN_CENTRAL | CAN_PERIPHERAL | L2CAP_SUPPORTED | PREFER_L2CAP = 0x3C.
+    /// CAN_CENTRAL was previously omitted as a workaround for FIPS deterministic NodeAddr
+    /// tie-breaker (always yielded to small NodeAddr). FIPS removed that tie-breaker in
+    /// commit 4aad5f1. The firmware remains peripheral-only (hardcoded in l2cap_host.rs)
+    /// regardless of advertised capabilities.
+    /// Matches FIPS PeerCapabilities bit layout (src/transport/ble/capabilities.rs).
+    pub const ESP32_DEFAULT: u8 = CAN_CENTRAL | CAN_PERIPHERAL | L2CAP_SUPPORTED | PREFER_L2CAP;
 }
 
 #[cfg(feature = "l2cap")]
