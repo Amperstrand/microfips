@@ -631,7 +631,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         } else {
                             self.policy.record_bad_frame();
                         }
-                        if self.policy.check_bad_frame_limit() == PolicyVerdict::Reject {
+                        if self.policy.check_bad_frame_limit() == PolicyVerdict::Reject
+                            || self.policy.check_total_bad_frame_limit()
+                                == PolicyVerdict::Reject
+                        {
                             log_steady!("policy: rejected: bad frame limit");
                             self.send_disconnect(
                                 ks,
