@@ -12,7 +12,6 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use esp_radio::ble::{controller::BleConnector, have_hci_read_data};
-use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::config::{
@@ -21,7 +20,6 @@ use crate::config::{
 };
 use crate::stats::BLE_STATS;
 
-static HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2>> = StaticCell::new();
 static BLE_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> =
     Channel::new();
 static BLE_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, BLE_MAX_FRAME>, 4> =
@@ -32,22 +30,6 @@ static BLE_LINK_UP: AtomicBool = AtomicBool::new(false);
 /// Set to true once the GATT client has enabled notifications (CCCD write).
 /// Until then, notify() failures are expected and must not trigger a disconnect.
 static BLE_NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(false);
-
-fn init_heap() {
-    const HEAP_SIZE: usize = 72 * 1024;
-    #[link_section = ".dram2_uninit"]
-    static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-    // SAFETY: HEAP is a static mut accessed once during initialization before any allocation.
-    // The pointer (&raw mut HEAP) has 'static lifetime. esp_alloc requires the region to
-    // remain valid for the program duration — satisfied because HEAP is static.
-    unsafe {
-        esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
-            &raw mut HEAP as *mut u8,
-            HEAP_SIZE,
-            esp_alloc::MemoryCapability::Internal.into(),
-        ));
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 enum BleHciError {
@@ -156,21 +138,14 @@ struct FipsService {
 
 #[embassy_executor::task]
 pub async fn ble_host_task() {
-    init_heap();
+    crate::heap::init();
     log::info!("heap initialized");
-
-    let Ok(radio) = esp_radio::init() else {
-        loop {
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
-                .await;
-        }
-    };
 
     // SAFETY: Peripherals::steal() is called once during BLE host task initialization.
     // The BT peripheral is not consumed by esp_hal::init() in the binary entry point —
     // it is only needed here for the BLE radio. No other code accesses BT.
     let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
-    let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
+    let Ok(connector) = BleConnector::new(bt, Default::default()) else {
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
                 .await;
@@ -179,21 +154,19 @@ pub async fn ble_host_task() {
 
     let controller: ExternalController<_, 20> =
         ExternalController::new(BleHciTransport::new(connector));
-    let resources = HOST_RESOURCES.init(HostResources::new());
-    let stack = trouble_host::new(controller, resources).set_random_address(Address::random([
-        0xff,
-        DEVICE_NSEC[27],
-        DEVICE_NSEC[28],
-        DEVICE_NSEC[29],
-        DEVICE_NSEC[30],
-        DEVICE_NSEC[31],
-    ]));
-
-    let Host {
-        mut peripheral,
-        mut runner,
-        ..
-    } = stack.build();
+    let mut resources: HostResources<_, DefaultPacketPool, 1, 2> = HostResources::new();
+    let stack = trouble_host::new(controller, &mut resources)
+        .set_random_address(Address::random([
+            0xff,
+            DEVICE_NSEC[27],
+            DEVICE_NSEC[28],
+            DEVICE_NSEC[29],
+            DEVICE_NSEC[30],
+            DEVICE_NSEC[31],
+        ]))
+        .build();
+    let mut runner = stack.runner();
+    let mut peripheral = stack.peripheral();
 
     let Ok(server) = FipsBleServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: BLE_DEVICE_NAME,
@@ -222,14 +195,14 @@ pub async fn ble_host_task() {
 
             let mut scan_data = [0u8; 31];
             let Ok(scan_len) = AdStructure::encode_slice(
-                &[AdStructure::ServiceUuids128(&FIPS_SERVICE_UUID_LE)],
+                &[AdStructure::CompleteServiceUuids128(&FIPS_SERVICE_UUID_LE)],
                 &mut scan_data,
             ) else {
                 log::error!("scan_data encode failed");
                 continue;
             };
 
-            let advertiser = match peripheral
+            let advertiser: Advertiser<'_, _, DefaultPacketPool> = match peripheral
                 .advertise(
                     &Default::default(),
                     Advertisement::ConnectableScannableUndirected {
@@ -246,7 +219,7 @@ pub async fn ble_host_task() {
                 }
             };
 
-            let conn = match advertiser.accept().await {
+            let conn: GattConnection<'_, '_, DefaultPacketPool> = match advertiser.accept().await {
                 Ok(c) => match c.with_attribute_server(&server) {
                     Ok(conn) => conn,
                     Err(e) => {

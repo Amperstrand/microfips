@@ -11,6 +11,7 @@ pub async fn run_uart_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
+    microfips_esp_transport::heap::init();
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
 
@@ -76,7 +77,7 @@ pub async fn run_ble_node(
     log::info!("trng ready");
 
     let transport = crate::ble_transport::BleTransport::new();
-    spawner.spawn(crate::control::control_task()).unwrap();
+    spawner.spawn(crate::control::control_task().expect("spawn control task failed"));
 
     log::info!("BLE advertising as '{}'", BLE_DEVICE_NAME);
 
@@ -112,7 +113,7 @@ pub async fn run_l2cap_node(
 
     let mut transport = crate::l2cap_transport::L2capTransport::new();
 
-    spawner.spawn(crate::control::control_task()).unwrap();
+    spawner.spawn(crate::control::control_task().expect("spawn control task failed"));
 
     let peer_pub = match transport.wait_for_peer_pub().await {
         Ok(pk) => pk,
@@ -218,7 +219,7 @@ pub async fn run_wifi_node(
 
     crate::control::init_control(&identity, "wifi");
     crate::control::set_peer_pub(VPS_NPUB);
-    spawner.spawn(crate::control::control_task()).ok();
+    if let Ok(token) = crate::control::control_task() { spawner.spawn(token); }
 
     log::info!("Node running over WiFi...");
     node.run(&mut handler).await;

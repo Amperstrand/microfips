@@ -142,7 +142,9 @@ impl BleHostAdapter for EspBleHost {
         // the embassy executor (inside run_*_node() which is called from #[esp_rtos::main]).
         // The executor is guaranteed to exist and be the current one.
         let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
-        spawner.spawn(ble_host_task()).map_err(|_| ())
+        let token = ble_host_task().map_err(|_| ())?;
+        spawner.spawn(token);
+        Ok(())
     }
 
     async fn wait_for_link() {

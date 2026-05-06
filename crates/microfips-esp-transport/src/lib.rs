@@ -13,6 +13,7 @@ compile_error!("features \"esp32\" and \"esp32s3\" are mutually exclusive");
 
 pub mod config;
 pub mod handler;
+pub mod heap;
 pub mod led;
 pub mod node_info;
 pub mod rng;
