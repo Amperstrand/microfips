@@ -10,14 +10,6 @@ MSG1_SIZE = 114
 MSG2_SIZE = 69
 
 
-def _fips_has_udp():
-    try:
-        with open("/etc/fips/fips.yaml") as f:
-            return "udp" in f.read().lower()
-    except FileNotFoundError:
-        return False
-
-
 def find_mcu_cdc_port(timeout=15):
     import os
     deadline = time.time() + timeout
@@ -40,7 +32,6 @@ def find_mcu_cdc_port(timeout=15):
 
 @pytest.fixture(scope="module")
 def stm32_serial():
-    """Flash STM32, wait for USB CDC enumeration, open serial."""
     import serial as pyserial
     from conftest import flash_stm32
 
@@ -55,7 +46,6 @@ def stm32_serial():
 
 
 def test_stm32_fips_framing(stm32_serial):
-    """Verify STM32 boots and sends valid FIPS length-prefixed frames (MSG1)."""
     hdr = stm32_serial.read(2)
     assert len(hdr) == 2, "No response from STM32"
     frame_len = struct.unpack("<H", hdr)[0]
@@ -66,16 +56,7 @@ def test_stm32_fips_framing(stm32_serial):
     assert len(payload) == frame_len, f"Short read: got {len(payload)}, expected {frame_len}"
 
 
-@pytest.mark.skipif(
-    not _fips_has_udp(),
-    reason="FIPS daemon not configured with UDP transport"
-)
-def test_stm32_handshake_via_bridge(stm32_serial, fips_service_running):
-    """Start bridge, verify MSG1→FIPS and MSG2→STM32 exchange.
-
-    The STM32 retries MSG1 every ~33s (500ms connect delay + 30s recv timeout + 3s retry).
-    The bridge must be running when the next MSG1 goes out.
-    """
+def test_stm32_handshake_via_bridge(stm32_serial, fips_with_udp):
     port = stm32_serial.port
     stm32_serial.close()
 

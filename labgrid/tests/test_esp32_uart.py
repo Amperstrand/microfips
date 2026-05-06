@@ -9,14 +9,6 @@ MSG2_SIZE = 69
 PROJECT_ROOT = "/home/ubuntu/src2/microfips"
 
 
-def _fips_has_udp():
-    try:
-        with open("/etc/fips/fips.yaml") as f:
-            return "udp" in f.read().lower()
-    except FileNotFoundError:
-        return False
-
-
 @pytest.fixture(scope="module")
 def uart_port():
     from conftest import flash_esp32
@@ -36,8 +28,7 @@ def uart_port():
     pytest.skip("ESP32-D0WD not found after flash")
 
 
-@pytest.mark.skipif(not _fips_has_udp(), reason="FIPS daemon not configured with UDP transport")
-def test_esp32_uart_handshake(uart_port, fips_service_running):
+def test_esp32_uart_handshake(uart_port, fips_with_udp):
     bridge_proc = subprocess.Popen(
         [
             "python3",
@@ -75,8 +66,7 @@ def test_esp32_uart_handshake(uart_port, fips_service_running):
         bridge_proc.wait(timeout=5)
 
 
-@pytest.mark.skipif(not _fips_has_udp(), reason="FIPS daemon not configured with UDP transport")
-def test_esp32_uart_heartbeat(uart_port, fips_service_running):
+def test_esp32_uart_heartbeat(uart_port, fips_with_udp):
     bridge_proc = subprocess.Popen(
         [
             "python3",
