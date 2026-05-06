@@ -12,11 +12,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use esp_radio::ble::controller::BleConnector;
-use static_cell::StaticCell;
 use trouble_host::l2cap::{L2capChannelReader, L2capChannelWriter};
 use trouble_host::prelude::{
     AdStructure, Address, Advertisement, Central, ConnectConfig, DefaultPacketPool,
-    ExternalController, Host, HostResources, L2capChannel, L2capChannelConfig, PacketPool,
+    ExternalController, HostResources, L2capChannel, L2capChannelConfig, PacketPool,
     RequestedConnParams, ScanConfig, Stack, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
 };
 
@@ -30,7 +29,6 @@ const L2CAP_RECV_TIMEOUT_SECS: u64 = 45;
 const L2CAP_SEND_TIMEOUT_SECS: u64 = 15;
 const CENTRAL_COLLISION_COOLDOWN_MS: u64 = 6_000;
 
-static L2CAP_HOST_RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 3>> = StaticCell::new();
 static L2CAP_RX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 16> =
     Channel::new();
 static L2CAP_TX_CH: Channel<CriticalSectionRawMutex, heapless::Vec<u8, L2CAP_FRAME_CAP>, 8> =
@@ -49,22 +47,6 @@ static STAT_L2CAP_CENTRAL_OK: AtomicU32 = AtomicU32::new(0);
 static STAT_L2CAP_PERIPHERAL_OK: AtomicU32 = AtomicU32::new(0);
 static L2CAP_LAST_ROLE: AtomicU32 = AtomicU32::new(0);
 static L2CAP_LAST_REASON: AtomicU32 = AtomicU32::new(0);
-
-fn init_heap() {
-    const HEAP_SIZE: usize = 72 * 1024;
-    #[link_section = ".dram2_uninit"]
-    static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-    // SAFETY: HEAP is a static mut accessed once during initialization before any allocation.
-    // The pointer (&raw mut HEAP) has 'static lifetime. esp_alloc requires the region to
-    // remain valid for the program duration — satisfied because HEAP is static.
-    unsafe {
-        esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
-            &raw mut HEAP as *mut u8,
-            HEAP_SIZE,
-            esp_alloc::MemoryCapability::Internal.into(),
-        ));
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 enum BleHciError {
@@ -532,23 +514,14 @@ const BLE_YIELD_RETRY_MS: u64 = 3000;
 #[embassy_executor::task]
 pub async fn l2cap_host_task() {
     log::info!("started");
-    init_heap();
+    crate::heap::init();
     log::info!("heap initialized");
-
-    let Ok(radio) = esp_radio::init() else {
-        log::error!("esp_radio::init failed");
-        loop {
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
-                .await;
-        }
-    };
-    log::info!("esp_radio initialized");
 
     // SAFETY: Peripherals::steal() is called once during BLE host task initialization.
     // The BT peripheral is not consumed by esp_hal::init() in the binary entry point —
     // it is only needed here for the BLE radio. No other code accesses BT.
     let bt = unsafe { esp_hal::peripherals::Peripherals::steal().BT };
-    let Ok(connector) = BleConnector::new(&radio, bt, Default::default()) else {
+    let Ok(connector) = BleConnector::new(bt, Default::default()) else {
         log::error!("BleConnector::new failed");
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(RECV_RETRY_DELAY_MS))
@@ -560,9 +533,9 @@ pub async fn l2cap_host_task() {
     let controller: ExternalController<_, 20> =
         ExternalController::new(BleHciTransport::new(connector));
     log::info!("controller created");
-    let resources = L2CAP_HOST_RESOURCES.init(HostResources::new());
+    let mut resources: HostResources<_, DefaultPacketPool, 1, 3> = HostResources::new();
     log::info!("host resources initialized");
-    let stack = trouble_host::new(controller, resources);
+    let stack = trouble_host::new(controller, &mut resources).register_l2cap_spsm(L2CAP_PSM);
     let stack = if USE_PUBLIC_BLE_ADDRESS {
         stack
     } else {
@@ -578,12 +551,10 @@ pub async fn l2cap_host_task() {
     };
     log::info!("stack initialized");
 
-    let Host {
-        mut central,
-        mut peripheral,
-        mut runner,
-        ..
-    } = stack.build();
+    let stack = stack.build();
+    let mut runner = stack.runner();
+    let mut central = stack.central();
+    let mut peripheral = stack.peripheral();
     log::info!("host built (dual-role: central + peripheral)");
 
     let _ = embassy_futures::join::join(
@@ -633,12 +604,12 @@ pub async fn l2cap_host_task() {
     .await;
 }
 
-async fn do_central_connect<'s, T, P>(
-    stack: &'s Stack<'s, T, P>,
-    central: &mut Central<'s, T, P>,
+async fn do_central_connect<'host, 'stack, T, P>(
+    stack: &'host Stack<'stack, T, P>,
+    central: &mut Central<'host, T, P>,
 ) -> Option<(
-    L2capChannelWriter<'s, P>,
-    L2capChannelReader<'s, P>,
+    L2capChannelWriter<'host, P>,
+    L2capChannelReader<'host, P>,
     [u8; 33],
 )>
 where
@@ -646,6 +617,7 @@ where
     P: PacketPool,
 {
     let bd_addr = bt_hci::param::BdAddr::new(FIPS_BLE_ADDR);
+    let accept_list = [Address::new(bt_hci::param::AddrKind::PUBLIC, bd_addr)];
     log::info!(
         "attempting central connect to {:?} (timeout {}s)",
         bd_addr,
@@ -655,7 +627,7 @@ where
     let config = ConnectConfig {
         scan_config: ScanConfig {
             active: true,
-            filter_accept_list: &[(bt_hci::param::AddrKind::PUBLIC, &bd_addr)],
+            filter_accept_list: &accept_list,
             ..Default::default()
         },
         connect_params: RequestedConnParams {
@@ -734,9 +706,9 @@ where
     Some((writer, reader, peer_pub))
 }
 
-async fn do_peripheral<'s, T, P>(
-    stack: &'s Stack<'s, T, P>,
-    peripheral: &mut trouble_host::peripheral::Peripheral<'s, T, P>,
+async fn do_peripheral<'host, 'stack, T, P>(
+    stack: &'host Stack<'stack, T, P>,
+    peripheral: &mut trouble_host::peripheral::Peripheral<'host, T, P>,
 ) -> DisconnectReason
 where
     T: trouble_host::prelude::Controller,
@@ -748,7 +720,7 @@ where
     let Ok(adv_len) = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::ServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE),
+            AdStructure::CompleteServiceUuids128(&L2CAP_FIPS_SERVICE_UUID_LE),
         ],
         &mut adv_data,
     ) else {
@@ -813,7 +785,7 @@ where
         ..Default::default()
     };
 
-    let channel = match L2capChannel::accept(stack, &conn, &[L2CAP_PSM], &l2cap_config).await {
+    let channel = match L2capChannel::listen(stack, &conn).accept(&l2cap_config).await {
         Ok(ch) => {
             log::info!("L2CAP channel accepted on PSM {}", L2CAP_PSM);
             ch
