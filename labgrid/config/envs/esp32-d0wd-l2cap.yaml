@@ -1,0 +1,16 @@
+# ESP32-D0WD L2CAP environment
+# Usage: pytest --lg-env labgrid/config/envs/esp32-d0wd-l2cap.yaml labgrid/tests/
+
+targets:
+  main:
+    resources:
+      USBSerialPort:
+        match:
+          ID_VENDOR_ID: "10c4"
+          ID_MODEL_ID: "ea60"
+        speed: 115200
+    drivers:
+      SerialDriver: {}
+
+images:
+  firmware: "target/xtensa-esp32-none-elf/release/microfips-esp32-l2cap"

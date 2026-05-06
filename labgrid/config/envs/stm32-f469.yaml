@@ -1,0 +1,23 @@
+# STM32F469I-DISCO environment
+# Usage: pytest --lg-env labgrid/config/envs/stm32-f469.yaml labgrid/tests/test_stm32.py
+#
+# STM32 has two serial interfaces:
+#   - ST-Link (0483:374b): used for flashing via SWD, always present
+#   - USB CDC (c0de:cafe): appears when firmware is running, used for FIPS traffic
+#
+# Flashing uses st-flash via SWD (ST-Link). After flashing, USB CDC
+# appears after ~8s enumeration delay. The test opens USB CDC for traffic.
+
+targets:
+  main:
+    resources:
+      USBSerialPort:
+        match:
+          ID_VENDOR_ID: "c0de"
+          ID_MODEL_ID: "cafe"
+        speed: 115200
+    drivers:
+      SerialDriver: {}
+
+images:
+  firmware: "target/thumbv7em-none-eabi/release/microfips"

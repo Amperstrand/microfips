@@ -1,0 +1,13 @@
+# Linux dev workstation (this host)
+# Manages FIPS daemon lifecycle and simulators.
+# Usage: pytest --lg-env labgrid/config/envs/linux-host.yaml labgrid/tests/test_fips.py
+
+targets:
+  main:
+    resources:
+      NetworkService:
+        address: "127.0.0.1"
+        username: "ubuntu"
+    drivers:
+      SSHDriver:
+        keyfile: "/home/ubuntu/.ssh/id_ed25519"

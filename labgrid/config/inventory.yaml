@@ -1,0 +1,167 @@
+# labgrid board inventory — all known hardware targets
+# Used by: labgrid exporter, pytest --lg-env
+#
+# Board matching: labgrid uses udev properties to find devices.
+# VID:PID matching is primary; USB serial number disambiguates boards
+# with the same chip (e.g. two CP210x ESP32s).
+
+targets:
+
+  # ── Microcontrollers ──────────────────────────────────────────
+
+  esp32-d0wd:
+    description: "ESP32-D0WD (CP210x UART, BLE, L2CAP, WiFi)"
+    resources:
+      RawSerialPort:
+        # Match by VID:PID — CP210x USB-serial
+        match:
+          ID_VENDOR_ID: "10c4"
+          ID_MODEL_ID: "ea60"
+        # If multiple CP210x devices are connected, disambiguate by USB serial
+        # USB serial: "0001" (Silicon Labs CP2102)
+        speed: 115200
+    drivers:
+      FlashScriptDriver:
+        script: "labgrid/scripts/flash_esp32.sh"
+      SerialDriver:
+        txdelay: 0.05
+    # Board metadata (not used by labgrid, for our reference)
+    metadata:
+      usb_vid: "10c4"
+      usb_pid: "ea60"
+      usb_serial: "0001"
+      mac_address: "30:ae:a4:99:7e:e4"
+      ble_address: "02:00:00:00:00:FF"
+      chip: "esp32"
+      flash_command: "espflash flash --chip esp32"
+      fips_node_addr: "0135da2f8acf7b9e3090939432e47684"
+      fips_npub: "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+      fips_nsec_index: 2
+      firmware_variants:
+        - name: uart
+          binary: "target/xtensa-esp32-none-elf/release/microfips-esp32"
+          features: []
+        - name: ble
+          binary: "target/xtensa-esp32-none-elf/release/microfips-esp32-ble"
+          features: ["ble"]
+        - name: l2cap
+          binary: "target/xtensa-esp32-none-elf/release/microfips-esp32-l2cap"
+          features: ["l2cap"]
+        - name: wifi
+          binary: "target/xtensa-esp32-none-elf/release/microfips-esp32-wifi"
+          features: ["wifi"]
+
+  esp32-s3-tildagon:
+    description: "ESP32-S3 TiLDAGON (USB Serial JTAG, WiFi, BLE L2CAP)"
+    resources:
+      RawSerialPort:
+        # Match by VID:PID — Espressif USB Serial JTAG
+        match:
+          ID_VENDOR_ID: "303a"
+          ID_MODEL_ID: "1001"
+        speed: 115200
+    drivers:
+      FlashScriptDriver:
+        script: "labgrid/scripts/flash_esp32s3.sh"
+      SerialDriver:
+        txdelay: 0.05
+    metadata:
+      usb_vid: "303a"
+      usb_pid: "1001"
+      usb_serial: "64:E8:33:72:01:24"
+      chip: "esp32s3"
+      flash_command: "espflash flash --chip esp32s3"
+      fips_node_addr: "6bef476b391177c1d587c40344ddcab1"
+      fips_npub: "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+      fips_nsec_index: 5
+      note: "USB Serial JTAG, NOT CP210x. Detect by VID:PID 303a:1001. Serial port /dev/ttyACM*."
+      firmware_variants:
+        - name: wifi
+          binary: "target/xtensa-esp32s3-none-elf/release/microfips-esp32s3"
+          features: []
+        - name: l2cap
+          binary: "target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-l2cap"
+          features: ["l2cap"]
+
+  stm32-f469:
+    description: "STM32F469I-DISCO (USB CDC ACM, FIPS over serial bridge)"
+    resources:
+      RawSerialPort:
+        # Match by VID:PID — custom c0de:cafe CDC ACM
+        match:
+          ID_VENDOR_ID: "c0de"
+          ID_MODEL_ID: "cafe"
+        speed: 115200
+    drivers:
+      FlashScriptDriver:
+        script: "labgrid/scripts/flash_stm32.sh"
+      SerialDriver:
+        txdelay: 0.05
+    metadata:
+      usb_vid: "c0de"
+      usb_pid: "cafe"
+      stlink_serial: "066FFF515786534867184152"
+      chip: "STM32F469NIHx"
+      flash_command: "st-flash --connect-under-reset write"
+      fips_node_addr: "132f39a98c31baaddba6525f5d43f295"
+      fips_npub: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+      fips_nsec_index: 1
+      note: "USB CDC appears as c0de:cafe when firmware running. ST-Link is separate (0483:374b)."
+      led_pins: "PG6=green PD4=orange PD5=red PK3=blue"
+      firmware_binary: "target/thumbv7em-none-eabi/release/microfips"
+
+  stm32-f746:
+    description: "STM32F746G-DISCO (USB CDC ACM, same firmware as F469)"
+    resources:
+      RawSerialPort:
+        # Same c0de:cafe VID:PID — if both F469 and F746 are connected,
+        # disambiguate by ST-Link serial number or physical USB port
+        match:
+          ID_VENDOR_ID: "c0de"
+          ID_MODEL_ID: "cafe"
+        speed: 115200
+    drivers:
+      FlashScriptDriver:
+        script: "labgrid/scripts/flash_stm32f746.sh"
+      SerialDriver:
+        txdelay: 0.05
+    metadata:
+      usb_vid: "c0de"
+      usb_pid: "cafe"
+      chip: "STM32F746NGHx"
+      flash_command: "st-flash --connect-under-reset write"
+      fips_node_addr: "132f39a98c31baaddba6525f5d43f295"
+      fips_npub: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+      fips_nsec_index: 1
+      note: "Same firmware crate as F469, different --features board-f746. Only 1 user LED on PI1."
+      build_features: "board-f746"
+      firmware_binary: "target/thumbv7em-none-eabi/release/microfips"
+
+  # ── Host machines ─────────────────────────────────────────────
+
+  linux-host:
+    description: "Linux dev workstation (FIPS daemon host, simulator host)"
+    resources:
+      NetworkService:
+        address: "127.0.0.1"
+        username: "ubuntu"
+    drivers:
+      SSHDriver:
+        keyfile: "/home/ubuntu/.ssh/id_rsa"
+    metadata:
+      hostname: "ubuntu-Legion-T5-26AMR5"
+      fips_binary: "/usr/local/bin/fips"
+      fips_config: "/etc/fips/fips.yaml"
+      fips_service: "fips"
+      fips_node_addr: "8b5844e7c090f6cdad002354d56ec094"
+      fips_npub: "02b3989043c68d9c2d3c8f949d73e61cae27997993432c3dbbd8498117d92d95bb"
+      fips_key_path: "/etc/fips/fips.key"
+      fips_pub_path: "/etc/fips/fips.pub"
+      has_ble_adapter: true
+      ble_adapter: "hci0"
+
+  # ── Do NOT target (safety) ────────────────────────────────────
+
+  # M5 Stack: FTDI FT232, VID:PID 0403:6001, USB serial "81528A13B6"
+  # DO NOT flash or open this device. Appears as /dev/ttyUSB*.
+  # Listed here only to document its presence and prevent misidentification.
