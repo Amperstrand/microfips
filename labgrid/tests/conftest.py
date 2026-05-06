@@ -89,7 +89,16 @@ class FIPSHost:
         return self._run(cmd)
 
     def write_config(self, config_yaml):
-        self._run(f"echo '{config_yaml}' | sudo tee /etc/fips/fips.yaml > /dev/null")
+        self._run("sudo chattr -i /etc/fips/fips.yaml 2>/dev/null || true")
+        if self._ssh:
+            self._run(f"cat << 'LABGRID_EOF' | sudo tee /etc/fips/fips.yaml > /dev/null\n{config_yaml}\nLABGRID_EOF")
+        else:
+            proc = subprocess.Popen(
+                ["sudo", "tee", "/etc/fips/fips.yaml"],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True,
+            )
+            proc.communicate(input=config_yaml)
+            proc.wait()
 
     def start_with_config(self, config_yaml):
         self.stop()
@@ -105,6 +114,62 @@ class FIPSHost:
 @pytest.fixture(scope="session")
 def fips_host(ssh_driver):
     return FIPSHost(ssh=ssh_driver)
+
+
+@pytest.fixture(scope="session")
+def fips_local():
+    return FIPSHost()
+
+
+FIPS_CONFIG_UDP_BLE = """\
+node:
+  identity:
+    persistent: true
+  log_level: debug
+transports:
+  udp:
+    bind_addr: '0.0.0.0:2121'
+  ble:
+    adapter: hci0
+    mtu: 2048
+    accept_connections: true
+    auto_connect: true
+    scan: true
+    advertise: true
+    send_rate_bps: 80000
+    send_burst_bytes: 2048
+    psm: 133
+tun:
+  enabled: false
+dns:
+  enabled: false
+"""
+
+
+@pytest.fixture(scope="session")
+def fips_with_udp(fips_local):
+    original = subprocess.run(
+        ["sudo", "cat", "/etc/fips/fips.yaml"],
+        capture_output=True, text=True,
+    ).stdout
+
+    fips_local.stop()
+    time.sleep(2)
+    fips_local.write_config(FIPS_CONFIG_UDP_BLE)
+    fips_local.start()
+
+    actual = subprocess.run(
+        ["sudo", "cat", "/etc/fips/fips.yaml"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "udp" in actual.lower(), f"Config write failed: {actual}"
+
+    yield fips_local
+
+    fips_local.stop()
+    time.sleep(1)
+    fips_local.write_config(original)
+    fips_local.start()
 
 
 class SerialControl:

@@ -10,14 +10,6 @@ PROJECT_ROOT = "/home/ubuntu/src2/microfips"
 BLE_DEVICE_NAME = "microfips-esp32"
 
 
-def _fips_has_udp():
-    try:
-        with open("/etc/fips/fips.yaml") as f:
-            return "udp" in f.read().lower()
-    except FileNotFoundError:
-        return False
-
-
 def _bleak_available():
     try:
         import bleak
@@ -49,9 +41,8 @@ def ble_ready():
     return found[0]
 
 
-@pytest.mark.skipif(not _fips_has_udp(), reason="FIPS daemon not configured with UDP transport")
 @pytest.mark.skipif(not _bleak_available(), reason="bleak not installed")
-def test_esp32_ble_handshake(ble_ready, fips_service_running):
+def test_esp32_ble_handshake(ble_ready, fips_with_udp):
     bridge_proc = subprocess.Popen(
         [
             "python3",
@@ -89,9 +80,8 @@ def test_esp32_ble_handshake(ble_ready, fips_service_running):
         bridge_proc.wait(timeout=5)
 
 
-@pytest.mark.skipif(not _fips_has_udp(), reason="FIPS daemon not configured with UDP transport")
 @pytest.mark.skipif(not _bleak_available(), reason="bleak not installed")
-def test_esp32_ble_heartbeat(ble_ready, fips_service_running):
+def test_esp32_ble_heartbeat(ble_ready, fips_with_udp):
     bridge_proc = subprocess.Popen(
         [
             "python3",
