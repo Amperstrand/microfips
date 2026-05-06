@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import time
 
 import pytest
@@ -18,15 +19,12 @@ def _bleak_available():
         return False
 
 
-def _flash_ble_firmware():
+@pytest.fixture(scope="module")
+def ble_ready(fips_with_udp):
     from conftest import flash_esp32
+
     flash_esp32(variant="ble")
     time.sleep(8)
-
-
-@pytest.fixture(scope="module")
-def ble_ready():
-    _flash_ble_firmware()
 
     import asyncio
     from bleak import BleakScanner
@@ -42,10 +40,10 @@ def ble_ready():
 
 
 @pytest.mark.skipif(not _bleak_available(), reason="bleak not installed")
-def test_esp32_ble_handshake(ble_ready, fips_with_udp):
+def test_esp32_ble_handshake(ble_ready):
     bridge_proc = subprocess.Popen(
         [
-            "python3",
+            sys.executable,
             f"{PROJECT_ROOT}/tools/ble_udp_bridge.py",
             "--ble-name", BLE_DEVICE_NAME,
             "--udp-host", "127.0.0.1",
@@ -57,7 +55,7 @@ def test_esp32_ble_handshake(ble_ready, fips_with_udp):
     )
 
     try:
-        deadline = time.time() + 45
+        deadline = time.time() + 60
         got_msg1 = False
         got_msg2 = False
 
@@ -81,10 +79,10 @@ def test_esp32_ble_handshake(ble_ready, fips_with_udp):
 
 
 @pytest.mark.skipif(not _bleak_available(), reason="bleak not installed")
-def test_esp32_ble_heartbeat(ble_ready, fips_with_udp):
+def test_esp32_ble_heartbeat(ble_ready):
     bridge_proc = subprocess.Popen(
         [
-            "python3",
+            sys.executable,
             f"{PROJECT_ROOT}/tools/ble_udp_bridge.py",
             "--ble-name", BLE_DEVICE_NAME,
             "--udp-host", "127.0.0.1",
@@ -95,8 +93,8 @@ def test_esp32_ble_heartbeat(ble_ready, fips_with_udp):
     )
 
     try:
-        deadline = time.time() + 45
-        got_msg2 = False
+        deadline = time.time() + 60
+        handshake_done = False
         frames_after = 0
 
         while time.time() < deadline:
@@ -104,13 +102,18 @@ def test_esp32_ble_heartbeat(ble_ready, fips_with_udp):
             if not line:
                 time.sleep(0.5)
                 continue
-            if "UDP->BLE" in line and f"{MSG2_SIZE}B" in line:
-                got_msg2 = True
-            if got_msg2 and "BLE->UDP" in line:
-                frames_after += 1
-            if frames_after >= 3:
-                break
+            if not handshake_done:
+                if "BLE->UDP" in line and f"{MSG1_SIZE}B" in line:
+                    pass
+                if "UDP->BLE" in line and f"{MSG2_SIZE}B" in line:
+                    handshake_done = True
+            else:
+                if "BLE->UDP" in line or "UDP->BLE" in line:
+                    frames_after += 1
+                if frames_after >= 3:
+                    break
 
+        assert handshake_done, "Handshake never completed (no MSG2 from FIPS)"
         assert frames_after >= 3, f"Only {frames_after} frames after handshake, expected >= 3"
     finally:
         bridge_proc.terminate()

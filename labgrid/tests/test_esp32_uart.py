@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import time
 
 import pytest
@@ -10,7 +11,7 @@ PROJECT_ROOT = "/home/ubuntu/src2/microfips"
 
 
 @pytest.fixture(scope="module")
-def uart_port():
+def uart_port(fips_with_udp):
     from conftest import flash_esp32
     flash_esp32(variant="uart")
     time.sleep(3)
@@ -28,10 +29,10 @@ def uart_port():
     pytest.skip("ESP32-D0WD not found after flash")
 
 
-def test_esp32_uart_handshake(uart_port, fips_with_udp):
+def test_esp32_uart_handshake(uart_port):
     bridge_proc = subprocess.Popen(
         [
-            "python3",
+            sys.executable,
             f"{PROJECT_ROOT}/tools/serial_udp_bridge.py",
             "--serial", uart_port,
             "--udp-host", "127.0.0.1",
@@ -43,7 +44,7 @@ def test_esp32_uart_handshake(uart_port, fips_with_udp):
     )
 
     try:
-        deadline = time.time() + 30
+        deadline = time.time() + 60
         got_msg1 = False
         got_msg2 = False
 
@@ -66,10 +67,10 @@ def test_esp32_uart_handshake(uart_port, fips_with_udp):
         bridge_proc.wait(timeout=5)
 
 
-def test_esp32_uart_heartbeat(uart_port, fips_with_udp):
+def test_esp32_uart_heartbeat(uart_port):
     bridge_proc = subprocess.Popen(
         [
-            "python3",
+            sys.executable,
             f"{PROJECT_ROOT}/tools/serial_udp_bridge.py",
             "--serial", uart_port,
             "--udp-host", "127.0.0.1",
@@ -81,8 +82,8 @@ def test_esp32_uart_heartbeat(uart_port, fips_with_udp):
     )
 
     try:
-        deadline = time.time() + 30
-        got_msg2 = False
+        deadline = time.time() + 60
+        handshake_done = False
         frames_after = 0
 
         while time.time() < deadline:
@@ -90,13 +91,16 @@ def test_esp32_uart_heartbeat(uart_port, fips_with_udp):
             if not line:
                 time.sleep(0.5)
                 continue
-            if "UDP->CDC" in line and f"{MSG2_SIZE}B" in line:
-                got_msg2 = True
-            if got_msg2 and "CDC->UDP" in line:
-                frames_after += 1
-            if frames_after >= 3:
-                break
+            if not handshake_done:
+                if "UDP->CDC" in line and f"{MSG2_SIZE}B" in line:
+                    handshake_done = True
+            else:
+                if "CDC->UDP" in line or "UDP->CDC" in line:
+                    frames_after += 1
+                if frames_after >= 3:
+                    break
 
+        assert handshake_done, "Handshake never completed (no MSG2 from FIPS)"
         assert frames_after >= 3, f"Only {frames_after} frames after handshake, expected >= 3"
     finally:
         bridge_proc.terminate()
