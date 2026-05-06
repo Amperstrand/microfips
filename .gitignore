@@ -11,3 +11,4 @@ fips
 .opencode/
 .sisyphus/
 *.log
+.venv/

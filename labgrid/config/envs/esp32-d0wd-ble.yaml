@@ -1,0 +1,18 @@
+# ESP32-D0WD BLE GATT (via ble_udp_bridge) environment
+# Flash BLE GATT firmware, bridge BLE↔UDP to FIPS
+# Requires FIPS with UDP transport, bleak installed
+# Usage: make test-esp32-ble
+
+targets:
+  main:
+    resources:
+      USBSerialPort:
+        match:
+          ID_VENDOR_ID: "10c4"
+          ID_MODEL_ID: "ea60"
+        speed: 115200
+    drivers:
+      SerialDriver: {}
+
+images:
+  firmware: "target/xtensa-esp32-none-elf/release/microfips-esp32-ble"
