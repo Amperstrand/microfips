@@ -979,7 +979,7 @@ HSI (16 MHz) → PLL → 168 MHz sysclk
                    → 84 MHz APB2
 ```
 
-With `--features display`:
+With `--features display` (uses BSP `config_168()` preset):
 ```
 HSE (8 MHz oscillator) → PLL → 168 MHz sysclk
                                → 48 MHz USB (PLL_Q, Clk48sel)
