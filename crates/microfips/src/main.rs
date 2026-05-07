@@ -29,7 +29,7 @@ use embassy_futures::join::join;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::rng::Rng;
 use embassy_stm32::usb::Driver;
-use embassy_stm32::{bind_interrupts, peripherals, rng as stm32_rng, usb, Config};
+use embassy_stm32::{bind_interrupts, peripherals, rng as stm32_rng, usb};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::Builder;
 use static_cell::StaticCell;
@@ -76,9 +76,7 @@ static EP_OUT_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    let mut config = Config::default();
-    board::configure_clocks(&mut config);
-    let p = embassy_stm32::init(config);
+    let p = embassy_stm32::init(board::clock_config());
 
     // After a soft reset (SYSRESETREQ from st-flash), the USB OTG FS peripheral
     // can retain stale PHY state that prevents re-enumeration. Cycling the RCC clock,
