@@ -12,12 +12,15 @@ extern crate alloc;
 compile_error!("features \"esp32\" and \"esp32s3\" are mutually exclusive");
 
 pub mod config;
+pub mod gpio_helpers;
 pub mod handler;
 pub mod heap;
 pub mod led;
+pub mod macros;
 pub mod node_info;
 pub mod rng;
 pub mod runner;
+pub mod run_tasks;
 pub mod stats;
 pub mod uart_transport;
 

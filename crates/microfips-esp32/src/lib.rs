@@ -1,8 +1,7 @@
-//! ESP32-D0WD firmware: chip-specific config, BLE/L2CAP/UART/WiFi tasks, and binary entry points.
+//! ESP32-D0WD firmware: chip-specific run functions and binary entry points.
 
 #![no_std]
 
-pub mod config;
 pub mod run;
 pub use microfips_esp_transport::{handler, node_info};
 
