@@ -8,6 +8,12 @@ description = "Minimal FIPS leaf node on STM32F469I-DISCO"
 default = ["board-f469"]
 board-f469 = ["embassy-stm32/stm32f469ni"]
 board-f746 = ["embassy-stm32/stm32f746ng"]
+display = [
+    "dep:stm32-fmc",
+    "dep:nt35510",
+    "dep:embedded-display-controller",
+    "dep:embedded-graphics",
+]
 defmt = [
     "dep:defmt",
     "dep:defmt-rtt",
@@ -57,3 +63,9 @@ panic-halt = "1.0.0"
 panic-probe = { version = "1.0", features = ["print-defmt"], optional = true }
 heapless = "0.9"
 static_cell = "2"
+
+# Display dependencies (feature-gated behind "display")
+stm32-fmc = { version = "0.4.0", features = ["sdram"], optional = true }
+nt35510 = { git = "https://github.com/Amperstrand/nt35510", rev = "263d8e4", optional = true }
+embedded-display-controller = { version = "0.2", optional = true }
+embedded-graphics = { version = "0.8", optional = true }
