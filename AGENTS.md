@@ -971,6 +971,7 @@ Runs at 216 MHz (vs 168 MHz on F469). Only 1 physical user LED on this board.
 
 ### STM32F469
 
+Default (no display):
 ```
 HSI (16 MHz) → PLL → 168 MHz sysclk
                    → 48 MHz USB (PLL_Q, Clk48sel)
@@ -978,7 +979,18 @@ HSI (16 MHz) → PLL → 168 MHz sysclk
                    → 84 MHz APB2
 ```
 
-HSE bypass hangs on this board. Do NOT use HSE.
+With `--features display`:
+```
+HSE (8 MHz oscillator) → PLL → 168 MHz sysclk
+                               → 48 MHz USB (PLL_Q, Clk48sel)
+                        → PLLSAI → 54.86 MHz LTDC pixel clock (PLLSAI_R)
+```
+
+The "HSE bypass hangs" warning applies to `HseMode::Bypass`, NOT `HseMode::Oscillator`.
+The board has an 8 MHz crystal — `HseMode::Oscillator` works fine (proven in gm65-scanner, micronuts).
+
+Note: DCKCFGR2 does NOT exist on STM32F469 (Amperstrand/embassy-stm32f469i-disco#27).
+embassy writes CK48MSEL to DCKCFGR, which is correct for this MCU. No DCKCFGR2 workaround needed.
 
 ### STM32F746
 
