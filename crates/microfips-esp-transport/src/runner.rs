@@ -10,18 +10,10 @@ use crate::handler::build_demo_fsp;
 use crate::led::Led;
 use crate::rng::EspRng;
 
+#[derive(Default)]
 pub struct NodeOpts {
     pub raw_framing: bool,
     pub peer_sent_first: bool,
-}
-
-impl Default for NodeOpts {
-    fn default() -> Self {
-        Self {
-            raw_framing: false,
-            peer_sent_first: false,
-        }
-    }
 }
 
 pub fn make_led(gpio2: esp_hal::peripherals::GPIO2<'static>) -> Led {

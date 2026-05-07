@@ -43,24 +43,24 @@ microfips-esp-transport = { path = "../microfips-esp-transport", features = ["es
 microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
-rand_core = { version = "0.6", default-features = false }
-esp-hal = { version = "1.1.0", features = ["esp32s3", "unstable"] }
-esp-rtos = { version = "0.3.0", features = ["esp32s3", "embassy", "esp-alloc", "esp-radio"] }
-esp-bootloader-esp-idf = { version = "0.4", features = ["esp32s3"] }
-embassy-time = "0.5.1"
-embassy-futures = "0.1.2"
-embassy-executor = "0.10"
-embassy-sync = "0.8"
-embedded-io-async = "0.7"
-heapless = "0.9"
-static_cell = "2"
-esp-radio = { version = "0.18.0", default-features = false, features = ["esp32s3", "ble", "wifi", "unstable"], optional = true }
-trouble-host = { git = "https://github.com/embassy-rs/trouble", rev = "c103e97ff7d333c2cb76b643477e3c4141d0ff74", features = ["default-packet-pool-mtu-255", "scan"], optional = true }
-esp-alloc = { version = "0.10" }
-bt-hci = { version = "0.8", features = ["uuid"], optional = true }
-embedded-io = { version = "0.7", optional = true }
-esp-println = { version = "0.16.1", default-features = false, features = ["esp32s3", "jtag-serial"], optional = true }
-log = { version = "0.4", optional = true }
+rand_core = { workspace = true }
+esp-hal = { workspace = true, features = ["esp32s3", "unstable"] }
+esp-rtos = { workspace = true, features = ["esp32s3", "embassy", "esp-alloc", "esp-radio"] }
+esp-bootloader-esp-idf = { workspace = true, features = ["esp32s3"] }
+embassy-time = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-executor = { workspace = true }
+embassy-sync = { workspace = true }
+embedded-io-async = { workspace = true }
+heapless = { workspace = true }
+static_cell = { workspace = true }
+esp-radio = { workspace = true, features = ["esp32s3", "ble", "wifi", "unstable"], optional = true }
+trouble-host = { workspace = true, features = ["default-packet-pool-mtu-255", "scan"], optional = true }
+esp-alloc = { workspace = true }
+bt-hci = { workspace = true, features = ["uuid"], optional = true }
+embedded-io = { workspace = true, optional = true }
+esp-println = { workspace = true, features = ["esp32s3", "jtag-serial"], optional = true }
+log = { workspace = true, optional = true }
 
 [build-dependencies]
-microfips-build = { path = "../microfips-build" }
+microfips-build = { workspace = true }
