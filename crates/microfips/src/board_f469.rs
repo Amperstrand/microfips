@@ -1,8 +1,5 @@
 use embassy_stm32::Config;
 
-#[cfg(feature = "display")]
-pub const SYSCLK_HZ: u32 = embassy_stm32f469i_disco::SYSCLK_HZ_168;
-
 /// Returns a clock config from BSP presets (display) or hand-rolled HSI-only (non-display).
 ///
 /// BSP presets are hardware-verified on STM32F469I-Discovery (issue BSP#28).
