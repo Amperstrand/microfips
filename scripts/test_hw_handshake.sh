@@ -109,10 +109,10 @@ if [ "$DO_FLASH" = true ]; then
     fi
 
     echo "[2/3] Building firmware..."
-    cargo build -p microfips --release --target thumbv7em-none-eabi 2>&1 | tail -3
+    cargo build -p microfips --release --target thumbv7em-none-eabihf 2>&1 | tail -3
 
     echo "[3/3] Flashing..."
-    arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabi/release/microfips microfips.bin
+    arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabihf/release/microfips microfips.bin
     st-flash --connect-under-reset write microfips.bin 0x08000000 2>&1 | tail -3
     rm -f microfips.bin
 else

@@ -108,7 +108,7 @@ targets:
       fips_nsec_index: 1
       note: "USB CDC appears as c0de:cafe when firmware running. ST-Link is separate (0483:374b)."
       led_pins: "PG6=green PD4=orange PD5=red PK3=blue"
-      firmware_binary: "target/thumbv7em-none-eabi/release/microfips"
+      firmware_binary: "target/thumbv7em-none-eabihf/release/microfips"
 
   stm32-f746:
     description: "STM32F746G-DISCO (USB CDC ACM, same firmware as F469)"
@@ -135,7 +135,7 @@ targets:
       fips_nsec_index: 1
       note: "Same firmware crate as F469, different --features board-f746. Only 1 user LED on PI1."
       build_features: "board-f746"
-      firmware_binary: "target/thumbv7em-none-eabi/release/microfips"
+      firmware_binary: "target/thumbv7em-none-eabihf/release/microfips"
 
   # ── Host machines ─────────────────────────────────────────────
 
