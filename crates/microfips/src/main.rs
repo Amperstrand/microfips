@@ -79,9 +79,13 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(board::clock_config());
 
     // After a soft reset (SYSRESETREQ from st-flash), the USB OTG FS peripheral
-    // can retain stale PHY state that prevents re-enumeration. Cycling the RCC clock,
-    // asserting peripheral reset, performing a core soft reset (GRSTCTL.CSRST), and
-    // power-cycling the PHY (GCCFG.PWRDWN) ensures a clean start.
+    // can retain stale PHY state that prevents re-enumeration. The BSP provides
+    // a complete reset sequence (clock disable, peripheral reset, core soft reset,
+    // PHY power-cycle) via reset_usb_phy().
+    #[cfg(feature = "display")]
+    embassy_stm32f469i_disco::reset_usb_phy();
+
+    #[cfg(not(feature = "display"))]
     {
         let rcc = embassy_stm32::pac::RCC;
 
