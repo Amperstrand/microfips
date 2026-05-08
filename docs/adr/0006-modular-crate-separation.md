@@ -57,7 +57,7 @@ reusable across D0WD and S3. `microfips-esp-transport` depends on `esp-hal` and
 
 | Crate | Target |
 |-------|--------|
-| `microfips` | STM32F469NI (`thumbv7em-none-eabi`) |
+| `microfips` | STM32F469NI (`thumbv7em-none-eabihf`) |
 | `microfips-esp32` | ESP32-D0WD (`xtensa-esp32-none-elf`) |
 | `microfips-esp32s3` | ESP32-S3 (`xtensa-esp32s3-none-elf`) |
 
