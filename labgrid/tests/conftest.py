@@ -218,7 +218,7 @@ def control(pyserial):
 def flash_stm32(binary=None):
     project_root = "/home/ubuntu/src2/microfips"
     if binary is None:
-        binary = f"{project_root}/target/thumbv7em-none-eabi/release/microfips"
+        binary = f"{project_root}/target/thumbv7em-none-eabihf/release/microfips"
     subprocess.run(
         ["arm-none-eabi-objcopy", "-O", "binary", binary, "/tmp/microfips.bin"],
         check=True,
