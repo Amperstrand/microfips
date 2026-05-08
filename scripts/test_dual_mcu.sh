@@ -133,7 +133,7 @@ if [ "$DO_FLASH" = true ]; then
     echo "=== Phase 1: Build & Flash ==="
 
     echo "[1/4] Building STM32 firmware..."
-    cargo build -p microfips --release --target thumbv7em-none-eabi 2>&1 | tail -3
+    cargo build -p microfips --release --target thumbv7em-none-eabihf 2>&1 | tail -3
 
     echo "[2/4] Building ESP32 firmware..."
     . /home/ubuntu/export-esp.sh
@@ -141,7 +141,7 @@ if [ "$DO_FLASH" = true ]; then
         --target xtensa-esp32-none-elf -Zbuild-std=core,alloc 2>&1 | tail -3
 
     echo "[3/4] Flashing STM32..."
-    arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabi/release/microfips microfips.bin
+    arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabihf/release/microfips microfips.bin
     st-flash --connect-under-reset write microfips.bin 0x08000000 2>&1 | tail -3
     rm -f microfips.bin
 

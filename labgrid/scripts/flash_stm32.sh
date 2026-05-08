@@ -5,11 +5,11 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BINARY="${1:-$PROJECT_ROOT/target/thumbv7em-none-eabi/release/microfips}"
+BINARY="${1:-$PROJECT_ROOT/target/thumbv7em-none-eabihf/release/microfips}"
 
 if [ ! -f "$BINARY" ]; then
     echo "ERROR: Binary not found: $BINARY" >&2
-    echo "Build with: cargo build -p microfips --release --target thumbv7em-none-eabi" >&2
+    echo "Build with: cargo build -p microfips --release --target thumbv7em-none-eabihf" >&2
     exit 1
 fi
 

@@ -20,4 +20,4 @@ targets:
       SerialDriver: {}
 
 images:
-  firmware: "target/thumbv7em-none-eabi/release/microfips"
+  firmware: "target/thumbv7em-none-eabihf/release/microfips"
