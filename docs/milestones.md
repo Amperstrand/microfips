@@ -5,7 +5,7 @@
 - [x] Confirm board (STM32F469I-DISCO) and tooling
 - [x] Create git repo and GitHub remote
 - [x] Create project scaffold and documentation
-**Success signal:** `cargo build --target thumbv7em-none-eabi` succeeds.
+**Success signal:** `cargo build --target thumbv7em-none-eabihf` succeeds.
 
 ## M1: USB CDC ACM + Echo
 
