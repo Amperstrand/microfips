@@ -7,7 +7,7 @@ use embassy_stm32::Config;
 pub fn clock_config() -> Config {
     #[cfg(feature = "display")]
     {
-        embassy_stm32f469i_disco::config_168()
+        embassy_stm32f469i_disco::config_180()
     }
 
     #[cfg(not(feature = "display"))]
