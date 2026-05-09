@@ -67,4 +67,4 @@ static_cell = "2"
 
 # Display (via BSP git dep)
 embedded-graphics = { version = "0.8", optional = true }
-embassy-stm32f469i-disco = { git = "https://github.com/Amperstrand/embassy-stm32f469i-disco", rev = "c794206", default-features = false, features = ["display", "touch"], optional = true }
+embassy-stm32f469i-disco = { git = "https://github.com/Amperstrand/embassy-stm32f469i-disco", rev = "a41e6b3", default-features = false, features = ["display", "touch"], optional = true }
