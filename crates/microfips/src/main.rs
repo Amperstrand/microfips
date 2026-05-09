@@ -128,22 +128,6 @@ async fn main(_spawner: Spawner) {
             otg_global.add(0x038 / 4).write_volatile(1 << 16);
         }
     }
-            }
-
-            otg_global.add(0x010 / 4).write_volatile(1);
-            timeout = 100_000u32;
-            while otg_global.add(0x010 / 4).read_volatile() & 1 != 0 {
-                timeout -= 1;
-                if timeout == 0 {
-                    break;
-                }
-            }
-
-            otg_global.add(0x038 / 4).write_volatile(0);
-            cortex_m::asm::delay(100);
-            otg_global.add(0x038 / 4).write_volatile(1 << 16);
-        }
-    }
 
     // Display init must happen before USB claims peripherals (SDRAM claims FMC pins).
     #[cfg(all(feature = "board-f469", feature = "display"))]
