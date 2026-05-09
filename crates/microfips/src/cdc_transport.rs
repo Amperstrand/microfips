@@ -5,6 +5,10 @@ use embassy_usb::class::cdc_acm::CdcAcmClass;
 use embassy_usb::driver::EndpointError;
 use microfips_protocol::transport::Transport;
 
+#[cfg(feature = "board-f469")]
+use embassy_stm32f469i_disco::send_with_zlp;
+
+#[cfg(feature = "board-f746")]
 use crate::config::CDC_PKT;
 use crate::stats::{STAT_RECV_PKT, STAT_USB_ERR};
 
@@ -20,6 +24,16 @@ impl Transport for CdcTransport<'_> {
         Ok(())
     }
 
+    #[cfg(feature = "board-f469")]
+    async fn send(&mut self, data: &[u8]) -> Result<(), Self::Error> {
+        send_with_zlp(&mut *self.class, data)
+            .await
+            .inspect_err(|_| {
+                STAT_USB_ERR.fetch_add(1, Ordering::Relaxed);
+            })
+    }
+
+    #[cfg(feature = "board-f746")]
     async fn send(&mut self, data: &[u8]) -> Result<(), Self::Error> {
         let mut off = 0;
         while off < data.len() {

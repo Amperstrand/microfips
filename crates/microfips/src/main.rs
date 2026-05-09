@@ -16,6 +16,9 @@ mod board_f469;
 #[cfg(feature = "board-f746")]
 mod board_f746;
 
+#[cfg(all(feature = "board-f469", feature = "display"))]
+mod display;
+
 #[cfg(feature = "board-f469")]
 use board_f469 as board;
 #[cfg(feature = "board-f746")]
@@ -76,16 +79,19 @@ static EP_OUT_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
+    #[cfg(all(feature = "board-f469", feature = "display"))]
+    let mut p = embassy_stm32::init(board::clock_config());
+    #[cfg(not(all(feature = "board-f469", feature = "display")))]
     let p = embassy_stm32::init(board::clock_config());
 
     // After a soft reset (SYSRESETREQ from st-flash), the USB OTG FS peripheral
     // can retain stale PHY state that prevents re-enumeration. The BSP provides
     // a complete reset sequence (clock disable, peripheral reset, core soft reset,
     // PHY power-cycle) via reset_usb_phy().
-    #[cfg(feature = "display")]
-    embassy_stm32f469i_disco::reset_usb_phy();
 
-    #[cfg(not(feature = "display"))]
+    #[cfg(feature = "board-f469")]
+    embassy_stm32f469i_disco::reset_usb_phy();
+    #[cfg(feature = "board-f746")]
     {
         let rcc = embassy_stm32::pac::RCC;
 
@@ -121,6 +127,32 @@ async fn main(_spawner: Spawner) {
             cortex_m::asm::delay(100);
             otg_global.add(0x038 / 4).write_volatile(1 << 16);
         }
+    }
+            }
+
+            otg_global.add(0x010 / 4).write_volatile(1);
+            timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & 1 != 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            otg_global.add(0x038 / 4).write_volatile(0);
+            cortex_m::asm::delay(100);
+            otg_global.add(0x038 / 4).write_volatile(1 << 16);
+        }
+    }
+
+    // Display init must happen before USB claims peripherals (SDRAM claims FMC pins).
+    #[cfg(all(feature = "board-f469", feature = "display"))]
+    {
+        let sdram = crate::display::create_sdram(&mut p);
+        let ctrl = crate::display::create_display(
+            &sdram, p.LTDC, p.DSIHOST, p.PJ2, p.PH7,
+        );
+        _spawner.spawn(crate::display::display_task(ctrl).expect("display task"));
     }
 
     // F746G-DISCO: PK3 = LCD_BL_CTRL. Drive LOW to turn off the LCD backlight.
