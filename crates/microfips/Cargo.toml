@@ -6,10 +6,13 @@ description = "Minimal FIPS leaf node on STM32F469I-DISCO"
 
 [features]
 default = ["board-f469"]
-board-f469 = ["embassy-stm32/stm32f469ni"]
+board-f469 = [
+    "embassy-stm32/stm32f469ni",
+    "dep:embassy-stm32f469i-disco",
+]
 board-f746 = ["embassy-stm32/stm32f746ng"]
 display = [
-    "dep:embassy-stm32f469i-disco",
+    "embassy-stm32f469i-disco/display",
     "dep:embedded-graphics",
 ]
 defmt = [
@@ -64,4 +67,4 @@ static_cell = "2"
 
 # Display (via BSP git dep)
 embedded-graphics = { version = "0.8", optional = true }
-embassy-stm32f469i-disco = { git = "https://github.com/Amperstrand/embassy-stm32f469i-disco", rev = "e7e8b41", default-features = false, features = ["display", "touch"], optional = true }
+embassy-stm32f469i-disco = { git = "https://github.com/Amperstrand/embassy-stm32f469i-disco", rev = "c794206", default-features = false, features = ["display", "touch"], optional = true }
