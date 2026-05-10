@@ -132,7 +132,7 @@ async fn main(_spawner: Spawner) {
     // Display init must happen before USB claims peripherals (SDRAM claims FMC pins).
     #[cfg(all(feature = "board-f469", feature = "display"))]
     {
-        let sdram = crate::display::create_sdram(&mut p);
+        let sdram = embassy_stm32f469i_disco::sdram_init!(p);
         let ctrl = crate::display::create_display(
             &sdram, p.LTDC, p.DSIHOST, p.PJ2, p.PH7,
         );

@@ -24,10 +24,6 @@ use crate::stats::{
     STAT_RECV_PKT, STAT_STATE, STAT_USB_ERR,
 };
 
-pub fn create_sdram(p: &mut embassy_stm32::Peripherals) -> SdramCtrl {
-    SdramCtrl::new(p, embassy_stm32f469i_disco::SYSCLK_HZ_168)
-}
-
 pub fn create_display(
     sdram: &SdramCtrl,
     ltdc: Peri<'static, peripherals::LTDC>,
