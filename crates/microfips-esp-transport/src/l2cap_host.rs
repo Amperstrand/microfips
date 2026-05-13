@@ -366,6 +366,8 @@ where
                     tx_count,
                     rx_drop_total
                 );
+                let up = relay_start.elapsed().as_secs();
+                log::info!("relay exit: RecvTimeout uptime={}s RX={} TX={}", up, rx_count, tx_count);
                 STAT_L2CAP_RECV_TIMEOUT.fetch_add(1, Ordering::Relaxed);
                 mark_link_down();
                 break DisconnectReason::RecvTimeout;
@@ -429,6 +431,8 @@ where
                 );
                 mark_link_down();
                 if rx_count == 0 && tx_count == 0 {
+                    let up = relay_start.elapsed().as_secs();
+                    log::info!("relay exit: CleanYield uptime={}s (zero frames)", up);
                     STAT_L2CAP_ZERO_FRAME_DC.fetch_add(1, Ordering::Relaxed);
                     break DisconnectReason::CleanYield;
                 }
@@ -508,7 +512,7 @@ where
 }
 
 const CENTRAL_CONNECT_TIMEOUT_SECS: u64 = 3;
-const BLE_DISCONNECT_SETTLE_MS: u64 = 500;
+const BLE_DISCONNECT_SETTLE_MS: u64 = 2000;
 const BLE_YIELD_RETRY_MS: u64 = 3000;
 
 #[embassy_executor::task]
@@ -590,8 +594,22 @@ pub async fn l2cap_host_task() {
                         ))
                         .await;
                     }
+                    DisconnectReason::RecvTimeout => {
+                        log::info!("peripheral recv timeout, settling {}ms", BLE_DISCONNECT_SETTLE_MS);
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                            BLE_DISCONNECT_SETTLE_MS,
+                        ))
+                        .await;
+                    }
+                    DisconnectReason::SendError => {
+                        log::info!("peripheral send error, settling {}ms", BLE_DISCONNECT_SETTLE_MS);
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                            BLE_DISCONNECT_SETTLE_MS,
+                        ))
+                        .await;
+                    }
                     _ => {
-                        log::info!("peripheral disconnected, retrying");
+                        log::info!("peripheral disconnected (reason={:?}), retrying", reason);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
