@@ -343,6 +343,7 @@ where
     let mut rx_drop_total: u32 = 0;
     let mut first_frame_logged = false;
     let mut last_heap_log = embassy_time::Instant::now();
+    let relay_start = embassy_time::Instant::now();
 
     log::info!("relay starting (role context: {})", recv_disconnect_log);
 
