@@ -48,3 +48,5 @@ pub mod l2cap_host;
 pub mod l2cap_transport;
 #[cfg(feature = "l2cap")]
 pub mod peer_caps;
+#[cfg(feature = "l2cap")]
+pub mod rate_limit;
