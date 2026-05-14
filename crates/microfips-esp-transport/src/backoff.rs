@@ -24,18 +24,22 @@ const BASE_SECS: u64 = 5;
 // to prevent excessive delays on intermittently reachable devices.
 const MAX_SECS: u64 = 300;
 
-// Maximum consecutive failures before auto-deny. After 5 rapid failures
+// Maximum consecutive failures before auto-deny. After 10 rapid failures
 // the peer is considered persistently unreachable and is blacklisted.
-const MAX_FAILURES: u32 = 5;
+// 10 gives more room when the peer has a dual-link collision issue.
+const MAX_FAILURES: u32 = 10;
 
-// Deny duration: 3600 seconds (1 hour). After MAX_FAILURES consecutive
-// failures, the address is blacklisted for 1 hour.
-const DENY_SECS: u64 = 3600;
+// Deny duration: 300 seconds (5 minutes). After MAX_FAILURES consecutive
+// failures, the address is blacklisted for 5 minutes to break a failure loop
+// without blocking for an hour.
+const DENY_SECS: u64 = 300;
 
 /// If a connection lasted longer than this (seconds), it was healthy.
 /// Its disconnection was likely due to mobility or session-level issues,
-/// not a transport-level failure.
-const HEALTHY_THRESHOLD_SECS: u64 = 30;
+/// not a transport-level failure. 10s is enough for a complete Noise
+/// handshake + data exchange; the FIPS cross-connection bug causes
+/// 7-15s connections that ARE functional.
+const HEALTHY_THRESHOLD_SECS: u64 = 10;
 
 /// Tracks consecutive failures and next-allowed-attempt time for the single FIPS peer.
 struct Entry {
