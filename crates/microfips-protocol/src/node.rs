@@ -555,7 +555,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     if resend_count > self.timing.handshake_max_resends {
                         return Err(ProtocolError::Timeout);
                     }
-                    self.send_frame(&f1[..f1len]).await?;
+                    if !self.peer_sent_first {
+                        self.send_frame(&f1[..f1len]).await?;
+                    }
                 }
                 Err(e) => return Err(e),
             }
