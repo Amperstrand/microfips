@@ -39,7 +39,7 @@ const DENY_SECS: u64 = 300;
 /// not a transport-level failure. 10s is enough for a complete Noise
 /// handshake + data exchange; the FIPS cross-connection bug causes
 /// 7-15s connections that ARE functional.
-const HEALTHY_THRESHOLD_SECS: u64 = 10;
+pub const HEALTHY_THRESHOLD_SECS: u64 = 10;
 
 /// Tracks consecutive failures and next-allowed-attempt time for the single FIPS peer.
 struct Entry {
