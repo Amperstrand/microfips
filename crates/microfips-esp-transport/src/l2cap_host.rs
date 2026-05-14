@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use bt_hci::{
     ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci,
@@ -47,6 +47,7 @@ static STAT_L2CAP_CENTRAL_OK: AtomicU32 = AtomicU32::new(0);
 static STAT_L2CAP_PERIPHERAL_OK: AtomicU32 = AtomicU32::new(0);
 static L2CAP_LAST_ROLE: AtomicU32 = AtomicU32::new(0);
 static L2CAP_LAST_REASON: AtomicU32 = AtomicU32::new(0);
+static L2CAP_PEER_CAPS: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Debug, Clone, Copy)]
 enum BleHciError {
@@ -215,82 +216,101 @@ where
 {
     let local_pub = microfips_core::noise::ecdh_pubkey(secret).ok()?;
 
-    // FIPS macos-ble commit 8c388cf: wire format [len:2BE][0x00][pubkey:32][flags:1]
-    let payload_len: u16 = 34;
-    let mut tx = [0u8; 36];
-    tx[0..2].copy_from_slice(&payload_len.to_be_bytes());
-    tx[2] = 0x00;
-    tx[3..35].copy_from_slice(&local_pub[1..33]);
-    tx[35] = crate::config::peer_caps::ESP32_DEFAULT;
+    // Ported from fips pubkey exchange (issue #120): retry loop for send+recv
+    for attempt in 0..3u32 {
+        // FIPS macos-ble commit 8c388cf: wire format [len:2BE][0x00][pubkey:32][flags:1]
+        let payload_len: u16 = 34;
+        let mut tx = [0u8; 36];
+        tx[0..2].copy_from_slice(&payload_len.to_be_bytes());
+        tx[2] = 0x00;
+        tx[3..35].copy_from_slice(&local_pub[1..33]);
+        tx[35] = crate::peer_caps::ESP32_DEFAULT;
 
-    log::info!(
-        "sending pubkey exchange ({}B payload, {}B wire)",
-        payload_len,
-        tx.len()
-    );
-    embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(L2CAP_SEND_TIMEOUT_SECS),
-        writer.send(stack, &tx),
-    )
-    .await
-    .ok()?
-    .ok()?;
-
-    let mut rx_buf = [0u8; L2CAP_SDU_CAP];
-    let result = embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(5),
-        reader.receive(stack, &mut rx_buf),
-    )
-    .await;
-
-    match result {
-        Ok(Ok(n)) => {
-            // Old: [0x0021][0x00][pubkey:32] = 35B, New: [0x0022][0x00][pubkey:32][flags:1] = 36B
-            if n < 35 {
-                log::warn!("pubkey exchange recv too short: {}B", n);
-                return None;
+        // Send our pubkey
+        match embassy_time::with_timeout(
+            embassy_time::Duration::from_secs(L2CAP_SEND_TIMEOUT_SECS),
+            writer.send(stack, &tx),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            _ => {
+                log::warn!("pubkey send failed on attempt {}", attempt);
+                continue;
             }
-            let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
-            if !(payload_len == 33 || payload_len == 34) {
-                log::warn!("pubkey exchange bad payload len: {}", payload_len);
-                return None;
-            }
-            if rx_buf[2] != 0x00 {
-                log::warn!("pubkey exchange bad prefix: 0x{:02X}", rx_buf[2]);
-                return None;
-            }
+        }
 
-            let mut peer_pub = [0u8; 33];
-            peer_pub[0] = 0x02;
-            peer_pub[1..33].copy_from_slice(&rx_buf[3..35]);
+        // Receive peer's pubkey
+        let mut rx_buf = [0u8; L2CAP_SDU_CAP];
+        let start = embassy_time::Instant::now();
+        match embassy_time::with_timeout(
+            embassy_time::Duration::from_secs(5),
+            reader.receive(stack, &mut rx_buf),
+        )
+        .await
+        {
+            Ok(Ok(n)) => {
+                // Old: [0x0021][0x00][pubkey:32] = 35B, New: [0x0022][0x00][pubkey:32][flags:1] = 36B
+                if n < 35 {
+                    log::warn!("pubkey exchange recv too short: {}B", n);
+                    continue;
+                }
+                let recv_payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
+                if !(recv_payload_len == 33 || recv_payload_len == 34) {
+                    log::warn!("pubkey exchange bad payload len: {}", recv_payload_len);
+                    continue;
+                }
+                if rx_buf[2] != 0x00 {
+                    log::warn!("pubkey exchange bad prefix: 0x{:02X}", rx_buf[2]);
+                    continue;
+                }
 
-            {
-                let mut hex = [0u8; 64];
-                microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+                let mut peer_pub = [0u8; 33];
+                peer_pub[0] = 0x02;
+                peer_pub[1..33].copy_from_slice(&rx_buf[3..35]);
+
+                {
+                    let mut hex = [0u8; 64];
+                    microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+                    log::info!(
+                        "peer x-only pubkey: {}",
+                        core::str::from_utf8(&hex).unwrap_or("?")
+                    );
+                }
+
+                // Ported from fips capabilities.rs: parse and store peer flags
+                let flags = if recv_payload_len == 34 && n == 36 {
+                    rx_buf[35]
+                } else {
+                    0
+                };
+                L2CAP_PEER_CAPS.store(flags, Ordering::Relaxed);
                 log::info!(
-                    "peer x-only pubkey: {}",
-                    core::str::from_utf8(&hex).unwrap_or("?")
+                    "pubkey exchange OK on attempt {} in {}ms (flags: 0x{:02X} outbound={} peripheral={})",
+                    attempt,
+                    start.elapsed().as_millis(),
+                    flags,
+                    crate::peer_caps::peer_prefers_outbound(flags),
+                    crate::peer_caps::peer_can_peripheral(flags),
                 );
+                STAT_L2CAP_PUBKEY_OK.fetch_add(1, Ordering::Relaxed);
+                return Some(peer_pub);
             }
-
-            if payload_len == 34 && n == 36 {
-                let flags = rx_buf[35];
-                log::info!("pubkey exchange OK (got {}B, flags: 0x{:02X})", n, flags);
-            } else {
-                log::info!("pubkey exchange OK (got {}B, old format)", n);
+            Ok(Err(e)) => {
+                log::warn!("pubkey recv failed on attempt {}: {:?}", attempt, e);
+                if attempt < 2 {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                }
             }
-            STAT_L2CAP_PUBKEY_OK.fetch_add(1, Ordering::Relaxed);
-            Some(peer_pub)
-        }
-        Ok(Err(e)) => {
-            log::warn!("pubkey exchange recv error: {:?}", e);
-            None
-        }
-        Err(_) => {
-            log::warn!("pubkey exchange timeout");
-            None
+            Err(_) => {
+                log::warn!("pubkey recv timeout on attempt {}", attempt);
+                if attempt < 2 {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                }
+            }
         }
     }
+    None
 }
 
 fn peer_is_fips(peer_pub: &[u8; 33]) -> bool {
@@ -570,7 +590,27 @@ pub async fn l2cap_host_task() {
             }
         },
         async {
+            // Ported from fips backoff.rs (issue #119): exponential backoff for BLE connections
+            static BACKOFF: static_cell::StaticCell<crate::backoff::L2capBackoff> =
+                static_cell::StaticCell::new();
+            let backoff = BACKOFF.init(crate::backoff::L2capBackoff::new());
+
             loop {
+                // Check backoff before attempting connection
+                if backoff.is_denied() {
+                    log::warn!("BLE denied by backoff, sleeping 60s");
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
+                    continue;
+                }
+                if backoff.is_in_backoff() {
+                    let remaining = backoff.remaining_secs();
+                    log::info!("BLE in backoff, waiting {}s", remaining);
+                    embassy_time::Timer::after(
+                        embassy_time::Duration::from_secs(remaining),
+                    )
+                    .await;
+                }
+
                 mark_link_down();
 
                 // Peripheral-only: central connect causes dual-L2CAP conflict
@@ -578,8 +618,21 @@ pub async fn l2cap_host_task() {
                 // Peripheral-only means only FIPS probe_loop path is used.
                 let _ = &mut central;
 
+                let start = embassy_time::Instant::now();
                 log::info!("entering peripheral mode");
                 let reason = do_peripheral(&stack, &mut peripheral).await;
+                let connected_for_secs = start.elapsed().as_secs();
+
+                // Ported from fips: healthy threshold (30s) — long connections are healthy
+                if connected_for_secs > 30 {
+                    backoff.clear();
+                } else {
+                    let denied = backoff.record_failure();
+                    if denied {
+                        log::warn!("BLE denied by backoff after failures (failures={})", backoff.failure_count());
+                    }
+                }
+
                 set_last_disconnect(L2capRole::Peripheral, reason);
                 mark_link_down();
                 drain_l2cap_channels();
