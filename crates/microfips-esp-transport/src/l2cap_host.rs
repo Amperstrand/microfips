@@ -48,6 +48,7 @@ static STAT_L2CAP_PERIPHERAL_OK: AtomicU32 = AtomicU32::new(0);
 static L2CAP_LAST_ROLE: AtomicU32 = AtomicU32::new(0);
 static L2CAP_LAST_REASON: AtomicU32 = AtomicU32::new(0);
 static L2CAP_PEER_CAPS: AtomicU8 = AtomicU8::new(0);
+static STAT_L2CAP_REKEY_FRAMES: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Clone, Copy)]
 enum BleHciError {
@@ -430,6 +431,14 @@ where
                     log::info!("RX #{}: {}B phase={:#04x}", rx_count, payload_len, phase);
                 }
 
+                // Track rekey frames — phase 0x01 or 0x02 (#123)
+                {
+                    let phase = frame.first().copied().unwrap_or(0xFF);
+                    if phase == 0x01 || phase == 0x02 {
+                        STAT_L2CAP_REKEY_FRAMES.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
                 if L2CAP_RX_CH.try_send(frame).is_err() {
                     rx_drop_total += 1;
                     STAT_L2CAP_RX_DROP.fetch_add(1, Ordering::Relaxed);
@@ -519,6 +528,7 @@ where
 
         let now = embassy_time::Instant::now();
         if now.duration_since(last_heap_log).as_secs() >= 30 {
+            let up = relay_start.elapsed().as_secs();
             #[cfg(feature = "l2cap")]
             {
                 let free = esp_alloc::HEAP.free();
@@ -528,6 +538,18 @@ where
                     rx_count,
                     tx_count,
                     rx_drop_total
+                );
+            }
+            // Connection quality health log (#124)
+            log::info!(
+                "relay health: uptime={}s RX={} TX={} drops={}",
+                up, rx_count, tx_count, rx_drop_total
+            );
+            // Stale connection detection (#124)
+            if rx_count == 0 && tx_count > 2 && up > 30 {
+                log::warn!(
+                    "relay stale: TX={} but RX=0 after {}s",
+                    tx_count, up
                 );
             }
             last_heap_log = now;
@@ -616,18 +638,24 @@ pub async fn l2cap_host_task() {
 
                 mark_link_down();
 
-                // Peripheral-only: central connect causes dual-L2CAP conflict
-                // (FIPS accept_loop + probe_loop both active on same BLE link).
-                // Peripheral-only means only FIPS probe_loop path is used.
-                let _ = &mut central;
-
                 let start = embassy_time::Instant::now();
-                log::info!("entering peripheral mode");
-                let reason = do_peripheral(&stack, &mut peripheral).await;
+
+                // Dual-role: try both peripheral and central simultaneously (#125)
+                let (reason, role) = match select(
+                    do_peripheral(&stack, &mut peripheral),
+                    do_central(&stack, &mut central),
+                ).await {
+                    Either::First(reason) => {
+                        log::info!("peripheral won: {:?}", reason);
+                        (reason, L2capRole::Peripheral)
+                    }
+                    Either::Second(reason) => {
+                        log::info!("central won: {:?}", reason);
+                        (reason, L2capRole::Central)
+                    }
+                };
                 let connected_for_secs = start.elapsed().as_secs();
 
-                // Ported from fips: healthy threshold — connections exceeding this are healthy.
-                // Uses crate::backoff::HEALTHY_THRESHOLD_SECS (10s, tuned for FIPS cross-connection bug).
                 if connected_for_secs > crate::backoff::HEALTHY_THRESHOLD_SECS as u64 {
                     backoff.clear();
                 } else {
@@ -637,14 +665,14 @@ pub async fn l2cap_host_task() {
                     }
                 }
 
-                set_last_disconnect(L2capRole::Peripheral, reason);
+                set_last_disconnect(role, reason);
                 mark_link_down();
                 drain_l2cap_channels();
                 match reason {
                     DisconnectReason::CleanYield => {
                         log::info!(
-                            "peripheral clean yield (FIPS tie-breaker), waiting {}ms",
-                            BLE_YIELD_RETRY_MS
+                            "{:?} clean yield (FIPS tie-breaker), waiting {}ms",
+                            role, BLE_YIELD_RETRY_MS
                         );
                         set_prefer_peripheral_window(CENTRAL_COLLISION_COOLDOWN_MS);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
@@ -653,21 +681,21 @@ pub async fn l2cap_host_task() {
                         .await;
                     }
                     DisconnectReason::RecvTimeout => {
-                        log::info!("peripheral recv timeout, settling {}ms", BLE_DISCONNECT_SETTLE_MS);
+                        log::info!("{:?} recv timeout, settling {}ms", role, BLE_DISCONNECT_SETTLE_MS);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
                         .await;
                     }
                     DisconnectReason::SendError => {
-                        log::info!("peripheral send error, settling {}ms", BLE_DISCONNECT_SETTLE_MS);
+                        log::info!("{:?} send error, settling {}ms", role, BLE_DISCONNECT_SETTLE_MS);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
                         .await;
                     }
                     _ => {
-                        log::info!("peripheral disconnected (reason={:?}), retrying", reason);
+                        log::info!("{:?} disconnected (reason={:?}), retrying", role, reason);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
@@ -678,6 +706,32 @@ pub async fn l2cap_host_task() {
         },
     )
     .await;
+}
+
+async fn do_central<'host, 'stack, T, P>(
+    stack: &'host Stack<'stack, T, P>,
+    central: &mut Central<'host, T, P>,
+) -> DisconnectReason
+where
+    T: trouble_host::prelude::Controller,
+    P: PacketPool,
+{
+    let Some((mut writer, mut reader, peer_pub)) = do_central_connect(stack, central).await else {
+        return DisconnectReason::DataExchanged;
+    };
+
+    drain_l2cap_channels();
+    embassy_time::Timer::after(embassy_time::Duration::from_millis(200)).await;
+    mark_link_ready(peer_pub);
+    STAT_L2CAP_CENTRAL_OK.fetch_add(1, Ordering::Relaxed);
+    relay_l2cap_frames(
+        stack,
+        &mut writer,
+        &mut reader,
+        "central receive loop disconnected",
+        "central send loop disconnected",
+    )
+    .await
 }
 
 async fn do_central_connect<'host, 'stack, T, P>(
