@@ -29,14 +29,14 @@ pub const FIPS_SERVICE_UUID_LE: [[u8; 16]; 1] = [[
 #[cfg(feature = "l2cap")]
 pub const USE_PUBLIC_BLE_ADDRESS: bool = false;
 
-/// Maximum FMP frame size carried over L2CAP.
+/// Maximum FMP frame size carried over L2CAP. Matches the L2CAP MTU (2048).
 /// 768 = 50% increase over previous 512. Covers all link-layer and FSP frames
 /// (MSG1=114B, heartbeat=37B, SessionSetup=148B). FilterAnnounce (~1071B)
 /// still exceeds this but LEAF_ONLY nodes don't need bloom-filter propagation.
 /// Values >=1024 overflow ESP32 DRAM (16×(cap+2) + 8×(cap+2) + 72KB heap +
 /// 32×2054B PacketPool ≈ 186KB > available DRAM).
 #[cfg(feature = "l2cap")]
-pub const L2CAP_FRAME_CAP: usize = 768;
+pub const L2CAP_FRAME_CAP: usize = 2048;
 
 #[cfg(feature = "l2cap")]
 pub const L2CAP_PSM: u16 = 133;
