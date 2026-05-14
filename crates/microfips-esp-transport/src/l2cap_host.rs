@@ -640,22 +640,15 @@ pub async fn l2cap_host_task() {
 
                 let start = embassy_time::Instant::now();
 
-                // Dual-role: try both peripheral and central simultaneously (#125).
-                // FIPS cross-connection bug (fips#128) is now fixed — both loops
-                // double-check pool.contains() before inserting.
-                let (reason, role) = match select(
-                    do_peripheral(&stack, &mut peripheral),
-                    do_central(&stack, &mut central),
-                ).await {
-                    Either::First(reason) => {
-                        log::info!("peripheral won: {:?}", reason);
-                        (reason, L2capRole::Peripheral)
-                    }
-                    Either::Second(reason) => {
-                        log::info!("central won: {:?}", reason);
-                        (reason, L2capRole::Central)
-                    }
-                };
+                // Peripheral-only: ESP32 can only maintain one BLE connection,
+                // so select(peripheral, central) is unsafe — central's 3s
+                // timeout makes it "win" the select even on failure,
+                // cancelling an in-progress peripheral connection.
+                // Keep central for future use when ESP32 supports dual-role.
+                let _ = &mut central;
+
+                let reason = do_peripheral(&stack, &mut peripheral).await;
+                let role = L2capRole::Peripheral;
                 let connected_for_secs = start.elapsed().as_secs();
 
                 if connected_for_secs > crate::backoff::HEALTHY_THRESHOLD_SECS as u64 {
@@ -667,14 +660,14 @@ pub async fn l2cap_host_task() {
                     }
                 }
 
-                set_last_disconnect(role, reason);
+                set_last_disconnect(L2capRole::Peripheral, reason);
                 mark_link_down();
                 drain_l2cap_channels();
                 match reason {
                     DisconnectReason::CleanYield => {
                         log::info!(
-                            "{:?} clean yield (FIPS tie-breaker), waiting {}ms",
-                            role, BLE_YIELD_RETRY_MS
+                            "peripheral clean yield (FIPS tie-breaker), waiting {}ms",
+                            BLE_YIELD_RETRY_MS
                         );
                         set_prefer_peripheral_window(CENTRAL_COLLISION_COOLDOWN_MS);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
@@ -683,21 +676,21 @@ pub async fn l2cap_host_task() {
                         .await;
                     }
                     DisconnectReason::RecvTimeout => {
-                        log::info!("{:?} recv timeout, settling {}ms", role, BLE_DISCONNECT_SETTLE_MS);
+                        log::info!("peripheral recv timeout, settling {}ms", BLE_DISCONNECT_SETTLE_MS);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
                         .await;
                     }
                     DisconnectReason::SendError => {
-                        log::info!("{:?} send error, settling {}ms", role, BLE_DISCONNECT_SETTLE_MS);
+                        log::info!("peripheral send error, settling {}ms", BLE_DISCONNECT_SETTLE_MS);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
                         .await;
                     }
                     _ => {
-                        log::info!("{:?} disconnected (reason={:?}), retrying", role, reason);
+                        log::info!("peripheral disconnected (reason={:?}), retrying", reason);
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
@@ -719,7 +712,7 @@ where
     P: PacketPool,
 {
     let Some((mut writer, mut reader, peer_pub)) = do_central_connect(stack, central).await else {
-        return DisconnectReason::DataExchanged;
+        return DisconnectReason::CleanYield;
     };
 
     drain_l2cap_channels();
