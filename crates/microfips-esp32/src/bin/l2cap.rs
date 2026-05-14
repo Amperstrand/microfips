@@ -11,6 +11,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     let timg0 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, sw_ints.software_interrupt0);
     microfips_esp32::run::run_l2cap_node(
-        spawner, peripherals.GPIO2, peripherals.RNG, peripherals.ADC1, false,
+        spawner, peripherals.GPIO2, peripherals.RNG, peripherals.ADC1, true,
     ).await;
 }
