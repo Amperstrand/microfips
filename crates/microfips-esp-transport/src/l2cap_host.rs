@@ -623,8 +623,9 @@ pub async fn l2cap_host_task() {
                 let reason = do_peripheral(&stack, &mut peripheral).await;
                 let connected_for_secs = start.elapsed().as_secs();
 
-                // Ported from fips: healthy threshold (30s) — long connections are healthy
-                if connected_for_secs > 30 {
+                // Ported from fips: healthy threshold — connections exceeding this are healthy.
+                // Uses crate::backoff::HEALTHY_THRESHOLD_SECS (10s, tuned for FIPS cross-connection bug).
+                if connected_for_secs > crate::backoff::HEALTHY_THRESHOLD_SECS as u64 {
                     backoff.clear();
                 } else {
                     let denied = backoff.record_failure();
