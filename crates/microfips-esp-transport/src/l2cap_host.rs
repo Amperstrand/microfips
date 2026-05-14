@@ -364,6 +364,7 @@ where
     let mut first_frame_logged = false;
     let mut last_heap_log = embassy_time::Instant::now();
     let relay_start = embassy_time::Instant::now();
+    let mut rate_limiter = crate::rate_limit::SendRateLimiter::new(35_000, 2048);
 
     log::info!("relay starting (role context: {})", recv_disconnect_log);
 
@@ -476,6 +477,8 @@ where
                     let phase = frame.first().copied().unwrap_or(0xFF);
                     log::info!("TX #{}: {}B phase={:#04x}", tx_count, len, phase);
                 }
+
+                rate_limiter.acquire(sdu.len()).await;
 
                 match embassy_time::with_timeout(
                     embassy_time::Duration::from_secs(L2CAP_SEND_TIMEOUT_SECS),
