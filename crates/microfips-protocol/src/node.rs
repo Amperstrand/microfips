@@ -117,6 +117,7 @@ impl NodeHandler for NoopHandler {
     }
 }
 
+#[cfg(feature = "benchmark")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ThroughputState {
     test_id: u32,
@@ -137,10 +138,11 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     rbuf: [u8; MAX_FRAME_SIZE],
     rpos: usize,
     rlen: usize,
-    resp_buf: [u8; 256],
+    resp_buf: [u8; 320],
     raw_framing: bool,
     epoch: u64,
     peer_sent_first: bool,
+    #[cfg(feature = "benchmark")]
     throughput: ThroughputState,
     #[cfg(feature = "mmp")]
     mmp: crate::mmp::MmpPeerState,
@@ -264,10 +266,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             rbuf: [0u8; MAX_FRAME_SIZE],
             rpos: 0,
             rlen: 0,
-            resp_buf: [0u8; 256],
+            resp_buf: [0u8; 320],
             raw_framing: false,
             epoch: 0,
             peer_sent_first: false,
+            #[cfg(feature = "benchmark")]
             throughput: ThroughputState::default(),
             #[cfg(feature = "mmp")]
             mmp: crate::mmp::MmpPeerState::new(),
@@ -357,7 +360,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         self.rpos = 0;
         self.rlen = 0;
-        self.throughput = ThroughputState::default();
+        #[cfg(feature = "benchmark")]
+        {
+            self.throughput = ThroughputState::default();
+        }
 
         match self.handshake(epoch, handler).await {
             Ok((ks, kr, them)) => {
@@ -672,12 +678,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             continue;
                         }
 
-                        let result = dispatch_link_message(
-                            &frame,
-                            &mut self.throughput,
-                            handler,
-                            &mut self.resp_buf,
-                        );
+                        let result = {
+                            #[cfg(feature = "benchmark")]
+                            { dispatch_link_message(&frame, &mut self.throughput, handler, &mut self.resp_buf) }
+                            #[cfg(not(feature = "benchmark"))]
+                            { dispatch_link_message(&frame, &mut (), handler, &mut self.resp_buf) }
+                        };
                         if self
                             .process_frame_action(result, ks, them, &mut send_ctr, handler)
                             .await?
@@ -1223,6 +1229,7 @@ fn build_receiver_report_response(payload: &[u8], resp: &mut [u8]) -> FrameActio
     }
 }
 
+#[cfg(feature = "benchmark")]
 fn handle_throughput_request(frame: &DecryptedFrame<'_>, throughput: &mut ThroughputState) {
     if let Some((test_id, direction, duration_secs, _frame_size, _rate_bps)) =
         wire::parse_throughput_request(frame.payload)
@@ -1240,6 +1247,7 @@ fn handle_throughput_request(frame: &DecryptedFrame<'_>, throughput: &mut Throug
     }
 }
 
+#[cfg(feature = "benchmark")]
 fn handle_throughput_stream(
     frame: &DecryptedFrame<'_>,
     throughput: &mut ThroughputState,
@@ -1300,6 +1308,7 @@ fn handle_throughput_stream(
     }
 }
 
+#[cfg(feature = "benchmark")]
 fn dispatch_link_message<H: NodeHandler>(
     frame: &DecryptedFrame<'_>,
     throughput: &mut ThroughputState,
@@ -1342,6 +1351,53 @@ fn dispatch_link_message<H: NodeHandler>(
             FrameAction::Continue
         }
         wire::MSG_THROUGHPUT_STREAM => handle_throughput_stream(frame, throughput, resp),
+        _ => match handler.on_message(frame.msg_type, frame.payload, resp) {
+            HandleResult::None => FrameAction::Continue,
+            HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
+            HandleResult::Disconnect => FrameAction::SelfDC,
+        },
+    }
+}
+
+#[cfg(not(feature = "benchmark"))]
+fn dispatch_link_message<H: NodeHandler>(
+    frame: &DecryptedFrame<'_>,
+    _throughput: &mut (),
+    handler: &mut H,
+    resp: &mut [u8],
+) -> FrameAction {
+    use microfips_core::wire;
+
+    match frame.msg_type {
+        wire::MSG_HEARTBEAT => FrameAction::HeartbeatRecv,
+        wire::MSG_DISCONNECT => {
+            let reason = frame
+                .payload
+                .first()
+                .copied()
+                .unwrap_or(wire::DISC_REASON_OTHER);
+            FrameAction::PeerDC { reason }
+        }
+        wire::MSG_SENDER_REPORT => build_receiver_report_response(frame.payload, resp),
+        wire::MSG_RECEIVER_REPORT => FrameAction::Continue,
+        wire::MSG_ECHO_REQUEST => {
+            if let Some((send_ts, seq, payload)) = wire::parse_echo_request(frame.payload) {
+                let now_us = Instant::now().as_micros();
+                if let Some(resp_len) =
+                    wire::build_echo_response(send_ts, now_us, seq, payload, resp)
+                {
+                    FrameAction::SendLinkMessage {
+                        msg_type: wire::MSG_ECHO_RESPONSE,
+                        len: resp_len,
+                    }
+                } else {
+                    FrameAction::Continue
+                }
+            } else {
+                FrameAction::Continue
+            }
+        }
+        wire::MSG_THROUGHPUT_REQUEST | wire::MSG_THROUGHPUT_STREAM => FrameAction::Continue,
         _ => match handler.on_message(frame.msg_type, frame.payload, resp) {
             HandleResult::None => FrameAction::Continue,
             HandleResult::SendDatagram(len) => FrameAction::SendDatagram(len),
@@ -1671,6 +1727,7 @@ mod tests {
         (inner[0], inner[1..].to_vec())
     }
 
+    #[cfg(feature = "benchmark")]
     fn dispatch_test_frame<H: NodeHandler>(
         key: &[u8; 32],
         frame: &[u8],
@@ -1683,6 +1740,21 @@ mod tests {
             return FrameAction::Continue;
         };
         dispatch_link_message(&frame, throughput, handler, resp)
+    }
+
+    #[cfg(not(feature = "benchmark"))]
+    fn dispatch_test_frame<H: NodeHandler>(
+        key: &[u8; 32],
+        frame: &[u8],
+        _throughput: &mut (),
+        handler: &mut H,
+        resp: &mut [u8],
+    ) -> FrameAction {
+        let mut dec_buf = [0u8; MAX_FRAME_SIZE];
+        let Some(frame) = decrypt_established_frame(key, frame, &mut dec_buf) else {
+            return FrameAction::Continue;
+        };
+        dispatch_link_message(&frame, _throughput, handler, resp)
     }
 
     #[test]
@@ -1701,13 +1773,12 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = dispatch_test_frame(
-            &key,
-            &frame,
-            &mut ThroughputState::default(),
-            &mut NoopTestHandler,
-            &mut resp,
-        );
+        let result = {
+            #[cfg(feature = "benchmark")]
+            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            #[cfg(not(feature = "benchmark"))]
+            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+        };
         assert_eq!(result, FrameAction::HeartbeatRecv);
     }
 
@@ -1727,13 +1798,12 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = dispatch_test_frame(
-            &key,
-            &frame,
-            &mut ThroughputState::default(),
-            &mut NoopTestHandler,
-            &mut resp,
-        );
+        let result = {
+            #[cfg(feature = "benchmark")]
+            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            #[cfg(not(feature = "benchmark"))]
+            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+        };
         assert_eq!(
             result,
             FrameAction::PeerDC {
@@ -1751,13 +1821,12 @@ mod tests {
         let frame = build_test_frame(wire::SessionIndex::new(0), 2, 0x05, ts, b"unknown", &key);
 
         let mut resp = [0u8; 256];
-        let result = dispatch_test_frame(
-            &key,
-            &frame,
-            &mut ThroughputState::default(),
-            &mut NoopTestHandler,
-            &mut resp,
-        );
+        let result = {
+            #[cfg(feature = "benchmark")]
+            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            #[cfg(not(feature = "benchmark"))]
+            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+        };
         assert_eq!(result, FrameAction::Continue);
     }
 
@@ -1823,13 +1892,12 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = dispatch_test_frame(
-            &key,
-            &frame,
-            &mut ThroughputState::default(),
-            &mut DatagramHandler,
-            &mut resp,
-        );
+        let result = {
+            #[cfg(feature = "benchmark")]
+            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut DatagramHandler, &mut resp) }
+            #[cfg(not(feature = "benchmark"))]
+            { dispatch_test_frame(&key, &frame, &mut (), &mut DatagramHandler, &mut resp) }
+        };
         assert_eq!(result, FrameAction::SendDatagram(4));
         assert_eq!(&resp[..4], b"pong");
     }
@@ -1856,13 +1924,12 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = dispatch_test_frame(
-            &key,
-            &frame,
-            &mut ThroughputState::default(),
-            &mut NoopTestHandler,
-            &mut resp,
-        );
+        let result = {
+            #[cfg(feature = "benchmark")]
+            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            #[cfg(not(feature = "benchmark"))]
+            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+        };
 
         assert_eq!(
             result,
@@ -1888,13 +1955,12 @@ mod tests {
         );
 
         let mut resp = [0u8; 256];
-        let result = dispatch_test_frame(
-            &key,
-            &frame,
-            &mut ThroughputState::default(),
-            &mut NoopTestHandler,
-            &mut resp,
-        );
+        let result = {
+            #[cfg(feature = "benchmark")]
+            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            #[cfg(not(feature = "benchmark"))]
+            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+        };
 
         assert_eq!(result, FrameAction::Continue);
     }
@@ -1926,13 +1992,12 @@ mod tests {
         let frame = build_test_frame(wire::SessionIndex::new(0), 10, 0xAA, 987, b"bye", &key);
 
         let mut resp = [0u8; 256];
-        let result = dispatch_test_frame(
-            &key,
-            &frame,
-            &mut ThroughputState::default(),
-            &mut DisconnectHandler,
-            &mut resp,
-        );
+        let result = {
+            #[cfg(feature = "benchmark")]
+            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut DisconnectHandler, &mut resp) }
+            #[cfg(not(feature = "benchmark"))]
+            { dispatch_test_frame(&key, &frame, &mut (), &mut DisconnectHandler, &mut resp) }
+        };
 
         assert_eq!(result, FrameAction::SelfDC);
     }
@@ -1966,6 +2031,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     fn test_handle_frame_throughput_request_activates_state() {
         use microfips_core::wire;
 
@@ -1998,6 +2064,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     fn test_handle_frame_throughput_stream_sends_report() {
         use microfips_core::wire;
 
