@@ -12,6 +12,7 @@ default = []
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
 wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
+benchmark = ["microfips-protocol/benchmark"]
 
 [[bin]]
 name = "microfips-esp32"
