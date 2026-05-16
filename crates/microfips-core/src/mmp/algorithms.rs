@@ -33,6 +33,8 @@ pub struct SrttEstimator {
     srtt_us: i64,
     rttvar_us: i64,
     initialized: bool,
+    sample_count: u32,
+    min_rtt_us: i64,
 }
 
 impl SrttEstimator {
@@ -41,6 +43,8 @@ impl SrttEstimator {
             srtt_us: 0,
             rttvar_us: 0,
             initialized: false,
+            sample_count: 0,
+            min_rtt_us: i64::MAX,
         }
     }
 
@@ -54,6 +58,8 @@ impl SrttEstimator {
             self.rttvar_us = self.rttvar_us - (self.rttvar_us >> 2) + (err >> 2);
             self.srtt_us = self.srtt_us - (self.srtt_us >> 3) + (rtt_us >> 3);
         }
+        self.min_rtt_us = self.min_rtt_us.min(rtt_us);
+        self.sample_count += 1;
     }
 
     pub fn srtt_us(&self) -> i64 {
@@ -62,6 +68,38 @@ impl SrttEstimator {
 
     pub fn initialized(&self) -> bool {
         self.initialized
+    }
+
+    // Ported from fips
+    pub fn rttvar_us(&self) -> i64 {
+        self.rttvar_us
+    }
+
+    // Ported from fips
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
+    }
+
+    // Ported from fips
+    pub fn min_rtt_us(&self) -> i64 {
+        self.min_rtt_us
+    }
+
+    // Ported from fips
+    // Per RFC 9002 §5.3: reset RTT measurements on path change
+    pub fn reset(&mut self) {
+        self.srtt_us = 0;
+        self.rttvar_us = 0;
+        self.min_rtt_us = i64::MAX;
+        self.initialized = false;
+        self.sample_count = 0;
+    }
+
+    // Ported from fips
+    // RFC 6298 §2.3: RTO = SRTT + max(G, 4×RTTVAR), floored at 1s
+    pub fn rto_us(&self) -> i64 {
+        let rto = self.srtt_us + (self.rttvar_us << 2).max(1_000_000);
+        rto.max(1_000_000)
     }
 }
 
@@ -212,6 +250,51 @@ pub fn compute_etx(d_forward: f64, d_reverse: f64) -> f64 {
         return 100.0;
     }
     (1.0 / product).clamp(1.0, 100.0)
+}
+
+// Ported from fips
+/// Spin bit state for passive RTT estimation.
+/// Based on RFC 9490 (QUIC Spin Bit) adapted for MMP frame headers.
+pub struct SpinBitState {
+    is_initiator: bool,
+    current_value: bool,
+    /// Highest counter observed with a spin edge (responder guard).
+    highest_counter_for_spin: u64,
+}
+
+impl SpinBitState {
+    pub fn new(is_initiator: bool) -> Self {
+        Self {
+            is_initiator,
+            current_value: false,
+            highest_counter_for_spin: 0,
+        }
+    }
+
+    /// Get the spin bit value to set on an outgoing frame.
+    pub fn tx_bit(&self) -> bool {
+        self.current_value
+    }
+
+    /// Process a received frame's spin bit.
+    /// Returns true if an edge was detected (for RTT measurement).
+    // Ported from fips (simplified: no Duration return for no_std)
+    pub fn rx_observe(&mut self, received_bit: bool, counter: u64) -> bool {
+        if self.is_initiator {
+            if received_bit == self.current_value {
+                self.current_value = !self.current_value;
+                true
+            } else {
+                false
+            }
+        } else {
+            if counter > self.highest_counter_for_spin {
+                self.highest_counter_for_spin = counter;
+                self.current_value = received_bit;
+            }
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -394,5 +477,39 @@ mod tests {
 
         let etx_half = compute_etx(0.5, 0.5);
         assert!((etx_half - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_srtt_min_rtt() {
+        let mut srtt = SrttEstimator::new();
+        let samples = [50_000, 30_000, 40_000, 20_000, 60_000];
+        for &rtt in &samples {
+            srtt.update(rtt);
+        }
+        assert_eq!(srtt.min_rtt_us(), 20_000);
+        assert_eq!(srtt.sample_count(), 5);
+    }
+
+    #[test]
+    fn test_srtt_reset() {
+        let mut srtt = SrttEstimator::new();
+        srtt.update(50_000);
+        srtt.update(40_000);
+        assert!(srtt.initialized());
+        assert_eq!(srtt.sample_count(), 2);
+        assert_eq!(srtt.min_rtt_us(), 40_000);
+
+        srtt.reset();
+        assert!(!srtt.initialized());
+        assert_eq!(srtt.srtt_us(), 0);
+        assert_eq!(srtt.rttvar_us(), 0);
+        assert_eq!(srtt.min_rtt_us(), i64::MAX);
+        assert_eq!(srtt.sample_count(), 0);
+
+        srtt.update(30_000);
+        assert!(srtt.initialized());
+        assert_eq!(srtt.srtt_us(), 30_000);
+        assert_eq!(srtt.min_rtt_us(), 30_000);
+        assert_eq!(srtt.sample_count(), 1);
     }
 }

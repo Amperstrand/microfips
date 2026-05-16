@@ -273,7 +273,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             #[cfg(feature = "benchmark")]
             throughput: ThroughputState::default(),
             #[cfg(feature = "mmp")]
-            mmp: crate::mmp::MmpPeerState::new(),
+            mmp: crate::mmp::MmpPeerState::default(),
         }
     }
 

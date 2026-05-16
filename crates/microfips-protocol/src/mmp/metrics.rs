@@ -178,6 +178,51 @@ impl MmpMetrics {
             None
         }
     }
+
+    // Ported from fips
+    /// Minimum observed RTT in milliseconds.
+    /// Per RFC 9002 §5.2: min_rtt provides baseline for detecting queuing delay inflation.
+    pub fn min_rtt_ms(&self) -> Option<f64> {
+        if self.srtt.initialized() {
+            Some(self.srtt.min_rtt_us() as f64 / 1000.0)
+        } else {
+            None
+        }
+    }
+
+    // Ported from fips
+    /// RTT inflation ratio (SRTT / min_rtt). Returns None until 5+ RTT samples.
+    pub fn inflation_ratio(&self) -> Option<f64> {
+        if self.srtt.sample_count() < 5 {
+            return None;
+        }
+        let srtt = self.srtt_ms()?;
+        let min = self.min_rtt_ms()?;
+        if min > 0.0 { Some(srtt / min) } else { None }
+    }
+
+    // Ported from fips
+    /// Smoothed loss rate (long-term EWMA).
+    pub fn smoothed_loss(&self) -> Option<f64> {
+        if self.loss_trend.initialized() {
+            Some(self.loss_trend.long())
+        } else {
+            None
+        }
+    }
+
+    // Ported from fips
+    /// Reset SRTT estimator for path change (proactive reconnect).
+    /// Per RFC 9002 §5.3: RTT measurements MUST be reset on path change.
+    pub fn reset_srtt(&mut self) {
+        self.srtt.reset();
+    }
+
+    // Ported from fips
+    /// Cumulative ECN CE count from the most recent ReceiverReport.
+    pub fn last_ecn_ce_count(&self) -> u32 {
+        self.prev_rr_ecn_ce
+    }
 }
 
 impl Default for MmpMetrics {
