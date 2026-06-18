@@ -5,8 +5,8 @@ use microfips_core::fsp::{
 };
 use microfips_core::identity::{NodeAddr, STM32_NSEC};
 use microfips_core::noise::{
-    aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseIkInitiator, NoiseIkResponder,
-    NoiseXkInitiator, PUBKEY_SIZE, TAG_SIZE,
+    aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseXkInitiator, NoiseXxInitiator,
+    NoiseXxResponder, PUBKEY_SIZE, TAG_SIZE,
 };
 use microfips_core::wire;
 use rand::RngCore;
@@ -102,7 +102,7 @@ fn decrypt_fmp_established(data: &[u8], key: &[u8; 32]) -> Option<(u64, u8, Vec<
     }
 }
 
-fn do_ik_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
+fn do_xx_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
     let init_eph: [u8; 32] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
         0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
@@ -118,21 +118,14 @@ fn do_ik_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
     let init_pub = init_pub();
     let resp_pub = resp_pub();
 
-    let (mut initiator, _) = NoiseIkInitiator::new(&init_eph, &INIT_SECRET, &resp_pub).unwrap();
+    let (mut initiator, _) = NoiseXxInitiator::new(&init_eph, &INIT_SECRET).unwrap();
 
     let mut msg1 = [0u8; 128];
-    let msg1_len = initiator
-        .write_message1(&init_pub, &epoch, &mut msg1)
-        .unwrap();
+    let msg1_len = initiator.write_message1(&mut msg1).unwrap();
     assert_eq!(msg1_len, wire::HANDSHAKE_MSG1_SIZE);
 
-    let e_init: [u8; PUBKEY_SIZE] = msg1[..PUBKEY_SIZE].try_into().unwrap();
-    let mut responder = NoiseIkResponder::new(&RESP_SECRET, &e_init).unwrap();
-    let (recv_pub, recv_epoch) = responder
-        .read_message1(&msg1[PUBKEY_SIZE..msg1_len])
-        .unwrap();
-    assert_eq!(recv_pub, init_pub);
-    assert_eq!(recv_epoch, epoch);
+    let mut responder = NoiseXxResponder::new(&RESP_SECRET).unwrap();
+    responder.read_message1(&msg1[..msg1_len]).unwrap();
 
     let mut msg2_noise = [0u8; 128];
     let msg2_len = responder
@@ -140,23 +133,39 @@ fn do_ik_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
         .unwrap();
     assert_eq!(msg2_len, wire::HANDSHAKE_MSG2_SIZE);
 
-    initiator.read_message2(&msg2_noise[..msg2_len]).unwrap();
+    let (recv_pub, recv_epoch) = initiator
+        .read_message2(&msg2_noise[..msg2_len])
+        .unwrap();
+    assert_eq!(recv_pub, resp_pub);
+    assert_eq!(recv_epoch, epoch);
 
-    let (init_k1, init_k2) = initiator.finalize();
-    let (resp_k1, resp_k2) = responder.finalize();
+    let mut msg3_noise = [0u8; 128];
+    let msg3_len = initiator
+        .write_message3(&init_pub, &epoch, &mut msg3_noise)
+        .unwrap();
+    assert_eq!(msg3_len, wire::HANDSHAKE_MSG3_SIZE);
 
-    let init_k_send = init_k1;
-    let init_k_recv = init_k2;
-    let resp_k_send = resp_k2;
-    let resp_k_recv = resp_k1;
+    let (init_pub_recv, init_epoch_recv) = responder
+        .read_message3(&msg3_noise[..msg3_len])
+        .unwrap();
+    assert_eq!(init_pub_recv, init_pub);
+    assert_eq!(init_epoch_recv, epoch);
+
+    let (init_c1, init_c2) = initiator.finalize();
+    let (resp_c1, resp_c2) = responder.finalize();
+
+    let init_k_send = init_c1;
+    let init_k_recv = init_c2;
+    let resp_k_send = resp_c2;
+    let resp_k_recv = resp_c1;
 
     assert_eq!(
         init_k_send, resp_k_recv,
-        "IK: initiator k_send == responder k_recv"
+        "XX: initiator c1 == responder c1"
     );
     assert_eq!(
         init_k_recv, resp_k_send,
-        "IK: initiator k_recv == responder k_send"
+        "XX: initiator c2 == responder c2"
     );
 
     (init_k_send, init_k_recv, resp_k_send, resp_k_recv)
@@ -288,7 +297,7 @@ fn test_fsp_full_handshake_over_fmp() {
 
 #[test]
 fn test_fsp_setup_over_fmp_roundtrip() {
-    let (_init_k_send, init_k_recv, resp_k_send, _resp_k_recv) = do_ik_handshake();
+    let (_init_k_send, init_k_recv, resp_k_send, _resp_k_recv) = do_xx_handshake();
 
     let resp_addr = resp_addr();
     let init_addr = init_addr();

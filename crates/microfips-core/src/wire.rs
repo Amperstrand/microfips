@@ -12,38 +12,29 @@
 //! | ~~N3~~ | `session_flags` | ~~initiator sends 0x03~~ → now 0x00 | defaults to 0x00 | **Fixed**: matches FIPS default. FIPS doesn't validate flags. |
 
 use crate::generated::fips_compat;
+use crate::noise;
 
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
-pub const FMP_VERSION: u8 = 0;
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
+pub const FMP_VERSION: u8 = 1;
+
 pub const COMMON_PREFIX_SIZE: usize = 4;
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const IDX_SIZE: usize = 4;
-// FIPS: bd08505 node/wire.rs:EncryptedHeader::parse()
 pub const ESTABLISHED_HEADER_SIZE: usize = 16;
-// FIPS: bd08505 node/wire.rs:EncryptedHeader::parse()
-pub const INNER_HEADER_SIZE: usize = 5; // 4-byte timestamp + at least 1 byte msg_type
-                                        // FIPS: bd08505 node/wire.rs:EncryptedHeader::parse()
+pub const INNER_HEADER_SIZE: usize = 5;
 pub const ENCRYPTED_MIN_SIZE: usize = 32;
 
-// FIPS: bd08505 noise/handshake.rs:write_message_1()
-pub use fips_compat::HANDSHAKE_MSG1_SIZE;
-// FIPS: bd08505 noise/handshake.rs:read_message_2()
-pub use fips_compat::HANDSHAKE_MSG2_SIZE;
-// FIPS: bd08505 noise/handshake.rs:write_message_1()
-pub const EPOCH_ENCRYPTED_SIZE: usize = 24;
+pub const HANDSHAKE_MSG1_SIZE: usize = noise::XX_HANDSHAKE_MSG1_SIZE;
+pub const HANDSHAKE_MSG2_SIZE: usize = noise::XX_HANDSHAKE_MSG2_SIZE;
+pub const HANDSHAKE_MSG3_SIZE: usize = noise::XX_HANDSHAKE_MSG3_SIZE;
+pub const EPOCH_ENCRYPTED_SIZE: usize = noise::EPOCH_SIZE + noise::TAG_SIZE;
 
-// FIPS: bd08505 node/wire.rs:build_msg1()
-pub const MSG1_WIRE_SIZE: usize = 114;
-// FIPS: bd08505 node/wire.rs:build_msg2()
-pub const MSG2_WIRE_SIZE: usize = 69;
+pub const MSG1_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + IDX_SIZE + HANDSHAKE_MSG1_SIZE;
+pub const MSG2_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG2_SIZE;
+pub const MSG3_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG3_SIZE;
 
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const PHASE_ESTABLISHED: u8 = 0x00;
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const PHASE_MSG1: u8 = 0x01;
-// FIPS: bd08505 node/wire.rs:CommonPrefix::parse()
 pub const PHASE_MSG2: u8 = 0x02;
+pub const PHASE_MSG3: u8 = 0x03;
 
 // FIPS: bd08505 node/link.rs:handle_heartbeat()
 /// Link-layer message types (inner header byte, after 4-byte LE timestamp).
@@ -157,7 +148,6 @@ pub const DISC_REASON_OTHER: u8 = fips_compat::DISC_REASON_OTHER;
 
 pub const FLAG_KEY_EPOCH: u8 = 0x01;
 pub const FLAG_CE: u8 = 0x02;
-pub const FLAG_SP: u8 = 0x04;
 
 /// Wire-level session index (mirrors FIPS `utils::SessionIndex`).
 ///
@@ -199,6 +189,11 @@ pub enum FmpMessage<'a> {
         noise_payload: &'a [u8],
     },
     Msg2 {
+        sender_idx: SessionIndex,
+        receiver_idx: SessionIndex,
+        noise_payload: &'a [u8],
+    },
+    Msg3 {
         sender_idx: SessionIndex,
         receiver_idx: SessionIndex,
         noise_payload: &'a [u8],
@@ -259,6 +254,27 @@ pub fn build_msg2(
     }
     let payload_len = (IDX_SIZE * 2 + noise_payload.len()) as u16;
     let prefix = build_prefix(PHASE_MSG2, 0x00, payload_len);
+    out[..COMMON_PREFIX_SIZE].copy_from_slice(&prefix);
+    out[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
+        .copy_from_slice(&sender_idx.to_le_bytes());
+    out[COMMON_PREFIX_SIZE + IDX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE * 2]
+        .copy_from_slice(&receiver_idx.to_le_bytes());
+    out[COMMON_PREFIX_SIZE + IDX_SIZE * 2..needed].copy_from_slice(noise_payload);
+    Some(needed)
+}
+
+pub fn build_msg3(
+    sender_idx: SessionIndex,
+    receiver_idx: SessionIndex,
+    noise_payload: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let needed = COMMON_PREFIX_SIZE + IDX_SIZE * 2 + noise_payload.len();
+    if out.len() < needed {
+        return None;
+    }
+    let payload_len = (IDX_SIZE * 2 + noise_payload.len()) as u16;
+    let prefix = build_prefix(PHASE_MSG3, 0x00, payload_len);
     out[..COMMON_PREFIX_SIZE].copy_from_slice(&prefix);
     out[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
         .copy_from_slice(&sender_idx.to_le_bytes());
@@ -468,7 +484,7 @@ impl Msg1Header {
         );
         Some(Self {
             sender_idx,
-            noise_msg1_offset: COMMON_PREFIX_SIZE + IDX_SIZE + IDX_SIZE,
+            noise_msg1_offset: COMMON_PREFIX_SIZE + IDX_SIZE,
         })
     }
 }
@@ -481,7 +497,7 @@ pub struct Msg2Header {
 
 impl Msg2Header {
     pub fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() != MSG2_WIRE_SIZE {
+        if data.len() < MSG2_WIRE_SIZE {
             return None;
         }
         let (_, flags, _payload_len) = parse_prefix(data)?;
@@ -501,7 +517,40 @@ impl Msg2Header {
         Some(Self {
             sender_idx,
             receiver_idx,
-            noise_msg2_offset: COMMON_PREFIX_SIZE + IDX_SIZE + IDX_SIZE + IDX_SIZE,
+            noise_msg2_offset: COMMON_PREFIX_SIZE + IDX_SIZE + IDX_SIZE,
+        })
+    }
+}
+
+pub struct Msg3Header {
+    pub sender_idx: SessionIndex,
+    pub receiver_idx: SessionIndex,
+    pub noise_msg3_offset: usize,
+}
+
+impl Msg3Header {
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < MSG3_WIRE_SIZE {
+            return None;
+        }
+        let (_, flags, _payload_len) = parse_prefix(data)?;
+        if flags != 0 {
+            return None;
+        }
+        let sender_idx = SessionIndex::from_le_bytes(
+            data[COMMON_PREFIX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE]
+                .try_into()
+                .ok()?,
+        );
+        let receiver_idx = SessionIndex::from_le_bytes(
+            data[COMMON_PREFIX_SIZE + IDX_SIZE..COMMON_PREFIX_SIZE + IDX_SIZE + IDX_SIZE]
+                .try_into()
+                .ok()?,
+        );
+        Some(Self {
+            sender_idx,
+            receiver_idx,
+            noise_msg3_offset: COMMON_PREFIX_SIZE + IDX_SIZE + IDX_SIZE,
         })
     }
 }
@@ -546,6 +595,20 @@ pub fn parse_message(data: &[u8]) -> Option<FmpMessage<'_>> {
                 noise_payload,
             })
         }
+        PHASE_MSG3 => {
+            if payload.len() < IDX_SIZE * 2 {
+                return None;
+            }
+            let sender_idx = SessionIndex::from_le_bytes(payload[..IDX_SIZE].try_into().ok()?);
+            let receiver_idx =
+                SessionIndex::from_le_bytes(payload[IDX_SIZE..IDX_SIZE * 2].try_into().ok()?);
+            let noise_payload = &payload[IDX_SIZE * 2..];
+            Some(FmpMessage::Msg3 {
+                sender_idx,
+                receiver_idx,
+                noise_payload,
+            })
+        }
         PHASE_ESTABLISHED => {
             if payload.len() < IDX_SIZE + 8 {
                 return None;
@@ -569,23 +632,30 @@ mod tests {
 
     #[test]
     fn build_prefix_msg1() {
-        let p = build_prefix(PHASE_MSG1, 0x00, 110);
-        assert_eq!(p[0], 0x01);
+        let p = build_prefix(PHASE_MSG1, 0x00, 37);
+        assert_eq!(p[0], 0x11);
         assert_eq!(p[1], 0x00);
-        assert_eq!(u16::from_le_bytes([p[2], p[3]]), 110);
+        assert_eq!(u16::from_le_bytes([p[2], p[3]]), 37);
     }
 
     #[test]
     fn build_prefix_msg2() {
-        let p = build_prefix(PHASE_MSG2, 0x00, 65);
-        assert_eq!(p[0], 0x02);
-        assert_eq!(u16::from_le_bytes([p[2], p[3]]), 65);
+        let p = build_prefix(PHASE_MSG2, 0x00, 114);
+        assert_eq!(p[0], 0x12);
+        assert_eq!(u16::from_le_bytes([p[2], p[3]]), 114);
+    }
+
+    #[test]
+    fn build_prefix_msg3() {
+        let p = build_prefix(PHASE_MSG3, 0x00, 81);
+        assert_eq!(p[0], 0x13);
+        assert_eq!(u16::from_le_bytes([p[2], p[3]]), 81);
     }
 
     #[test]
     fn build_prefix_established() {
         let p = build_prefix(PHASE_ESTABLISHED, 0x00, 100);
-        assert_eq!(p[0], 0x00);
+        assert_eq!(p[0], 0x10);
         assert_eq!(u16::from_le_bytes([p[2], p[3]]), 100);
     }
 
@@ -645,24 +715,25 @@ mod tests {
 
     #[test]
     fn build_msg1_size() {
-        let noise_payload = [0u8; 106];
+        let noise_payload = [0u8; HANDSHAKE_MSG1_SIZE];
         let mut out = [0u8; 256];
         let len = build_msg1(SessionIndex::new(42), &noise_payload, &mut out).unwrap();
         assert_eq!(len, MSG1_WIRE_SIZE);
+        assert_eq!(len, 41);
     }
 
     #[test]
     fn build_msg1_has_correct_prefix() {
-        let noise_payload = [0u8; 106];
+        let noise_payload = [0u8; HANDSHAKE_MSG1_SIZE];
         let mut out = [0u8; 256];
         build_msg1(SessionIndex::new(42), &noise_payload, &mut out);
-        assert_eq!(out[0], 0x01);
+        assert_eq!(out[0], 0x11);
         assert_eq!(out[1], 0x00);
     }
 
     #[test]
     fn build_msg1_has_sender_idx() {
-        let noise_payload = [0u8; 106];
+        let noise_payload = [0u8; HANDSHAKE_MSG1_SIZE];
         let mut out = [0u8; 256];
         build_msg1(SessionIndex::new(0xDEADBEEF), &noise_payload, &mut out);
         let idx = u32::from_le_bytes(out[4..8].try_into().unwrap());
@@ -671,7 +742,7 @@ mod tests {
 
     #[test]
     fn build_msg2_size() {
-        let noise_payload = [0u8; 57];
+        let noise_payload = [0u8; HANDSHAKE_MSG2_SIZE];
         let mut out = [0u8; 256];
         let len = build_msg2(
             SessionIndex::new(1),
@@ -681,11 +752,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(len, MSG2_WIRE_SIZE);
+        assert_eq!(len, 118);
+    }
+
+    #[test]
+    fn build_msg3_size() {
+        let noise_payload = [0u8; HANDSHAKE_MSG3_SIZE];
+        let mut out = [0u8; 256];
+        let len = build_msg3(
+            SessionIndex::new(1),
+            SessionIndex::new(0),
+            &noise_payload,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(len, MSG3_WIRE_SIZE);
+        assert_eq!(len, 85);
     }
 
     #[test]
     fn build_msg2_has_both_indices() {
-        let noise_payload = [0u8; 57];
+        let noise_payload = [0u8; HANDSHAKE_MSG2_SIZE];
         let mut out = [0u8; 256];
         build_msg2(
             SessionIndex::new(1),
@@ -701,7 +788,7 @@ mod tests {
 
     #[test]
     fn parse_msg1_roundtrip() {
-        let noise_payload = [0xAA; 106];
+        let noise_payload = [0xAA; HANDSHAKE_MSG1_SIZE];
         let mut out = [0u8; 256];
         let len = build_msg1(SessionIndex::new(42), &noise_payload, &mut out).unwrap();
         let msg = parse_message(&out[..len]).unwrap();
@@ -719,7 +806,7 @@ mod tests {
 
     #[test]
     fn parse_msg2_roundtrip() {
-        let noise_payload = [0xBB; 57];
+        let noise_payload = [0xBB; HANDSHAKE_MSG2_SIZE];
         let mut out = [0u8; 256];
         let len = build_msg2(
             SessionIndex::new(1),
@@ -740,6 +827,32 @@ mod tests {
                 assert_eq!(parsed, &noise_payload[..]);
             }
             _ => panic!("expected Msg2"),
+        }
+    }
+
+    #[test]
+    fn parse_msg3_roundtrip() {
+        let noise_payload = [0xCC; HANDSHAKE_MSG3_SIZE];
+        let mut out = [0u8; 256];
+        let len = build_msg3(
+            SessionIndex::new(1),
+            SessionIndex::new(0),
+            &noise_payload,
+            &mut out,
+        )
+        .unwrap();
+        let msg = parse_message(&out[..len]).unwrap();
+        match msg {
+            FmpMessage::Msg3 {
+                sender_idx,
+                receiver_idx,
+                noise_payload: parsed,
+            } => {
+                assert_eq!(sender_idx, SessionIndex::new(1));
+                assert_eq!(receiver_idx, SessionIndex::new(0));
+                assert_eq!(parsed, &noise_payload[..]);
+            }
+            _ => panic!("expected Msg3"),
         }
     }
 
@@ -846,12 +959,8 @@ mod tests {
     }
 
     #[test]
-    fn msg1_wire_size_matches_bridge_expectation() {
-        // Bridge reads 2-byte LE length prefix, then payload bytes.
-        // MSG1 = 4 (prefix) + 4 (sender_idx) + 106 (noise) = 114 bytes.
-        // On the wire over serial: [72, 00] (114 LE) + [114 bytes of FMP frame]
-        // Total serial bytes for MSG1: 2 + 114 = 116
-        assert_eq!(MSG1_WIRE_SIZE, 114);
+    fn msg1_wire_size_matches_xx() {
+        assert_eq!(MSG1_WIRE_SIZE, 41);
         assert_eq!(
             COMMON_PREFIX_SIZE + IDX_SIZE + HANDSHAKE_MSG1_SIZE,
             MSG1_WIRE_SIZE
@@ -859,13 +968,20 @@ mod tests {
     }
 
     #[test]
-    fn msg2_wire_size_matches_vps_response() {
-        // VPS sends MSG2 = 4 (prefix) + 4 (sender) + 4 (receiver) + 57 (noise) = 69 bytes.
-        // Wire over serial: [45, 00] (69 LE) + [69 bytes of FMP frame]
-        assert_eq!(MSG2_WIRE_SIZE, 69);
+    fn msg2_wire_size_matches_xx() {
+        assert_eq!(MSG2_WIRE_SIZE, 118);
         assert_eq!(
             COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG2_SIZE,
             MSG2_WIRE_SIZE
+        );
+    }
+
+    #[test]
+    fn msg3_wire_size_matches_xx() {
+        assert_eq!(MSG3_WIRE_SIZE, 85);
+        assert_eq!(
+            COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG3_SIZE,
+            MSG3_WIRE_SIZE
         );
     }
 
@@ -896,7 +1012,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_unknown_phase() {
-        let data = [0x0F, 0x00, 0x00, 0x00]; // version=0, phase=15
+        let data = [0x1F, 0x00, 0x00, 0x00]; // version=1, phase=15
         assert!(parse_message(&data).is_none());
     }
 
@@ -908,8 +1024,7 @@ mod tests {
 
     #[test]
     fn msg1_sender_idx_zero_for_initiator() {
-        // Initiator sends sender_idx=0 (hasn't received an index from responder yet)
-        let noise_payload = [0u8; 106];
+        let noise_payload = [0u8; HANDSHAKE_MSG1_SIZE];
         let mut out = [0u8; 256];
         let len = build_msg1(SessionIndex::new(0), &noise_payload, &mut out).unwrap();
         let idx = u32::from_le_bytes(
@@ -923,24 +1038,29 @@ mod tests {
 
     #[test]
     fn msg1_noise_payload_structure() {
-        // Noise IK MSG1 payload: 33 (e_pub) + 49 (enc_s = 33 pubkey + 16 tag) + 24 (enc_epoch = 8 epoch + 16 tag) = 106
-        assert_eq!(
-            HANDSHAKE_MSG1_SIZE,
-            crate::noise::PUBKEY_SIZE
-                + (crate::noise::PUBKEY_SIZE + crate::noise::TAG_SIZE)
-                + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
-        );
-        assert_eq!(HANDSHAKE_MSG1_SIZE, 106);
+        assert_eq!(HANDSHAKE_MSG1_SIZE, crate::noise::PUBKEY_SIZE);
+        assert_eq!(HANDSHAKE_MSG1_SIZE, 33);
     }
 
     #[test]
     fn msg2_noise_payload_structure() {
-        // Noise IK MSG2 payload: 33 (re_pub) + 24 (enc_epoch = 8 epoch + 16 tag) = 57
         assert_eq!(
             HANDSHAKE_MSG2_SIZE,
-            crate::noise::PUBKEY_SIZE + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
+            crate::noise::PUBKEY_SIZE
+                + (crate::noise::PUBKEY_SIZE + crate::noise::TAG_SIZE)
+                + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
         );
-        assert_eq!(HANDSHAKE_MSG2_SIZE, 57);
+        assert_eq!(HANDSHAKE_MSG2_SIZE, 106);
+    }
+
+    #[test]
+    fn msg3_noise_payload_structure() {
+        assert_eq!(
+            HANDSHAKE_MSG3_SIZE,
+            (crate::noise::PUBKEY_SIZE + crate::noise::TAG_SIZE)
+                + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
+        );
+        assert_eq!(HANDSHAKE_MSG3_SIZE, 73);
     }
 
     #[test]
@@ -957,67 +1077,37 @@ mod tests {
     }
 
     #[test]
-    fn noise_ik_initiator_msg1_exact_size() {
-        // Full Noise IK initiator produces exactly 106 bytes for write_message1
-        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE};
+    fn noise_xx_initiator_msg1_exact_size() {
+        use crate::noise::{NoiseXxInitiator, PUBKEY_SIZE};
         let eph_secret = [0x01u8; 32];
         let s_secret = [0x11u8; 32];
-        let responder_pub = [0x02u8; PUBKEY_SIZE];
-        let (mut initiator, _) =
-            NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
-        let my_static = crate::noise::ecdh_pubkey(&s_secret).unwrap();
-        let epoch = [0u8; EPOCH_SIZE];
+        let (mut initiator, _) = NoiseXxInitiator::new(&eph_secret, &s_secret).unwrap();
         let mut out = [0u8; 256];
-        let n = initiator
-            .write_message1(&my_static, &epoch, &mut out)
-            .unwrap();
+        let n = initiator.write_message1(&mut out).unwrap();
         assert_eq!(n, HANDSHAKE_MSG1_SIZE);
-        assert_eq!(n, 106);
+        assert_eq!(n, PUBKEY_SIZE);
     }
 
     #[test]
     fn parse_msg1_noise_payload_sections() {
-        // Build a real MSG1, parse it, verify noise_payload has correct structure
-        use crate::noise::{NoiseIkInitiator, EPOCH_SIZE, PUBKEY_SIZE, TAG_SIZE};
+        use crate::noise::{NoiseXxInitiator, PUBKEY_SIZE};
         let eph_secret = [0x01u8; 32];
         let s_secret = [0x11u8; 32];
-        let responder_pub = [0x02u8; PUBKEY_SIZE];
-        let (mut initiator, _) =
-            NoiseIkInitiator::new(&eph_secret, &s_secret, &responder_pub).unwrap();
-        let my_static = crate::noise::ecdh_pubkey(&s_secret).unwrap();
-        let epoch = [0u8; EPOCH_SIZE];
+        let (mut initiator, _) = NoiseXxInitiator::new(&eph_secret, &s_secret).unwrap();
         let mut noise_out = [0u8; 128];
-        let noise_len = initiator
-            .write_message1(&my_static, &epoch, &mut noise_out)
-            .unwrap();
-        assert_eq!(noise_len, 106);
+        let noise_len = initiator.write_message1(&mut noise_out).unwrap();
+        assert_eq!(noise_len, HANDSHAKE_MSG1_SIZE);
 
-        // Wrap in FMP MSG1 frame
         let mut fmp_out = [0u8; 256];
         let fmp_len =
             build_msg1(SessionIndex::new(0), &noise_out[..noise_len], &mut fmp_out).unwrap();
         assert_eq!(fmp_len, MSG1_WIRE_SIZE);
 
-        // Parse and verify noise_payload section offsets
         let msg = parse_message(&fmp_out[..fmp_len]).unwrap();
         match msg {
             FmpMessage::Msg1 { noise_payload, .. } => {
-                assert_eq!(noise_payload.len(), 106);
-                // e_pub at offset 0, 33 bytes
+                assert_eq!(noise_payload.len(), PUBKEY_SIZE);
                 assert_eq!(&noise_payload[..PUBKEY_SIZE], &noise_out[..PUBKEY_SIZE]);
-                // enc_static at offset 33, 49 bytes (33 pubkey + 16 tag)
-                let enc_static_len = PUBKEY_SIZE + TAG_SIZE;
-                assert_eq!(
-                    &noise_payload[PUBKEY_SIZE..PUBKEY_SIZE + enc_static_len],
-                    &noise_out[PUBKEY_SIZE..PUBKEY_SIZE + enc_static_len]
-                );
-                // enc_epoch at offset 82, 24 bytes (8 epoch + 16 tag)
-                let enc_epoch_len = EPOCH_SIZE + TAG_SIZE;
-                let epoch_offset = PUBKEY_SIZE + enc_static_len;
-                assert_eq!(
-                    &noise_payload[epoch_offset..epoch_offset + enc_epoch_len],
-                    &noise_out[epoch_offset..epoch_offset + enc_epoch_len]
-                );
             }
             _ => panic!("expected Msg1"),
         }
@@ -1043,7 +1133,7 @@ mod tests {
 
     #[test]
     fn build_msg1_returns_none_on_small_buffer() {
-        let noise_payload = [0u8; 106];
+        let noise_payload = [0u8; HANDSHAKE_MSG1_SIZE];
         let mut out = [0u8; 10];
         assert!(build_msg1(SessionIndex::new(0), &noise_payload, &mut out).is_none());
     }
@@ -1052,7 +1142,7 @@ mod tests {
     fn build_established_header_roundtrip_with_parse() {
         let header = build_established_header(SessionIndex::new(42), 99, FLAG_KEY_EPOCH, 37);
         assert_eq!(header.len(), ESTABLISHED_HEADER_SIZE);
-        assert_eq!(header[0], 0x00); // ver=0, phase=0 (established)
+        assert_eq!(header[0], 0x10); // ver=1, phase=0 (established)
         assert_eq!(header[1], FLAG_KEY_EPOCH);
         let parsed_len = u16::from_le_bytes([header[2], header[3]]);
         assert_eq!(parsed_len, 37);

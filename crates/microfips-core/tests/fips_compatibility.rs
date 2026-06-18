@@ -17,26 +17,26 @@ fn deterministic_pubkeys() -> ([u8; 33], [u8; 33]) {
 #[test]
 fn fmp_prefix_phase_msg1_matches_commonprefix_layout() {
     let p = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
-    assert_eq!(p, [0x01, 0x00, 0x00, 0x00]);
+    assert_eq!(p, [0x11, 0x00, 0x00, 0x00]);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:CommonPrefix::ver_phase_byte() — MSG2 prefix byte layout.
 #[test]
 fn fmp_prefix_phase_msg2_matches_commonprefix_layout() {
     let p = wire::build_prefix(wire::PHASE_MSG2, 0x00, 0);
-    assert_eq!(p, [0x02, 0x00, 0x00, 0x00]);
+    assert_eq!(p, [0x12, 0x00, 0x00, 0x00]);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:CommonPrefix::ver_phase_byte() — established prefix byte layout.
 #[test]
 fn fmp_prefix_phase_established_matches_commonprefix_layout() {
     let p = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 0);
-    assert_eq!(p, [0x00, 0x00, 0x00, 0x00]);
+    assert_eq!(p, [0x10, 0x00, 0x00, 0x00]);
 }
 
-// Tests FIPS: bd08505 fips/src/node/wire.rs:build_msg1() — MSG1 total wire size is 114 bytes.
+// Tests FIPS next wire.rs:build_msg1() — MSG1 total wire size is 41 bytes (XX: 4+4+33).
 #[test]
-fn msg1_total_size_is_114_bytes() {
+fn msg1_total_size_is_41_bytes() {
     let noise_payload = [0x11u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
     let len = wire::build_msg1(
@@ -47,7 +47,7 @@ fn msg1_total_size_is_114_bytes() {
     .unwrap();
 
     assert_eq!(len, wire::MSG1_WIRE_SIZE);
-    assert_eq!(len, 114);
+    assert_eq!(len, 41);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:Msg1Header::parse() — sender_idx sits at offset 4..8.
@@ -66,7 +66,7 @@ fn msg1_sender_index_at_offset_4() {
     assert_eq!(idx, 0xDEADBEEF);
 }
 
-// Tests FIPS: bd08505 fips/src/node/wire.rs:Msg1Header::noise_msg1() — Noise payload starts at offset 8 and is 106 bytes.
+// Tests FIPS next wire.rs:Msg1Header::noise_msg1() — Noise payload starts at offset 8 and is 33 bytes (XX ephemeral only).
 #[test]
 fn msg1_noise_payload_offset_and_length_match_fips() {
     let noise_payload = [0x33u8; wire::HANDSHAKE_MSG1_SIZE];
@@ -78,13 +78,13 @@ fn msg1_noise_payload_offset_and_length_match_fips() {
     )
     .unwrap();
 
-    assert_eq!(len, 4 + 4 + 106);
-    assert_eq!(&out[8..114], &noise_payload);
+    assert_eq!(len, 4 + 4 + 33);
+    assert_eq!(&out[8..41], &noise_payload);
 }
 
-// Tests FIPS: bd08505 fips/src/node/wire.rs:build_msg2() — MSG2 total wire size is 69 bytes.
+// Tests FIPS next wire.rs:build_msg2() — MSG2 total wire size is 118 bytes (XX: 4+8+106).
 #[test]
-fn msg2_total_size_is_69_bytes() {
+fn msg2_total_size_is_118_bytes() {
     let noise_payload = [0x44u8; wire::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
     let len = wire::build_msg2(
@@ -96,7 +96,7 @@ fn msg2_total_size_is_69_bytes() {
     .unwrap();
 
     assert_eq!(len, wire::MSG2_WIRE_SIZE);
-    assert_eq!(len, 69);
+    assert_eq!(len, 118);
 }
 
 // Tests FIPS: bd08505 fips/src/node/wire.rs:Msg2Header::parse() — sender/receiver indices are at offsets 4..8 and 8..12.
@@ -122,7 +122,7 @@ fn msg2_indices_offsets_match_fips_layout() {
     );
 }
 
-// Tests FIPS: bd08505 fips/src/node/wire.rs:Msg2Header::noise_msg2() — Noise payload starts at offset 12 and is 57 bytes.
+// Tests FIPS next wire.rs:Msg2Header::noise_msg2() — Noise payload starts at offset 12 and is 106 bytes (XX: e+enc_s+enc_epoch).
 #[test]
 fn msg2_noise_payload_offset_and_length_match_fips() {
     let noise_payload = [0x66u8; wire::HANDSHAKE_MSG2_SIZE];
@@ -135,7 +135,7 @@ fn msg2_noise_payload_offset_and_length_match_fips() {
     )
     .unwrap();
 
-    assert_eq!(&out[12..69], &noise_payload);
+    assert_eq!(&out[12..118], &noise_payload);
 }
 
 fn established_frame(
@@ -180,7 +180,7 @@ fn established_frame_header_layout_matches_fips() {
     );
 
     assert!(out.len() >= wire::ESTABLISHED_HEADER_SIZE + noise::TAG_SIZE);
-    assert_eq!(out[0], 0x00);
+    assert_eq!(out[0], 0x10);
     assert_eq!(
         u32::from_le_bytes(out[4..8].try_into().unwrap()),
         0xAABBCCDD

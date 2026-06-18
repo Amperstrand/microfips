@@ -6,25 +6,19 @@
 //! `Err(NoiseError)`). No test uses `#[should_panic]`.
 
 use microfips_core::noise;
-use microfips_core::noise::{NoiseError, NoiseIkInitiator, NoiseIkResponder};
+use microfips_core::noise::{NoiseError, NoiseXxInitiator, NoiseXxResponder};
 use microfips_core::wire;
 
 // ---- Helpers ----
 
-/// Build a valid FMP MSG1 frame with a real Noise handshake payload.
+/// Build a valid FMP MSG1 frame with a real Noise XX handshake payload.
 fn build_valid_msg1() -> ([u8; 256], usize) {
     let init_secret = [0x01u8; 32];
-    let init_pub = noise::ecdh_pubkey(&init_secret).unwrap();
-    let resp_secret = [0x02u8; 32];
-    let resp_pub = noise::ecdh_pubkey(&resp_secret).unwrap();
     let eph_secret = [0x03u8; 32];
-    let epoch = [0x01u8; noise::EPOCH_SIZE];
 
-    let (mut initiator, _) = NoiseIkInitiator::new(&eph_secret, &init_secret, &resp_pub).unwrap();
+    let (mut initiator, _) = NoiseXxInitiator::new(&eph_secret, &init_secret).unwrap();
     let mut noise_out = [0u8; 128];
-    let noise_len = initiator
-        .write_message1(&init_pub, &epoch, &mut noise_out)
-        .unwrap();
+    let noise_len = initiator.write_message1(&mut noise_out).unwrap();
     assert_eq!(noise_len, wire::HANDSHAKE_MSG1_SIZE);
 
     let mut out = [0u8; 256];
@@ -37,18 +31,14 @@ fn build_valid_msg1() -> ([u8; 256], usize) {
     (out, len)
 }
 
-/// Build a valid Noise IK MSG2 (the Noise-layer payload only, 57 bytes).
+/// Build a valid Noise XX MSG2 (the Noise-layer payload only, 106 bytes).
 fn build_valid_noise_msg2(msg1_noise: &[u8]) -> ([u8; 128], usize) {
     let resp_secret = [0x02u8; 32];
     let eph_resp_secret = [0x04u8; 32];
     let epoch_r = [0x02u8; noise::EPOCH_SIZE];
 
-    // Reconstruct the initiator ephemeral pub from MSG1 bytes[0..33]
-    let ei_pub: [u8; noise::PUBKEY_SIZE] = msg1_noise[..noise::PUBKEY_SIZE].try_into().unwrap();
-    let mut responder = NoiseIkResponder::new(&resp_secret, &ei_pub).unwrap();
-    responder
-        .read_message1(&msg1_noise[noise::PUBKEY_SIZE..])
-        .unwrap();
+    let mut responder = NoiseXxResponder::new(&resp_secret).unwrap();
+    responder.read_message1(msg1_noise).unwrap();
 
     let mut out = [0u8; 128];
     let len = responder
@@ -59,36 +49,36 @@ fn build_valid_noise_msg2(msg1_noise: &[u8]) -> ([u8; 128], usize) {
 
 // ---- Category 1: Corrupted FMP prefix ----
 
-/// Invalid version byte (high nibble ≠ 0) → parse_prefix returns None.
+/// Invalid version byte (version=2, not 1) → parse_prefix returns None.
 #[test]
 fn test_fmp_prefix_invalid_version_byte() {
-    // byte0 = (version=1 << 4) | phase=0x01 → 0x11
-    let data = [0x11u8, 0x00, 0x00, 0x00, 0x00, 0x00];
+    // byte0 = (version=2 << 4) | phase=0x01 → 0x21
+    let data = [0x21u8, 0x00, 0x00, 0x00, 0x00, 0x00];
     let result = wire::parse_prefix(&data);
-    assert!(result.is_none(), "version≠0 must be rejected");
+    assert!(result.is_none(), "version≠1 must be rejected");
 }
 
-/// Invalid phase 0x03 (unknown) — parse_prefix accepts prefix (phase is just a nibble),
-/// but parse_message rejects it because no branch handles phase=3.
+/// Invalid phase 0x04 (unknown) — parse_prefix accepts prefix (version OK, phase is just a nibble),
+/// but parse_message rejects it because no branch handles phase=4.
 #[test]
-fn test_fmp_parse_message_unknown_phase_0x03() {
-    // byte0 = (version=0 << 4) | phase=0x03 → 0x03
-    // Valid 4-byte prefix, but phase 0x03 is not MSG1/MSG2/ESTABLISHED
+fn test_fmp_parse_message_unknown_phase_0x04() {
+    // byte0 = (version=1 << 4) | phase=0x04 → 0x14
+    // Valid 4-byte prefix, but phase 0x04 is not ESTABLISHED/MSG1/MSG2/MSG3
     let mut data = [0u8; 20];
-    data[0] = 0x03; // phase=3, version=0
+    data[0] = 0x14; // version=1, phase=4
     data[1] = 0x00; // flags
     data[2] = 0x08; // payload_len low
     data[3] = 0x00; // payload_len high
     let result = wire::parse_message(&data);
-    assert!(result.is_none(), "unknown phase 0x03 must be rejected");
+    assert!(result.is_none(), "unknown phase 0x04 must be rejected");
 }
 
 /// Invalid phase 0x0F (unknown) — parse_message returns None.
 #[test]
 fn test_fmp_parse_message_unknown_phase_0xff() {
-    // byte0 = (version=0 << 4) | phase=0x0F → 0x0F
+    // byte0 = (version=1 << 4) | phase=0x0F → 0x1F
     let mut data = [0u8; 20];
-    data[0] = 0x0F;
+    data[0] = 0x1F;
     data[1] = 0x00;
     data[2] = 0x08;
     data[3] = 0x00;
@@ -122,12 +112,13 @@ fn test_fmp_prefix_wrong_payload_length_zero() {
 
 // ---- Category 2: Truncated MSG1 ----
 
-/// Only 50 bytes of a 114-byte MSG1 → parse_message returns None.
+/// Only 20 bytes of a MSG1 (wire size 41) → parse_message returns None or Msg1 with
+/// truncated noise_payload; either way Noise layer rejects it.
 #[test]
-fn test_fmp_truncated_msg1_50_bytes() {
+fn test_fmp_truncated_msg1_20_bytes() {
     let (frame, _full_len) = build_valid_msg1();
-    // Provide only 50 bytes (prefix is fine, but noise payload is truncated)
-    let result = wire::parse_message(&frame[..50]);
+    // Provide only 20 bytes (prefix is fine, but noise payload is truncated)
+    let result = wire::parse_message(&frame[..20]);
     // parse_prefix will succeed, but noise_payload will be very short
     // The FMP layer itself doesn't validate Noise size — but the caller
     // would get a truncated noise_payload. Let's also verify the full
@@ -156,21 +147,15 @@ fn test_fmp_msg1_minimal_truncation_noise_layer_rejects() {
             noise_payload,
             sender_idx,
         }) => {
-            // noise_payload is empty → initiator read_message2 would need exactly 57 bytes
+            // noise_payload is empty → read_message2 would need exactly 106 bytes
             assert_eq!(noise_payload.len(), 0, "8-byte frame has no noise payload");
             assert_eq!(sender_idx, wire::SessionIndex::new(0x0001));
             // Confirm that read_message2 would reject this empty payload
             let init_secret = [0x01u8; 32];
-            let resp_pub = noise::ecdh_pubkey(&[0x02u8; 32]).unwrap();
             let eph_secret = [0x03u8; 32];
-            let (mut initiator, _) =
-                NoiseIkInitiator::new(&eph_secret, &init_secret, &resp_pub).unwrap();
-            let init_pub = noise::ecdh_pubkey(&init_secret).unwrap();
-            let epoch = [0x01u8; noise::EPOCH_SIZE];
+            let (mut initiator, _) = NoiseXxInitiator::new(&eph_secret, &init_secret).unwrap();
             let mut noise_out = [0u8; 128];
-            initiator
-                .write_message1(&init_pub, &epoch, &mut noise_out)
-                .unwrap();
+            initiator.write_message1(&mut noise_out).unwrap();
             let err = initiator.read_message2(noise_payload);
             assert!(
                 matches!(err, Err(NoiseError::InvalidMessage)),
@@ -184,7 +169,7 @@ fn test_fmp_msg1_minimal_truncation_noise_layer_rejects() {
 
 // ---- Category 3: Truncated MSG2 ----
 
-/// Only 30 bytes of a 69-byte MSG2 → parse_message returns None or Msg2 with
+/// Only 30 bytes of a MSG2 → parse_message returns None or Msg2 with
 /// truncated noise_payload; either way Noise layer rejects it.
 #[test]
 fn test_fmp_truncated_msg2_30_bytes() {
@@ -203,7 +188,7 @@ fn test_fmp_truncated_msg2_30_bytes() {
         Some(wire::FmpMessage::Msg2 {
             noise_payload: np, ..
         }) => {
-            // If we got here, noise_payload is truncated (< 57 bytes)
+            // If we got here, noise_payload is truncated (< 106 bytes)
             assert!(
                 np.len() < wire::HANDSHAKE_MSG2_SIZE,
                 "truncated MSG2 must yield short noise_payload"
@@ -217,7 +202,7 @@ fn test_fmp_truncated_msg2_30_bytes() {
 }
 
 /// MSG2 with only 12 bytes (prefix + two indices) — no noise payload.
-/// If FMP parses it, noise_payload.len() < 57; read_message2 must return Err.
+/// If FMP parses it, noise_payload.len() < 106; read_message2 must return Err.
 #[test]
 fn test_fmp_msg2_minimal_truncation_noise_layer_rejects() {
     let noise_payload_full = [0xBBu8; wire::HANDSHAKE_MSG2_SIZE];
@@ -240,16 +225,10 @@ fn test_fmp_msg2_minimal_truncation_noise_layer_rejects() {
             );
             // read_message2 on a real initiator must reject this
             let init_secret = [0x01u8; 32];
-            let resp_pub = noise::ecdh_pubkey(&[0x02u8; 32]).unwrap();
             let eph_secret = [0x03u8; 32];
-            let (mut initiator, _) =
-                NoiseIkInitiator::new(&eph_secret, &init_secret, &resp_pub).unwrap();
-            let init_pub = noise::ecdh_pubkey(&init_secret).unwrap();
-            let epoch = [0x01u8; noise::EPOCH_SIZE];
+            let (mut initiator, _) = NoiseXxInitiator::new(&eph_secret, &init_secret).unwrap();
             let mut noise_out = [0u8; 128];
-            initiator
-                .write_message1(&init_pub, &epoch, &mut noise_out)
-                .unwrap();
+            initiator.write_message1(&mut noise_out).unwrap();
             let err = initiator.read_message2(noise_payload);
             assert!(
                 matches!(err, Err(NoiseError::InvalidMessage)),
@@ -270,7 +249,7 @@ fn test_fmp_msg2_minimal_truncation_noise_layer_rejects() {
 fn test_fmp_oversized_payload_claimed_65535() {
     // Craft a prefix that claims 65535 bytes of payload
     let mut data = [0u8; 8]; // only 8 bytes of actual data
-    data[0] = wire::PHASE_MSG1; // version=0, phase=1
+    data[0] = (wire::FMP_VERSION << 4) | wire::PHASE_MSG1; // 0x11
     data[1] = 0x00;
     data[2] = 0xFF; // payload_len = 65535 LE
     data[3] = 0xFF;
@@ -392,8 +371,8 @@ fn test_fmp_msg1_zero_length_payload() {
     // Build a prefix claiming phase=MSG1, payload_len=0, then just the 4-byte prefix
     let prefix = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
     let result = wire::parse_message(&prefix); // only 4 bytes, no payload at all
-                                               // After the 4-byte prefix, payload is empty (len=0 bytes).
-                                               // MSG1 needs at least IDX_SIZE=4 bytes after prefix, so parse_message must return None.
+                                                // After the 4-byte prefix, payload is empty (len=0 bytes).
+                                                // MSG1 needs at least IDX_SIZE=4 bytes after prefix, so parse_message must return None.
     assert!(result.is_none(), "zero-payload MSG1 must be rejected");
 }
 
@@ -445,24 +424,14 @@ fn test_fmp_established_zero_length_encrypted() {
 fn test_noise_msg2_corrupted_ciphertext_returns_err() {
     // Build a valid MSG1 first to get the initiator into the right state
     let init_secret = [0x01u8; 32];
-    let init_pub = noise::ecdh_pubkey(&init_secret).unwrap();
-    let resp_pub = noise::ecdh_pubkey(&[0x02u8; 32]).unwrap();
     let eph_secret = [0x03u8; 32];
-    let epoch = [0x01u8; noise::EPOCH_SIZE];
 
-    let (mut initiator, _) = NoiseIkInitiator::new(&eph_secret, &init_secret, &resp_pub).unwrap();
+    let (mut initiator, _) = NoiseXxInitiator::new(&eph_secret, &init_secret).unwrap();
     let mut noise_out = [0u8; 128];
-    initiator
-        .write_message1(&init_pub, &epoch, &mut noise_out)
-        .unwrap();
+    initiator.write_message1(&mut noise_out).unwrap();
 
-    // Feed corrupted MSG2 noise payload (random bytes, correct length 57)
-    let corrupted_msg2 = [
-        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
-        0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
-        0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31u8,
-    ];
+    // Feed corrupted MSG2 noise payload (random bytes, correct length 106)
+    let corrupted_msg2 = [0xDEu8; wire::HANDSHAKE_MSG2_SIZE];
     assert_eq!(corrupted_msg2.len(), wire::HANDSHAKE_MSG2_SIZE);
 
     let result = initiator.read_message2(&corrupted_msg2);
@@ -487,16 +456,11 @@ fn test_noise_msg2_corrupted_ciphertext_returns_err() {
 fn test_noise_msg2_single_bit_flip_returns_err() {
     // Complete MSG1 → get valid MSG2 noise bytes → flip one bit → feed to initiator
     let init_secret = [0x01u8; 32];
-    let init_pub = noise::ecdh_pubkey(&init_secret).unwrap();
-    let resp_pub = noise::ecdh_pubkey(&[0x02u8; 32]).unwrap();
     let eph_secret = [0x03u8; 32];
-    let epoch = [0x01u8; noise::EPOCH_SIZE];
 
-    let (mut initiator, _) = NoiseIkInitiator::new(&eph_secret, &init_secret, &resp_pub).unwrap();
+    let (mut initiator, _) = NoiseXxInitiator::new(&eph_secret, &init_secret).unwrap();
     let mut noise_out = [0u8; 128];
-    let noise_len = initiator
-        .write_message1(&init_pub, &epoch, &mut noise_out)
-        .unwrap();
+    let noise_len = initiator.write_message1(&mut noise_out).unwrap();
 
     let (mut valid_msg2, valid_len) = build_valid_noise_msg2(&noise_out[..noise_len]);
     // Flip one bit in the encrypted portion (byte index 40, beyond the 33-byte ephemeral pub)
@@ -517,7 +481,7 @@ fn test_noise_msg2_single_bit_flip_returns_err() {
 
 /// Same MSG1 (identical bytes) sent twice — both times parse_message succeeds
 /// (FMP has no replay detection), but the second time the Noise initiator's
-/// state is exhausted and a fresh NoiseIkInitiator rejects the original MSG2.
+/// state is exhausted and a fresh NoiseXxInitiator rejects the original MSG2.
 #[test]
 fn test_fmp_msg1_replay_double_parse() {
     // MSG1 is stateless bytes — a replay attack sends the same MSG1 twice.
@@ -565,25 +529,18 @@ fn test_fmp_msg1_replay_double_parse() {
 fn test_noise_msg2_replay_to_wrong_initiator_fails() {
     // Session 1: get a valid MSG2
     let init_secret = [0x01u8; 32];
-    let init_pub = noise::ecdh_pubkey(&init_secret).unwrap();
-    let resp_pub = noise::ecdh_pubkey(&[0x02u8; 32]).unwrap();
     let eph_secret = [0x03u8; 32];
-    let epoch = [0x01u8; noise::EPOCH_SIZE];
 
-    let (mut initiator1, _) = NoiseIkInitiator::new(&eph_secret, &init_secret, &resp_pub).unwrap();
+    let (mut initiator1, _) = NoiseXxInitiator::new(&eph_secret, &init_secret).unwrap();
     let mut noise_out = [0u8; 128];
-    let noise_len = initiator1
-        .write_message1(&init_pub, &epoch, &mut noise_out)
-        .unwrap();
+    let noise_len = initiator1.write_message1(&mut noise_out).unwrap();
     let (valid_msg2, valid_len) = build_valid_noise_msg2(&noise_out[..noise_len]);
 
     // Session 2: completely fresh initiator with DIFFERENT ephemeral key
     let eph_secret2 = [0x05u8; 32]; // different ephemeral
-    let (mut initiator2, _) = NoiseIkInitiator::new(&eph_secret2, &init_secret, &resp_pub).unwrap();
+    let (mut initiator2, _) = NoiseXxInitiator::new(&eph_secret2, &init_secret).unwrap();
     let mut noise_out2 = [0u8; 128];
-    initiator2
-        .write_message1(&init_pub, &epoch, &mut noise_out2)
-        .unwrap();
+    initiator2.write_message1(&mut noise_out2).unwrap();
 
     // Replay session-1's MSG2 to session-2's initiator → must fail
     let result = initiator2.read_message2(&valid_msg2[..valid_len]);
@@ -619,7 +576,7 @@ fn test_fmp_empty_input_returns_none() {
 /// Only 3 bytes (less than COMMON_PREFIX_SIZE=4) → parse_prefix returns None.
 #[test]
 fn test_fmp_too_short_for_prefix() {
-    let short = [0x01u8, 0x00, 0x00];
+    let short = [0x11u8, 0x00, 0x00];
     assert!(
         wire::parse_prefix(&short).is_none(),
         "3-byte input must be rejected"
@@ -630,20 +587,15 @@ fn test_fmp_too_short_for_prefix() {
     );
 }
 
-/// read_message2 with wrong length (not exactly 57 bytes) → returns Err(InvalidMessage).
+/// read_message2 with wrong length (not exactly 106 bytes) → returns Err(InvalidMessage).
 #[test]
 fn test_noise_read_message2_wrong_length_returns_err() {
     let init_secret = [0x01u8; 32];
-    let resp_pub = noise::ecdh_pubkey(&[0x02u8; 32]).unwrap();
     let eph_secret = [0x03u8; 32];
 
-    let (mut initiator, _) = NoiseIkInitiator::new(&eph_secret, &init_secret, &resp_pub).unwrap();
-    let init_pub = noise::ecdh_pubkey(&init_secret).unwrap();
-    let epoch = [0x01u8; noise::EPOCH_SIZE];
+    let (mut initiator, _) = NoiseXxInitiator::new(&eph_secret, &init_secret).unwrap();
     let mut noise_out = [0u8; 128];
-    initiator
-        .write_message1(&init_pub, &epoch, &mut noise_out)
-        .unwrap();
+    initiator.write_message1(&mut noise_out).unwrap();
 
     // Try with only 30 bytes (truncated)
     let truncated = [0xABu8; 30];
