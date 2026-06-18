@@ -111,6 +111,19 @@ pub const PROTOCOL_NAME: &[u8] = b"Noise_IK_secp256k1_ChaChaPoly_SHA256";
 
 pub const PROTOCOL_NAME_XK: &[u8] = b"Noise_XK_secp256k1_ChaChaPoly_SHA256";
 
+/// Protocol name for Noise XX with secp256k1 (both link and session layers).
+/// Used by FIPS `next` branch (v0.5.0+). Replaces both IK and XK.
+pub const PROTOCOL_NAME_XX: &[u8] = b"Noise_XX_secp256k1_ChaChaPoly_SHA256";
+
+/// XX handshake msg1: ephemeral only (33 bytes). No DH, no encrypted static.
+pub const XX_HANDSHAKE_MSG1_SIZE: usize = PUBKEY_SIZE;
+
+/// XX handshake msg2: ephemeral (33) + encrypted static (49) + encrypted epoch (24) = 106 bytes.
+pub const XX_HANDSHAKE_MSG2_SIZE: usize = PUBKEY_SIZE + (PUBKEY_SIZE + TAG_SIZE) + (EPOCH_SIZE + TAG_SIZE);
+
+/// XX handshake msg3: encrypted static (49) + encrypted epoch (24) = 73 bytes.
+pub const XX_HANDSHAKE_MSG3_SIZE: usize = (PUBKEY_SIZE + TAG_SIZE) + (EPOCH_SIZE + TAG_SIZE);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoiseError {
     InvalidKey,
@@ -931,6 +944,334 @@ impl NoiseXkResponder {
         k1.copy_from_slice(&okm[..32]);
         k2.copy_from_slice(&okm[32..]);
         (k1, k2)
+    }
+}
+
+// ===========================================================================
+// Noise XX — Link + Session Layer (FIPS next branch, v0.5.0+)
+// ===========================================================================
+//
+// Replaces both IK (link) and XK (session) with a single unified pattern.
+// Neither side knows the other's static key before the handshake.
+//
+// XX Handshake Pattern:
+//   -> e                        (msg1: 33B — ephemeral only, no DH)
+//   <- e, ee, s, es, epoch      (msg2: 106B — ephemeral + encrypted static + epoch)
+//   -> s, se, epoch             (msg3: 73B — encrypted static + epoch)
+//
+// Identity timing:
+//   msg1: no identity
+//   msg2: responder reveals static to initiator
+//   msg3: initiator reveals static to responder
+
+/// Noise XX Initiator for both link-layer (FMP) and session-layer (FSP).
+pub struct NoiseXxInitiator {
+    h: [u8; 32],
+    ck: [u8; 32],
+    e_priv: [u8; 32],
+    e_pub: [u8; PUBKEY_SIZE],
+    s_priv: [u8; 32],
+    re_pub: Option<[u8; PUBKEY_SIZE]>,
+    rs_pub: Option<[u8; PUBKEY_SIZE]>,
+    k: Option<[u8; 32]>,
+    n: u64,
+}
+
+impl NoiseXxInitiator {
+    pub fn new(
+        my_ephemeral_secret: &[u8; 32],
+        my_static_secret: &[u8; 32],
+    ) -> Result<(Self, [u8; PUBKEY_SIZE]), NoiseError> {
+        let e_pub = ecdh_pubkey(my_ephemeral_secret)?;
+        let h = hash_one(PROTOCOL_NAME_XX);
+        Ok((
+            Self {
+                h,
+                ck: h,
+                e_priv: *my_ephemeral_secret,
+                e_pub,
+                s_priv: *my_static_secret,
+                re_pub: None,
+                rs_pub: None,
+                k: None,
+                n: 0,
+            },
+            e_pub,
+        ))
+    }
+
+    /// Write XX msg1: `-> e` (33 bytes). Ephemeral key only, no DH.
+    pub fn write_message1(&mut self, out: &mut [u8]) -> Result<usize, NoiseError> {
+        if out.len() < XX_HANDSHAKE_MSG1_SIZE {
+            return Err(NoiseError::BufferTooSmall);
+        }
+        out[..PUBKEY_SIZE].copy_from_slice(&self.e_pub);
+        self.h = mix_hash(&self.h, &self.e_pub);
+        Ok(PUBKEY_SIZE)
+    }
+
+    /// Read XX msg2: `<- e, ee, s, es, epoch` (106 bytes).
+    /// Returns (responder_static_pub, responder_epoch).
+    pub fn read_message2(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<([u8; PUBKEY_SIZE], [u8; EPOCH_SIZE]), NoiseError> {
+        if payload.len() != XX_HANDSHAKE_MSG2_SIZE {
+            return Err(NoiseError::InvalidMessage);
+        }
+
+        let re_pub: [u8; PUBKEY_SIZE] = payload[..PUBKEY_SIZE].try_into().unwrap();
+        self.re_pub = Some(re_pub);
+        self.h = mix_hash(&self.h, &re_pub);
+
+        let ee = x_only_ecdh(&self.e_priv, &re_pub)?;
+        let (ck, k) = mix_key(&self.ck, &ee);
+        self.ck = ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        let enc_rs = &payload[PUBKEY_SIZE..PUBKEY_SIZE + PUBKEY_SIZE + TAG_SIZE];
+        let mut rs_pub = [0u8; PUBKEY_SIZE];
+        aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], enc_rs, &mut rs_pub)?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, enc_rs);
+        self.rs_pub = Some(rs_pub);
+
+        let es = x_only_ecdh(&self.e_priv, &rs_pub)?;
+        let (ck, k) = mix_key(&self.ck, &es);
+        self.ck = ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        let enc_epoch = &payload[PUBKEY_SIZE + PUBKEY_SIZE + TAG_SIZE..];
+        let mut epoch_buf = [0u8; EPOCH_SIZE];
+        aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], enc_epoch, &mut epoch_buf)?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, enc_epoch);
+
+        Ok((rs_pub, epoch_buf))
+    }
+
+    /// Write XX msg3: `-> s, se, epoch` (73 bytes).
+    pub fn write_message3(
+        &mut self,
+        my_static_pub: &[u8; PUBKEY_SIZE],
+        epoch: &[u8; EPOCH_SIZE],
+        out: &mut [u8],
+    ) -> Result<usize, NoiseError> {
+        if out.len() < XX_HANDSHAKE_MSG3_SIZE {
+            return Err(NoiseError::BufferTooSmall);
+        }
+        let re_pub = self.re_pub.ok_or(NoiseError::InvalidState)?;
+        let mut pos = 0;
+
+        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], my_static_pub, &mut out[pos..])?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
+        pos += enc_len;
+
+        let se = x_only_ecdh(&self.s_priv, &re_pub)?;
+        let (ck, k) = mix_key(&self.ck, &se);
+        self.ck = ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], epoch, &mut out[pos..])?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
+        pos += enc_len;
+
+        Ok(pos)
+    }
+
+    /// Encrypt negotiation payload after msg3, before finalize.
+    pub fn encrypt_payload(&mut self, plaintext: &[u8], out: &mut [u8]) -> Result<usize, NoiseError> {
+        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], plaintext, out)?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, &out[..enc_len]);
+        Ok(enc_len)
+    }
+
+    /// Decrypt negotiation payload after msg2, before finalize.
+    pub fn decrypt_payload(&mut self, ciphertext: &[u8], out: &mut [u8]) -> Result<usize, NoiseError> {
+        let dec_len = aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], ciphertext, out)?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, ciphertext);
+        Ok(dec_len)
+    }
+
+    /// Derive transport keys via Split(). Returns (k1, k2) = (c1, c2).
+    /// c1 = initiator→responder, c2 = responder→initiator.
+    pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
+        let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
+        let mut okm = [0u8; 64];
+        hk.expand(&[], &mut okm)
+            .expect("hkdf expand 64 bytes should never fail");
+        let mut k1 = [0u8; 32];
+        let mut k2 = [0u8; 32];
+        k1.copy_from_slice(&okm[..32]);
+        k2.copy_from_slice(&okm[32..]);
+        (k1, k2)
+    }
+
+    pub fn remote_static(&self) -> Option<&[u8; PUBKEY_SIZE]> {
+        self.rs_pub.as_ref()
+    }
+}
+
+/// Noise XX Responder for both link-layer (FMP) and session-layer (FSP).
+pub struct NoiseXxResponder {
+    h: [u8; 32],
+    ck: [u8; 32],
+    s_priv: [u8; 32],
+    s_pub: [u8; PUBKEY_SIZE],
+    e_priv: Option<[u8; 32]>,
+    e_pub: Option<[u8; PUBKEY_SIZE]>,
+    ei_pub: Option<[u8; PUBKEY_SIZE]>,
+    rs_pub: Option<[u8; PUBKEY_SIZE]>,
+    k: Option<[u8; 32]>,
+    n: u64,
+}
+
+impl NoiseXxResponder {
+    pub fn new(my_static_secret: &[u8; 32]) -> Result<Self, NoiseError> {
+        let s_pub = ecdh_pubkey(my_static_secret)?;
+        let h = hash_one(PROTOCOL_NAME_XX);
+        Ok(Self {
+            h,
+            ck: h,
+            s_priv: *my_static_secret,
+            s_pub,
+            e_priv: None,
+            e_pub: None,
+            ei_pub: None,
+            rs_pub: None,
+            k: None,
+            n: 0,
+        })
+    }
+
+    /// Read XX msg1: `-> e` (33 bytes). Parse ephemeral, no DH.
+    pub fn read_message1(&mut self, payload: &[u8]) -> Result<(), NoiseError> {
+        if payload.len() != XX_HANDSHAKE_MSG1_SIZE {
+            return Err(NoiseError::InvalidMessage);
+        }
+        let ei_pub: [u8; PUBKEY_SIZE] = payload[..PUBKEY_SIZE].try_into().unwrap();
+        self.ei_pub = Some(ei_pub);
+        self.h = mix_hash(&self.h, &ei_pub);
+        Ok(())
+    }
+
+    /// Write XX msg2: `<- e, ee, s, es, epoch` (106 bytes).
+    pub fn write_message2(
+        &mut self,
+        my_ephemeral_secret: &[u8; 32],
+        epoch: &[u8; EPOCH_SIZE],
+        out: &mut [u8],
+    ) -> Result<usize, NoiseError> {
+        if out.len() < XX_HANDSHAKE_MSG2_SIZE {
+            return Err(NoiseError::BufferTooSmall);
+        }
+        let ei_pub = self.ei_pub.ok_or(NoiseError::InvalidState)?;
+
+        self.e_priv = Some(*my_ephemeral_secret);
+        let e_pub = ecdh_pubkey(my_ephemeral_secret)?;
+        self.e_pub = Some(e_pub);
+        let mut pos = 0;
+
+        out[..PUBKEY_SIZE].copy_from_slice(&e_pub);
+        self.h = mix_hash(&self.h, &e_pub);
+        pos += PUBKEY_SIZE;
+
+        let ee = x_only_ecdh(my_ephemeral_secret, &ei_pub)?;
+        let (ck, k) = mix_key(&self.ck, &ee);
+        self.ck = ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], &self.s_pub, &mut out[pos..])?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
+        pos += enc_len;
+
+        let es = x_only_ecdh(&self.s_priv, &ei_pub)?;
+        let (ck, k) = mix_key(&self.ck, &es);
+        self.ck = ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], epoch, &mut out[pos..])?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
+        pos += enc_len;
+
+        Ok(pos)
+    }
+
+    /// Read XX msg3: `-> s, se, epoch` (73 bytes).
+    /// Returns (initiator_static_pub, initiator_epoch).
+    pub fn read_message3(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<([u8; PUBKEY_SIZE], [u8; EPOCH_SIZE]), NoiseError> {
+        if payload.len() != XX_HANDSHAKE_MSG3_SIZE {
+            return Err(NoiseError::InvalidMessage);
+        }
+
+        let enc_rs = &payload[..PUBKEY_SIZE + TAG_SIZE];
+        let mut rs_pub = [0u8; PUBKEY_SIZE];
+        aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], enc_rs, &mut rs_pub)?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, enc_rs);
+        self.rs_pub = Some(rs_pub);
+
+        let se = x_only_ecdh(self.e_priv.as_ref().unwrap(), &rs_pub)?;
+        let (ck, k) = mix_key(&self.ck, &se);
+        self.ck = ck;
+        self.k = Some(k);
+        self.n = 0;
+
+        let enc_epoch = &payload[PUBKEY_SIZE + TAG_SIZE..];
+        let mut epoch_buf = [0u8; EPOCH_SIZE];
+        aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], enc_epoch, &mut epoch_buf)?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, enc_epoch);
+
+        Ok((rs_pub, epoch_buf))
+    }
+
+    /// Encrypt negotiation payload after msg2, before finalize.
+    pub fn encrypt_payload(&mut self, plaintext: &[u8], out: &mut [u8]) -> Result<usize, NoiseError> {
+        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], plaintext, out)?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, &out[..enc_len]);
+        Ok(enc_len)
+    }
+
+    /// Decrypt negotiation payload after msg3, before finalize.
+    pub fn decrypt_payload(&mut self, ciphertext: &[u8], out: &mut [u8]) -> Result<usize, NoiseError> {
+        let dec_len = aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], ciphertext, out)?;
+        self.n += 1;
+        self.h = mix_hash(&self.h, ciphertext);
+        Ok(dec_len)
+    }
+
+    /// Derive transport keys via Split(). Returns (k1, k2) = (c1, c2).
+    /// c1 = initiator→responder, c2 = responder→initiator.
+    pub fn finalize(&self) -> ([u8; 32], [u8; 32]) {
+        let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
+        let mut okm = [0u8; 64];
+        hk.expand(&[], &mut okm)
+            .expect("hkdf expand 64 bytes should never fail");
+        let mut k1 = [0u8; 32];
+        let mut k2 = [0u8; 32];
+        k1.copy_from_slice(&okm[..32]);
+        k2.copy_from_slice(&okm[32..]);
+        (k1, k2)
+    }
+
+    pub fn remote_static(&self) -> Option<&[u8; PUBKEY_SIZE]> {
+        self.rs_pub.as_ref()
     }
 }
 
@@ -2065,5 +2406,160 @@ mod responder_tests {
             responder.read_message3(&msg3),
             Err(NoiseError::InvalidState)
         );
+    }
+
+    // --- Noise XX Tests ---
+
+    #[test]
+    fn noise_xx_msg1_is_ephemeral_only() {
+        let (eph, _) = test_keypair();
+        let (stat, _) = test_keypair();
+        let (mut init, e_pub) = NoiseXxInitiator::new(&eph, &stat).unwrap();
+
+        let mut msg1 = [0u8; 256];
+        let len = init.write_message1(&mut msg1).unwrap();
+        assert_eq!(len, XX_HANDSHAKE_MSG1_SIZE);
+        assert_eq!(&msg1[..PUBKEY_SIZE], &e_pub);
+    }
+
+    #[test]
+    fn noise_xx_full_round_trip() {
+        let (i_eph, _) = test_keypair();
+        let (i_stat, i_pub) = test_keypair();
+        let (r_stat, r_pub) = test_keypair();
+        let (r_eph, _) = test_keypair();
+        let epoch_i = [0x01, 0, 0, 0, 0, 0, 0, 0];
+        let epoch_r = [0x02, 0, 0, 0, 0, 0, 0, 0];
+
+        let (mut init, _) = NoiseXxInitiator::new(&i_eph, &i_stat).unwrap();
+        let mut resp = NoiseXxResponder::new(&r_stat).unwrap();
+
+        let mut msg1 = [0u8; 256];
+        let msg1_len = init.write_message1(&mut msg1).unwrap();
+        assert_eq!(msg1_len, XX_HANDSHAKE_MSG1_SIZE);
+
+        resp.read_message1(&msg1[..msg1_len]).unwrap();
+
+        let mut msg2 = [0u8; 256];
+        let msg2_len = resp
+            .write_message2(&r_eph, &epoch_r, &mut msg2)
+            .unwrap();
+        assert_eq!(msg2_len, XX_HANDSHAKE_MSG2_SIZE);
+
+        let (recv_r_pub, recv_epoch_r) = init.read_message2(&msg2[..msg2_len]).unwrap();
+        assert_eq!(recv_r_pub, r_pub);
+        assert_eq!(recv_epoch_r, epoch_r);
+
+        let mut msg3 = [0u8; 256];
+        let msg3_len = init
+            .write_message3(&i_pub, &epoch_i, &mut msg3)
+            .unwrap();
+        assert_eq!(msg3_len, XX_HANDSHAKE_MSG3_SIZE);
+
+        let (recv_i_pub, recv_epoch_i) = resp.read_message3(&msg3[..msg3_len]).unwrap();
+        assert_eq!(recv_i_pub, i_pub);
+        assert_eq!(recv_epoch_i, epoch_i);
+
+        let (c1_i, c2_i) = init.finalize();
+        let (c1_r, c2_r) = resp.finalize();
+
+        assert_eq!(c1_i, c1_r, "both sides derive same c1 (init->resp)");
+        assert_eq!(c2_i, c2_r, "both sides derive same c2 (resp->init)");
+        assert_ne!(c1_i, c2_i, "c1 != c2");
+    }
+
+    #[test]
+    fn noise_xx_keys_are_deterministic() {
+        let i_eph: [u8; 32] = [0x01; 32];
+        let i_stat: [u8; 32] = [0x11; 32];
+        let r_stat: [u8; 32] = [0x22; 32];
+        let r_eph: [u8; 32] = [0xAA; 32];
+        let epoch_i = [0x01, 0, 0, 0, 0, 0, 0, 0];
+        let epoch_r = [0x02, 0, 0, 0, 0, 0, 0, 0];
+
+        let i_pub = ecdh_pubkey(&i_stat).unwrap();
+
+        let (mut init1, _) = NoiseXxInitiator::new(&i_eph, &i_stat).unwrap();
+        let mut resp1 = NoiseXxResponder::new(&r_stat).unwrap();
+
+        let mut m1 = [0u8; 256];
+        let l1 = init1.write_message1(&mut m1).unwrap();
+        resp1.read_message1(&m1[..l1]).unwrap();
+
+        let mut m2 = [0u8; 256];
+        let l2 = resp1.write_message2(&r_eph, &epoch_r, &mut m2).unwrap();
+        init1.read_message2(&m2[..l2]).unwrap();
+
+        let mut m3 = [0u8; 256];
+        let l3 = init1.write_message3(&i_pub, &epoch_i, &mut m3).unwrap();
+        resp1.read_message3(&m3[..l3]).unwrap();
+
+        let (ks1, kr1) = init1.finalize();
+
+        let (mut init2, _) = NoiseXxInitiator::new(&i_eph, &i_stat).unwrap();
+        let mut resp2 = NoiseXxResponder::new(&r_stat).unwrap();
+
+        let mut m1b = [0u8; 256];
+        let l1b = init2.write_message1(&mut m1b).unwrap();
+        resp2.read_message1(&m1b[..l1b]).unwrap();
+
+        let mut m2b = [0u8; 256];
+        let l2b = resp2.write_message2(&r_eph, &epoch_r, &mut m2b).unwrap();
+        init2.read_message2(&m2b[..l2b]).unwrap();
+
+        let mut m3b = [0u8; 256];
+        let l3b = init2.write_message3(&i_pub, &epoch_i, &mut m3b).unwrap();
+        resp2.read_message3(&m3b[..l3b]).unwrap();
+
+        let (ks2, kr2) = init2.finalize();
+
+        assert_eq!(ks1, ks2, "send key deterministic");
+        assert_eq!(kr1, kr2, "recv key deterministic");
+    }
+
+    #[test]
+    fn noise_xx_wrong_msg1_size_rejected() {
+        let (stat, _) = test_keypair();
+        let mut resp = NoiseXxResponder::new(&stat).unwrap();
+        assert_eq!(
+            resp.read_message1(&[0u8; 32]),
+            Err(NoiseError::InvalidMessage)
+        );
+    }
+
+    #[test]
+    fn noise_xx_negotiation_payload_roundtrip() {
+        let (i_eph, _) = test_keypair();
+        let (i_stat, _) = test_keypair();
+        let (r_stat, _) = test_keypair();
+        let (r_eph, _) = test_keypair();
+        let epoch_i = [0x01, 0, 0, 0, 0, 0, 0, 0];
+        let epoch_r = [0x02, 0, 0, 0, 0, 0, 0, 0];
+        let i_pub = ecdh_pubkey(&i_stat).unwrap();
+
+        let (mut init, _) = NoiseXxInitiator::new(&i_eph, &i_stat).unwrap();
+        let mut resp = NoiseXxResponder::new(&r_stat).unwrap();
+
+        let mut m1 = [0u8; 256];
+        let l1 = init.write_message1(&mut m1).unwrap();
+        resp.read_message1(&m1[..l1]).unwrap();
+
+        let mut m2 = [0u8; 256];
+        let l2 = resp.write_message2(&r_eph, &epoch_r, &mut m2).unwrap();
+        init.read_message2(&m2[..l2]).unwrap();
+
+        let mut m3 = [0u8; 256];
+        let l3 = init.write_message3(&i_pub, &epoch_i, &mut m3).unwrap();
+        resp.read_message3(&m3[..l3]).unwrap();
+
+        let payload = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
+
+        let mut enc = [0u8; 256];
+        let enc_len = init.encrypt_payload(&payload, &mut enc).unwrap();
+
+        let mut dec = [0u8; 256];
+        let dec_len = resp.decrypt_payload(&enc[..enc_len], &mut dec).unwrap();
+
+        assert_eq!(&dec[..dec_len], &payload);
     }
 }
