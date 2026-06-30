@@ -1,3 +1,12 @@
+//! Ported from fips v0.4.0: `src/mmp/algorithms.rs`.
+//!
+//! Deviation: algorithms are preserved 1:1 except where no_std requires it —
+//! notably `SpinBitState` drops the `Duration` return path used upstream
+//! (see inline note at the `SpinBitState` impl). No allocators or std time
+//! types are used.
+//!
+//! Ported from fips v0.4.0: `src/mmp/algorithms.rs`.
+//!
 //! MMP algorithmic building blocks.
 //!
 //! Pure computational types with no dependency on peer or node state.

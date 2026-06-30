@@ -1,3 +1,6 @@
+//! Ported from fips v0.4.0: `src/identity/node_addr.rs`, `src/identity/mod.rs`, `src/identity/encoding.rs`.
+//! Core NodeAddr/FipsAddress logic is ported; env-based device key constants are microfips-only.
+
 use sha2::{Digest, Sha256};
 
 use crate::hex::{hex_bytes_16, hex_bytes_32, hex_bytes_33};

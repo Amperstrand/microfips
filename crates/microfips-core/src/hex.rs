@@ -1,3 +1,15 @@
+//! microfips-only: const hex parser for compile-time key injection. No direct
+//! fips equivalent; closest upstream helper: fips v0.4.0 `src/identity/mod.rs`
+//! hex_encode.
+//!
+//! Deviation: upstream `hex_encode` is a runtime `&[u8] -> String` helper
+//! requiring alloc; this module provides a `const fn` parser going the opposite
+//! direction (`&str -> [u8; N]`) so keys can be baked in at compile time without
+//! a heap.
+
+//! microfips-only: const hex parser for compile-time key injection.
+//! No direct fips equivalent; closest upstream helper: fips v0.4.0 `src/identity/mod.rs` hex_encode.
+
 const fn hex_nibble(b: u8) -> u8 {
     match b {
         b'0'..=b'9' => b - b'0',
