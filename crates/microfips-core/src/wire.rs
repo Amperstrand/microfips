@@ -14,6 +14,9 @@
 use crate::generated::fips_compat;
 use crate::noise;
 
+#[cfg(not(feature = "noise-xx"))]
+pub const FMP_VERSION: u8 = 0;
+#[cfg(feature = "noise-xx")]
 pub const FMP_VERSION: u8 = 1;
 
 pub const COMMON_PREFIX_SIZE: usize = 4;
@@ -22,8 +25,18 @@ pub const ESTABLISHED_HEADER_SIZE: usize = 16;
 pub const INNER_HEADER_SIZE: usize = 5;
 pub const ENCRYPTED_MIN_SIZE: usize = 32;
 
+#[cfg(not(feature = "noise-xx"))]
+pub const HANDSHAKE_MSG1_SIZE: usize = fips_compat::HANDSHAKE_MSG1_SIZE;
+#[cfg(not(feature = "noise-xx"))]
+pub const HANDSHAKE_MSG2_SIZE: usize = fips_compat::HANDSHAKE_MSG2_SIZE;
+#[cfg(not(feature = "noise-xx"))]
+pub const HANDSHAKE_MSG3_SIZE: usize = fips_compat::XK_HANDSHAKE_MSG3_SIZE;
+
+#[cfg(feature = "noise-xx")]
 pub const HANDSHAKE_MSG1_SIZE: usize = noise::XX_HANDSHAKE_MSG1_SIZE;
+#[cfg(feature = "noise-xx")]
 pub const HANDSHAKE_MSG2_SIZE: usize = noise::XX_HANDSHAKE_MSG2_SIZE;
+#[cfg(feature = "noise-xx")]
 pub const HANDSHAKE_MSG3_SIZE: usize = noise::XX_HANDSHAKE_MSG3_SIZE;
 pub const EPOCH_ENCRYPTED_SIZE: usize = noise::EPOCH_SIZE + noise::TAG_SIZE;
 
@@ -633,7 +646,7 @@ mod tests {
     #[test]
     fn build_prefix_msg1() {
         let p = build_prefix(PHASE_MSG1, 0x00, 37);
-        assert_eq!(p[0], 0x11);
+        assert_eq!(p[0], (FMP_VERSION << 4) | PHASE_MSG1);
         assert_eq!(p[1], 0x00);
         assert_eq!(u16::from_le_bytes([p[2], p[3]]), 37);
     }
@@ -641,21 +654,21 @@ mod tests {
     #[test]
     fn build_prefix_msg2() {
         let p = build_prefix(PHASE_MSG2, 0x00, 114);
-        assert_eq!(p[0], 0x12);
+        assert_eq!(p[0], (FMP_VERSION << 4) | PHASE_MSG2);
         assert_eq!(u16::from_le_bytes([p[2], p[3]]), 114);
     }
 
     #[test]
     fn build_prefix_msg3() {
         let p = build_prefix(PHASE_MSG3, 0x00, 81);
-        assert_eq!(p[0], 0x13);
+        assert_eq!(p[0], (FMP_VERSION << 4) | PHASE_MSG3);
         assert_eq!(u16::from_le_bytes([p[2], p[3]]), 81);
     }
 
     #[test]
     fn build_prefix_established() {
         let p = build_prefix(PHASE_ESTABLISHED, 0x00, 100);
-        assert_eq!(p[0], 0x10);
+        assert_eq!(p[0], (FMP_VERSION << 4) | PHASE_ESTABLISHED);
         assert_eq!(u16::from_le_bytes([p[2], p[3]]), 100);
     }
 
@@ -719,7 +732,6 @@ mod tests {
         let mut out = [0u8; 256];
         let len = build_msg1(SessionIndex::new(42), &noise_payload, &mut out).unwrap();
         assert_eq!(len, MSG1_WIRE_SIZE);
-        assert_eq!(len, 41);
     }
 
     #[test]
@@ -727,7 +739,7 @@ mod tests {
         let noise_payload = [0u8; HANDSHAKE_MSG1_SIZE];
         let mut out = [0u8; 256];
         build_msg1(SessionIndex::new(42), &noise_payload, &mut out);
-        assert_eq!(out[0], 0x11);
+        assert_eq!(out[0], (FMP_VERSION << 4) | PHASE_MSG1);
         assert_eq!(out[1], 0x00);
     }
 
@@ -752,7 +764,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(len, MSG2_WIRE_SIZE);
-        assert_eq!(len, 118);
     }
 
     #[test]
@@ -767,7 +778,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(len, MSG3_WIRE_SIZE);
-        assert_eq!(len, 85);
     }
 
     #[test]
@@ -959,8 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn msg1_wire_size_matches_xx() {
-        assert_eq!(MSG1_WIRE_SIZE, 41);
+    fn msg1_wire_size_matches_handshake() {
         assert_eq!(
             COMMON_PREFIX_SIZE + IDX_SIZE + HANDSHAKE_MSG1_SIZE,
             MSG1_WIRE_SIZE
@@ -968,8 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn msg2_wire_size_matches_xx() {
-        assert_eq!(MSG2_WIRE_SIZE, 118);
+    fn msg2_wire_size_matches_handshake() {
         assert_eq!(
             COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG2_SIZE,
             MSG2_WIRE_SIZE
@@ -977,8 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn msg3_wire_size_matches_xx() {
-        assert_eq!(MSG3_WIRE_SIZE, 85);
+    fn msg3_wire_size_matches_handshake() {
         assert_eq!(
             COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG3_SIZE,
             MSG3_WIRE_SIZE
@@ -1012,7 +1019,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_unknown_phase() {
-        let data = [0x1F, 0x00, 0x00, 0x00]; // version=1, phase=15
+        let data = [(FMP_VERSION << 4) | 0x0F, 0x00, 0x00, 0x00];
         assert!(parse_message(&data).is_none());
     }
 
@@ -1038,29 +1045,50 @@ mod tests {
 
     #[test]
     fn msg1_noise_payload_structure() {
-        assert_eq!(HANDSHAKE_MSG1_SIZE, crate::noise::PUBKEY_SIZE);
-        assert_eq!(HANDSHAKE_MSG1_SIZE, 33);
+        #[cfg(not(feature = "noise-xx"))]
+        {
+            assert_eq!(HANDSHAKE_MSG1_SIZE, 106); // IK msg1
+        }
+        #[cfg(feature = "noise-xx")]
+        {
+            assert_eq!(HANDSHAKE_MSG1_SIZE, crate::noise::PUBKEY_SIZE);
+            assert_eq!(HANDSHAKE_MSG1_SIZE, 33); // XX msg1
+        }
     }
 
     #[test]
     fn msg2_noise_payload_structure() {
-        assert_eq!(
-            HANDSHAKE_MSG2_SIZE,
-            crate::noise::PUBKEY_SIZE
-                + (crate::noise::PUBKEY_SIZE + crate::noise::TAG_SIZE)
-                + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
-        );
-        assert_eq!(HANDSHAKE_MSG2_SIZE, 106);
+        #[cfg(not(feature = "noise-xx"))]
+        {
+            assert_eq!(HANDSHAKE_MSG2_SIZE, 57); // IK msg2
+        }
+        #[cfg(feature = "noise-xx")]
+        {
+            assert_eq!(
+                HANDSHAKE_MSG2_SIZE,
+                crate::noise::PUBKEY_SIZE
+                    + (crate::noise::PUBKEY_SIZE + crate::noise::TAG_SIZE)
+                    + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
+            );
+            assert_eq!(HANDSHAKE_MSG2_SIZE, 106); // XX msg2
+        }
     }
 
     #[test]
     fn msg3_noise_payload_structure() {
-        assert_eq!(
-            HANDSHAKE_MSG3_SIZE,
-            (crate::noise::PUBKEY_SIZE + crate::noise::TAG_SIZE)
-                + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
-        );
-        assert_eq!(HANDSHAKE_MSG3_SIZE, 73);
+        #[cfg(not(feature = "noise-xx"))]
+        {
+            assert_eq!(HANDSHAKE_MSG3_SIZE, 73); // XK msg3
+        }
+        #[cfg(feature = "noise-xx")]
+        {
+            assert_eq!(
+                HANDSHAKE_MSG3_SIZE,
+                (crate::noise::PUBKEY_SIZE + crate::noise::TAG_SIZE)
+                    + (crate::noise::EPOCH_SIZE + crate::noise::TAG_SIZE)
+            );
+            assert_eq!(HANDSHAKE_MSG3_SIZE, 73); // XX msg3
+        }
     }
 
     #[test]
@@ -1077,6 +1105,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "noise-xx")]
     fn noise_xx_initiator_msg1_exact_size() {
         use crate::noise::{NoiseXxInitiator, PUBKEY_SIZE};
         let eph_secret = [0x01u8; 32];
@@ -1089,6 +1118,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "noise-xx")]
     fn parse_msg1_noise_payload_sections() {
         use crate::noise::{NoiseXxInitiator, PUBKEY_SIZE};
         let eph_secret = [0x01u8; 32];
@@ -1142,7 +1172,7 @@ mod tests {
     fn build_established_header_roundtrip_with_parse() {
         let header = build_established_header(SessionIndex::new(42), 99, FLAG_KEY_EPOCH, 37);
         assert_eq!(header.len(), ESTABLISHED_HEADER_SIZE);
-        assert_eq!(header[0], 0x10); // ver=1, phase=0 (established)
+        assert_eq!(header[0], (FMP_VERSION << 4) | PHASE_ESTABLISHED);
         assert_eq!(header[1], FLAG_KEY_EPOCH);
         let parsed_len = u16::from_le_bytes([header[2], header[3]]);
         assert_eq!(parsed_len, 37);
