@@ -1,3 +1,5 @@
+//! Ported from fips v0.4.0: `src/mmp/metrics.rs`.
+
 use embassy_time::Instant;
 use microfips_core::mmp::algorithms::{compute_etx, DualEwma, SrttEstimator};
 use microfips_core::mmp::report::ReceiverReport;
@@ -75,14 +77,28 @@ impl MmpMetrics {
     ) -> bool {
         let had_srtt = self.srtt.initialized();
 
+        // Bugfix 1 (fips v0.4): Reject stale or duplicate ReceiverReports.
+        // Reports are only built after interval data, so a fresh report
+        // always advances at least one cumulative counter. A duplicate or
+        // regressed report would produce a bogus RTT sample.
+        if self.has_prev_rr && self.is_stale_or_duplicate(rr) {
+            return false;
+        }
+
+        // Bugfix 2 (fips v0.4): RTT from timestamp echo with checked arithmetic
+        // to prevent underflow on corrupt or stale echo values.
         if rr.timestamp_echo > 0 {
             let echo_ms = rr.timestamp_echo;
-            let dwell_ms = rr.dwell_time as u32;
-            if our_timestamp_ms > echo_ms + dwell_ms {
-                let rtt_ms = our_timestamp_ms - echo_ms - dwell_ms;
-                let rtt_us = (rtt_ms as i64) * 1000;
-                self.srtt.update(rtt_us);
-                self.rtt_trend.update(rtt_us as f64);
+            let dwell_ms = u32::from(rr.dwell_time);
+            let rtt_sample_ms = echo_ms
+                .checked_add(dwell_ms)
+                .and_then(|send_done_ms| our_timestamp_ms.checked_sub(send_done_ms));
+            if let Some(rtt_ms) = rtt_sample_ms {
+                if rtt_ms > 0 {
+                    let rtt_us = (rtt_ms as i64) * 1000;
+                    self.srtt.update(rtt_us);
+                    self.rtt_trend.update(rtt_us as f64);
+                }
             }
         }
 
@@ -135,6 +151,22 @@ impl MmpMetrics {
         self.has_prev_rr = true;
 
         !had_srtt && self.srtt.initialized()
+    }
+
+    /// Check if a ReceiverReport's counters regressed or are exact duplicates
+    /// of the previous report. Ported from fips v0.4.
+    fn is_stale_or_duplicate(&self, rr: &ReceiverReport) -> bool {
+        let counters_regressed = rr.highest_counter < self.prev_rr_highest_counter
+            || rr.cumulative_packets_recv < self.prev_rr_cum_packets
+            || rr.cumulative_bytes_recv < self.prev_rr_cum_bytes
+            || rr.ecn_ce_count < self.prev_rr_ecn_ce
+            || rr.cumulative_reorder_count < self.prev_rr_reorder;
+        let duplicate_counters = rr.highest_counter == self.prev_rr_highest_counter
+            && rr.cumulative_packets_recv == self.prev_rr_cum_packets
+            && rr.cumulative_bytes_recv == self.prev_rr_cum_bytes
+            && rr.ecn_ce_count == self.prev_rr_ecn_ce
+            && rr.cumulative_reorder_count == self.prev_rr_reorder;
+        counters_regressed || duplicate_counters
     }
 
     pub fn update_reverse_delivery(&mut self, our_recv_packets: u64, peer_highest: u64) {
@@ -337,5 +369,31 @@ mod tests {
             "reverse={}, expected 0.5",
             m.delivery_ratio_reverse
         );
+    }
+
+    #[test]
+    fn test_ignores_duplicate_receiver_report_after_valid_sample() {
+        let mut m = MmpMetrics::new();
+        let t0 = Instant::now();
+
+        let rr1 = make_rr(10, 10, 5_000, 1_000, 5, 0);
+        m.process_receiver_report(&rr1, 1_050, t0);
+
+        let rr2 = make_rr(20, 18, 14_000, 1_100, 5, 0);
+        m.process_receiver_report(&rr2, 1_150, t0 + Duration::from_secs(1));
+        let baseline_srtt_ms = m.srtt_ms().unwrap();
+        let baseline_loss = m.loss_rate();
+        let baseline_goodput = m.goodput_bps();
+
+        assert!(baseline_loss > 0.0);
+        assert!(baseline_goodput > 0.0);
+
+        // A duplicate of rr2 arriving later would be a ~4.9s RTT sample
+        // if accepted. It must not move any metrics.
+        m.process_receiver_report(&rr2, 6_000, t0 + Duration::from_secs(5));
+
+        assert_eq!(m.srtt_ms().unwrap(), baseline_srtt_ms);
+        assert_eq!(m.loss_rate(), baseline_loss);
+        assert_eq!(m.goodput_bps(), baseline_goodput);
     }
 }
