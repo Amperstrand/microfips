@@ -1,3 +1,5 @@
+//! Ported from fips v0.4.0: `src/mmp/receiver.rs`.
+
 use embassy_time::{Duration, Instant};
 use microfips_core::mmp::algorithms::{JitterEstimator, OwdTrendDetector};
 use microfips_core::mmp::report::ReceiverReport;
@@ -209,10 +211,20 @@ impl ReceiverState {
             return None;
         }
 
-        let dwell_time = self
+        // Bugfix 3 (fips v0.4): If dwell time exceeds u16::MAX (~65.5s),
+        // suppress the timestamp echo (set to 0) and cap dwell_time. This
+        // prevents a bogus RTT sample on the peer from a wrapped dwell value.
+        let (timestamp_echo, dwell_time) = self
             .last_recv_time
-            .map(|t| now.duration_since(t).as_millis() as u16)
-            .unwrap_or(0);
+            .map(|t| {
+                let dwell_ms = now.duration_since(t).as_millis();
+                if dwell_ms > u64::from(u16::MAX) {
+                    (0u32, u16::MAX)
+                } else {
+                    (self.last_sender_timestamp, dwell_ms as u16)
+                }
+            })
+            .unwrap_or((0, 0));
 
         let (burst_count, max_burst, mean_burst) = self.gap_tracker.take_interval_stats();
 
@@ -220,7 +232,7 @@ impl ReceiverState {
             highest_counter: self.highest_counter,
             cumulative_packets_recv: self.cumulative_packets_recv,
             cumulative_bytes_recv: self.cumulative_bytes_recv,
-            timestamp_echo: self.last_sender_timestamp,
+            timestamp_echo,
             dwell_time,
             max_burst_loss: max_burst,
             mean_burst_loss: mean_burst,
@@ -468,5 +480,20 @@ mod tests {
         assert_eq!(count, 2);
         assert_eq!(max, 2);
         assert_eq!(mean, 512);
+    }
+
+    #[test]
+    fn test_build_report_suppresses_rtt_echo_when_dwell_overflows() {
+        let mut r = ReceiverState::new(32);
+        let t0 = Instant::now();
+        r.record_recv(1, 100, 500, false, t0);
+
+        let report = r
+            .build_report(t0 + Duration::from_millis(u64::from(u16::MAX) + 1))
+            .unwrap();
+
+        assert_eq!(report.timestamp_echo, 0);
+        assert_eq!(report.dwell_time, u16::MAX);
+        assert_eq!(report.cumulative_packets_recv, 1);
     }
 }
