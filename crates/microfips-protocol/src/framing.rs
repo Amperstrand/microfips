@@ -1,3 +1,5 @@
+//! Frame buffer compaction helper. Closest upstream: fips v0.4.0 `src/transport/mod.rs` frame-handling logic.
+
 pub fn compact(buf: &mut [u8], pos: &mut usize, len: &mut usize) {
     if *pos > 0 && *pos < *len {
         let remaining = *len - *pos;

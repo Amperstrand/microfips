@@ -1,3 +1,7 @@
+//! Ported from fips v0.4.0: `src/protocol/error.rs` (simplified subset for no_std).
+//!
+//! Subset only: transport/disconnect/decrypt errors. Upstream has richer error taxonomy.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolError {
     Disconnected,

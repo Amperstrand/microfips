@@ -1,3 +1,5 @@
+//! Ported from fips v0.4.0: `src/lib.rs` (module structure subset for no_std leaf node).
+//!
 //! no_std FIPS protocol state machine: Transport trait, length-prefixed framing, Node runtime, FSP dual handler, and peer policy for leaf nodes.
 
 #![no_std]
