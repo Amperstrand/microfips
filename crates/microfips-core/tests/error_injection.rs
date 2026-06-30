@@ -6,12 +6,15 @@
 //! `Err(NoiseError)`). No test uses `#[should_panic]`.
 
 use microfips_core::noise;
-use microfips_core::noise::{NoiseError, NoiseXxInitiator, NoiseXxResponder};
+use microfips_core::noise::NoiseError;
+#[cfg(feature = "noise-xx")]
+use microfips_core::noise::{NoiseXxInitiator, NoiseXxResponder};
 use microfips_core::wire;
 
 // ---- Helpers ----
 
 /// Build a valid FMP MSG1 frame with a real Noise XX handshake payload.
+#[cfg(feature = "noise-xx")]
 fn build_valid_msg1() -> ([u8; 256], usize) {
     let init_secret = [0x01u8; 32];
     let eph_secret = [0x03u8; 32];
@@ -32,6 +35,7 @@ fn build_valid_msg1() -> ([u8; 256], usize) {
 }
 
 /// Build a valid Noise XX MSG2 (the Noise-layer payload only, 106 bytes).
+#[cfg(feature = "noise-xx")]
 fn build_valid_noise_msg2(msg1_noise: &[u8]) -> ([u8; 128], usize) {
     let resp_secret = [0x02u8; 32];
     let eph_resp_secret = [0x04u8; 32];
@@ -112,9 +116,10 @@ fn test_fmp_prefix_wrong_payload_length_zero() {
 
 // ---- Category 2: Truncated MSG1 ----
 
-/// Only 20 bytes of a MSG1 (wire size 41) → parse_message returns None or Msg1 with
+/// Only 20 bytes of a MSG1 → parse_message returns None or Msg1 with
 /// truncated noise_payload; either way Noise layer rejects it.
 #[test]
+#[cfg(feature = "noise-xx")]
 fn test_fmp_truncated_msg1_20_bytes() {
     let (frame, _full_len) = build_valid_msg1();
     // Provide only 20 bytes (prefix is fine, but noise payload is truncated)
@@ -138,6 +143,7 @@ fn test_fmp_truncated_msg1_20_bytes() {
 /// → parse_message returns Msg1 with empty noise_payload which is
 ///   detectable as invalid at the next layer.
 #[test]
+#[cfg(feature = "noise-xx")]
 fn test_fmp_msg1_minimal_truncation_noise_layer_rejects() {
     // Build an FMP MSG1 frame but only give 8 bytes (4 prefix + 4 idx)
     let (frame, _) = build_valid_msg1();
@@ -204,6 +210,7 @@ fn test_fmp_truncated_msg2_30_bytes() {
 /// MSG2 with only 12 bytes (prefix + two indices) — no noise payload.
 /// If FMP parses it, noise_payload.len() < 106; read_message2 must return Err.
 #[test]
+#[cfg(feature = "noise-xx")]
 fn test_fmp_msg2_minimal_truncation_noise_layer_rejects() {
     let noise_payload_full = [0xBBu8; wire::HANDSHAKE_MSG2_SIZE];
     let mut frame = [0u8; 256];
@@ -249,7 +256,7 @@ fn test_fmp_msg2_minimal_truncation_noise_layer_rejects() {
 fn test_fmp_oversized_payload_claimed_65535() {
     // Craft a prefix that claims 65535 bytes of payload
     let mut data = [0u8; 8]; // only 8 bytes of actual data
-    data[0] = (wire::FMP_VERSION << 4) | wire::PHASE_MSG1; // 0x11
+    data[0] = (wire::FMP_VERSION << 4) | wire::PHASE_MSG1;
     data[1] = 0x00;
     data[2] = 0xFF; // payload_len = 65535 LE
     data[3] = 0xFF;
@@ -421,6 +428,7 @@ fn test_fmp_established_zero_length_encrypted() {
 
 /// Valid FMP MSG2 wrapper but noise_payload is all random bytes → read_message2 returns Err.
 #[test]
+#[cfg(feature = "noise-xx")]
 fn test_noise_msg2_corrupted_ciphertext_returns_err() {
     // Build a valid MSG1 first to get the initiator into the right state
     let init_secret = [0x01u8; 32];
@@ -453,6 +461,7 @@ fn test_noise_msg2_corrupted_ciphertext_returns_err() {
 
 /// Valid FMP MSG2 frame with one flipped bit in the ciphertext → AEAD auth fails.
 #[test]
+#[cfg(feature = "noise-xx")]
 fn test_noise_msg2_single_bit_flip_returns_err() {
     // Complete MSG1 → get valid MSG2 noise bytes → flip one bit → feed to initiator
     let init_secret = [0x01u8; 32];
@@ -526,6 +535,7 @@ fn test_fmp_msg1_replay_double_parse() {
 /// Replay of MSG2 to a fresh initiator (different state) → Noise decryption fails.
 /// This demonstrates that MSG2 is not replayable across sessions.
 #[test]
+#[cfg(feature = "noise-xx")]
 fn test_noise_msg2_replay_to_wrong_initiator_fails() {
     // Session 1: get a valid MSG2
     let init_secret = [0x01u8; 32];
@@ -589,6 +599,7 @@ fn test_fmp_too_short_for_prefix() {
 
 /// read_message2 with wrong length (not exactly 106 bytes) → returns Err(InvalidMessage).
 #[test]
+#[cfg(feature = "noise-xx")]
 fn test_noise_read_message2_wrong_length_returns_err() {
     let init_secret = [0x01u8; 32];
     let eph_secret = [0x03u8; 32];

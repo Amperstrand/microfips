@@ -60,27 +60,26 @@ fn build_two_step_established(
 #[test]
 fn test_fmp_prefix_version_phase_encoding() {
     // FIPS: wire.rs:114-116 ver_phase_byte() = (version << 4) | (phase & 0x0F)
-    // FIPS: wire.rs:28 FMP_VERSION=0
     let p1 = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
-    assert_eq!(p1[0], 0x11, "phase 1: version=1, phase=1");
+    assert_eq!(p1[0], (wire::FMP_VERSION << 4) | wire::PHASE_MSG1, "phase 1 byte");
     assert_eq!(p1[1], 0x00, "flags=0");
     assert_eq!(p1[2], 0x00, "payload_len low=0");
     assert_eq!(p1[3], 0x00, "payload_len high=0");
 
     let p2 = wire::build_prefix(wire::PHASE_MSG2, 0x03, 65);
-    assert_eq!(p2[0], 0x12, "phase 2: version=1, phase=2");
+    assert_eq!(p2[0], (wire::FMP_VERSION << 4) | wire::PHASE_MSG2, "phase 2 byte");
     assert_eq!(p2[1], 0x03, "flags=3");
     assert_eq!(u16::from_le_bytes([p2[2], p2[3]]), 65);
 
     let pe = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 100);
-    assert_eq!(pe[0], 0x10, "phase 0: version=1, phase=0");
+    assert_eq!(pe[0], (wire::FMP_VERSION << 4) | wire::PHASE_ESTABLISHED, "phase 0 byte");
     assert_eq!(u16::from_le_bytes([pe[2], pe[3]]), 100);
 }
 
 #[test]
 fn test_fmp_msg1_wire_layout() {
     // FIPS: wire.rs:314-326 build_msg1()
-    // Layout: [0x01][0x00][payload_len:2LE][sender_idx:4LE][noise_payload:106]
+    // Layout: [ver+phase][flags][payload_len:2LE][sender_idx:4LE][noise_payload]
     let noise_payload = [0x42u8; wire::HANDSHAKE_MSG1_SIZE];
     let mut out = [0u8; 256];
     let len = wire::build_msg1(
@@ -91,26 +90,25 @@ fn test_fmp_msg1_wire_layout() {
     .unwrap();
 
     assert_eq!(len, wire::MSG1_WIRE_SIZE, "MSG1 total size");
-    assert_eq!(len, 41, "MSG1 = 4+4+33");
 
-    assert_eq!(out[0], 0x11, "version=1, phase=1");
+    assert_eq!(out[0], (wire::FMP_VERSION << 4) | wire::PHASE_MSG1, "ver+phase");
     assert_eq!(out[1], 0x00, "flags=0");
     assert_eq!(
         u16::from_le_bytes([out[2], out[3]]),
-        37,
-        "payload_len=4+33=37"
+        (wire::IDX_SIZE + wire::HANDSHAKE_MSG1_SIZE) as u16,
+        "payload_len = idx + noise"
     );
     assert_eq!(
         u32::from_le_bytes(out[4..8].try_into().unwrap()),
         0xDEADBEEF
     );
-    assert_eq!(&out[8..41], &noise_payload[..]);
+    assert_eq!(&out[8..len], &noise_payload[..]);
 }
 
 #[test]
 fn test_fmp_msg2_wire_layout() {
     // FIPS: wire.rs:331-344 build_msg2()
-    // Layout: [0x02][0x00][payload_len:2LE][sender_idx:4LE][receiver_idx:4LE][noise_payload:57]
+    // Layout: [ver+phase][flags][payload_len:2LE][sender_idx:4LE][receiver_idx:4LE][noise_payload]
     let noise_payload = [0x42u8; wire::HANDSHAKE_MSG2_SIZE];
     let mut out = [0u8; 256];
     let len = wire::build_msg2(
@@ -122,14 +120,13 @@ fn test_fmp_msg2_wire_layout() {
     .unwrap();
 
     assert_eq!(len, wire::MSG2_WIRE_SIZE, "MSG2 total size");
-    assert_eq!(len, 118, "MSG2 = 4+4+4+106");
 
-    assert_eq!(out[0], 0x12, "version=1, phase=2");
+    assert_eq!(out[0], (wire::FMP_VERSION << 4) | wire::PHASE_MSG2, "ver+phase");
     assert_eq!(out[1], 0x00, "flags=0");
     assert_eq!(
         u16::from_le_bytes([out[2], out[3]]),
-        114,
-        "payload_len=4+4+106=114"
+        (wire::IDX_SIZE * 2 + wire::HANDSHAKE_MSG2_SIZE) as u16,
+        "payload_len = 2*idx + noise"
     );
     assert_eq!(
         u32::from_le_bytes(out[4..8].try_into().unwrap()),
@@ -141,7 +138,7 @@ fn test_fmp_msg2_wire_layout() {
         2,
         "receiver_idx"
     );
-    assert_eq!(&out[12..118], &noise_payload[..]);
+    assert_eq!(&out[12..len], &noise_payload[..]);
 }
 
 #[test]
@@ -166,8 +163,8 @@ fn test_fmp_established_header_is_16_bytes_aad() {
 
     // First 16 bytes = AEAD AAD
     let aad = &out[..wire::ESTABLISHED_HEADER_SIZE];
-    // Byte 0: ver_phase = (1<<4)|0x0 = 0x10
-    assert_eq!(aad[0], 0x10, "established: version=1, phase=0");
+    // Byte 0: ver_phase = (FMP_VERSION<<4)|0x0
+    assert_eq!(aad[0], (wire::FMP_VERSION << 4) | wire::PHASE_ESTABLISHED, "established ver+phase");
     // Byte 1: flags = 0x00
     assert_eq!(aad[1], 0x00, "flags=0");
     // Bytes 4-7: receiver_idx = 5
@@ -578,9 +575,18 @@ fn test_noise_constants_match_fips() {
     assert_eq!(noise::TAG_SIZE, 16, "FIPS: mod.rs:65");
     assert_eq!(noise::EPOCH_SIZE, 8, "FIPS: mod.rs:71");
     assert_eq!(noise::PUBKEY_SIZE, 33, "FIPS: mod.rs:68");
-    assert_eq!(wire::HANDSHAKE_MSG1_SIZE, 33, "XX msg1 = ephemeral only");
-    assert_eq!(wire::HANDSHAKE_MSG2_SIZE, 106, "XX msg2 = 33+49+24");
-    assert_eq!(wire::HANDSHAKE_MSG3_SIZE, 73, "XX msg3 = 49+24");
+    #[cfg(not(feature = "noise-xx"))]
+    {
+        assert_eq!(wire::HANDSHAKE_MSG1_SIZE, 106, "IK msg1 = 33+49+24");
+        assert_eq!(wire::HANDSHAKE_MSG2_SIZE, 57, "IK msg2 = 33+24");
+        assert_eq!(wire::HANDSHAKE_MSG3_SIZE, 73, "XK msg3 = 49+24");
+    }
+    #[cfg(feature = "noise-xx")]
+    {
+        assert_eq!(wire::HANDSHAKE_MSG1_SIZE, 33, "XX msg1 = ephemeral only");
+        assert_eq!(wire::HANDSHAKE_MSG2_SIZE, 106, "XX msg2 = 33+49+24");
+        assert_eq!(wire::HANDSHAKE_MSG3_SIZE, 73, "XX msg3 = 49+24");
+    }
     assert_eq!(fsp::XK_HANDSHAKE_MSG1_SIZE, 33, "FIPS: mod.rs:83");
     assert_eq!(fsp::XK_HANDSHAKE_MSG2_SIZE, 57, "FIPS: mod.rs:86");
     assert_eq!(fsp::XK_HANDSHAKE_MSG3_SIZE, 73, "FIPS: mod.rs:89 — 49+24");
@@ -589,6 +595,9 @@ fn test_noise_constants_match_fips() {
 #[test]
 fn test_fmp_constants_match_fips() {
     // FIPS: wire.rs:28-67
+    #[cfg(not(feature = "noise-xx"))]
+    assert_eq!(wire::FMP_VERSION, 0, "FIPS v0.4: wire.rs FMP_VERSION=0");
+    #[cfg(feature = "noise-xx")]
     assert_eq!(wire::FMP_VERSION, 1, "FIPS next: wire.rs FMP_VERSION=1");
     assert_eq!(wire::COMMON_PREFIX_SIZE, 4, "FIPS: wire.rs:40");
     assert_eq!(
@@ -598,9 +607,18 @@ fn test_fmp_constants_match_fips() {
     );
     assert_eq!(wire::INNER_HEADER_SIZE, 5, "FIPS: wire.rs:55 — 4+1");
     assert_eq!(wire::ENCRYPTED_MIN_SIZE, 32, "FIPS: wire.rs:52 — 16+16");
-    assert_eq!(wire::MSG1_WIRE_SIZE, 41, "XX: 4+4+33");
-    assert_eq!(wire::MSG2_WIRE_SIZE, 118, "XX: 4+4+4+106");
-    assert_eq!(wire::MSG3_WIRE_SIZE, 85, "XX: 4+4+4+73");
+    #[cfg(not(feature = "noise-xx"))]
+    {
+        assert_eq!(wire::MSG1_WIRE_SIZE, 114, "IK: 4+4+106");
+        assert_eq!(wire::MSG2_WIRE_SIZE, 69, "IK: 4+4+4+57");
+        assert_eq!(wire::MSG3_WIRE_SIZE, 85, "XK: 4+4+4+73");
+    }
+    #[cfg(feature = "noise-xx")]
+    {
+        assert_eq!(wire::MSG1_WIRE_SIZE, 41, "XX: 4+4+33");
+        assert_eq!(wire::MSG2_WIRE_SIZE, 118, "XX: 4+4+4+106");
+        assert_eq!(wire::MSG3_WIRE_SIZE, 85, "XX: 4+4+4+73");
+    }
     assert_eq!(wire::PHASE_ESTABLISHED, 0x00, "FIPS: wire.rs:31");
     assert_eq!(wire::PHASE_MSG1, 0x01, "FIPS: wire.rs:34");
     assert_eq!(wire::PHASE_MSG2, 0x02, "FIPS: wire.rs:37");

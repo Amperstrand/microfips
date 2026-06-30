@@ -5,8 +5,13 @@ use microfips_core::fsp::{
 };
 use microfips_core::identity::{NodeAddr, STM32_NSEC};
 use microfips_core::noise::{
-    aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseXkInitiator, NoiseXxInitiator,
-    NoiseXxResponder, PUBKEY_SIZE, TAG_SIZE,
+    aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseXkInitiator,
+    PUBKEY_SIZE, TAG_SIZE,
+};
+#[cfg(feature = "noise-xx")]
+use microfips_core::noise::{
+    NoiseXxInitiator, NoiseXxResponder, XX_HANDSHAKE_MSG1_SIZE, XX_HANDSHAKE_MSG2_SIZE,
+    XX_HANDSHAKE_MSG3_SIZE,
 };
 use microfips_core::wire;
 use rand::RngCore;
@@ -102,6 +107,7 @@ fn decrypt_fmp_established(data: &[u8], key: &[u8; 32]) -> Option<(u64, u8, Vec<
     }
 }
 
+#[cfg(feature = "noise-xx")]
 fn do_xx_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
     let init_eph: [u8; 32] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -122,7 +128,7 @@ fn do_xx_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
 
     let mut msg1 = [0u8; 128];
     let msg1_len = initiator.write_message1(&mut msg1).unwrap();
-    assert_eq!(msg1_len, wire::HANDSHAKE_MSG1_SIZE);
+    assert_eq!(msg1_len, XX_HANDSHAKE_MSG1_SIZE);
 
     let mut responder = NoiseXxResponder::new(&RESP_SECRET).unwrap();
     responder.read_message1(&msg1[..msg1_len]).unwrap();
@@ -131,7 +137,7 @@ fn do_xx_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
     let msg2_len = responder
         .write_message2(&resp_eph, &epoch, &mut msg2_noise)
         .unwrap();
-    assert_eq!(msg2_len, wire::HANDSHAKE_MSG2_SIZE);
+    assert_eq!(msg2_len, XX_HANDSHAKE_MSG2_SIZE);
 
     let (recv_pub, recv_epoch) = initiator
         .read_message2(&msg2_noise[..msg2_len])
@@ -143,7 +149,7 @@ fn do_xx_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
     let msg3_len = initiator
         .write_message3(&init_pub, &epoch, &mut msg3_noise)
         .unwrap();
-    assert_eq!(msg3_len, wire::HANDSHAKE_MSG3_SIZE);
+    assert_eq!(msg3_len, XX_HANDSHAKE_MSG3_SIZE);
 
     let (init_pub_recv, init_epoch_recv) = responder
         .read_message3(&msg3_noise[..msg3_len])
@@ -296,6 +302,7 @@ fn test_fsp_full_handshake_over_fmp() {
 }
 
 #[test]
+#[cfg(feature = "noise-xx")]
 fn test_fsp_setup_over_fmp_roundtrip() {
     let (_init_k_send, init_k_recv, resp_k_send, _resp_k_recv) = do_xx_handshake();
 
