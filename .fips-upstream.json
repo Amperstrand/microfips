@@ -1,4 +1,5 @@
 {
-  "repo": "https://github.com/Amperstrand/fips.git",
-  "branch": "integrate/macos-linux-sync"
+  "repo": "https://github.com/jmcorgan/fips.git",
+  "ref": "v0.4.0",
+  "noise_compat": "IK/XK (FMP v0). Noise XX (FMP v1) behind --features noise-xx for fips next/v0.5 forward compat."
 }

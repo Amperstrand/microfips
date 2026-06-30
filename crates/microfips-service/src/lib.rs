@@ -1,3 +1,5 @@
+//! microfips-only: transport-neutral service layer. No direct fips equivalent. Closest upstream code split across `src/control/protocol.rs`, `src/node/handlers/session.rs`, `src/mmp/report.rs`.
+//!
 //! Transport-neutral request/response service layer for FIPS applications.
 
 #![no_std]
