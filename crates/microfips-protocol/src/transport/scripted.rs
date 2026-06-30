@@ -1,3 +1,5 @@
+//! Test-only mock transport. Closest upstream: fips v0.4.0 `src/transport/loopback.rs`.
+
 use std::boxed::Box;
 use std::collections::VecDeque;
 use std::format;
@@ -179,6 +181,7 @@ mod tests {
     use microfips_core::wire;
     use rand::RngCore as _;
     use rand::SeedableRng;
+
     use std::boxed::Box;
     use std::sync::{Arc, Mutex};
     use std::time::Instant as StdInstant;

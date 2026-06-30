@@ -1,3 +1,7 @@
+//! Ported from fips v0.4.0: `src/transport/mod.rs` (simplified transport trait for no_std).
+//!
+//! Simplified: minimal async trait + frame reader/writer. Upstream has concrete transport handles and broader transport surface.
+
 use crate::node::MAX_FRAME_SIZE;
 
 use core::fmt::Debug;

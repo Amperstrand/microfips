@@ -1,3 +1,5 @@
+//! Ported from fips v0.4.0: `src/peer_policy.rs`. (Originally ported TO fips from microfips; now tracked as upstream.)
+
 use core::cell::Cell;
 use embassy_time::{Duration, Instant};
 

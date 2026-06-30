@@ -1,3 +1,5 @@
+//! Module scaffold. Upstream `src/mmp/mod.rs` also contains session state and path MTU logic not included here.
+
 pub mod metrics;
 pub mod peer_state;
 pub mod receiver;
