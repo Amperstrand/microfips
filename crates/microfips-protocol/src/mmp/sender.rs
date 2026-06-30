@@ -1,3 +1,5 @@
+//! Ported from fips v0.4.0: `src/mmp/sender.rs`.
+
 use embassy_time::{Duration, Instant};
 use microfips_core::mmp::report::SenderReport;
 use microfips_core::mmp::{
