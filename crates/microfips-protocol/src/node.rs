@@ -1,3 +1,10 @@
+//! Ported from fips v0.4.0: `src/node/mod.rs`, `src/node/handlers/{dispatch,handshake,encrypted,session}.rs`, `src/node/{wire,session_wire}.rs`.
+//!
+//! ## Deviations from fips
+//! - Combined 6+ upstream files into one for no_std simplicity.
+//! - Custom transport/framing abstractions replace upstream's concrete-handle approach.
+//! - Leaf-node-only: no routing, no spanning tree, no bloom filters.
+
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Timer};
 use microfips_core::wire;
@@ -405,10 +412,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         let initiator_eph = self.generate_valid_eph();
         let (mut noise_st, _e_pub) =
-            noise::NoiseIkInitiator::new(&initiator_eph, &self.nsec, &self.peer_npub)?;
+            noise::NoiseXxInitiator::new(&initiator_eph, &self.nsec)?;
 
         let mut n1 = [0u8; 256];
-        let n1len = noise_st.write_message1(&my_pub, &epoch, &mut n1)?;
+        let n1len = noise_st.write_message1(&mut n1)?;
 
         let our_index = self.allocate_session_index();
         let mut f1 = [0u8; 256];
@@ -424,7 +431,6 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
 
         let mut mb = [0u8; MAX_FRAME_SIZE];
-        let mut competing_msg1_count: u32 = 0;
         let mut resend_count: u32 = 0;
         loop {
             let recv_timeout_ms = self.current_handshake_resend_timeout_ms(resend_count);
@@ -439,9 +445,27 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             ..
                         } => {
                             let mut st = noise_st.clone();
-                            st.read_message2(noise_payload)?;
-                            let (ks, kr) = st.finalize();
-                            return Ok((ks, kr, sender_idx));
+                            let (_resp_pub, _resp_epoch) = st
+                                .read_message2(noise_payload)
+                                .map_err(|_| ProtocolError::DecryptFailed)?;
+
+                            let mut n3 = [0u8; 128];
+                            let n3len = st
+                                .write_message3(&my_pub, &epoch, &mut n3)
+                                .map_err(|_| ProtocolError::DecryptFailed)?;
+                            let mut f3 = [0u8; 256];
+                            let f3len = wire::build_msg3(
+                                our_index,
+                                sender_idx,
+                                &n3[..n3len],
+                                &mut f3,
+                            )
+                            .ok_or(ProtocolError::InvalidFrame)?;
+                            self.send_frame(&f3[..f3len]).await?;
+
+                            // finalize() returns (c1, c2) = (init→resp, resp→init)
+                            let (c1, c2) = st.finalize();
+                            return Ok((c1, c2, sender_idx));
                         }
                         wire::FmpMessage::Msg1 {
                             sender_idx: peer_sender_idx,
@@ -453,72 +477,21 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 return Err(ProtocolError::InvalidMessage);
                             }
 
-                            if noise_payload.len() < noise::PUBKEY_SIZE {
-                                #[cfg(feature = "log")]
-                                log::warn!(
-                                    "handshake: MSG1 noise payload too short ({})",
-                                    noise_payload.len()
-                                );
-                                return Err(ProtocolError::InvalidMessage);
-                            }
-
-                            let peer_e_pub: [u8; noise::PUBKEY_SIZE] = noise_payload
-                                [..noise::PUBKEY_SIZE]
-                                .try_into()
-                                .map_err(|_| ProtocolError::InvalidMessage)?;
-
-                            let mut responder =
-                                match noise::NoiseIkResponder::new(&self.nsec, &peer_e_pub) {
-                                    Ok(r) => r,
-                                    Err(_e) => {
-                                        #[cfg(feature = "log")]
-                                        log::error!(
-                                            "handshake: NoiseIkResponder::new failed: {:?}",
-                                            _e
-                                        );
-                                        return Err(ProtocolError::InvalidMessage);
-                                    }
-                                };
-
-                            let (initiator_static_pub, epoch) = match responder
-                                .read_message1(&noise_payload[noise::PUBKEY_SIZE..])
-                            {
-                                Ok(v) => v,
-                                Err(_e) => {
-                                    #[cfg(feature = "log")]
-                                    log::error!("handshake: read_message1 failed: {:?}", _e);
-                                    return Err(ProtocolError::InvalidMessage);
-                                }
-                            };
-
-                            // Compare x-only bytes only (1..33). The prefix byte may differ:
-                            // peer_pub is constructed with 0x02 from x-only exchange data,
-                            // but the Noise-decrypted initiator_static_pub has the actual
-                            // compressed pubkey prefix (0x02 or 0x03 depending on y-parity).
-                            // Both represent the same key — only the x-coordinate matters.
-                            let from_configured_peer =
-                                initiator_static_pub[1..33] == self.peer_npub[1..33];
-                            #[cfg(feature = "log")]
-                            {
-                                log::info!("handshake: from_configured_peer={} peer_sent_first={} prefix_initiator=0x{:02x} prefix_peer=0x{:02x}",
-                                    from_configured_peer, self.peer_sent_first,
-                                    initiator_static_pub[0], self.peer_npub[0]);
-                            }
-
-                            if from_configured_peer
-                                && !self.peer_sent_first
+                            // XX tie-breaking: if we also sent MSG1, yield when our
+                            // address is lower. (Identity cannot be verified from
+                            // XX MSG1 — it's ephemeral-only. Verification happens
+                            // after MSG3 reveals the initiator's static key.)
+                            if !self.peer_sent_first
                                 && my_addr.as_bytes() < peer_addr.as_bytes()
                             {
                                 continue;
                             }
 
-                            if !from_configured_peer {
-                                competing_msg1_count += 1;
-                                if competing_msg1_count > MAX_COMPETING_MSG1 {
-                                    return Err(ProtocolError::Timeout);
-                                }
-                                continue;
-                            }
+                            let mut responder = noise::NoiseXxResponder::new(&self.nsec)
+                                .map_err(|_| ProtocolError::InvalidMessage)?;
+                            responder
+                                .read_message1(noise_payload)
+                                .map_err(|_| ProtocolError::InvalidMessage)?;
 
                             let mut resp_eph = self.generate_valid_eph();
                             while resp_eph == initiator_eph {
@@ -526,23 +499,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             }
 
                             let mut msg2_noise = [0u8; 128];
-                            let msg2_noise_len = match responder.write_message2(
-                                &resp_eph,
-                                &epoch,
-                                &mut msg2_noise,
-                            ) {
-                                Ok(n) => n,
-                                Err(_e) => {
-                                    #[cfg(feature = "log")]
-                                    log::error!("handshake: write_message2 failed: {:?}", _e);
-                                    return Err(ProtocolError::DecryptFailed);
-                                }
-                            };
+                            let msg2_noise_len = responder
+                                .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                                .map_err(|_| ProtocolError::DecryptFailed)?;
 
-                            let our_index = self.allocate_session_index();
+                            let resp_index = self.allocate_session_index();
                             let mut msg2_buf = [0u8; 256];
                             let msg2_len = wire::build_msg2(
-                                our_index,
+                                resp_index,
                                 peer_sender_idx,
                                 &msg2_noise[..msg2_noise_len],
                                 &mut msg2_buf,
@@ -550,8 +514,60 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             .ok_or(ProtocolError::InvalidMessage)?;
                             self.send_frame(&msg2_buf[..msg2_len]).await?;
 
-                            let (k1, k2) = responder.finalize();
-                            return Ok((k2, k1, peer_sender_idx));
+                            let mut msg3_resend_count: u32 = 0;
+                            loop {
+                                let msg3_timeout_ms =
+                                    self.current_handshake_resend_timeout_ms(msg3_resend_count);
+                                match self.recv_frame(&mut mb, msg3_timeout_ms).await {
+                                    Ok(ml3) => {
+                                        let m3 = wire::parse_message(&mb[..ml3])
+                                            .ok_or(ProtocolError::InvalidMessage)?;
+                                        match m3 {
+                                            wire::FmpMessage::Msg3 {
+                                                noise_payload: np3,
+                                                ..
+                                            } => {
+                                                let (init_pub, _init_epoch) = responder
+                                                    .read_message3(np3)
+                                                    .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                                                // Verify identity NOW — XX reveals
+                                                // initiator's static key in MSG3.
+                                                // Compare x-only bytes (1..33) because
+                                                // the compressed prefix may differ.
+                                                if init_pub[1..33] != self.peer_npub[1..33] {
+                                                    #[cfg(feature = "log")]
+                                                    log::warn!(
+                                                        "handshake: MSG3 identity mismatch"
+                                                    );
+                                                    return Err(ProtocolError::InvalidMessage);
+                                                }
+
+                                                // Responder keys are reversed:
+                                                // c1 = init→resp (our recv),
+                                                // c2 = resp→init (our send)
+                                                let (c1, c2) = responder.finalize();
+                                                return Ok((c2, c1, peer_sender_idx));
+                                            }
+                                            _ => {
+                                                #[cfg(feature = "log")]
+                                                log::warn!(
+                                                    "handshake: expected MSG3, ignoring other frame"
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    Err(ProtocolError::Timeout) => {
+                                        msg3_resend_count += 1;
+                                        if msg3_resend_count > self.timing.handshake_max_resends {
+                                            return Err(ProtocolError::Timeout);
+                                        }
+                                        self.send_frame(&msg2_buf[..msg2_len]).await?;
+                                    }
+                                    Err(e) => return Err(e),
+                                }
+                            }
                         }
                         _ => continue,
                     }
@@ -1158,7 +1174,9 @@ fn decrypt_established_frame<'a>(
         #[cfg(feature = "std")]
         if matches!(
             m,
-            wire::FmpMessage::Msg1 { .. } | wire::FmpMessage::Msg2 { .. }
+            wire::FmpMessage::Msg1 { .. }
+                | wire::FmpMessage::Msg2 { .. }
+                | wire::FmpMessage::Msg3 { .. }
         ) {
             log::warn!("discarding handshake frame in established state");
         }
