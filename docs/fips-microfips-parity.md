@@ -1,3 +1,5 @@
+> ⚠️ **STALE — PRE-MIGRATION SNAPSHOT.** This document describes the pre-Noise-XX-migration state. As of 2026-07-04, microFIPS HEAD uses `FMP_VERSION=1` and Noise XX. For current compatibility analysis, see `docs/fips-microfips-compat-audit.md`.
+
 # FIPS ↔ microfips parity mapping
 
 Source baseline:
