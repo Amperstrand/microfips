@@ -400,6 +400,22 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         epoch: [u8; microfips_core::noise::EPOCH_SIZE],
         handler: &mut H,
     ) -> Result<([u8; 32], [u8; 32], wire::SessionIndex), ProtocolError> {
+        #[cfg(feature = "noise-xx")]
+        {
+            self.handshake_xx(epoch, handler).await
+        }
+        #[cfg(not(feature = "noise-xx"))]
+        {
+            self.handshake_ik(epoch, handler).await
+        }
+    }
+
+    #[cfg(feature = "noise-xx")]
+    async fn handshake_xx<H: NodeHandler>(
+        &mut self,
+        epoch: [u8; microfips_core::noise::EPOCH_SIZE],
+        handler: &mut H,
+    ) -> Result<([u8; 32], [u8; 32], wire::SessionIndex), ProtocolError> {
         use microfips_core::identity::NodeAddr;
         use microfips_core::noise;
         use microfips_core::wire;
@@ -568,6 +584,122 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     Err(e) => return Err(e),
                                 }
                             }
+                        }
+                        _ => continue,
+                    }
+                }
+                Err(ProtocolError::Timeout) => {
+                    resend_count += 1;
+                    if resend_count > self.timing.handshake_max_resends {
+                        return Err(ProtocolError::Timeout);
+                    }
+                    if !self.peer_sent_first {
+                        self.send_frame(&f1[..f1len]).await?;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    #[cfg(not(feature = "noise-xx"))]
+    async fn handshake_ik<H: NodeHandler>(
+        &mut self,
+        epoch: [u8; microfips_core::noise::EPOCH_SIZE],
+        handler: &mut H,
+    ) -> Result<([u8; 32], [u8; 32], wire::SessionIndex), ProtocolError> {
+        use microfips_core::noise;
+        use microfips_core::wire;
+
+        let my_pub = noise::ecdh_pubkey(&self.nsec)?;
+        let initiator_eph = self.generate_valid_eph();
+
+        let (mut noise_st, _e_pub) = noise::NoiseIkInitiator::new(
+            &initiator_eph,
+            &self.nsec,
+            &self.peer_npub,
+        )?;
+
+        let mut n1 = [0u8; 256];
+        let n1len = noise_st.write_message1(&my_pub, &epoch, &mut n1)?;
+
+        let our_index = self.allocate_session_index();
+        let mut f1 = [0u8; 256];
+        let f1len = wire::build_msg1(our_index, &n1[..n1len], &mut f1)
+            .ok_or(ProtocolError::InvalidFrame)?;
+
+        if !self.peer_sent_first {
+            self.send_frame(&f1[..f1len]).await?;
+            handler.on_event(NodeEvent::Msg1Sent).await;
+        }
+
+        let mut mb = [0u8; MAX_FRAME_SIZE];
+        let mut resend_count: u32 = 0;
+        loop {
+            let recv_timeout_ms = self.current_handshake_resend_timeout_ms(resend_count);
+            match self.recv_frame(&mut mb, recv_timeout_ms).await {
+                Ok(ml) => {
+                    resend_count = 0;
+                    let m = wire::parse_message(&mb[..ml]).ok_or(ProtocolError::InvalidMessage)?;
+                    match m {
+                        wire::FmpMessage::Msg2 {
+                            sender_idx,
+                            noise_payload,
+                            ..
+                        } => {
+                            noise_st
+                                .read_message2(noise_payload)
+                                .map_err(|_| ProtocolError::DecryptFailed)?;
+
+                            let (c1, c2) = noise_st.finalize();
+                            return Ok((c1, c2, sender_idx));
+                        }
+                        wire::FmpMessage::Msg1 {
+                            sender_idx: peer_sender_idx,
+                            noise_payload,
+                        } => {
+                            if noise_payload.len() < noise::PUBKEY_SIZE {
+                                continue;
+                            }
+                            let init_eph_pub: [u8; noise::PUBKEY_SIZE] =
+                                noise_payload[..noise::PUBKEY_SIZE].try_into().unwrap();
+
+                            let mut responder = noise::NoiseIkResponder::new(
+                                &self.nsec,
+                                &init_eph_pub,
+                            )
+                            .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                            let (init_pub, _init_epoch) = responder
+                                .read_message1(noise_payload)
+                                .map_err(|_| ProtocolError::InvalidMessage)?;
+
+                            if init_pub[1..33] != self.peer_npub[1..33] {
+                                #[cfg(feature = "log")]
+                                log::warn!("handshake: IK MSG1 identity mismatch");
+                                return Err(ProtocolError::InvalidMessage);
+                            }
+
+                            let resp_eph = self.generate_valid_eph();
+                            let mut msg2_noise = [0u8; 128];
+                            let msg2_noise_len = responder
+                                .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                                .map_err(|_| ProtocolError::DecryptFailed)?;
+
+                            let resp_index = self.allocate_session_index();
+                            let mut msg2_buf = [0u8; 256];
+                            let msg2_len = wire::build_msg2(
+                                resp_index,
+                                peer_sender_idx,
+                                &msg2_noise[..msg2_noise_len],
+                                &mut msg2_buf,
+                            )
+                            .ok_or(ProtocolError::InvalidMessage)?;
+
+                            self.send_frame(&msg2_buf[..msg2_len]).await?;
+
+                            let (c1, c2) = responder.finalize();
+                            return Ok((c2, c1, peer_sender_idx));
                         }
                         _ => continue,
                     }
@@ -2647,6 +2779,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "noise-xx")]
     #[test]
     fn test_tiebreaker_simultaneous_handshake() {
         use crate::transport::channel::pair as channel_pair;
@@ -2690,6 +2823,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "noise-xx")]
     #[test]
     fn test_tiebreaker_winner_ignores_msg1() {
         use crate::transport::channel::pair as channel_pair;
@@ -2765,6 +2899,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "noise-xx")]
     #[test]
     fn test_tiebreaker_loser_becomes_responder() {
         use crate::transport::channel::pair as channel_pair;
@@ -2836,6 +2971,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "noise-xx")]
     #[test]
     fn test_tiebreaker_counter_abort() {
         use crate::transport::channel::pair as channel_pair;
