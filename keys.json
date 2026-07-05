@@ -1,7 +1,7 @@
 {
   "_description": "Single source of truth for all FIPS/microfips device identity keys.",
   "_usage": "See GitHub issue #64. MCU keys are deterministic (generator * N). FIPS host keys are persistent on disk.",
-  "_secret_note": "MCU secrets are NOT secure — they are deterministic test keys. Secure key storage is tracked in #64.",
+  "_secret_note": "MCU secrets are NOT secure \u2014 they are deterministic test keys. Secure key storage is tracked in #64.",
   "devices": {
     "stm32": {
       "label": "STM32F469I-DISCO",
@@ -30,6 +30,15 @@
       "comment": "secp256k1 generator * 5",
       "source": "crates/microfips-esp32s3/src/config.rs ESP32S3_SECRET"
     },
+    "esp32c3": {
+      "label": "ESP32-C3 (RISC-V)",
+      "type": "mcu",
+      "nsec_hex": "0000000000000000000000000000000000000000000000000000000000000007",
+      "npub_hex": "RETRIEVE_FROM_BUILD",
+      "node_addr": "RETRIEVE_FROM_BUILD",
+      "comment": "secp256k1 generator * 7",
+      "source": "keys.json \u2014 for ESP32-C3 WiFi interop test"
+    },
     "sim-a": {
       "label": "SIM-A (host test node)",
       "type": "sim",
@@ -49,13 +58,13 @@
       "source": "crates/microfips-sim/src/main.rs SIM_B_SECRET"
     },
     "vps": {
-        "label": "VPS1 FIPS (66.92.204.38)",
-        "type": "fips-host",
-        "nsec_hex": "RETRIEVE_FROM_VPS",
-        "npub_hex": "03d833fb0801aea854ba11a5d4e60fc22e3b6ed37f381ad946109bbbcfb8266b4b",
-        "node_addr": "90850f9ce010602e45cb33b38ac73db1",
-        "comment": "Persistent key on VPS1 (66.92.204.38), npub1mqelkzqp4659fws35h2wvr7z9caka5ml8qddj3ssnwaulwpxdd9sdc3esw",
-        "source": "/etc/fips/fips.key on VPS1"
+      "label": "VPS1 FIPS (66.92.204.38)",
+      "type": "fips-host",
+      "nsec_hex": "RETRIEVE_FROM_VPS",
+      "npub_hex": "03d833fb0801aea854ba11a5d4e60fc22e3b6ed37f381ad946109bbbcfb8266b4b",
+      "node_addr": "90850f9ce010602e45cb33b38ac73db1",
+      "comment": "Persistent key on VPS1 (66.92.204.38), npub1mqelkzqp4659fws35h2wvr7z9caka5ml8qddj3ssnwaulwpxdd9sdc3esw",
+      "source": "/etc/fips/fips.key on VPS1"
     },
     "linux": {
       "label": "Linux FIPS (dev workstation)",

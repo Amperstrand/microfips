@@ -6,6 +6,10 @@ rustflags = ["-C", "link-arg=-Tlinkall.x"]
 runner = "espflash flash --monitor -p /dev/ttyACM1 --chip esp32s3"
 rustflags = ["-C", "link-arg=-Tlinkall.x"]
 
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --monitor -p /dev/ttyACM1 --chip esp32c3"
+rustflags = ["-C", "link-arg=-Tlinkall.x"]
+
 [env]
 TROUBLE_HOST_DEFAULT_PACKET_POOL_MTU = "2048"
 TROUBLE_HOST_DEFAULT_PACKET_POOL_SIZE = "4"

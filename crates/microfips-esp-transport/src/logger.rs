@@ -26,6 +26,9 @@ impl Log for UartLogger {
 }
 
 pub fn init() {
+    #[cfg(not(target_arch = "riscv32"))]
     log::set_logger(&LOGGER).unwrap();
+    #[cfg(not(target_arch = "riscv32"))]
+    #[cfg(not(target_arch = "riscv32"))]
     log::set_max_level(LevelFilter::Info);
 }

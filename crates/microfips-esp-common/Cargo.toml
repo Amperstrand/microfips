@@ -10,3 +10,4 @@ microfips-protocol = { path = "../microfips-protocol" }
 embassy-net = { workspace = true, features = ["dhcpv4", "udp"] }
 embassy-time = { workspace = true }
 static_cell = { workspace = true }
+portable-atomic = { version = "1", default-features = false }

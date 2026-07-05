@@ -1,4 +1,4 @@
-use core::sync::atomic::Ordering;
+use portable_atomic::Ordering;
 
 use microfips_http_demo::DemoService;
 use microfips_protocol::fsp_handler::FspDualHandler;

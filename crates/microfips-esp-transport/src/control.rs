@@ -90,6 +90,35 @@ fn read_byte() -> u8 {
         val as u8
     }
 }
+// --- ESP32-C3: USB Serial JTAG (same peripheral as S3, same register layout) ---
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_BASE: usize = 0x6004_3000;
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_EP1_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x08) as *const u32;
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_EP1_CONF_REG: *mut u32 = (USB_SERIAL_JTAG_BASE + 0x0C) as *mut u32;
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_IN_EP1_ST_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x44) as *const u32;
+
+#[cfg(feature = "esp32c3")]
+fn init_rx() {}
+
+#[cfg(feature = "esp32c3")]
+fn rx_available() -> bool {
+    unsafe {
+        let st = read_volatile(USB_SERIAL_JTAG_IN_EP1_ST_REG);
+        (st & 0x04) != 0
+    }
+}
+
+#[cfg(feature = "esp32c3")]
+fn read_byte() -> u8 {
+    unsafe {
+        let val = read_volatile(USB_SERIAL_JTAG_EP1_REG) & 0xFF;
+        write_volatile(USB_SERIAL_JTAG_EP1_CONF_REG, 0x01);
+        val as u8
+    }
+}
 
 static PEER_PUB_CELL: StaticCell<[u8; 33]> = StaticCell::new();
 static PEER_PUB_READY: AtomicBool = AtomicBool::new(false);

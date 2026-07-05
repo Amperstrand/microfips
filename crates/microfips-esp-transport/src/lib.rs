@@ -24,7 +24,7 @@ pub mod run_tasks;
 pub mod stats;
 pub mod uart_transport;
 
-#[cfg(feature = "esp32s3")]
+#[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
 pub mod usb_transport;
 
 #[cfg(feature = "wifi")]
