@@ -130,7 +130,6 @@ pub async fn run_wifi_node(
     );
 
     esp_println::println!("[microFIPS] boot: TRNG ready, identity computed");
-    #[cfg(not(target_arch = "riscv32"))]
     log::info!("WiFi mode starting");
 
     let mut resp_eph = [0u8; 32];
@@ -151,7 +150,6 @@ pub async fn run_wifi_node(
         Ok(transport) => transport,
         Err(err) => {
             esp_println::println!("[microFIPS] ERROR: WiFi connect failed: {:?}", err);
-            #[cfg(not(target_arch = "riscv32"))]
             log::error!("WiFi: max retries exceeded, entering error state: {:?}", err);
             led.set_state(config::LED_OFF);
             loop {
@@ -183,7 +181,6 @@ pub async fn run_wifi_node(
     if let Ok(token) = crate::control::control_task() { spawner.spawn(token); }
 
     esp_println::println!("[microFIPS] boot: starting Noise IK handshake with VPS1");
-    #[cfg(not(target_arch = "riscv32"))]
     log::info!("Node running over WiFi...");
     node.run(&mut handler).await;
     #[allow(unreachable_code)]
