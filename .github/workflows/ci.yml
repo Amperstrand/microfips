@@ -514,6 +514,72 @@ jobs:
         run: |
           kill $(pgrep -f microfips-sim) 2>/dev/null || true
 
+  publish-evidence:
+    name: Publish Test Evidence
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: always()
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo test with JSON output
+        run: |
+          mkdir -p test-results
+          {
+            cargo test --message-format=json -p microfips-core 2>&1 || true
+            cargo test --message-format=json -p microfips-core --features std -- --test-threads=1 2>&1 || true
+            cargo test --message-format=json -p microfips-protocol --features std -- --test-threads=1 2>&1 || true
+            cargo test --message-format=json -p microfips-service 2>&1 || true
+            cargo test --message-format=json -p microfips-l2cap-test 2>&1 || true
+          } > test-results/cargo-results.json
+
+      - name: Generate summary.json
+        run: python3 scripts/generate-summary.py test-results/cargo-results.json -o test-results/summary.json
+
+      - name: Install nak CLI
+        run: |
+          NAK_URL=$(curl -sL https://api.github.com/repos/fiatjaf/nak/releases/latest \
+            | python3 -c "import json,sys; print([a['browser_download_url'] for a in json.load(sys.stdin)['assets'] if 'linux-amd64' in a['name']][0])")
+          curl -sL "$NAK_URL" -o /usr/local/bin/nak
+          chmod +x /usr/local/bin/nak
+          nak --version || true
+
+      - name: Install nostr-publish
+        run: pip install git+https://github.com/Amperstrand/nostr-publish-file-metadata-action.git
+
+      - name: Publish test evidence to Blossom + Nostr
+        env:
+          PROJECT_TAG: microfips
+          PUBLISH_NSEC: ${{ secrets.PUBLISH_NSEC }}
+        run: |
+          if [ -z "$PUBLISH_NSEC" ]; then
+            echo "PUBLISH_NSEC secret not set — skipping publish"
+            exit 0
+          fi
+          printf '%s' "$PUBLISH_NSEC" > /tmp/nsec
+          # Extract counts for nostr-publish metadata
+          PASSED=$(python3 -c "import json; d=json.load(open('test-results/summary.json')); print(d['counts']['passed'])")
+          FAILED=$(python3 -c "import json; d=json.load(open('test-results/summary.json')); print(d['counts']['failed'])")
+          SKIPPED=$(python3 -c "import json; d=json.load(open('test-results/summary.json')); print(d['counts']['skipped'])")
+          nostr-publish test-results/ \
+            --nsec-file /tmp/nsec \
+            --blossom-server https://blossom.psbt.me \
+            --relays wss://relay.cashu.email,wss://relay.damus.io,wss://nos.lol \
+            --branch "${{ github.ref_name }}" \
+            --commit "${{ github.sha }}" \
+            --passed "$PASSED" \
+            --failed "$FAILED" \
+            --skipped "$SKIPPED" \
+            || true
+          rm -f /tmp/nsec
+
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
