@@ -1,5 +1,7 @@
 [workspace]
-members = ["crates/microfips-build", "crates/microfips-core", "crates/microfips-link", "crates/microfips-sim", "crates/microfips", "crates/microfips-protocol", "crates/microfips-service", "crates/microfips-http-demo", "crates/microfips-http-test", "crates/microfips-esp32", "crates/fips-decrypt", "crates/microfips-esp32s3", "crates/microfips-esp32c3", "crates/microfips-esp-common", "crates/microfips-esp-transport", "crates/microfips-l2cap-test"]
+members = ["crates/microfips-build", "crates/microfips-core", "crates/microfips-link", "crates/microfips-sim", "crates/microfips", "crates/microfips-protocol", "crates/microfips-service", "crates/microfips-http-demo", "crates/microfips-http-test", "crates/fips-decrypt", "crates/microfips-esp32c3", "crates/microfips-esp-common", "crates/microfips-esp-transport", "crates/microfips-l2cap-test"]
+# Temporarily disabled due to ESP32 feature conflicts:
+# "crates/microfips-esp32", "crates/microfips-esp32s3"
 resolver = "2"
 
 [workspace.metadata.esp32]
@@ -29,5 +31,5 @@ rand_core = { version = "0.6", default-features = false }
 embassy-net = "0.9.0"
 trouble-host = { git = "https://github.com/embassy-rs/trouble", rev = "c103e97ff7d333c2cb76b643477e3c4141d0ff74", features = ["default-packet-pool", "scan", "central"] }
 microfips-build = { path = "crates/microfips-build" }
-critical-section = { version = "1.1.2" }
+critical-section = { version = "1.1.2", features = ["restore-state-u8"] }
 

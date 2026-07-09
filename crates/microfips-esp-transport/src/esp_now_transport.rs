@@ -61,7 +61,6 @@ mod ffi {
         pub fn esp_wifi_start() -> c_int;
         pub fn esp_wifi_set_channel(primary: c_uchar, secondary: c_uchar) -> c_int;
         pub fn esp_read_mac(mac: *mut c_uchar, typ: c_int) -> c_int;
-        pub fn esp_mac_type_t;
     }
 
     // ESP-NOW functions

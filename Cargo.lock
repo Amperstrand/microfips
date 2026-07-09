@@ -2223,69 +2223,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "microfips-esp32"
-version = "0.1.0"
-dependencies = [
- "bt-hci",
- "embassy-executor",
- "embassy-futures",
- "embassy-sync 0.8.0",
- "embassy-time",
- "embedded-io 0.7.1",
- "embedded-io-async 0.7.0",
- "esp-alloc",
- "esp-bootloader-esp-idf",
- "esp-hal",
- "esp-println",
- "esp-radio",
- "esp-rtos",
- "heapless 0.9.3",
- "log",
- "microfips-build",
- "microfips-core",
- "microfips-esp-common",
- "microfips-esp-transport",
- "microfips-http-demo",
- "microfips-protocol",
- "microfips-service",
- "rand_core 0.6.4",
- "static_cell",
- "trouble-host",
-]
-
-[[package]]
 name = "microfips-esp32c3"
-version = "0.1.0"
-dependencies = [
- "bt-hci",
- "embassy-executor",
- "embassy-futures",
- "embassy-sync 0.8.0",
- "embassy-time",
- "embedded-io 0.7.1",
- "embedded-io-async 0.7.0",
- "esp-alloc",
- "esp-bootloader-esp-idf",
- "esp-hal",
- "esp-println",
- "esp-radio",
- "esp-rtos",
- "heapless 0.9.3",
- "log",
- "microfips-build",
- "microfips-core",
- "microfips-esp-common",
- "microfips-esp-transport",
- "microfips-http-demo",
- "microfips-protocol",
- "microfips-service",
- "rand_core 0.6.4",
- "static_cell",
- "trouble-host",
-]
-
-[[package]]
-name = "microfips-esp32s3"
 version = "0.1.0"
 dependencies = [
  "bt-hci",

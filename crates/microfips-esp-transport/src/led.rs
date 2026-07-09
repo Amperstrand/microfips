@@ -12,4 +12,8 @@ impl Led {
             _ => {}
         }
     }
+
+    pub fn toggle(&mut self) {
+        self.0.toggle();
+    }
 }

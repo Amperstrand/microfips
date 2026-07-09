@@ -90,14 +90,11 @@ pub async fn run_espnow_node(
 
     // Initialize control interface
     use microfips_esp_transport::node_info::NodeIdentity;
-    let identity = NodeIdentity {
-        node_addr_hex: VPS_NPUB,  // Use VPS_NPUB as node address for now
-        pubkey_hex: VPS_NPUB,      // Use same for pubkey
-    };
+    let identity = NodeIdentity::compute();
     init_control(&identity, "esp-now");
 
     // Start control task for UART CLI
-    spawner.spawn(control::control_task()).unwrap();
+    spawner.spawn(control::control_task().unwrap());
 
     // Run as a FIPS node using the existing runner
     runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
