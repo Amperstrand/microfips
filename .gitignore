@@ -12,3 +12,8 @@ fips
 .sisyphus/
 *.log
 .venv/
+
+# agent-loop / QA artifacts
+.sisyphus/
+.playwright-mcp/
+.omo/
