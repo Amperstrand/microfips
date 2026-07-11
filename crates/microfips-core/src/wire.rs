@@ -704,6 +704,49 @@ mod tests {
         assert_eq!(u64::from_le_bytes(out[28..36].try_into().unwrap()), 16_384);
     }
 
+    /// Regression for microfips#126: echo response max size is
+    /// ECHO_RESPONSE_MIN_SIZE(20) + ECHO_MAX_PAYLOAD(256) = 276 bytes.
+    /// Node.resp_buf was previously [u8; 256] (too small, silent overflow);
+    /// the fix bumped it to [u8; 320]. This test pins the wire-layer
+    /// invariant the resp_buf sizing depends on.
+    #[test]
+    fn echo_max_payload_response_fits_fixed_resp_buf() {
+        let payload = [0xA5u8; ECHO_MAX_PAYLOAD];
+
+        // Fixed resp_buf size (node.rs): 276-byte response MUST fit.
+        let mut fixed_buf = [0u8; 320];
+        let len = build_echo_response(1, 2, 3, &payload, &mut fixed_buf).unwrap();
+        assert_eq!(len, ECHO_RESPONSE_MIN_SIZE + ECHO_MAX_PAYLOAD);
+        assert_eq!(len, 276);
+        // Verify the fixed buffer had room to spare (no truncation).
+        assert!(len <= fixed_buf.len());
+
+        // The pre-fix resp_buf size: a 256-byte response buffer MUST be
+        // rejected by build_echo_response for a max payload, proving the
+        // original bug would have silently dropped the response.
+        let mut old_buggy_buf = [0u8; 256];
+        assert!(build_echo_response(1, 2, 3, &payload, &mut old_buggy_buf).is_none());
+    }
+
+    /// Echo round-trip: parse_echo_request feeds build_echo_response for a
+    /// 200-byte payload, exercising the full reply path.
+    #[test]
+    fn echo_request_response_roundtrip() {
+        let payload = [0x77u8; 200];
+        let mut req = [0u8; 8 + 4 + 200];
+        req[0..8].copy_from_slice(&1000u64.to_le_bytes());
+        req[8..12].copy_from_slice(&42u32.to_le_bytes());
+        req[12..].copy_from_slice(&payload);
+        let (ts, seq, p) = parse_echo_request(&req).unwrap();
+        assert_eq!(ts, 1000);
+        assert_eq!(seq, 42);
+        assert_eq!(p.len(), 200);
+
+        let mut out = [0u8; 320];
+        let len = build_echo_response(ts, 2000, seq, p, &mut out).unwrap();
+        assert_eq!(len, 20 + 200);
+    }
+
     #[test]
     fn parse_prefix_roundtrip() {
         let p = build_prefix(PHASE_MSG1, 0x03, 256);
