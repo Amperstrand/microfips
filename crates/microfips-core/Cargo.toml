@@ -16,6 +16,7 @@ hkdf = { version = "0.12", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hex = { version = "0.4", optional = true }
 log = { version = "0.4", optional = true }
+fips-proto-defs = { git = "https://github.com/Amperstrand/fips-protocol-defs-mvp.git", rev = "2b606a8e7b2e78ebb91cf18b3e1a6d86c92bbe95" }
 
 [dev-dependencies]
 hex = "0.4"
