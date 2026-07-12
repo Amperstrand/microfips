@@ -2647,6 +2647,50 @@ mod tests {
         });
     }
 
+    #[cfg(not(feature = "noise-xx"))]
+    #[test]
+    fn test_tiebreaker_simultaneous_handshake_ik() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let (secret_a, secret_b) = distinct_secret_pair();
+        let pub_a = ecdh_pubkey(&secret_a).unwrap();
+        let pub_b = ecdh_pubkey(&secret_b).unwrap();
+        let addr_a = node_addr_from_secret(&secret_a);
+        let addr_b = node_addr_from_secret(&secret_b);
+
+        let (transport_a, transport_b) = channel_pair();
+
+        block_on(async move {
+            let node_a = async move {
+                let mut node = Node::new(transport_a, TestRng::from_os_rng(), secret_a, pub_b);
+                let mut handler = NoopTestHandler;
+                let epoch = node.advance_epoch();
+                node.handshake(epoch, &mut handler).await.unwrap()
+            };
+
+            let node_b = async move {
+                let mut node = Node::new(transport_b, TestRng::from_os_rng(), secret_b, pub_a);
+                let mut handler = NoopTestHandler;
+                let epoch = node.advance_epoch();
+                node.handshake(epoch, &mut handler).await.unwrap()
+            };
+
+            let (result_a, result_b) = join(node_a, node_b).await;
+            assert_eq!(result_a.0, result_b.1);
+            assert_eq!(result_a.1, result_b.0);
+
+            let (winner, loser) = if addr_a.as_bytes() < addr_b.as_bytes() {
+                (result_a, result_b)
+            } else {
+                (result_b, result_a)
+            };
+            assert_eq!(winner.0, loser.1);
+            assert_eq!(winner.1, loser.0);
+        });
+    }
+
     #[test]
     fn test_tiebreaker_simultaneous_handshake() {
         use crate::transport::channel::pair as channel_pair;
