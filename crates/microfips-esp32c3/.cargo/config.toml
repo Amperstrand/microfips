@@ -1,0 +1,16 @@
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --monitor -p /dev/ttyACM1 --chip esp32c3"
+rustflags = [
+  "-C", "link-arg=-Tlinkall.x",
+  "-C", "link-arg=-L/home/c03rad0r/repos/microfips/crates/microfips-esp32c3",
+  "-C", "force-frame-pointers=no",
+]
+
+[env]
+TROUBLE_HOST_DEFAULT_PACKET_POOL_MTU = "2048"
+TROUBLE_HOST_DEFAULT_PACKET_POOL_SIZE = "4"
+
+[profile.release]
+lto = "fat"
+opt-level = "s"
+codegen-units = 1
