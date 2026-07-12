@@ -154,6 +154,10 @@ fn main() -> ExitCode {
                         log::error!("[FIPS → LINK] received Established (expected MSG2)");
                         ExitCode::from(2)
                     }
+                    wire::FmpMessage::Msg3 { .. } => {
+                        log::error!("[FIPS → LINK] received MSG3 (expected MSG2)");
+                        ExitCode::from(2)
+                    }
                 },
                 None => {
                     log::error!("[FIPS → LINK] failed to parse FMP message");
