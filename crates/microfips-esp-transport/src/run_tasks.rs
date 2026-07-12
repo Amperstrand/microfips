@@ -8,10 +8,10 @@ pub async fn run_ble_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use core::sync::atomic::Ordering;
     use crate::config::BLE_DEVICE_NAME;
     use crate::node_info::NodeIdentity;
     use crate::stats::STATS;
+    use core::sync::atomic::Ordering;
 
     crate::logger::init();
     STATS.boot_tick_ms.store(
@@ -34,7 +34,15 @@ pub async fn run_ble_node(
 
     log::info!("BLE advertising as '{}'", BLE_DEVICE_NAME);
 
-    crate::runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, crate::runner::NodeOpts::default()).await
+    crate::runner::run_node(
+        transport,
+        trng_source,
+        trng,
+        &mut led,
+        VPS_NPUB,
+        crate::runner::NodeOpts::default(),
+    )
+    .await
 }
 
 #[cfg(feature = "l2cap")]
@@ -45,10 +53,10 @@ pub async fn run_l2cap_node(
     adc1: esp_hal::peripherals::ADC1<'static>,
     peer_sent_first: bool,
 ) -> ! {
-    use core::sync::atomic::Ordering;
     use crate::config::RECV_RETRY_DELAY_MS;
     use crate::node_info::NodeIdentity;
     use crate::stats::STATS;
+    use core::sync::atomic::Ordering;
 
     crate::logger::init();
     STATS.boot_tick_ms.store(
@@ -107,14 +115,14 @@ pub async fn run_wifi_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use core::sync::atomic::Ordering;
-    use microfips_core::identity::{STM32_NODE_ADDR, STM32_NPUB};
+    use crate::config;
     use crate::handler::{build_demo_fsp, SharedEspHandler};
     use crate::node_info::NodeIdentity;
     use crate::rng::EspRng;
     use crate::stats::STATS;
-    use crate::config;
     use crate::wifi_transport::build_wifi_transport;
+    use core::sync::atomic::Ordering;
+    use microfips_core::identity::{STM32_NODE_ADDR, STM32_NPUB};
     use microfips_protocol::node::Node;
     use rand_core::RngCore;
 
@@ -145,7 +153,10 @@ pub async fn run_wifi_node(
     {
         Ok(transport) => transport,
         Err(err) => {
-            log::error!("WiFi: max retries exceeded, entering error state: {:?}", err);
+            log::error!(
+                "WiFi: max retries exceeded, entering error state: {:?}",
+                err
+            );
             led.set_state(config::LED_OFF);
             loop {
                 led.set_state(config::LED_ON);
@@ -172,7 +183,9 @@ pub async fn run_wifi_node(
 
     crate::control::init_control(&identity, "wifi");
     crate::control::set_peer_pub(VPS_NPUB);
-    if let Ok(token) = crate::control::control_task() { spawner.spawn(token); }
+    if let Ok(token) = crate::control::control_task() {
+        spawner.spawn(token);
+    }
 
     log::info!("Node running over WiFi...");
     node.run(&mut handler).await;

@@ -5,8 +5,8 @@ use microfips_core::fsp::{
 };
 use microfips_core::identity::{NodeAddr, STM32_NSEC};
 use microfips_core::noise::{
-    aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseXkInitiator,
-    PUBKEY_SIZE, TAG_SIZE,
+    aead_decrypt, aead_encrypt, ecdh_pubkey, parity_normalize, NoiseXkInitiator, PUBKEY_SIZE,
+    TAG_SIZE,
 };
 #[cfg(feature = "noise-xx")]
 use microfips_core::noise::{
@@ -139,9 +139,7 @@ fn do_xx_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
         .unwrap();
     assert_eq!(msg2_len, XX_HANDSHAKE_MSG2_SIZE);
 
-    let (recv_pub, recv_epoch) = initiator
-        .read_message2(&msg2_noise[..msg2_len])
-        .unwrap();
+    let (recv_pub, recv_epoch) = initiator.read_message2(&msg2_noise[..msg2_len]).unwrap();
     assert_eq!(recv_pub, resp_pub);
     assert_eq!(recv_epoch, epoch);
 
@@ -151,9 +149,8 @@ fn do_xx_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
         .unwrap();
     assert_eq!(msg3_len, XX_HANDSHAKE_MSG3_SIZE);
 
-    let (init_pub_recv, init_epoch_recv) = responder
-        .read_message3(&msg3_noise[..msg3_len])
-        .unwrap();
+    let (init_pub_recv, init_epoch_recv) =
+        responder.read_message3(&msg3_noise[..msg3_len]).unwrap();
     assert_eq!(init_pub_recv, init_pub);
     assert_eq!(init_epoch_recv, epoch);
 
@@ -165,14 +162,8 @@ fn do_xx_handshake() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
     let resp_k_send = resp_c2;
     let resp_k_recv = resp_c1;
 
-    assert_eq!(
-        init_k_send, resp_k_recv,
-        "XX: initiator c1 == responder c1"
-    );
-    assert_eq!(
-        init_k_recv, resp_k_send,
-        "XX: initiator c2 == responder c2"
-    );
+    assert_eq!(init_k_send, resp_k_recv, "XX: initiator c1 == responder c1");
+    assert_eq!(init_k_recv, resp_k_send, "XX: initiator c2 == responder c2");
 
     (init_k_send, init_k_recv, resp_k_send, resp_k_recv)
 }

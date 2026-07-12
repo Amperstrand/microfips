@@ -6,8 +6,8 @@
 use core::fmt::Write;
 use core::sync::atomic::Ordering;
 
-use embassy_stm32::Peri;
 use embassy_stm32::peripherals;
+use embassy_stm32::Peri;
 use embassy_stm32f469i_disco::display::{BoardHint, DisplayCtrl, SdramCtrl};
 use embassy_time::{Duration, Ticker};
 use embedded_graphics::{
@@ -20,8 +20,8 @@ use heapless::String;
 
 use crate::config::*;
 use crate::stats::{
-    STAT_DATA_RX, STAT_DATA_TX, STAT_HB_RX, STAT_HB_TX, STAT_MSG1_TX, STAT_MSG2_RX,
-    STAT_RECV_PKT, STAT_STATE, STAT_USB_ERR,
+    STAT_DATA_RX, STAT_DATA_TX, STAT_HB_RX, STAT_HB_TX, STAT_MSG1_TX, STAT_MSG2_RX, STAT_RECV_PKT,
+    STAT_STATE, STAT_USB_ERR,
 };
 
 pub fn create_display(
@@ -31,7 +31,14 @@ pub fn create_display(
     te_pin: Peri<'static, peripherals::PJ2>,
     reset_pin: Peri<'static, peripherals::PH7>,
 ) -> DisplayCtrl<'static> {
-    DisplayCtrl::new(sdram, ltdc, dsihost, te_pin, reset_pin, BoardHint::ForceNt35510)
+    DisplayCtrl::new(
+        sdram,
+        ltdc,
+        dsihost,
+        te_pin,
+        reset_pin,
+        BoardHint::ForceNt35510,
+    )
 }
 
 const STATE_NAMES: [&str; 8] = [
@@ -101,11 +108,17 @@ pub fn render_status(display: &mut DisplayCtrl<'static>, uptime_secs: u32) {
     fmt_line(&mut line, format_args!("HB tx:{} rx:{}", hb_tx, hb_rx));
     let _ = Text::new(&line, Point::new(4, 48), style).draw(&mut fb);
 
-    fmt_line(&mut line, format_args!("Data tx:{} rx:{}", data_tx, data_rx));
+    fmt_line(
+        &mut line,
+        format_args!("Data tx:{} rx:{}", data_tx, data_rx),
+    );
     let _ = Text::new(&line, Point::new(4, 60), style).draw(&mut fb);
 
     let err_color = if usb_err > 0 { style_err } else { style_dim };
-    fmt_line(&mut line, format_args!("USB err:{} Pkt:{}", usb_err, recv_pkt));
+    fmt_line(
+        &mut line,
+        format_args!("USB err:{} Pkt:{}", usb_err, recv_pkt),
+    );
     let _ = Text::new(&line, Point::new(4, 72), err_color).draw(&mut fb);
 
     fmt_line(&mut line, format_args!("Uptime: {}s", uptime_secs));

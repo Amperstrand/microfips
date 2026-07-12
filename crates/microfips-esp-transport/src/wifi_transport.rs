@@ -64,8 +64,7 @@ pub async fn build_wifi_transport(
     static TX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
 
     let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default())
-            .expect("wifi::new failed");
+        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
     let wifi_device = interfaces.station;
 
     let resources = RESOURCES.init(StackResources::new());
@@ -99,27 +98,28 @@ pub async fn build_wifi_transport(
                     #[cfg(feature = "log")]
                     log::info!("WiFi connected");
 
-                    let config_v4 = match with_timeout(
-                        Duration::from_secs(WIFI_DHCP_TIMEOUT_SECS),
-                        async {
+                    let config_v4 =
+                        match with_timeout(Duration::from_secs(WIFI_DHCP_TIMEOUT_SECS), async {
                             loop {
                                 if let Some(c) = stack.config_v4() {
                                     break c;
                                 }
                                 Timer::after(Duration::from_millis(500)).await;
                             }
-                        },
-                    )
-                    .await
-                    {
-                        Ok(config) => config,
-                        Err(_) => {
-                            #[cfg(feature = "log")]
-                            log::error!("WiFi DHCP timed out after {}s", WIFI_DHCP_TIMEOUT_SECS);
-                            let _ = wifi_controller.disconnect_async().await;
-                            Err(WifiInitError::DhcpTimeout)?
-                        }
-                    };
+                        })
+                        .await
+                        {
+                            Ok(config) => config,
+                            Err(_) => {
+                                #[cfg(feature = "log")]
+                                log::error!(
+                                    "WiFi DHCP timed out after {}s",
+                                    WIFI_DHCP_TIMEOUT_SECS
+                                );
+                                let _ = wifi_controller.disconnect_async().await;
+                                Err(WifiInitError::DhcpTimeout)?
+                            }
+                        };
 
                     #[cfg(feature = "log")]
                     log::info!("IP: {} (target: {})", config_v4.address, VPS_HOST);

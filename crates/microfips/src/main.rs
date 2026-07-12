@@ -133,9 +133,7 @@ async fn main(_spawner: Spawner) {
     #[cfg(all(feature = "board-f469", feature = "display"))]
     {
         let sdram = embassy_stm32f469i_disco::sdram_init!(p);
-        let ctrl = crate::display::create_display(
-            &sdram, p.LTDC, p.DSIHOST, p.PJ2, p.PH7,
-        );
+        let ctrl = crate::display::create_display(&sdram, p.LTDC, p.DSIHOST, p.PJ2, p.PH7);
         _spawner.spawn(crate::display::display_task(ctrl).expect("display task"));
     }
 

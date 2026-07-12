@@ -119,7 +119,8 @@ pub const PROTOCOL_NAME_XX: &[u8] = b"Noise_XX_secp256k1_ChaChaPoly_SHA256";
 pub const XX_HANDSHAKE_MSG1_SIZE: usize = PUBKEY_SIZE;
 
 /// XX handshake msg2: ephemeral (33) + encrypted static (49) + encrypted epoch (24) = 106 bytes.
-pub const XX_HANDSHAKE_MSG2_SIZE: usize = PUBKEY_SIZE + (PUBKEY_SIZE + TAG_SIZE) + (EPOCH_SIZE + TAG_SIZE);
+pub const XX_HANDSHAKE_MSG2_SIZE: usize =
+    PUBKEY_SIZE + (PUBKEY_SIZE + TAG_SIZE) + (EPOCH_SIZE + TAG_SIZE);
 
 /// XX handshake msg3: encrypted static (49) + encrypted epoch (24) = 73 bytes.
 pub const XX_HANDSHAKE_MSG3_SIZE: usize = (PUBKEY_SIZE + TAG_SIZE) + (EPOCH_SIZE + TAG_SIZE);
@@ -1046,7 +1047,13 @@ impl NoiseXxInitiator {
 
         let enc_epoch = &payload[PUBKEY_SIZE + PUBKEY_SIZE + TAG_SIZE..];
         let mut epoch_buf = [0u8; EPOCH_SIZE];
-        aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], enc_epoch, &mut epoch_buf)?;
+        aead_decrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[],
+            enc_epoch,
+            &mut epoch_buf,
+        )?;
         self.n += 1;
         self.h = mix_hash(&self.h, enc_epoch);
 
@@ -1066,7 +1073,13 @@ impl NoiseXxInitiator {
         let re_pub = self.re_pub.ok_or(NoiseError::InvalidState)?;
         let mut pos = 0;
 
-        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], my_static_pub, &mut out[pos..])?;
+        let enc_len = aead_encrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[],
+            my_static_pub,
+            &mut out[pos..],
+        )?;
         self.n += 1;
         self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
         pos += enc_len;
@@ -1077,7 +1090,13 @@ impl NoiseXxInitiator {
         self.k = Some(k);
         self.n = 0;
 
-        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], epoch, &mut out[pos..])?;
+        let enc_len = aead_encrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[],
+            epoch,
+            &mut out[pos..],
+        )?;
         self.n += 1;
         self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
         pos += enc_len;
@@ -1086,7 +1105,11 @@ impl NoiseXxInitiator {
     }
 
     /// Encrypt negotiation payload after msg3, before finalize.
-    pub fn encrypt_payload(&mut self, plaintext: &[u8], out: &mut [u8]) -> Result<usize, NoiseError> {
+    pub fn encrypt_payload(
+        &mut self,
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, NoiseError> {
         let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], plaintext, out)?;
         self.n += 1;
         self.h = mix_hash(&self.h, &out[..enc_len]);
@@ -1094,7 +1117,11 @@ impl NoiseXxInitiator {
     }
 
     /// Decrypt negotiation payload after msg2, before finalize.
-    pub fn decrypt_payload(&mut self, ciphertext: &[u8], out: &mut [u8]) -> Result<usize, NoiseError> {
+    pub fn decrypt_payload(
+        &mut self,
+        ciphertext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, NoiseError> {
         let dec_len = aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], ciphertext, out)?;
         self.n += 1;
         self.h = mix_hash(&self.h, ciphertext);
@@ -1191,7 +1218,13 @@ impl NoiseXxResponder {
         self.k = Some(k);
         self.n = 0;
 
-        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], &self.s_pub, &mut out[pos..])?;
+        let enc_len = aead_encrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[],
+            &self.s_pub,
+            &mut out[pos..],
+        )?;
         self.n += 1;
         self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
         pos += enc_len;
@@ -1202,7 +1235,13 @@ impl NoiseXxResponder {
         self.k = Some(k);
         self.n = 0;
 
-        let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], epoch, &mut out[pos..])?;
+        let enc_len = aead_encrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[],
+            epoch,
+            &mut out[pos..],
+        )?;
         self.n += 1;
         self.h = mix_hash(&self.h, &out[pos..pos + enc_len]);
         pos += enc_len;
@@ -1235,7 +1274,13 @@ impl NoiseXxResponder {
 
         let enc_epoch = &payload[PUBKEY_SIZE + TAG_SIZE..];
         let mut epoch_buf = [0u8; EPOCH_SIZE];
-        aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], enc_epoch, &mut epoch_buf)?;
+        aead_decrypt(
+            self.k.as_ref().unwrap(),
+            self.n,
+            &[],
+            enc_epoch,
+            &mut epoch_buf,
+        )?;
         self.n += 1;
         self.h = mix_hash(&self.h, enc_epoch);
 
@@ -1243,7 +1288,11 @@ impl NoiseXxResponder {
     }
 
     /// Encrypt negotiation payload after msg2, before finalize.
-    pub fn encrypt_payload(&mut self, plaintext: &[u8], out: &mut [u8]) -> Result<usize, NoiseError> {
+    pub fn encrypt_payload(
+        &mut self,
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, NoiseError> {
         let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], plaintext, out)?;
         self.n += 1;
         self.h = mix_hash(&self.h, &out[..enc_len]);
@@ -1251,7 +1300,11 @@ impl NoiseXxResponder {
     }
 
     /// Decrypt negotiation payload after msg3, before finalize.
-    pub fn decrypt_payload(&mut self, ciphertext: &[u8], out: &mut [u8]) -> Result<usize, NoiseError> {
+    pub fn decrypt_payload(
+        &mut self,
+        ciphertext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, NoiseError> {
         let dec_len = aead_decrypt(self.k.as_ref().unwrap(), self.n, &[], ciphertext, out)?;
         self.n += 1;
         self.h = mix_hash(&self.h, ciphertext);
@@ -2443,9 +2496,7 @@ mod responder_tests {
         resp.read_message1(&msg1[..msg1_len]).unwrap();
 
         let mut msg2 = [0u8; 256];
-        let msg2_len = resp
-            .write_message2(&r_eph, &epoch_r, &mut msg2)
-            .unwrap();
+        let msg2_len = resp.write_message2(&r_eph, &epoch_r, &mut msg2).unwrap();
         assert_eq!(msg2_len, XX_HANDSHAKE_MSG2_SIZE);
 
         let (recv_r_pub, recv_epoch_r) = init.read_message2(&msg2[..msg2_len]).unwrap();
@@ -2453,9 +2504,7 @@ mod responder_tests {
         assert_eq!(recv_epoch_r, epoch_r);
 
         let mut msg3 = [0u8; 256];
-        let msg3_len = init
-            .write_message3(&i_pub, &epoch_i, &mut msg3)
-            .unwrap();
+        let msg3_len = init.write_message3(&i_pub, &epoch_i, &mut msg3).unwrap();
         assert_eq!(msg3_len, XX_HANDSHAKE_MSG3_SIZE);
 
         let (recv_i_pub, recv_epoch_i) = resp.read_message3(&msg3[..msg3_len]).unwrap();

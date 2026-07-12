@@ -61,18 +61,30 @@ fn build_two_step_established(
 fn test_fmp_prefix_version_phase_encoding() {
     // FIPS: wire.rs:114-116 ver_phase_byte() = (version << 4) | (phase & 0x0F)
     let p1 = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
-    assert_eq!(p1[0], (wire::FMP_VERSION << 4) | wire::PHASE_MSG1, "phase 1 byte");
+    assert_eq!(
+        p1[0],
+        (wire::FMP_VERSION << 4) | wire::PHASE_MSG1,
+        "phase 1 byte"
+    );
     assert_eq!(p1[1], 0x00, "flags=0");
     assert_eq!(p1[2], 0x00, "payload_len low=0");
     assert_eq!(p1[3], 0x00, "payload_len high=0");
 
     let p2 = wire::build_prefix(wire::PHASE_MSG2, 0x03, 65);
-    assert_eq!(p2[0], (wire::FMP_VERSION << 4) | wire::PHASE_MSG2, "phase 2 byte");
+    assert_eq!(
+        p2[0],
+        (wire::FMP_VERSION << 4) | wire::PHASE_MSG2,
+        "phase 2 byte"
+    );
     assert_eq!(p2[1], 0x03, "flags=3");
     assert_eq!(u16::from_le_bytes([p2[2], p2[3]]), 65);
 
     let pe = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 100);
-    assert_eq!(pe[0], (wire::FMP_VERSION << 4) | wire::PHASE_ESTABLISHED, "phase 0 byte");
+    assert_eq!(
+        pe[0],
+        (wire::FMP_VERSION << 4) | wire::PHASE_ESTABLISHED,
+        "phase 0 byte"
+    );
     assert_eq!(u16::from_le_bytes([pe[2], pe[3]]), 100);
 }
 
@@ -91,7 +103,11 @@ fn test_fmp_msg1_wire_layout() {
 
     assert_eq!(len, wire::MSG1_WIRE_SIZE, "MSG1 total size");
 
-    assert_eq!(out[0], (wire::FMP_VERSION << 4) | wire::PHASE_MSG1, "ver+phase");
+    assert_eq!(
+        out[0],
+        (wire::FMP_VERSION << 4) | wire::PHASE_MSG1,
+        "ver+phase"
+    );
     assert_eq!(out[1], 0x00, "flags=0");
     assert_eq!(
         u16::from_le_bytes([out[2], out[3]]),
@@ -121,7 +137,11 @@ fn test_fmp_msg2_wire_layout() {
 
     assert_eq!(len, wire::MSG2_WIRE_SIZE, "MSG2 total size");
 
-    assert_eq!(out[0], (wire::FMP_VERSION << 4) | wire::PHASE_MSG2, "ver+phase");
+    assert_eq!(
+        out[0],
+        (wire::FMP_VERSION << 4) | wire::PHASE_MSG2,
+        "ver+phase"
+    );
     assert_eq!(out[1], 0x00, "flags=0");
     assert_eq!(
         u16::from_le_bytes([out[2], out[3]]),
@@ -164,7 +184,11 @@ fn test_fmp_established_header_is_16_bytes_aad() {
     // First 16 bytes = AEAD AAD
     let aad = &out[..wire::ESTABLISHED_HEADER_SIZE];
     // Byte 0: ver_phase = (FMP_VERSION<<4)|0x0
-    assert_eq!(aad[0], (wire::FMP_VERSION << 4) | wire::PHASE_ESTABLISHED, "established ver+phase");
+    assert_eq!(
+        aad[0],
+        (wire::FMP_VERSION << 4) | wire::PHASE_ESTABLISHED,
+        "established ver+phase"
+    );
     // Byte 1: flags = 0x00
     assert_eq!(aad[1], 0x00, "flags=0");
     // Bytes 4-7: receiver_idx = 5
