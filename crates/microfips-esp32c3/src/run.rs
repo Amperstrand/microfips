@@ -46,3 +46,6 @@ pub async fn run_usb_node(
 
 #[cfg(feature = "wifi")]
 pub use microfips_esp_transport::run_tasks::run_wifi_node;
+
+#[cfg(feature = "esp-now")]
+pub use microfips_esp_transport::run_tasks::run_esp_now_node;

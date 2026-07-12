@@ -53,3 +53,6 @@ pub mod l2cap_transport;
 pub mod peer_caps;
 #[cfg(feature = "l2cap")]
 pub mod rate_limit;
+
+#[cfg(feature = "esp-now")]
+pub mod esp_now_transport;

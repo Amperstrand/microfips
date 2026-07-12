@@ -193,3 +193,41 @@ pub async fn run_wifi_node(
     #[allow(clippy::empty_loop)]
     loop {}
 }
+
+#[cfg(feature = "esp-now")]
+pub async fn run_esp_now_node(
+    spawner: embassy_executor::Spawner,
+    gpio2: esp_hal::peripherals::GPIO2<'static>,
+    rng_periph: esp_hal::peripherals::RNG<'static>,
+    adc1: esp_hal::peripherals::ADC1<'static>,
+) -> ! {
+    use core::sync::atomic::Ordering;
+    use crate::node_info::NodeIdentity;
+    use crate::stats::STATS;
+
+    crate::logger::init();
+    STATS.boot_tick_ms.store(
+        embassy_time::Instant::now().as_millis() as u32,
+        Ordering::Relaxed,
+    );
+
+    let identity = NodeIdentity::compute();
+    crate::control::init_control(&identity, "esp_now");
+    crate::control::set_peer_pub(VPS_NPUB);
+
+    log::info!("ESP-NOW mode starting");
+
+    let mut led = crate::runner::make_led(gpio2);
+    let (trng_source, trng) = crate::runner::init_trng(rng_periph, adc1);
+    log::info!("trng ready");
+
+    // TODO: Initialize esp-radio ESP-NOW once esp-radio 0.18 exposes a public
+    // constructor for EspNow (new_internal is pub(crate)). For now the transport
+    // is a stub that logs sends and blocks on recv.
+    let transport = crate::esp_now_transport::EspNowTransport::new();
+    spawner.spawn(crate::control::control_task().expect("spawn control task failed"));
+
+    log::info!("ESP-NOW transport ready (stub mode)");
+
+    crate::runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, crate::runner::NodeOpts::default()).await
+}
