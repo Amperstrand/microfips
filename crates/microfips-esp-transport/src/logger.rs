@@ -1,4 +1,4 @@
-#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi", feature = "espnow"))]
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
