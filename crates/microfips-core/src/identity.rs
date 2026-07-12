@@ -58,6 +58,36 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
     result
 }
 
+pub const TEST_KEY_SEED: &[u8] = b"fips-test";
+
+pub fn derive_test_nsec(role: &[u8], sequence: u32) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(TEST_KEY_SEED);
+    hasher.update(b"-");
+    hasher.update(role);
+    hasher.update(b"-");
+    hasher.update(sequence.to_be_bytes());
+    let result = hasher.finalize();
+    let mut nsec = [0u8; 32];
+    nsec.copy_from_slice(&result);
+    nsec
+}
+
+pub fn derive_test_npub(role: &[u8], sequence: u32) -> [u8; 33] {
+    let nsec = derive_test_nsec(role, sequence);
+    crate::noise::ecdh_pubkey(&nsec).expect("derived test key must be valid")
+}
+
+pub fn derive_test_node_addr(role: &[u8], sequence: u32) -> [u8; 16] {
+    let npub = derive_test_npub(role, sequence);
+    let mut x_only = [0u8; 32];
+    x_only.copy_from_slice(&npub[1..]);
+    let addr = NodeAddr::from_pubkey_x(&x_only);
+    let mut result = [0u8; 16];
+    result.copy_from_slice(addr.as_bytes());
+    result
+}
+
 /// Load the FIPS secret key (nsec) from an environment variable.
 ///
 /// Checks `FIPS_NSEC` first (preferred), then falls back to `FIPS_SECRET`
