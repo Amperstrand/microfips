@@ -88,7 +88,10 @@ impl SendRateLimiter {
         if elapsed_ms > 0 {
             // Integer refill: tokens += (elapsed_ms * rate_bytes_per_sec) / 1000
             let new_tokens = (elapsed_ms * self.rate_bytes_per_sec as u64) / 1000;
-            self.tokens = self.tokens.saturating_add(new_tokens as u32).min(self.burst_bytes);
+            self.tokens = self
+                .tokens
+                .saturating_add(new_tokens as u32)
+                .min(self.burst_bytes);
             self.last_refill = now;
         }
     }

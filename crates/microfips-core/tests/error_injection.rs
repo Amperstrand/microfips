@@ -378,8 +378,8 @@ fn test_fmp_msg1_zero_length_payload() {
     // Build a prefix claiming phase=MSG1, payload_len=0, then just the 4-byte prefix
     let prefix = wire::build_prefix(wire::PHASE_MSG1, 0x00, 0);
     let result = wire::parse_message(&prefix); // only 4 bytes, no payload at all
-                                                // After the 4-byte prefix, payload is empty (len=0 bytes).
-                                                // MSG1 needs at least IDX_SIZE=4 bytes after prefix, so parse_message must return None.
+                                               // After the 4-byte prefix, payload is empty (len=0 bytes).
+                                               // MSG1 needs at least IDX_SIZE=4 bytes after prefix, so parse_message must return None.
     assert!(result.is_none(), "zero-payload MSG1 must be rejected");
 }
 

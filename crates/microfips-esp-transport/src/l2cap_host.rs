@@ -390,7 +390,12 @@ where
                     rx_drop_total
                 );
                 let up = relay_start.elapsed().as_secs();
-                log::info!("relay exit: RecvTimeout uptime={}s RX={} TX={}", up, rx_count, tx_count);
+                log::info!(
+                    "relay exit: RecvTimeout uptime={}s RX={} TX={}",
+                    up,
+                    rx_count,
+                    tx_count
+                );
                 STAT_L2CAP_RECV_TIMEOUT.fetch_add(1, Ordering::Relaxed);
                 mark_link_down();
                 break DisconnectReason::RecvTimeout;
@@ -543,14 +548,14 @@ where
             // Connection quality health log (#124)
             log::info!(
                 "relay health: uptime={}s RX={} TX={} drops={}",
-                up, rx_count, tx_count, rx_drop_total
+                up,
+                rx_count,
+                tx_count,
+                rx_drop_total
             );
             // Stale connection detection (#124)
             if rx_count == 0 && tx_count > 2 && up > 30 {
-                log::warn!(
-                    "relay stale: TX={} but RX=0 after {}s",
-                    tx_count, up
-                );
+                log::warn!("relay stale: TX={} but RX=0 after {}s", tx_count, up);
             }
             last_heap_log = now;
         }
@@ -630,10 +635,7 @@ pub async fn l2cap_host_task() {
                 if backoff.is_in_backoff() {
                     let remaining = backoff.remaining_secs();
                     log::info!("BLE in backoff, waiting {}s", remaining);
-                    embassy_time::Timer::after(
-                        embassy_time::Duration::from_secs(remaining),
-                    )
-                    .await;
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(remaining)).await;
                 }
 
                 mark_link_down();
@@ -656,7 +658,10 @@ pub async fn l2cap_host_task() {
                 } else {
                     let denied = backoff.record_failure();
                     if denied {
-                        log::warn!("BLE denied by backoff after failures (failures={})", backoff.failure_count());
+                        log::warn!(
+                            "BLE denied by backoff after failures (failures={})",
+                            backoff.failure_count()
+                        );
                     }
                 }
 
@@ -676,14 +681,20 @@ pub async fn l2cap_host_task() {
                         .await;
                     }
                     DisconnectReason::RecvTimeout => {
-                        log::info!("peripheral recv timeout, settling {}ms", BLE_DISCONNECT_SETTLE_MS);
+                        log::info!(
+                            "peripheral recv timeout, settling {}ms",
+                            BLE_DISCONNECT_SETTLE_MS
+                        );
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
                         .await;
                     }
                     DisconnectReason::SendError => {
-                        log::info!("peripheral send error, settling {}ms", BLE_DISCONNECT_SETTLE_MS);
+                        log::info!(
+                            "peripheral send error, settling {}ms",
+                            BLE_DISCONNECT_SETTLE_MS
+                        );
                         embassy_time::Timer::after(embassy_time::Duration::from_millis(
                             BLE_DISCONNECT_SETTLE_MS,
                         ))
@@ -910,7 +921,10 @@ where
         ..Default::default()
     };
 
-    let channel = match L2capChannel::listen(stack, &conn).accept(&l2cap_config).await {
+    let channel = match L2capChannel::listen(stack, &conn)
+        .accept(&l2cap_config)
+        .await
+    {
         Ok(ch) => {
             log::info!("L2CAP channel accepted on PSM {}", L2CAP_PSM);
             ch

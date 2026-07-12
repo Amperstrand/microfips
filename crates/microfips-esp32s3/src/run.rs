@@ -26,7 +26,15 @@ pub async fn run_uart_node(
     let (rx, tx) = uart.split();
     let transport = UartTransport { tx, rx };
 
-    runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
+    runner::run_node(
+        transport,
+        trng_source,
+        trng,
+        &mut led,
+        VPS_NPUB,
+        NodeOpts::default(),
+    )
+    .await
 }
 
 pub async fn run_usb_node(
@@ -45,7 +53,15 @@ pub async fn run_usb_node(
     let (rx, tx) = usb.split();
     let transport = UsbTransport { tx, rx };
 
-    runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
+    runner::run_node(
+        transport,
+        trng_source,
+        trng,
+        &mut led,
+        VPS_NPUB,
+        NodeOpts::default(),
+    )
+    .await
 }
 
 #[cfg(feature = "ble")]

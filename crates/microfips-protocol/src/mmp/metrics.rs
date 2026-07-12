@@ -230,7 +230,11 @@ impl MmpMetrics {
         }
         let srtt = self.srtt_ms()?;
         let min = self.min_rtt_ms()?;
-        if min > 0.0 { Some(srtt / min) } else { None }
+        if min > 0.0 {
+            Some(srtt / min)
+        } else {
+            None
+        }
     }
 
     // Ported from fips

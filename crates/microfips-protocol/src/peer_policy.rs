@@ -91,9 +91,7 @@ impl PeerPolicy {
         }
 
         if let Some(first_failure_time) = self.first_failure_time.get() {
-            let failure_window_secs = now
-                .as_secs()
-                .saturating_sub(first_failure_time.as_secs());
+            let failure_window_secs = now.as_secs().saturating_sub(first_failure_time.as_secs());
             if failure_window_secs > FAILURE_RESET_WINDOW_SECS {
                 self.consecutive_failures.set(0);
                 self.first_failure_time.set(None);

@@ -411,8 +411,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let peer_addr = NodeAddr::from_pubkey_x(&peer_x_only);
 
         let initiator_eph = self.generate_valid_eph();
-        let (mut noise_st, _e_pub) =
-            noise::NoiseXxInitiator::new(&initiator_eph, &self.nsec)?;
+        let (mut noise_st, _e_pub) = noise::NoiseXxInitiator::new(&initiator_eph, &self.nsec)?;
 
         let mut n1 = [0u8; 256];
         let n1len = noise_st.write_message1(&mut n1)?;
@@ -454,13 +453,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 .write_message3(&my_pub, &epoch, &mut n3)
                                 .map_err(|_| ProtocolError::DecryptFailed)?;
                             let mut f3 = [0u8; 256];
-                            let f3len = wire::build_msg3(
-                                our_index,
-                                sender_idx,
-                                &n3[..n3len],
-                                &mut f3,
-                            )
-                            .ok_or(ProtocolError::InvalidFrame)?;
+                            let f3len =
+                                wire::build_msg3(our_index, sender_idx, &n3[..n3len], &mut f3)
+                                    .ok_or(ProtocolError::InvalidFrame)?;
                             self.send_frame(&f3[..f3len]).await?;
 
                             // finalize() returns (c1, c2) = (init→resp, resp→init)
@@ -481,9 +476,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             // address is lower. (Identity cannot be verified from
                             // XX MSG1 — it's ephemeral-only. Verification happens
                             // after MSG3 reveals the initiator's static key.)
-                            if !self.peer_sent_first
-                                && my_addr.as_bytes() < peer_addr.as_bytes()
-                            {
+                            if !self.peer_sent_first && my_addr.as_bytes() < peer_addr.as_bytes() {
                                 continue;
                             }
 
@@ -524,8 +517,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                             .ok_or(ProtocolError::InvalidMessage)?;
                                         match m3 {
                                             wire::FmpMessage::Msg3 {
-                                                noise_payload: np3,
-                                                ..
+                                                noise_payload: np3, ..
                                             } => {
                                                 let (init_pub, _init_epoch) = responder
                                                     .read_message3(np3)
@@ -537,9 +529,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                                 // the compressed prefix may differ.
                                                 if init_pub[1..33] != self.peer_npub[1..33] {
                                                     #[cfg(feature = "log")]
-                                                    log::warn!(
-                                                        "handshake: MSG3 identity mismatch"
-                                                    );
+                                                    log::warn!("handshake: MSG3 identity mismatch");
                                                     return Err(ProtocolError::InvalidMessage);
                                                 }
 
@@ -597,8 +587,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             "steady: entered, next_hb in {}s",
             self.timing.heartbeat_interval_secs
         );
-        let mut next_hb =
-            embassy_time::Instant::now() + Duration::from_secs(1);
+        let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(1);
         let mut next_sr = embassy_time::Instant::now()
             + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
         let mut send_ctr: u64 = 0;
@@ -656,8 +645,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             self.policy.record_bad_frame();
                         }
                         if self.policy.check_bad_frame_limit() == PolicyVerdict::Reject
-                            || self.policy.check_total_bad_frame_limit()
-                                == PolicyVerdict::Reject
+                            || self.policy.check_total_bad_frame_limit() == PolicyVerdict::Reject
                         {
                             log_steady!("policy: rejected: bad frame limit");
                             self.send_disconnect(
@@ -696,9 +684,18 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
                         let result = {
                             #[cfg(feature = "benchmark")]
-                            { dispatch_link_message(&frame, &mut self.throughput, handler, &mut self.resp_buf) }
+                            {
+                                dispatch_link_message(
+                                    &frame,
+                                    &mut self.throughput,
+                                    handler,
+                                    &mut self.resp_buf,
+                                )
+                            }
                             #[cfg(not(feature = "benchmark"))]
-                            { dispatch_link_message(&frame, &mut (), handler, &mut self.resp_buf) }
+                            {
+                                dispatch_link_message(&frame, &mut (), handler, &mut self.resp_buf)
+                            }
                         };
                         if self
                             .process_frame_action(result, ks, them, &mut send_ctr, handler)
@@ -1793,9 +1790,19 @@ mod tests {
         let mut resp = [0u8; 256];
         let result = {
             #[cfg(feature = "benchmark")]
-            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(
+                    &key,
+                    &frame,
+                    &mut ThroughputState::default(),
+                    &mut NoopTestHandler,
+                    &mut resp,
+                )
+            }
             #[cfg(not(feature = "benchmark"))]
-            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp)
+            }
         };
         assert_eq!(result, FrameAction::HeartbeatRecv);
     }
@@ -1818,9 +1825,19 @@ mod tests {
         let mut resp = [0u8; 256];
         let result = {
             #[cfg(feature = "benchmark")]
-            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(
+                    &key,
+                    &frame,
+                    &mut ThroughputState::default(),
+                    &mut NoopTestHandler,
+                    &mut resp,
+                )
+            }
             #[cfg(not(feature = "benchmark"))]
-            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp)
+            }
         };
         assert_eq!(
             result,
@@ -1841,9 +1858,19 @@ mod tests {
         let mut resp = [0u8; 256];
         let result = {
             #[cfg(feature = "benchmark")]
-            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(
+                    &key,
+                    &frame,
+                    &mut ThroughputState::default(),
+                    &mut NoopTestHandler,
+                    &mut resp,
+                )
+            }
             #[cfg(not(feature = "benchmark"))]
-            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp)
+            }
         };
         assert_eq!(result, FrameAction::Continue);
     }
@@ -1912,9 +1939,19 @@ mod tests {
         let mut resp = [0u8; 256];
         let result = {
             #[cfg(feature = "benchmark")]
-            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut DatagramHandler, &mut resp) }
+            {
+                dispatch_test_frame(
+                    &key,
+                    &frame,
+                    &mut ThroughputState::default(),
+                    &mut DatagramHandler,
+                    &mut resp,
+                )
+            }
             #[cfg(not(feature = "benchmark"))]
-            { dispatch_test_frame(&key, &frame, &mut (), &mut DatagramHandler, &mut resp) }
+            {
+                dispatch_test_frame(&key, &frame, &mut (), &mut DatagramHandler, &mut resp)
+            }
         };
         assert_eq!(result, FrameAction::SendDatagram(4));
         assert_eq!(&resp[..4], b"pong");
@@ -1944,9 +1981,19 @@ mod tests {
         let mut resp = [0u8; 256];
         let result = {
             #[cfg(feature = "benchmark")]
-            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(
+                    &key,
+                    &frame,
+                    &mut ThroughputState::default(),
+                    &mut NoopTestHandler,
+                    &mut resp,
+                )
+            }
             #[cfg(not(feature = "benchmark"))]
-            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp)
+            }
         };
 
         assert_eq!(
@@ -1975,9 +2022,19 @@ mod tests {
         let mut resp = [0u8; 256];
         let result = {
             #[cfg(feature = "benchmark")]
-            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(
+                    &key,
+                    &frame,
+                    &mut ThroughputState::default(),
+                    &mut NoopTestHandler,
+                    &mut resp,
+                )
+            }
             #[cfg(not(feature = "benchmark"))]
-            { dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp) }
+            {
+                dispatch_test_frame(&key, &frame, &mut (), &mut NoopTestHandler, &mut resp)
+            }
         };
 
         assert_eq!(result, FrameAction::Continue);
@@ -2012,9 +2069,19 @@ mod tests {
         let mut resp = [0u8; 256];
         let result = {
             #[cfg(feature = "benchmark")]
-            { dispatch_test_frame(&key, &frame, &mut ThroughputState::default(), &mut DisconnectHandler, &mut resp) }
+            {
+                dispatch_test_frame(
+                    &key,
+                    &frame,
+                    &mut ThroughputState::default(),
+                    &mut DisconnectHandler,
+                    &mut resp,
+                )
+            }
             #[cfg(not(feature = "benchmark"))]
-            { dispatch_test_frame(&key, &frame, &mut (), &mut DisconnectHandler, &mut resp) }
+            {
+                dispatch_test_frame(&key, &frame, &mut (), &mut DisconnectHandler, &mut resp)
+            }
         };
 
         assert_eq!(result, FrameAction::SelfDC);
