@@ -598,7 +598,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             self.timing.heartbeat_interval_secs
         );
         let mut next_hb =
-            embassy_time::Instant::now() + Duration::from_secs(self.timing.heartbeat_interval_secs);
+            embassy_time::Instant::now() + Duration::from_secs(1);
         let mut next_sr = embassy_time::Instant::now()
             + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
         let mut send_ctr: u64 = 0;
