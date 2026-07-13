@@ -1,0 +1,18 @@
+[package]
+name = "fips-fmp"
+version = "0.1.0"
+edition = "2021"
+description = "FIPS Messaging Protocol — link-layer wire format and framing (no_std)"
+license = "MIT"
+
+[lib]
+name = "fips_fmp"
+path = "src/lib.rs"
+
+[dependencies]
+fips-noise = { path = "../fips-noise" }
+fips-proto-defs = { git = "https://github.com/Amperstrand/fips-protocol-defs-mvp.git", rev = "2b606a8e7b2e78ebb91cf18b3e1a6d86c92bbe95" }
+
+[features]
+default = []
+noise-xx = []

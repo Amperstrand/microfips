@@ -24,5 +24,6 @@ rand = "0.9"
 
 [features]
 default = []
+noise-xx = []
 std = ["sha2/std", "k256/std", "chacha20poly1305/std", "hkdf/std", "hex", "log"]
 log = ["dep:log"]
