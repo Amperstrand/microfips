@@ -18,20 +18,29 @@ fn test_derive_test_nsec_different_roles() {
 fn test_derive_test_nsec_different_sequences() {
     let seq1 = identity::derive_test_nsec(b"stm32", 1);
     let seq2 = identity::derive_test_nsec(b"stm32", 2);
-    assert_ne!(seq1, seq2, "different sequences must produce different keys");
+    assert_ne!(
+        seq1, seq2,
+        "different sequences must produce different keys"
+    );
 }
 
 #[test]
 fn test_derive_test_nsec_nonzero() {
     let nsec = identity::derive_test_nsec(b"vps", 1);
-    assert!(nsec.iter().any(|&b| b != 0), "derived key must not be all zeros");
+    assert!(
+        nsec.iter().any(|&b| b != 0),
+        "derived key must not be all zeros"
+    );
 }
 
 #[test]
 fn test_derive_test_npub_valid() {
     let npub = identity::derive_test_npub(b"esp32", 1);
     assert_eq!(npub.len(), 33, "compressed pubkey must be 33 bytes");
-    assert!(npub[0] == 0x02 || npub[0] == 0x03, "must be a valid compressed pubkey prefix");
+    assert!(
+        npub[0] == 0x02 || npub[0] == 0x03,
+        "must be a valid compressed pubkey prefix"
+    );
 }
 
 #[test]
