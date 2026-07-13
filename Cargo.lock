@@ -1680,6 +1680,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fips-noise"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "hex",
+ "hkdf",
+ "hmac 0.13.0",
+ "k256",
+ "log",
+ "rand",
+ "sha2",
+]
+
+[[package]]
 name = "fips-proto-defs"
 version = "0.1.0"
 source = "git+https://github.com/Amperstrand/fips-protocol-defs-mvp.git?rev=2b606a8e7b2e78ebb91cf18b3e1a6d86c92bbe95#2b606a8e7b2e78ebb91cf18b3e1a6d86c92bbe95"
@@ -2157,6 +2171,7 @@ name = "microfips-core"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
+ "fips-noise",
  "fips-proto-defs",
  "hex",
  "hkdf",
