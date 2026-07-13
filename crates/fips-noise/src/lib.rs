@@ -1,3 +1,5 @@
+#![no_std]
+
 //! Noise Protocol IK and XK Implementations for FIPS Interop
 //!
 //! Implements both handshake patterns used by FIPS:
