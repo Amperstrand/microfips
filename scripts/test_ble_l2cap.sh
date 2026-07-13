@@ -36,12 +36,11 @@ info "Copying firmware + capture script..."
 $SSH_SMALL 'cat /tmp/fw-test.bin' | $SSH_LEGION 'cat > /tmp/fw-test.bin' || { fail "Copy failed"; exit 2; }
 scp -o BatchMode=yes -o ConnectTimeout=10 "$SCRIPT_DIR/capture_serial.py" ubuntu@ai-legion:/tmp/capture_serial.py 2>/dev/null
 
+info "Restarting FIPS daemon (before flash, gives it time to be ready)..."
+$SSH_SMALL 'sudo systemctl restart fips' 2>/dev/null
+
 info "Flashing ESP32..."
 $SSH_LEGION 'sudo esptool --chip esp32 --port /dev/ttyUSB0 --before default-reset -b 460800 write-flash 0x10000 /tmp/fw-test.bin 2>&1' 2>/dev/null | tail -2
-
-info "Restarting FIPS daemon..."
-$SSH_SMALL 'sudo systemctl restart fips' 2>/dev/null &
-sleep 3
 
 info "Capturing serial for ${CAPTURE_SECS}s..."
 set +e
