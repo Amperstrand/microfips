@@ -1680,6 +1680,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fips-fmp"
+version = "0.1.0"
+dependencies = [
+ "fips-noise",
+ "fips-proto-defs",
+]
+
+[[package]]
 name = "fips-noise"
 version = "0.1.0"
 dependencies = [
@@ -2171,6 +2179,7 @@ name = "microfips-core"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
+ "fips-fmp",
  "fips-noise",
  "fips-proto-defs",
  "hex",
