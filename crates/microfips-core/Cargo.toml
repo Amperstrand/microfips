@@ -57,6 +57,10 @@ path = "tests/pcap_regression.rs"
 name = "derive_test_keys"
 path = "tests/derive_test_keys.rs"
 
+[[test]]
+name = "golden_vectors_ik"
+path = "tests/golden_vectors_ik.rs"
+
 [features]
 default = []
 # Use Noise XX (3-message) for both link and session layers — FIPS next/v0.5 wire compat.
