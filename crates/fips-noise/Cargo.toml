@@ -1,0 +1,28 @@
+[package]
+name = "fips-noise"
+version = "0.1.0"
+edition = "2021"
+description = "Noise Protocol Framework (IK/XK/XX) for FIPS — no_std, secp256k1, ChaChaPoly, SHA256"
+license = "MIT"
+
+[lib]
+name = "fips_noise"
+path = "src/lib.rs"
+
+[dependencies]
+sha2 = { version = "0.10", default-features = false, features = ["oid"] }
+k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
+chacha20poly1305 = { version = "0.10", default-features = false }
+hkdf = { version = "0.12", default-features = false }
+hmac = { version = "0.13", default-features = false }
+hex = { version = "0.4", optional = true }
+log = { version = "0.4", optional = true }
+
+[dev-dependencies]
+hex = "0.4"
+rand = "0.9"
+
+[features]
+default = []
+std = ["sha2/std", "k256/std", "chacha20poly1305/std", "hkdf/std", "hex", "log"]
+log = ["dep:log"]

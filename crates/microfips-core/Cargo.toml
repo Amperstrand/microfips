@@ -9,6 +9,7 @@ autotests = false
 microfips-build = { path = "../microfips-build" }
 
 [dependencies]
+fips-noise = { path = "../fips-noise" }
 sha2 = { version = "0.10", default-features = false, features = ["oid"] }
 k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
 chacha20poly1305 = { version = "0.10", default-features = false }
@@ -56,6 +57,10 @@ path = "tests/pcap_regression.rs"
 [[test]]
 name = "derive_test_keys"
 path = "tests/derive_test_keys.rs"
+
+[[test]]
+name = "golden_vectors_ik"
+path = "tests/golden_vectors_ik.rs"
 
 [features]
 default = []
