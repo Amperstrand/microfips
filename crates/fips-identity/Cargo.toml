@@ -1,0 +1,22 @@
+[package]
+name = "fips-identity"
+version = "0.1.0"
+edition = "2021"
+description = "FIPS identity — NodeAddr, key derivation, hex utilities (no_std)"
+license = "MIT"
+
+[lib]
+name = "fips_identity"
+path = "src/lib.rs"
+
+[dependencies]
+fips-noise = { path = "../fips-noise" }
+sha2 = { version = "0.10", default-features = false, features = ["oid"] }
+hex = { version = "0.4", optional = true }
+
+[dev-dependencies]
+hex = "0.4"
+
+[features]
+default = []
+std = ["sha2/std", "hex", "fips-noise/std"]

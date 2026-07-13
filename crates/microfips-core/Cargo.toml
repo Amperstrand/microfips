@@ -11,6 +11,7 @@ microfips-build = { path = "../microfips-build" }
 [dependencies]
 fips-noise = { path = "../fips-noise" }
 fips-fmp = { path = "../fips-fmp" }
+fips-identity = { path = "../fips-identity" }
 sha2 = { version = "0.10", default-features = false, features = ["oid"] }
 k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
 chacha20poly1305 = { version = "0.10", default-features = false }
