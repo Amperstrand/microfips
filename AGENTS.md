@@ -10,8 +10,14 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 
 ## Workspace architecture
 
-- `microfips-core`: cryptographic/session primitives, FIPS compat constants (auto-generated)
-- `microfips-protocol`: `Node`, framing, transport trait, FSP runtime, `ScriptedPeer` test harness
+**Extracted protocol crates (no_std, portable, can be consumed by upstream FIPS):**
+- `fips-noise`: Noise IK/XK/XX state machines, crypto helpers (secp256k1 ECDH, ChaChaPoly, SHA256)
+- `fips-fmp`: FMP link-layer wire format (framing, message parsing, build_msg1/2/3)
+- `fips-identity`: NodeAddr, FipsAddress, key derivation, hex utilities
+
+**Application crates:**
+- `microfips-core`: device constants + re-exports from fips-noise/fips-fmp/fips-identity, FSP session protocol, MMP metrics
+- `microfips-protocol`: `Node`, transport trait, FSP runtime, `ScriptedPeer` test harness (cfg-gated IK vs XX via `noise-xx` feature)
 - `microfips-service`: transport-neutral request/response layer above protocol
 - `microfips-http-demo`: optional demo-only HTTP adapter and demo service
 - `microfips-esp-transport`: shared ESP32 transport code (runner, LED, RNG, handlers, WiFi config)
