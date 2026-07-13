@@ -11,7 +11,7 @@ http = ["dep:picoserve", "dep:tokio"]
 [dependencies]
 microfips-service = { path = "../microfips-service" }
 picoserve = { version = "0.18.0", features = ["std", "tokio"], optional = true }
-tokio = { version = "1.51.0", features = ["macros", "net", "rt", "sync", "time"], optional = true }
+tokio = { version = "1.52.3", features = ["macros", "net", "rt", "sync", "time"], optional = true }
 
 [[bin]]
 name = "microfips-http-demo"
