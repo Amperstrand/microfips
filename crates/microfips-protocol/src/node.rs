@@ -609,11 +609,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let peer_addr = NodeAddr::from_pubkey_x(&peer_x_only);
 
         let initiator_eph = self.generate_valid_eph();
-        let (mut noise_st, _e_pub) = noise::NoiseIkInitiator::new(
-            &initiator_eph,
-            &self.nsec,
-            &self.peer_npub,
-        )?;
+        let (mut noise_st, _e_pub) =
+            noise::NoiseIkInitiator::new(&initiator_eph, &self.nsec, &self.peer_npub)?;
 
         let mut n1 = [0u8; 256];
         let n1len = noise_st.write_message1(&my_pub, &epoch, &mut n1)?;
@@ -662,16 +659,14 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 return Err(ProtocolError::InvalidMessage);
                             }
 
-                            if !self.peer_sent_first
-                                && my_addr.as_bytes() < peer_addr.as_bytes()
-                            {
+                            if !self.peer_sent_first && my_addr.as_bytes() < peer_addr.as_bytes() {
                                 continue;
                             }
 
-                            let e_init_pub: &[u8; noise::PUBKEY_SIZE] =
-                                noise_payload[..noise::PUBKEY_SIZE]
-                                    .try_into()
-                                    .map_err(|_| ProtocolError::InvalidMessage)?;
+                            let e_init_pub: &[u8; noise::PUBKEY_SIZE] = noise_payload
+                                [..noise::PUBKEY_SIZE]
+                                .try_into()
+                                .map_err(|_| ProtocolError::InvalidMessage)?;
 
                             let mut responder =
                                 noise::NoiseIkResponder::new(&self.nsec, e_init_pub)
