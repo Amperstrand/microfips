@@ -16,3 +16,4 @@ fips-proto-defs = { git = "https://github.com/Amperstrand/fips-protocol-defs-mvp
 [features]
 default = []
 noise-xx = []
+std = []
