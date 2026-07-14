@@ -1,5 +1,5 @@
-use microfips_core::noise::{self, PUBKEY_SIZE, EPOCH_SIZE};
 use hex;
+use microfips_core::noise::{self, EPOCH_SIZE, PUBKEY_SIZE};
 
 fn main() {
     let init_eph: [u8; 32] = [0x01; 32];
@@ -12,7 +12,8 @@ fn main() {
     let resp_pub = noise::ecdh_pubkey(&resp_static).unwrap();
     let init_pub = noise::ecdh_pubkey(&init_static).unwrap();
 
-    let (mut init, e_pub_init) = noise::NoiseIkInitiator::new(&init_eph, &init_static, &resp_pub).unwrap();
+    let (mut init, e_pub_init) =
+        noise::NoiseIkInitiator::new(&init_eph, &init_static, &resp_pub).unwrap();
 
     let mut msg1 = [0u8; 256];
     let msg1_len = init.write_message1(&init_pub, &epoch_a, &mut msg1).unwrap();
@@ -39,8 +40,16 @@ fn main() {
     println!("resp_eph_secret:    {}", hex::encode(resp_eph));
     println!("epoch_a:            {}", hex::encode(epoch_a));
     println!("epoch_b:            {}", hex::encode(epoch_b));
-    println!("msg1_noise ({}B):   {}", msg1_len, hex::encode(&msg1[..msg1_len]));
-    println!("msg2_noise ({}B):   {}", msg2_len, hex::encode(&msg2[..msg2_len]));
+    println!(
+        "msg1_noise ({}B):   {}",
+        msg1_len,
+        hex::encode(&msg1[..msg1_len])
+    );
+    println!(
+        "msg2_noise ({}B):   {}",
+        msg2_len,
+        hex::encode(&msg2[..msg2_len])
+    );
     println!("transport_k1:       {}", hex::encode(k1_init));
     println!("transport_k2:       {}", hex::encode(k2_init));
     println!("keys_match: {}", k1_init == k1_resp && k2_init == k2_resp);

@@ -21,9 +21,12 @@ const GOLDEN_MSG2_HEX: &str = "026a04ab98d9e4774ad806e302dddeb63bea16b5cb5f223ee
 const GOLDEN_K1_HEX: &str = "f17534b1ee1585e86ca578c5d040f413bb4291927e2cd2754a05950ea8aeb2b3";
 const GOLDEN_K2_HEX: &str = "3bcaf03c8ce78d3d221c59b1d59f9f38242f491f640f5d52c7f62c7f6f9a3e6b";
 
-const GOLDEN_INIT_STATIC_PUB_HEX: &str = "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
-const GOLDEN_RESP_STATIC_PUB_HEX: &str = "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27";
-const GOLDEN_INIT_EPH_PUB_HEX: &str = "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
+const GOLDEN_INIT_STATIC_PUB_HEX: &str =
+    "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
+const GOLDEN_RESP_STATIC_PUB_HEX: &str =
+    "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27";
+const GOLDEN_INIT_EPH_PUB_HEX: &str =
+    "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
 
 fn decode_hex_32(s: &str) -> [u8; 32] {
     let bytes = hex::decode(s).unwrap();
@@ -43,12 +46,13 @@ fn golden_vector_ik_msg1_bytes() {
         noise::NoiseIkInitiator::new(&INIT_EPH_SECRET, &INIT_STATIC_SECRET, &resp_pub).unwrap();
 
     let mut msg1 = [0u8; 256];
-    let msg1_len = init
-        .write_message1(&init_pub, &EPOCH_A, &mut msg1)
-        .unwrap();
+    let msg1_len = init.write_message1(&init_pub, &EPOCH_A, &mut msg1).unwrap();
 
     assert_eq!(msg1_len, 106);
-    assert_eq!(&msg1[..msg1_len], decode_hex_vec(GOLDEN_MSG1_HEX).as_slice());
+    assert_eq!(
+        &msg1[..msg1_len],
+        decode_hex_vec(GOLDEN_MSG1_HEX).as_slice()
+    );
 }
 
 #[test]
@@ -59,9 +63,7 @@ fn golden_vector_ik_msg2_bytes() {
         noise::NoiseIkInitiator::new(&INIT_EPH_SECRET, &INIT_STATIC_SECRET, &resp_pub).unwrap();
 
     let mut msg1 = [0u8; 256];
-    let msg1_len = init
-        .write_message1(&init_pub, &EPOCH_A, &mut msg1)
-        .unwrap();
+    let msg1_len = init.write_message1(&init_pub, &EPOCH_A, &mut msg1).unwrap();
 
     let e_init_pub: &[u8; PUBKEY_SIZE] = msg1[..PUBKEY_SIZE].try_into().unwrap();
     let mut resp = noise::NoiseIkResponder::new(&RESP_STATIC_SECRET, e_init_pub).unwrap();
@@ -73,7 +75,10 @@ fn golden_vector_ik_msg2_bytes() {
         .unwrap();
 
     assert_eq!(msg2_len, 57);
-    assert_eq!(&msg2[..msg2_len], decode_hex_vec(GOLDEN_MSG2_HEX).as_slice());
+    assert_eq!(
+        &msg2[..msg2_len],
+        decode_hex_vec(GOLDEN_MSG2_HEX).as_slice()
+    );
 }
 
 #[test]
@@ -84,9 +89,7 @@ fn golden_vector_ik_transport_keys_match() {
         noise::NoiseIkInitiator::new(&INIT_EPH_SECRET, &INIT_STATIC_SECRET, &resp_pub).unwrap();
 
     let mut msg1 = [0u8; 256];
-    let msg1_len = init
-        .write_message1(&init_pub, &EPOCH_A, &mut msg1)
-        .unwrap();
+    let msg1_len = init.write_message1(&init_pub, &EPOCH_A, &mut msg1).unwrap();
 
     let e_init_pub: &[u8; PUBKEY_SIZE] = msg1[..PUBKEY_SIZE].try_into().unwrap();
     let mut resp = noise::NoiseIkResponder::new(&RESP_STATIC_SECRET, e_init_pub).unwrap();
@@ -102,8 +105,14 @@ fn golden_vector_ik_transport_keys_match() {
     let (k1_init, k2_init) = init.finalize();
     let (k1_resp, k2_resp) = resp.finalize();
 
-    assert_eq!(k1_init, k1_resp, "initiator and responder must agree on k1 (init→resp)");
-    assert_eq!(k2_init, k2_resp, "initiator and responder must agree on k2 (resp→init)");
+    assert_eq!(
+        k1_init, k1_resp,
+        "initiator and responder must agree on k1 (init→resp)"
+    );
+    assert_eq!(
+        k2_init, k2_resp,
+        "initiator and responder must agree on k2 (resp→init)"
+    );
 
     assert_eq!(k1_init, decode_hex_32(GOLDEN_K1_HEX));
     assert_eq!(k2_init, decode_hex_32(GOLDEN_K2_HEX));
@@ -129,17 +138,20 @@ fn golden_vector_ik_identity_recovery() {
         noise::NoiseIkInitiator::new(&INIT_EPH_SECRET, &INIT_STATIC_SECRET, &resp_pub).unwrap();
 
     let mut msg1 = [0u8; 256];
-    let msg1_len = init
-        .write_message1(&init_pub, &EPOCH_A, &mut msg1)
-        .unwrap();
+    let msg1_len = init.write_message1(&init_pub, &EPOCH_A, &mut msg1).unwrap();
 
     let e_init_pub: &[u8; PUBKEY_SIZE] = msg1[..PUBKEY_SIZE].try_into().unwrap();
     let mut resp = noise::NoiseIkResponder::new(&RESP_STATIC_SECRET, e_init_pub).unwrap();
-    let (recv_init_pub, recv_epoch_a) =
-        resp.read_message1(&msg1[PUBKEY_SIZE..msg1_len]).unwrap();
+    let (recv_init_pub, recv_epoch_a) = resp.read_message1(&msg1[PUBKEY_SIZE..msg1_len]).unwrap();
 
-    assert_eq!(recv_init_pub, init_pub, "responder must recover initiator's static pubkey");
-    assert_eq!(recv_epoch_a, EPOCH_A, "responder must recover initiator's epoch");
+    assert_eq!(
+        recv_init_pub, init_pub,
+        "responder must recover initiator's static pubkey"
+    );
+    assert_eq!(
+        recv_epoch_a, EPOCH_A,
+        "responder must recover initiator's epoch"
+    );
 }
 
 /// Cross-validation: feed a FIPS-generated MSG1 into microfips's NoiseIkResponder.
