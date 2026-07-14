@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(feature = "std")]
+extern crate std;
+
 use sha2::{Digest, Sha256};
 
 pub struct NodeAddr(pub [u8; 16]);
