@@ -69,5 +69,5 @@ default = []
 # Use Noise XX (3-message) for both link and session layers — FIPS next/v0.5 wire compat.
 # Default OFF: uses Noise IK (link) + XK (session) for FIPS v0.4 wire compat.
 noise-xx = ["fips-noise/noise-xx", "fips-fmp/noise-xx"]
-std = ["sha2/std", "k256/std", "chacha20poly1305/std", "hkdf/std", "hex", "log"]
+std = ["sha2/std", "k256/std", "chacha20poly1305/std", "hkdf/std", "hex", "log", "fips-identity/std", "fips-noise/std"]
 log = ["dep:log"]
