@@ -1,0 +1,14 @@
+[Unit]
+Description=FIPS Daemon Restart Timer (recovery testing)
+Requires=fips.service
+
+[Timer]
+# First restart 1 hour after boot
+OnBootSec=1h
+# Then every hour
+OnUnitActiveSec=1h
+# Restart FIPS daemon itself
+Unit=fips-restart.service
+
+[Install]
+WantedBy=timers.target

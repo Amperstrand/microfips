@@ -1,0 +1,16 @@
+[Unit]
+Description=FIPS BLE L2CAP Overnight Monitor
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/fips-monitor/overnight_monitor.py 8
+WorkingDirectory=/opt/fips-monitor
+StandardOutput=append:/var/log/fips-monitor.log
+StandardError=append:/var/log/fips-monitor.log
+Restart=no
+User=root
+
+[Install]
+WantedBy=multi-user.target

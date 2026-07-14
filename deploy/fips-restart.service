@@ -1,0 +1,7 @@
+[Unit]
+Description=FIPS Daemon Restart (for recovery testing)
+After=fips.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart fips
