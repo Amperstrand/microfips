@@ -1288,4 +1288,34 @@ mod tests {
             );
         }
     }
+
+    /// Regression for microfips#126: echo response max size is
+    /// ECHO_RESPONSE_MIN_SIZE(20) + ECHO_MAX_PAYLOAD(256) = 276 bytes.
+    #[test]
+    fn echo_max_payload_response_fits_fixed_resp_buf() {
+        let payload = [0xA5u8; ECHO_MAX_PAYLOAD];
+        let mut fixed_buf = [0u8; 320];
+        let len = build_echo_response(1, 2, 3, &payload, &mut fixed_buf).unwrap();
+        assert_eq!(len, ECHO_RESPONSE_MIN_SIZE + ECHO_MAX_PAYLOAD);
+        assert_eq!(len, 276);
+        assert!(len <= fixed_buf.len());
+        let mut old_buggy_buf = [0u8; 256];
+        assert!(build_echo_response(1, 2, 3, &payload, &mut old_buggy_buf).is_none());
+    }
+
+    #[test]
+    fn echo_request_response_roundtrip() {
+        let payload = [0x77u8; 200];
+        let mut req = [0u8; 8 + 4 + 200];
+        req[0..8].copy_from_slice(&1000u64.to_le_bytes());
+        req[8..12].copy_from_slice(&42u32.to_le_bytes());
+        req[12..].copy_from_slice(&payload);
+        let (ts, seq, p) = parse_echo_request(&req).unwrap();
+        assert_eq!(ts, 1000);
+        assert_eq!(seq, 42);
+        assert_eq!(p.len(), 200);
+        let mut out = [0u8; 320];
+        let len = build_echo_response(ts, 2000, seq, p, &mut out).unwrap();
+        assert_eq!(len, 20 + 200);
+    }
 }
