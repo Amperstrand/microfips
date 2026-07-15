@@ -9,7 +9,7 @@ name = "microfips_esp32c3"
 
 [features]
 default = []
-wifi = ["dep:esp-radio", "dep:embassy-net", "dep:log", "microfips-esp-transport/wifi"]
+wifi = ["dep:esp-radio", "dep:embassy-net", "dep:log", "microfips-esp-transport/wifi", "esp-rtos/esp-radio"]
 
 [[bin]]
 name = "microfips-esp32c3-wifi"
