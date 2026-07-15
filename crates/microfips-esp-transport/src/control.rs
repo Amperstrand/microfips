@@ -9,7 +9,7 @@
 #![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 
 use core::ptr::{null_mut, read_volatile, write_volatile};
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use portable_atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
