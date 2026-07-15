@@ -9,7 +9,7 @@ name = "microfips_esp32c3"
 
 [features]
 default = []
-wifi = ["dep:esp-radio", "dep:embassy-net", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
+wifi = ["dep:esp-radio", "dep:embassy-net", "dep:log", "microfips-esp-transport/wifi"]
 
 [[bin]]
 name = "microfips-esp32c3-wifi"
@@ -44,7 +44,7 @@ heapless = { workspace = true }
 static_cell = { workspace = true }
 esp-radio = { workspace = true, features = ["esp32c3", "wifi", "unstable"], optional = true }
 esp-alloc = { workspace = true }
-esp-println = { workspace = true, features = ["esp32c3", "jtag-serial"], optional = true }
+esp-println = { workspace = true, features = ["esp32c3", "jtag-serial"] }
 log = { workspace = true, optional = true }
 embassy-net = { workspace = true, features = ["dhcpv4", "udp"], optional = true }
 
