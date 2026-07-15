@@ -5,11 +5,14 @@
 extern crate alloc;
 
 #[cfg(all(
-    feature = "esp32",
-    feature = "esp32s3",
+    any(
+        all(feature = "esp32", feature = "esp32s3"),
+        all(feature = "esp32", feature = "esp32c3"),
+        all(feature = "esp32s3", feature = "esp32c3"),
+    ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
-compile_error!("features \"esp32\" and \"esp32s3\" are mutually exclusive");
+compile_error!("chip features (esp32, esp32s3, esp32c3) are mutually exclusive");
 
 pub mod config;
 pub mod gpio_helpers;
@@ -24,7 +27,7 @@ pub mod runner;
 pub mod stats;
 pub mod uart_transport;
 
-#[cfg(feature = "esp32s3")]
+#[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
 pub mod usb_transport;
 
 #[cfg(feature = "wifi")]

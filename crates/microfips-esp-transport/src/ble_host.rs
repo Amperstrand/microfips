@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use portable_atomic::{AtomicBool, Ordering};
 
 use bt_hci::{
     ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci,

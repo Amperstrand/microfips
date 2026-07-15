@@ -1,0 +1,52 @@
+[package]
+name = "microfips-esp32c3"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal FIPS leaf node on ESP32-C3 (RISC-V)"
+
+[lib]
+name = "microfips_esp32c3"
+
+[features]
+default = []
+wifi = ["dep:esp-radio", "dep:embassy-net", "dep:log", "microfips-esp-transport/wifi", "esp-rtos/esp-radio"]
+
+[[bin]]
+name = "microfips-esp32c3-wifi"
+path = "src/bin/wifi.rs"
+required-features = ["wifi"]
+
+[[bin]]
+name = "microfips-esp32c3-uart"
+path = "src/bin/uart.rs"
+
+[[bin]]
+name = "microfips-esp32c3-usb"
+path = "src/bin/usb.rs"
+
+[dependencies]
+microfips-core = { path = "../microfips-core", features = ["log"] }
+microfips-esp-common = { path = "../microfips-esp-common" }
+microfips-esp-transport = { path = "../microfips-esp-transport", features = ["esp32c3"] }
+microfips-http-demo = { path = "../microfips-http-demo" }
+microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
+microfips-service = { path = "../microfips-service" }
+rand_core = { workspace = true }
+esp-hal = { workspace = true, features = ["esp32c3", "unstable"] }
+esp-rtos = { workspace = true, features = ["esp32c3", "embassy", "esp-alloc"] }
+esp-bootloader-esp-idf = { workspace = true, features = ["esp32c3"] }
+embassy-time = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-executor = { workspace = true }
+embassy-sync = { workspace = true }
+embedded-io-async = { workspace = true }
+heapless = { workspace = true }
+static_cell = { workspace = true }
+esp-radio = { workspace = true, features = ["esp32c3", "wifi", "unstable"], optional = true }
+esp-alloc = { workspace = true }
+esp-println = { workspace = true, features = ["esp32c3"] }
+log = { workspace = true, optional = true }
+embassy-net = { workspace = true, features = ["dhcpv4", "udp"], optional = true }
+
+[build-dependencies]
+microfips-build = { workspace = true }

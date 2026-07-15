@@ -1,6 +1,6 @@
 //! Adapted from fips v0.4.0: `src/node/stats.rs`. Uses global atomics for UI sampling instead of upstream's node/control snapshot plumbing.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use portable_atomic::{AtomicU32, Ordering};
 
 static SRTT_MS: AtomicU32 = AtomicU32::new(0);
 static LOSS_PCT: AtomicU32 = AtomicU32::new(0);
