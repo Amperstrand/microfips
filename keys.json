@@ -74,6 +74,15 @@
       "node_addr": "RETRIEVE_FROM_MAC",
       "comment": "Persistent key on Mac FIPS instance",
       "source": "cat /etc/fips/fips.key and /etc/fips/fips.pub on Mac"
+    },
+    "esp32c3": {
+      "label": "ESP32-C3",
+      "type": "mcu",
+      "nsec_hex": "0000000000000000000000000000000000000000000000000000000000000006",
+      "npub_hex": "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
+      "node_addr": "c6e87880c9204af27d2c02e857dfb4f4",
+      "comment": "secp256k1 generator * 6",
+      "source": "Added for microfips-esp32c3 crate"
     }
   }
 }

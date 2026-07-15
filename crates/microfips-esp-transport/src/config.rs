@@ -113,6 +113,9 @@ pub const DEVICE_NSEC: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE
 #[cfg(feature = "esp32s3")]
 pub const DEVICE_NSEC: [u8; 32] =
     microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_esp32s3"));
+#[cfg(feature = "esp32c3")]
+pub const DEVICE_NSEC: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_esp32c3"));
 
 #[cfg(all(feature = "esp32", feature = "ble"))]
 pub const BLE_DEVICE_NAME: &str = "microfips-esp32";
@@ -123,6 +126,8 @@ pub const BLE_DEVICE_NAME: &str = "microfips-esp32s3";
 pub const DEVICE_NAME: &str = "microfips-esp32";
 #[cfg(feature = "esp32s3")]
 pub const DEVICE_NAME: &str = "microfips-esp32s3";
+#[cfg(feature = "esp32c3")]
+pub const DEVICE_NAME: &str = "microfips-esp32c3";
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32")]
@@ -151,6 +156,9 @@ pub const UART_RX_GPIO_NUM: u32 = 44;
 pub const RESET_REGISTER: usize = 0x3FF4_8000;
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32s3")]
+pub const RESET_REGISTER: usize = 0x6000_8000;
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32c3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
 
 #[cfg(feature = "wifi")]
