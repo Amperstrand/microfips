@@ -1,5 +1,5 @@
 #[cfg(feature = "ble")]
-use core::sync::atomic::AtomicU32;
+use portable_atomic::AtomicU32;
 
 pub use microfips_esp_common::stats::*;
 

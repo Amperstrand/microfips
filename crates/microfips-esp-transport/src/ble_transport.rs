@@ -1,7 +1,7 @@
 #![cfg(feature = "ble")]
 
 use core::marker::PhantomData;
-use core::sync::atomic::Ordering;
+use portable_atomic::Ordering;
 
 use embassy_futures::select::{select, Either};
 use microfips_protocol::transport::Transport;
@@ -9,7 +9,7 @@ use microfips_protocol::transport::Transport;
 use crate::config::{BLE_MAX_FRAME, RECV_RETRY_DELAY_MS};
 
 pub trait BleHostAdapter {
-    fn task_started() -> &'static core::sync::atomic::AtomicBool;
+    fn task_started() -> &'static portable_atomic::AtomicBool;
     fn link_up() -> bool;
     async fn spawn_host_task() -> Result<(), ()>;
     async fn wait_for_link();
@@ -129,7 +129,7 @@ use crate::ble_host::{
 pub struct EspBleHost;
 
 impl BleHostAdapter for EspBleHost {
-    fn task_started() -> &'static core::sync::atomic::AtomicBool {
+    fn task_started() -> &'static portable_atomic::AtomicBool {
         ble_task_started()
     }
 

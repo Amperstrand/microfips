@@ -9,7 +9,7 @@
 #![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 
 use core::ptr::{null_mut, read_volatile, write_volatile};
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use portable_atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
@@ -54,23 +54,28 @@ fn read_byte() -> u8 {
     (unsafe { read_volatile(UART_FIFO_REG) } & 0xFF) as u8
 }
 
-// --- ESP32-S3: USB Serial JTAG EP1 CDC register access ---
+// --- ESP32-S3 / C3: USB Serial JTAG EP1 CDC register access ---
 #[cfg(feature = "esp32s3")]
 const USB_SERIAL_JTAG_BASE: usize = 0x6003_8000;
-#[cfg(feature = "esp32s3")]
-const USB_SERIAL_JTAG_EP1_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x08) as *const u32;
-#[cfg(feature = "esp32s3")]
-const USB_SERIAL_JTAG_EP1_CONF_REG: *mut u32 = (USB_SERIAL_JTAG_BASE + 0x0C) as *mut u32;
-#[cfg(feature = "esp32s3")]
-const USB_SERIAL_JTAG_IN_EP1_ST_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x44) as *const u32;
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_BASE: usize = 0x6004_3000;
+#[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
+const USB_SERIAL_JTAG_EP1_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x00) as *const u32;
+#[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
+const USB_SERIAL_JTAG_EP1_CONF_REG: *mut u32 = (USB_SERIAL_JTAG_BASE + 0x04) as *mut u32;
+#[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
+const USB_SERIAL_JTAG_IN_EP1_ST_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x2C) as *const u32;
 
 #[cfg(feature = "esp32s3")]
 fn init_rx() {}
 
-#[cfg(feature = "esp32s3")]
+#[cfg(feature = "esp32c3")]
+fn init_rx() {}
+
+#[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
 fn rx_available() -> bool {
     // SAFETY: Reading from USB_SERIAL_JTAG_IN_EP1_ST_REG, a fixed memory-mapped address
-    // (ESP32-S3 TRM §28). 32-bit aligned read is atomic. control_task has exclusive access
+    // (ESP32-S3/C3 TRM). 32-bit aligned read is atomic. control_task has exclusive access
     // to the USB Serial JTAG RX path.
     unsafe {
         let st = read_volatile(USB_SERIAL_JTAG_IN_EP1_ST_REG);
@@ -78,10 +83,10 @@ fn rx_available() -> bool {
     }
 }
 
-#[cfg(feature = "esp32s3")]
+#[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
 fn read_byte() -> u8 {
     // SAFETY: Reading from USB_SERIAL_JTAG_EP1_REG and writing to USB_SERIAL_JTAG_EP1_CONF_REG,
-    // fixed memory-mapped addresses (ESP32-S3 TRM §28). 32-bit aligned accesses are atomic.
+    // fixed memory-mapped addresses (ESP32-S3/C3 TRM). 32-bit aligned accesses are atomic.
     // control_task has exclusive access to the USB Serial JTAG RX path.
     unsafe {
         let val = read_volatile(USB_SERIAL_JTAG_EP1_REG) & 0xFF;
