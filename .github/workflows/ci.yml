@@ -152,9 +152,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: rustsec/audit-action@v2
+      - uses: dtolnay/rust-toolchain@v1
         with:
-          deny: warnings
+          toolchain: nightly
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked || true
+
+      - name: Run audit
+        run: cargo audit --deny warnings
 
   build-host:
     name: Build Host Tools
@@ -379,19 +385,19 @@ jobs:
         run: rustup component add rust-src
 
       - name: Build ESP32 UART
-        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
+        run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
 
       - name: Build ESP32 BLE
-        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
+        run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
 
       - name: Build ESP32 L2CAP
-        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
+        run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
 
       - name: Build ESP32 WiFi
-        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
 
       - name: Build ESP32-S3 WiFi
-        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
 
   sim-ping:
     name: Sim-to-Sim Ping via FIPS
