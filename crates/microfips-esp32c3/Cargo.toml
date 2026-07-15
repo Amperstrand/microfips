@@ -44,7 +44,7 @@ heapless = { workspace = true }
 static_cell = { workspace = true }
 esp-radio = { workspace = true, features = ["esp32c3", "wifi", "unstable"], optional = true }
 esp-alloc = { workspace = true }
-esp-println = { workspace = true, features = ["esp32c3", "jtag-serial"] }
+esp-println = { workspace = true, features = ["esp32c3"] }
 log = { workspace = true, optional = true }
 embassy-net = { workspace = true, features = ["dhcpv4", "udp"], optional = true }
 
