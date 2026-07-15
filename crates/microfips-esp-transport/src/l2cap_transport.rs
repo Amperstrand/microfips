@@ -1,7 +1,7 @@
 #![cfg(feature = "l2cap")]
 
 use core::marker::PhantomData;
-use core::sync::atomic::Ordering;
+use portable_atomic::Ordering;
 
 use embassy_futures::select::{select, Either};
 use microfips_protocol::transport::Transport;
@@ -9,7 +9,7 @@ use microfips_protocol::transport::Transport;
 use crate::config::{L2CAP_FRAME_CAP, RECV_RETRY_DELAY_MS};
 
 pub trait L2capHostAdapter {
-    fn task_started() -> &'static core::sync::atomic::AtomicBool;
+    fn task_started() -> &'static portable_atomic::AtomicBool;
     fn link_up() -> bool;
     async fn spawn_host_task() -> Result<(), ()>;
     async fn wait_for_l2cap_ready() -> [u8; 33];
@@ -134,7 +134,7 @@ use crate::l2cap_host::{
 pub struct EspL2capHost;
 
 impl L2capHostAdapter for EspL2capHost {
-    fn task_started() -> &'static core::sync::atomic::AtomicBool {
+    fn task_started() -> &'static portable_atomic::AtomicBool {
         l2cap_task_started()
     }
 

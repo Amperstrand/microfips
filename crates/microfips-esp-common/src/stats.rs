@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use portable_atomic::{AtomicU32, Ordering};
 
 #[used]
 pub static STATS: NodeStats = NodeStats::new();

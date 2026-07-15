@@ -11,7 +11,7 @@ pub async fn run_ble_node(
     use crate::config::BLE_DEVICE_NAME;
     use crate::node_info::NodeIdentity;
     use crate::stats::STATS;
-    use core::sync::atomic::Ordering;
+    use portable_atomic::Ordering;
 
     crate::logger::init();
     STATS.boot_tick_ms.store(
@@ -56,7 +56,7 @@ pub async fn run_l2cap_node(
     use crate::config::RECV_RETRY_DELAY_MS;
     use crate::node_info::NodeIdentity;
     use crate::stats::STATS;
-    use core::sync::atomic::Ordering;
+    use portable_atomic::Ordering;
 
     crate::logger::init();
     STATS.boot_tick_ms.store(
@@ -121,7 +121,7 @@ pub async fn run_wifi_node(
     use crate::rng::EspRng;
     use crate::stats::STATS;
     use crate::wifi_transport::build_wifi_transport;
-    use core::sync::atomic::Ordering;
+    use portable_atomic::Ordering;
     use microfips_core::identity::{STM32_NODE_ADDR, STM32_NPUB};
     use microfips_protocol::node::Node;
     use rand_core::RngCore;
