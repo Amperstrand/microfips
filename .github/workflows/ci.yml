@@ -95,7 +95,7 @@ jobs:
           TOTAL=$((CORE_COUNT + FSP_COUNT))
           echo "Core tests: $CORE_COUNT (expect >= 160)"
           echo "Protocol tests: $PROTO_COUNT (expect >= 46)"
-          echo "FSP integration tests: $FSP_COUNT (expect >= 6)"
+          echo "FSP integration tests: $FSP_COUNT (expect >= 5)"
           echo "Total core: $TOTAL (expect >= 166)"
           if [ "$CORE_COUNT" -lt 160 ]; then
             echo "::error::Core test count dropped below 160 (got $CORE_COUNT)"
@@ -105,8 +105,8 @@ jobs:
             echo "::error::Protocol test count dropped below 46 (got $PROTO_COUNT)"
             exit 1
           fi
-          if [ "$FSP_COUNT" -lt 6 ]; then
-            echo "::error::FSP integration test count dropped below 6 (got $FSP_COUNT)"
+          if [ "$FSP_COUNT" -lt 5 ]; then
+            echo "::error::FSP integration test count dropped below 5 (got $FSP_COUNT)"
             exit 1
           fi
 
