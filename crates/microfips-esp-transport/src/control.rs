@@ -60,11 +60,11 @@ const USB_SERIAL_JTAG_BASE: usize = 0x6003_8000;
 #[cfg(feature = "esp32c3")]
 const USB_SERIAL_JTAG_BASE: usize = 0x6004_3000;
 #[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
-const USB_SERIAL_JTAG_EP1_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x08) as *const u32;
+const USB_SERIAL_JTAG_EP1_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x00) as *const u32;
 #[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
-const USB_SERIAL_JTAG_EP1_CONF_REG: *mut u32 = (USB_SERIAL_JTAG_BASE + 0x0C) as *mut u32;
+const USB_SERIAL_JTAG_EP1_CONF_REG: *mut u32 = (USB_SERIAL_JTAG_BASE + 0x04) as *mut u32;
 #[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
-const USB_SERIAL_JTAG_IN_EP1_ST_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x44) as *const u32;
+const USB_SERIAL_JTAG_IN_EP1_ST_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x2C) as *const u32;
 
 #[cfg(feature = "esp32s3")]
 fn init_rx() {}
