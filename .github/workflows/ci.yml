@@ -112,7 +112,7 @@ jobs:
 
       - name: Verify FIPS-bug-compatible deviations are documented
         run: |
-          NOISE_RS="crates/microfips-core/src/noise.rs"
+          NOISE_RS="crates/fips-noise/src/lib.rs"
           echo "Checking that Noise deviations are documented..."
           grep -q "FIPS: no AAD during handshake" "$NOISE_RS" || { echo "::error::Missing D1 documentation (empty AAD)"; exit 1; }
           grep -q "se_and_es_produce_different_keys" "$NOISE_RS" || { echo "::error::Missing D2 documentation (se DH swap)"; exit 1; }
