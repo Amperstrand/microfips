@@ -25,7 +25,11 @@ impl Log for UartLogger {
     fn flush(&self) {}
 }
 
+#[cfg(target_has_atomic = "ptr")]
 pub fn init() {
     log::set_logger(&LOGGER).unwrap();
     log::set_max_level(LevelFilter::Info);
 }
+
+#[cfg(not(target_has_atomic = "ptr"))]
+pub fn init() {}
