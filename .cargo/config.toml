@@ -10,7 +10,6 @@ rustflags = ["-C", "link-arg=-Tlinkall.x"]
 runner = "espflash flash --monitor -p /dev/ttyACM0 --chip esp32c3"
 rustflags = [
   "-C", "link-arg=-Tlinkall.x",
-  "-C", "link-arg=-Tmemory.x",
   "-C", "force-frame-pointers=no",
 ]
 
