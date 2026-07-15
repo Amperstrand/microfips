@@ -180,6 +180,11 @@ jobs:
       # http-demo build disabled: nightly SocketAddr::ToString regression
       # - run: cargo build -p microfips-http-demo --features http --release
 
+      - name: Clone and build FIPS daemon
+        run: |
+          git clone --depth 1 https://github.com/Amperstrand/fips.git /tmp/fips
+          cargo build --release --manifest-path /tmp/fips/Cargo.toml --bin fips
+
       - uses: actions/upload-artifact@v4
         with:
           name: fips-handshake
@@ -190,6 +195,12 @@ jobs:
         with:
           name: microfips-sim
           path: target/release/microfips-sim
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fips-daemon
+          path: /tmp/fips/target/release/fips
           retention-days: 7
 
       - uses: actions/upload-artifact@v4
@@ -400,13 +411,12 @@ jobs:
         run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
 
   sim-ping:
-    name: Sim-to-Sim Ping via FIPS
+    name: Sim-to-Sim Ping via FIPS (on-demand VM)
     runs-on: ubuntu-latest
     needs: [build-host]
-    continue-on-error: true
-    timeout-minutes: 4
+    timeout-minutes: 8
     env:
-      FIPS_ADDR: orangeclaw.dns4sats.xyz:2121
+      SHC_API_KEY: ${{ secrets.SHC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -415,21 +425,29 @@ jobs:
           name: microfips-sim
           path: ./bin
 
-      - run: chmod +x ./bin/microfips-sim
+      - uses: actions/download-artifact@v4
+        with:
+          name: fips-daemon
+          path: ./bin
 
-      - name: Run sim-to-sim ping test against live FIPS
+      - run: chmod +x ./bin/microfips-sim ./bin/fips
+
+      - name: Install shc-toolkit
+        run: pip install shc-toolkit
+
+      - name: Provision VM and deploy FIPS
+        id: provision
+        run: python3 scripts/ci_sim_ping.py provision --github-output
+
+      - name: Run sim-to-sim ping test
+        env:
+          VM_IP: ${{ steps.provision.outputs.vm_ip }}
+          FIPS_NPUB: ${{ steps.provision.outputs.fips_npub_hex }}
         run: |
           set -e
+          FIPS_ADDR="$VM_IP:2121"
 
-          VPS_NPUB=$(python3 - <<'PY'
-          import json
-          with open('keys.json') as f:
-              keys = json.load(f)
-          print(keys['devices']['vps']['npub_hex'])
-          PY
-          )
-
-          FIPS_PEER_NPUB="$VPS_NPUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
+          FIPS_PEER_NPUB="$FIPS_NPUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
           SIMA_PID=$!
           sleep 8
 
@@ -440,7 +458,7 @@ jobs:
           fi
           echo "SIM-A connected"
 
-          FIPS_PEER_NPUB="$VPS_NPUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
+          FIPS_PEER_NPUB="$FIPS_NPUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
           SIMB_PID=$!
 
           wait $SIMB_PID 2>/dev/null
@@ -461,9 +479,14 @@ jobs:
             exit 1
           fi
 
-      - name: Cleanup
+      - name: Cleanup VM
         if: always()
+        env:
+          SERVICE_ID: ${{ steps.provision.outputs.service_id }}
         run: |
+          if [ -n "$SERVICE_ID" ]; then
+            python3 scripts/ci_sim_ping.py cleanup --service-id "$SERVICE_ID" || true
+          fi
           kill $(pgrep -f microfips-sim) 2>/dev/null || true
 
   publish-evidence:
