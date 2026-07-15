@@ -121,9 +121,9 @@ pub async fn run_wifi_node(
     use crate::rng::EspRng;
     use crate::stats::STATS;
     use crate::wifi_transport::build_wifi_transport;
-    use portable_atomic::Ordering;
     use microfips_core::identity::{STM32_NODE_ADDR, STM32_NPUB};
     use microfips_protocol::node::Node;
+    use portable_atomic::Ordering;
     use rand_core::RngCore;
 
     let mut led = crate::runner::make_led(gpio2);
