@@ -402,6 +402,9 @@ jobs:
       - name: Build ESP32-C3 UART
         run: cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --no-default-features
 
+      - name: Build ESP32-C3 WiFi
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --features wifi
+
   sim-ping:
     name: Sim-to-Sim Ping via FIPS
     runs-on: ubuntu-latest
