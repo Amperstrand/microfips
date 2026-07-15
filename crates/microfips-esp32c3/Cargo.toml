@@ -8,8 +8,8 @@ description = "Minimal FIPS leaf node on ESP32-C3 (RISC-V)"
 name = "microfips_esp32c3"
 
 [features]
-default = ["wifi"]
-wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
+default = []
+wifi = ["dep:esp-radio", "dep:embassy-net", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
 
 [[bin]]
 name = "microfips-esp32c3-wifi"
@@ -33,7 +33,7 @@ microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
 rand_core = { workspace = true }
 esp-hal = { workspace = true, features = ["esp32c3", "unstable"] }
-esp-rtos = { workspace = true, features = ["esp32c3", "embassy", "esp-alloc", "esp-radio"] }
+esp-rtos = { workspace = true, features = ["esp32c3", "embassy", "esp-alloc"] }
 esp-bootloader-esp-idf = { workspace = true, features = ["esp32c3"] }
 embassy-time = { workspace = true }
 embassy-futures = { workspace = true }
@@ -46,6 +46,7 @@ esp-radio = { workspace = true, features = ["esp32c3", "wifi", "unstable"], opti
 esp-alloc = { workspace = true }
 esp-println = { workspace = true, features = ["esp32c3", "jtag-serial"], optional = true }
 log = { workspace = true, optional = true }
+embassy-net = { workspace = true, features = ["dhcpv4", "udp"], optional = true }
 
 [build-dependencies]
 microfips-build = { workspace = true }

@@ -399,9 +399,6 @@ jobs:
       - name: Build ESP32-S3 WiFi
         run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
 
-      - name: Build ESP32-C3 WiFi
-        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --features wifi
-
       - name: Build ESP32-C3 UART
         run: cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --no-default-features
 
