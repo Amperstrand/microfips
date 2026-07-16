@@ -433,9 +433,6 @@ jobs:
 
       - run: chmod +x ./bin/microfips-sim ./bin/fips
 
-      - name: Install shc-toolkit
-        run: pip install shc-toolkit
-
       - name: Provision VM and deploy FIPS
         id: provision
         run: python3 scripts/ci_sim_ping.py provision --github-output
