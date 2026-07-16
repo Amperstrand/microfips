@@ -238,8 +238,16 @@ def cmd_provision(args: argparse.Namespace) -> None:
     _scp(ip, "/tmp/fips-ci.yaml", "/tmp/fips.yaml", user=ssh_user)
     print("  SCP fips binary (22MB)...", flush=True)
     _scp(ip, args.fips_binary, "/tmp/fips", user=ssh_user)
-    print("  SSH: chmod + start FIPS...", flush=True)
-    _ssh(ip, "chmod +x /tmp/fips && nohup /tmp/fips --config /tmp/fips.yaml </dev/null >/tmp/fips.log 2>&1 & sleep 2", user=ssh_user, timeout=30)
+
+    service = (
+        "[Unit]\nDescription=FIPS CI\nAfter=network.target\n\n"
+        "[Service]\nExecStart=/tmp/fips --config /tmp/fips.yaml\nRestart=no\n\n"
+        "[Install]\nWantedBy=multi-user.target\n"
+    )
+    Path("/tmp/fips-ci.service").write_text(service)
+    _scp(ip, "/tmp/fips-ci.service", "/tmp/fips-ci.service", user=ssh_user)
+    print("  Starting FIPS via systemd...", flush=True)
+    _ssh(ip, "chmod +x /tmp/fips && sudo cp /tmp/fips-ci.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl start fips-ci", user=ssh_user, timeout=30)
     print("  FIPS started.", flush=True)
 
     print("=== Waiting for FIPS UDP port ===")
@@ -254,7 +262,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print("=== Extracting FIPS npub ===")
-    fips_log = _ssh(ip, "grep 'npub:' /tmp/fips.log | tail -1", user=ssh_user)
+    fips_log = _ssh(ip, "sudo journalctl -u fips-ci --no-pager -o cat 2>/dev/null | grep 'npub:' | tail -1", user=ssh_user)
     npub_bech32 = fips_log.split("npub:")[-1].strip() if "npub:" in fips_log else ""
     if not npub_bech32:
         print(f"ERROR: Could not extract npub from FIPS log: {fips_log}", file=sys.stderr)
