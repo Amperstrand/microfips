@@ -144,7 +144,8 @@ def cmd_provision(args: argparse.Namespace) -> None:
     print("=== Ordering SHC VM ===")
     idem = f"ci-{uuid.uuid4().hex[:24]}"
     order = _api("POST", "/ordering/submit", api_key=api_key, body={
-        "package_id": 23,
+        "package_id": 80,
+        "pricing_id": 241,
         "hostname": f"microfips-ci-{int(time.time())}",
         "ssh_key": pub_key,
         "order_form_id": 11,
