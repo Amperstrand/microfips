@@ -236,7 +236,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
     Path("/tmp/fips-ci.yaml").write_text(fips_config)
     _scp(ip, "/tmp/fips-ci.yaml", "/tmp/fips.yaml", user=ssh_user)
     _scp(ip, args.fips_binary, "/tmp/fips", user=ssh_user)
-    _ssh(ip, "chmod +x /tmp/fips && nohup /tmp/fips --config /tmp/fips.yaml > /tmp/fips.log 2>&1 &", user=ssh_user)
+    _ssh(ip, "chmod +x /tmp/fips && nohup /tmp/fips --config /tmp/fips.yaml </dev/null >/tmp/fips.log 2>&1 &", user=ssh_user)
 
     print("=== Waiting for FIPS UDP port ===")
     for _ in range(30):
