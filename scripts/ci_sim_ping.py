@@ -252,15 +252,17 @@ def cmd_provision(args: argparse.Namespace) -> None:
     _ssh(ip, "chmod +x /tmp/fips && sudo cp /tmp/fips-ci.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl start fips-ci", user=ssh_user, timeout=30)
     print("  FIPS started.", flush=True)
 
-    print("=== Waiting for FIPS UDP port ===")
-    for _ in range(30):
-        r = subprocess.run(["nc", "-z", "-w1", ip, "2121"], capture_output=True)
-        if r.returncode == 0:
+    print("=== Waiting for FIPS to be ready ===")
+    fips_ready = False
+    for _ in range(15):
+        log = _ssh(ip, "sudo journalctl -u fips-ci --no-pager -o cat 2>/dev/null", user=ssh_user)
+        if "RX event loop started" in log or "Node started" in log:
+            fips_ready = True
             break
-        time.sleep(1)
-    else:
-        log_tail = _ssh(ip, "sudo journalctl -u fips-ci --no-pager -o cat 2>/dev/null | tail -30", user=ssh_user)
-        print(f"FIPS did not start. Log:\n{log_tail}", file=sys.stderr)
+        time.sleep(2)
+
+    if not fips_ready:
+        print(f"FIPS did not become ready. Log:\n{log}", file=sys.stderr)
         sys.exit(1)
 
     print("=== Extracting FIPS npub ===")
