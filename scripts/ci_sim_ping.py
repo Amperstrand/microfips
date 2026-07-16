@@ -246,6 +246,8 @@ def cmd_provision(args: argparse.Namespace) -> None:
     )
     Path("/tmp/fips-ci.service").write_text(service)
     _scp(ip, "/tmp/fips-ci.service", "/tmp/fips-ci.service", user=ssh_user)
+    print("  Installing runtime deps...", flush=True)
+    _ssh(ip, "sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-3", user=ssh_user, timeout=60)
     print("  Starting FIPS via systemd...", flush=True)
     _ssh(ip, "chmod +x /tmp/fips && sudo cp /tmp/fips-ci.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl start fips-ci", user=ssh_user, timeout=30)
     print("  FIPS started.", flush=True)
@@ -257,7 +259,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
             break
         time.sleep(1)
     else:
-        log_tail = _ssh(ip, "tail -20 /tmp/fips.log")
+        log_tail = _ssh(ip, "sudo journalctl -u fips-ci --no-pager -o cat 2>/dev/null | tail -30", user=ssh_user)
         print(f"FIPS did not start. Log:\n{log_tail}", file=sys.stderr)
         sys.exit(1)
 
