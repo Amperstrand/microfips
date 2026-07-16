@@ -234,9 +234,13 @@ def cmd_provision(args: argparse.Namespace) -> None:
         "tun:\n  enabled: false\n"
     )
     Path("/tmp/fips-ci.yaml").write_text(fips_config)
+    print("  SCP config...", flush=True)
     _scp(ip, "/tmp/fips-ci.yaml", "/tmp/fips.yaml", user=ssh_user)
+    print("  SCP fips binary (22MB)...", flush=True)
     _scp(ip, args.fips_binary, "/tmp/fips", user=ssh_user)
+    print("  SSH: chmod + start FIPS...", flush=True)
     _ssh(ip, "chmod +x /tmp/fips && nohup /tmp/fips --config /tmp/fips.yaml </dev/null >/tmp/fips.log 2>&1 & sleep 2", user=ssh_user, timeout=30)
+    print("  FIPS started.", flush=True)
 
     print("=== Waiting for FIPS UDP port ===")
     for _ in range(30):
