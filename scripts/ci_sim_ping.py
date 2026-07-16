@@ -181,7 +181,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
         if prov in ("failed", "error"):
             print(f"ERROR: provisioning failed: {vm}", file=sys.stderr)
             sys.exit(1)
-        if svc == "active" and ips:
+        if prov == "ready" and svc == "active" and ips:
             ip = ips[0]["ip"]
             try:
                 s = socket.create_connection((ip, 22), timeout=5)
@@ -200,6 +200,30 @@ def cmd_provision(args: argparse.Namespace) -> None:
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"vm_ip={ip}\n")
 
+    print("=== Probing SSH access ===")
+    ssh_user = None
+    for test_user in ("debian", "ubuntu", "root"):
+        for attempt in range(6):
+            r = subprocess.run(
+                ["ssh", "-i", str(key_path),
+                 "-o", "StrictHostKeyChecking=no",
+                 "-o", "UserKnownHostsFile=/dev/null",
+                 "-o", "LogLevel=ERROR",
+                 "-o", "ConnectTimeout=10",
+                 f"{test_user}@{ip}", "echo ok"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0 and "ok" in r.stdout:
+                ssh_user = test_user
+                print(f"SSH works as {ssh_user}")
+                break
+            time.sleep(10)
+        if ssh_user:
+            break
+    if not ssh_user:
+        print("ERROR: Could not establish SSH with debian/ubuntu/root", file=sys.stderr)
+        sys.exit(1)
+
     print("=== Deploying FIPS ===")
     fips_config = (
         "dns:\n  enabled: false\n"
@@ -210,9 +234,9 @@ def cmd_provision(args: argparse.Namespace) -> None:
         "tun:\n  enabled: false\n"
     )
     Path("/tmp/fips-ci.yaml").write_text(fips_config)
-    _scp(ip, "/tmp/fips-ci.yaml", "/tmp/fips.yaml")
-    _scp(ip, args.fips_binary, "/tmp/fips")
-    _ssh(ip, "chmod +x /tmp/fips && nohup /tmp/fips --config /tmp/fips.yaml > /tmp/fips.log 2>&1 &")
+    _scp(ip, "/tmp/fips-ci.yaml", "/tmp/fips.yaml", user=ssh_user)
+    _scp(ip, args.fips_binary, "/tmp/fips", user=ssh_user)
+    _ssh(ip, "chmod +x /tmp/fips && nohup /tmp/fips --config /tmp/fips.yaml > /tmp/fips.log 2>&1 &", user=ssh_user)
 
     print("=== Waiting for FIPS UDP port ===")
     for _ in range(30):
@@ -226,7 +250,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print("=== Extracting FIPS npub ===")
-    fips_log = _ssh(ip, "grep 'npub:' /tmp/fips.log | tail -1")
+    fips_log = _ssh(ip, "grep 'npub:' /tmp/fips.log | tail -1", user=ssh_user)
     npub_bech32 = fips_log.split("npub:")[-1].strip() if "npub:" in fips_log else ""
     if not npub_bech32:
         print(f"ERROR: Could not extract npub from FIPS log: {fips_log}", file=sys.stderr)
