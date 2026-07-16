@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """CI helper: provision SHC VM, deploy FIPS, run sim-ping, cleanup.
 
+Zero external dependencies — uses only Python stdlib (urllib).
+
 Usage in GitHub Actions:
 
-  # Provision + deploy FIPS, prints VM IP
-  python3 scripts/ci_sim_ping.py provision --ssh-key /tmp/ci_key
-
-  # Run tests against the VM (separate step)
-  ./bin/microfips-sim --udp $VM_IP:2121 --sim-a &
-  ./bin/microfips-sim --udp $VM_IP:2121 --sim-b --test-ping
-
-  # Cleanup (always runs, even on failure)
-  python3 scripts/ci_sim_ping.py cleanup --service-id 12345
+  python3 scripts/ci_sim_ping.py provision --github-output
+  # ... run sim tests against $VM_IP ...
+  python3 scripts/ci_sim_ping.py cleanup --service-id $SERVICE_ID
 
 Environment:
   SHC_API_KEY: Required for SHC API access.
@@ -22,13 +18,67 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
 
+BASE_URL = "https://blesta.sovereignhybridcompute.com/user-api/v2"
 
-def ssh(host: str, cmd: str, user: str = "debian", key: str = "/tmp/ci_key", timeout: int = 120) -> str:
+
+def _api(method: str, path: str, *, api_key: str, body: dict | None = None,
+         extra_headers: dict | None = None, timeout: int = 30) -> dict:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    url = f"{BASE_URL}{path}"
+    for attempt in range(3):
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                text = resp.read().decode()
+                parsed = json.loads(text) if text.strip() else {}
+                return parsed.get("data", parsed)
+        except urllib.error.HTTPError as e:
+            text = e.read().decode()
+            parsed = json.loads(text) if text.strip() else {}
+            err = parsed.get("error", {})
+            code = err.get("code", "unknown")
+            if code == "confirmation_required" and e.code == 409:
+                conf = parsed.get("confirmation", {})
+                cid = conf.get("confirmation_id") or conf.get("structuredContent", {}).get("confirmation_id")
+                if cid:
+                    eh = dict(extra_headers) if extra_headers else {}
+                    eh["X-User-Api-Confirm"] = cid
+                    return _api(method, path, api_key=api_key, body=body, extra_headers=eh, timeout=timeout)
+            if e.code in (429, 502, 503) and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            msg = err.get("message", text)
+            print(f"API error {e.code}: {code} - {msg}", file=sys.stderr)
+            raise
+        except urllib.error.URLError as e:
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise
+
+    raise RuntimeError("max retries exceeded")
+
+
+def _ssh(host: str, cmd: str, key: str = "/tmp/ci_key", user: str = "debian", timeout: int = 120) -> str:
     result = subprocess.run(
         ["ssh", "-i", key,
          "-o", "StrictHostKeyChecking=no",
@@ -40,12 +90,13 @@ def ssh(host: str, cmd: str, user: str = "debian", key: str = "/tmp/ci_key", tim
     )
     if result.returncode != 0:
         print(f"SSH failed (rc={result.returncode}): {cmd}", file=sys.stderr)
-        print(f"stderr: {result.stderr}", file=sys.stderr)
+        if result.stderr:
+            print(f"stderr: {result.stderr}", file=sys.stderr)
         raise RuntimeError(f"SSH command failed: {cmd}")
     return result.stdout.strip()
 
 
-def scp(host: str, local: str, remote: str, user: str = "debian", key: str = "/tmp/ci_key") -> None:
+def _scp(host: str, local: str, remote: str, key: str = "/tmp/ci_key", user: str = "debian") -> None:
     result = subprocess.run(
         ["scp", "-i", key, "-O",
          "-o", "StrictHostKeyChecking=no",
@@ -57,85 +108,7 @@ def scp(host: str, local: str, remote: str, user: str = "debian", key: str = "/t
         raise RuntimeError(f"scp failed: {result.stderr}")
 
 
-def cmd_provision(args: argparse.Namespace) -> None:
-    from shc_toolkit.client import SHCClient
-
-    c = SHCClient()
-
-    key_path = Path(args.ssh_key)
-    if not key_path.exists():
-        subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", str(key_path),
-                        "-N", "", "-q"], check=True)
-
-    pub_key = key_path.with_suffix(".pub").read_text().strip()
-
-    print("=== Ordering SHC VM ===")
-    order = c.order_vm(
-        hostname=f"microfips-ci-{int(time.time())}",
-        package_id=23,  # NVMe VPS - Starter (1 CPU, 4GB, 8GB)
-        ssh_key=str(key_path.with_suffix(".pub")),
-        pay=True,
-    )
-    service_id = order["service_id"]
-    print(f"service_id={service_id}")
-
-    if args.github_output:
-        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"service_id={service_id}\n")
-
-    print("=== Waiting for provisioning ===")
-    vm = c.wait_for_provisioning_healthy(service_id, timeout=300, interval=10)
-    ip = vm["ips"][0]["ip"]
-    print(f"vm_ip={ip}")
-
-    if args.github_output:
-        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"vm_ip={ip}\n")
-
-    print("=== Deploying FIPS ===")
-    fips_config = """\
-dns:
-  enabled: false
-node:
-  heartbeat_interval_secs: 5
-  identity:
-    persistent: true
-transports:
-  udp:
-    bind_addr: 0.0.0.0:2121
-    accept_connections: true
-tun:
-  enabled: false
-"""
-    config_path = Path("/tmp/fips-ci.yaml")
-    config_path.write_text(fips_config)
-    scp(ip, str(config_path), "/tmp/fips.yaml", key=args.ssh_key)
-    scp(ip, args.fips_binary, "/tmp/fips", key=args.ssh_key)
-
-    ssh(ip, "chmod +x /tmp/fips && nohup /tmp/fips --config /tmp/fips.yaml > /tmp/fips.log 2>&1 &",
-        key=args.ssh_key)
-
-    print("=== Waiting for FIPS UDP port ===")
-    for _ in range(30):
-        result = subprocess.run(
-            ["nc", "-z", "-w1", ip, "2121"],
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            break
-        time.sleep(1)
-    else:
-        log_tail = ssh(ip, "tail -20 /tmp/fips.log", key=args.ssh_key)
-        print(f"FIPS did not start. Log:\n{log_tail}", file=sys.stderr)
-        raise RuntimeError("FIPS failed to start within 30s")
-
-    print("=== Extracting FIPS npub ===")
-    fips_log = ssh(ip, "grep 'npub:' /tmp/fips.log | tail -1", key=args.ssh_key)
-    npub_bech32 = fips_log.split("npub:")[-1].strip() if "npub:" in fips_log else ""
-
-    if not npub_bech32:
-        raise RuntimeError(f"Could not extract npub from FIPS log: {fips_log}")
-
+def _npub_bech32_to_compressed_hex(npub_bech32: str) -> str:
     charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
     data_part = npub_bech32[5:-6]
     values = [charset.index(c) for c in data_part]
@@ -147,7 +120,6 @@ tun:
             bits -= 8
             out.append((buf >> bits) & 0xFF)
     x_only = bytes(out)
-
     p = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
     x = int.from_bytes(x_only, "big")
     y_sq = (pow(x, 3, p) + 7) % p
@@ -155,25 +127,128 @@ tun:
     if (y * y) % p != y_sq:
         raise RuntimeError("Invalid pubkey: x has no valid y on secp256k1 curve")
     prefix = b"\x02" if y % 2 == 0 else b"\x03"
-    npub_hex = (prefix + x_only).hex()
+    return (prefix + x_only).hex()
 
+
+def cmd_provision(args: argparse.Namespace) -> None:
+    api_key = os.environ.get("SHC_API_KEY", "")
+    if not api_key:
+        print("ERROR: SHC_API_KEY not set", file=sys.stderr)
+        sys.exit(1)
+
+    key_path = Path(args.ssh_key)
+    if not key_path.exists():
+        subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", str(key_path), "-N", "", "-q"], check=True)
+    pub_key = key_path.with_suffix(".pub").read_text().strip()
+
+    print("=== Ordering SHC VM ===")
+    idem = f"ci-{uuid.uuid4().hex[:24]}"
+    order = _api("POST", "/ordering/submit", api_key=api_key, body={
+        "package_id": 23,
+        "hostname": f"microfips-ci-{int(time.time())}",
+        "ssh_key": pub_key,
+        "order_form_id": 11,
+    }, extra_headers={"Idempotency-Key": idem})
+
+    service_id = order.get("service_id") or (order.get("service_ids") or [None])[0]
+    if not service_id:
+        print(f"ERROR: No service_id in order response: {order}", file=sys.stderr)
+        sys.exit(1)
+    print(f"service_id={service_id}")
+
+    if args.github_output:
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"service_id={service_id}\n")
+
+    invoice_id = order.get("invoice_id")
+    if invoice_id:
+        _api("POST", f"/payment/{invoice_id}/checkout", api_key=api_key, body={
+            "gateway": "btcpay_server",
+            "idempotency_key": f"pay-{uuid.uuid4().hex[:24]}",
+        })
+        print(f"Paid invoice {invoice_id}")
+
+    print("=== Waiting for provisioning ===")
+    deadline = time.time() + 300
+    ip = None
+    while time.time() < deadline:
+        vm = _api("GET", f"/vm/{service_id}", api_key=api_key)
+        svc = vm.get("service_status", "unknown")
+        prov = vm.get("provisioning_state", "unknown")
+        ips = vm.get("ips", [])
+        print(f"  service={svc} provisioning={prov} ips={len(ips)}")
+        if prov in ("failed", "error"):
+            print(f"ERROR: provisioning failed: {vm}", file=sys.stderr)
+            sys.exit(1)
+        if svc == "active" and ips:
+            ip = ips[0]["ip"]
+            try:
+                s = socket.create_connection((ip, 22), timeout=5)
+                s.close()
+                break
+            except OSError:
+                pass
+        time.sleep(10)
+
+    if not ip:
+        print("ERROR: VM not ready after 300s", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"vm_ip={ip}")
+    if args.github_output:
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"vm_ip={ip}\n")
+
+    print("=== Deploying FIPS ===")
+    fips_config = (
+        "dns:\n  enabled: false\n"
+        "node:\n  heartbeat_interval_secs: 5\n"
+        "  identity:\n    persistent: true\n"
+        "transports:\n  udp:\n    bind_addr: 0.0.0.0:2121\n"
+        "    accept_connections: true\n"
+        "tun:\n  enabled: false\n"
+    )
+    Path("/tmp/fips-ci.yaml").write_text(fips_config)
+    _scp(ip, "/tmp/fips-ci.yaml", "/tmp/fips.yaml")
+    _scp(ip, args.fips_binary, "/tmp/fips")
+    _ssh(ip, "chmod +x /tmp/fips && nohup /tmp/fips --config /tmp/fips.yaml > /tmp/fips.log 2>&1 &")
+
+    print("=== Waiting for FIPS UDP port ===")
+    for _ in range(30):
+        r = subprocess.run(["nc", "-z", "-w1", ip, "2121"], capture_output=True)
+        if r.returncode == 0:
+            break
+        time.sleep(1)
+    else:
+        log_tail = _ssh(ip, "tail -20 /tmp/fips.log")
+        print(f"FIPS did not start. Log:\n{log_tail}", file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Extracting FIPS npub ===")
+    fips_log = _ssh(ip, "grep 'npub:' /tmp/fips.log | tail -1")
+    npub_bech32 = fips_log.split("npub:")[-1].strip() if "npub:" in fips_log else ""
+    if not npub_bech32:
+        print(f"ERROR: Could not extract npub from FIPS log: {fips_log}", file=sys.stderr)
+        sys.exit(1)
+
+    npub_hex = _npub_bech32_to_compressed_hex(npub_bech32)
     print(f"fips_npub_hex={npub_hex}")
-
     if args.github_output:
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"fips_npub_hex={npub_hex}\n")
 
-    print(f"FIPS ready on {ip}:2121 (npub={npub_bech32})")
+    print(f"FIPS ready on {ip}:2121")
 
 
 def cmd_cleanup(args: argparse.Namespace) -> None:
-    from shc_toolkit.client import SHCClient
-
-    c = SHCClient()
+    api_key = os.environ.get("SHC_API_KEY", "")
+    if not api_key:
+        return
     service_id = int(args.service_id)
     print(f"=== Cancelling VM {service_id} ===")
     try:
-        c.cancel_vm(service_id, immediate=True)
+        _api("POST", f"/vm/{service_id}/cancel", api_key=api_key, body={"immediate": True},
+             extra_headers={"Idempotency-Key": f"cancel-{uuid.uuid4().hex[:24]}"})
         print(f"VM {service_id} cancelled")
     except Exception as e:
         print(f"Failed to cancel VM {service_id}: {e}", file=sys.stderr)
