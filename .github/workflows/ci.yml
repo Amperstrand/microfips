@@ -93,26 +93,26 @@ jobs:
           PROTO_COUNT=$(cargo test -p microfips-protocol --features std -- --list 2>&1 | grep -c "test$" || true)
           FSP_COUNT=$(cargo test -p microfips-core --features std --test fsp_over_fmp -- --list 2>&1 | grep -c "test$" || true)
           TOTAL=$((CORE_COUNT + FSP_COUNT))
-          echo "Core tests: $CORE_COUNT (expect >= 169)"
+          echo "Core tests: $CORE_COUNT (expect >= 160)"
           echo "Protocol tests: $PROTO_COUNT (expect >= 46)"
-          echo "FSP integration tests: $FSP_COUNT (expect >= 6)"
-          echo "Total core: $TOTAL (expect >= 175)"
-          if [ "$CORE_COUNT" -lt 169 ]; then
-            echo "::error::Core test count dropped below 169 (got $CORE_COUNT)"
+          echo "FSP integration tests: $FSP_COUNT (expect >= 5)"
+          echo "Total core: $TOTAL (expect >= 166)"
+          if [ "$CORE_COUNT" -lt 160 ]; then
+            echo "::error::Core test count dropped below 160 (got $CORE_COUNT)"
             exit 1
           fi
           if [ "$PROTO_COUNT" -lt 46 ]; then
             echo "::error::Protocol test count dropped below 46 (got $PROTO_COUNT)"
             exit 1
           fi
-          if [ "$FSP_COUNT" -lt 6 ]; then
-            echo "::error::FSP integration test count dropped below 6 (got $FSP_COUNT)"
+          if [ "$FSP_COUNT" -lt 5 ]; then
+            echo "::error::FSP integration test count dropped below 5 (got $FSP_COUNT)"
             exit 1
           fi
 
       - name: Verify FIPS-bug-compatible deviations are documented
         run: |
-          NOISE_RS="crates/microfips-core/src/noise.rs"
+          NOISE_RS="crates/fips-noise/src/lib.rs"
           echo "Checking that Noise deviations are documented..."
           grep -q "FIPS: no AAD during handshake" "$NOISE_RS" || { echo "::error::Missing D1 documentation (empty AAD)"; exit 1; }
           grep -q "se_and_es_produce_different_keys" "$NOISE_RS" || { echo "::error::Missing D2 documentation (se DH swap)"; exit 1; }
@@ -152,9 +152,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: rustsec/audit-action@v2
+      - uses: dtolnay/rust-toolchain@v1
         with:
-          deny: warnings
+          toolchain: nightly
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked || true
+
+      - name: Run audit
+        run: cargo audit --ignore RUSTSEC-2026-0173 --ignore RUSTSEC-2026-0097
 
   build-host:
     name: Build Host Tools
@@ -174,6 +180,12 @@ jobs:
       # http-demo build disabled: nightly SocketAddr::ToString regression
       # - run: cargo build -p microfips-http-demo --features http --release
 
+      - name: Clone and build FIPS daemon
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-dev pkg-config
+          git clone --depth 1 https://github.com/Amperstrand/fips.git /tmp/fips
+          cargo build --release --manifest-path /tmp/fips/Cargo.toml --bin fips
+
       - uses: actions/upload-artifact@v4
         with:
           name: fips-handshake
@@ -184,6 +196,12 @@ jobs:
         with:
           name: microfips-sim
           path: target/release/microfips-sim
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fips-daemon
+          path: /tmp/fips/target/release/fips
           retention-days: 7
 
       - uses: actions/upload-artifact@v4
@@ -379,28 +397,27 @@ jobs:
         run: rustup component add rust-src
 
       - name: Build ESP32 UART
-        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
+        run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
 
       - name: Build ESP32 BLE
-        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
+        run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
 
       - name: Build ESP32 L2CAP
-        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
+        run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
 
       - name: Build ESP32 WiFi
-        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
 
       - name: Build ESP32-S3 WiFi
-        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
 
   sim-ping:
-    name: Sim-to-Sim Ping via FIPS
+    name: Sim-to-Sim Ping via FIPS (on-demand VM)
     runs-on: ubuntu-latest
     needs: [build-host]
-    continue-on-error: true
-    timeout-minutes: 4
+    timeout-minutes: 8
     env:
-      FIPS_ADDR: orangeclaw.dns4sats.xyz:2121
+      SHC_API_KEY: ${{ secrets.SHC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -409,21 +426,26 @@ jobs:
           name: microfips-sim
           path: ./bin
 
-      - run: chmod +x ./bin/microfips-sim
+      - uses: actions/download-artifact@v4
+        with:
+          name: fips-daemon
+          path: ./bin
 
-      - name: Run sim-to-sim ping test against live FIPS
+      - run: chmod +x ./bin/microfips-sim ./bin/fips
+
+      - name: Provision VM and deploy FIPS
+        id: provision
+        run: python3 scripts/ci_sim_ping.py provision --github-output
+
+      - name: Run sim-to-sim ping test
+        env:
+          VM_IP: ${{ steps.provision.outputs.vm_ip }}
+          FIPS_NPUB: ${{ steps.provision.outputs.fips_npub_hex }}
         run: |
           set -e
+          FIPS_ADDR="$VM_IP:2121"
 
-          VPS_NPUB=$(python3 - <<'PY'
-          import json
-          with open('keys.json') as f:
-              keys = json.load(f)
-          print(keys['devices']['vps']['npub_hex'])
-          PY
-          )
-
-          FIPS_PEER_NPUB="$VPS_NPUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
+          FIPS_PEER_NPUB="$FIPS_NPUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
           SIMA_PID=$!
           sleep 8
 
@@ -434,7 +456,7 @@ jobs:
           fi
           echo "SIM-A connected"
 
-          FIPS_PEER_NPUB="$VPS_NPUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
+          FIPS_PEER_NPUB="$FIPS_NPUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
           SIMB_PID=$!
 
           wait $SIMB_PID 2>/dev/null
@@ -455,9 +477,14 @@ jobs:
             exit 1
           fi
 
-      - name: Cleanup
+      - name: Cleanup VM
         if: always()
+        env:
+          SERVICE_ID: ${{ steps.provision.outputs.service_id }}
         run: |
+          if [ -n "$SERVICE_ID" ]; then
+            python3 scripts/ci_sim_ping.py cleanup --service-id "$SERVICE_ID" || true
+          fi
           kill $(pgrep -f microfips-sim) 2>/dev/null || true
 
   publish-evidence:

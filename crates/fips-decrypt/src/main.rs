@@ -662,6 +662,16 @@ fn decode_frame_details(frame: &[u8], keys: &[KeyPair]) -> String {
             line
         }
         None => "failed to parse message body".to_string(),
+        Some(FmpMessage::Msg3 {
+            sender_idx,
+            receiver_idx,
+            noise_payload,
+        }) => format!(
+            "sender_idx={} receiver_idx={} noise_payload_size={}B (MSG3)",
+            sender_idx,
+            receiver_idx,
+            noise_payload.len()
+        ),
     }
 }
 
