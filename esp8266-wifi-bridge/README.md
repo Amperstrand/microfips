@@ -59,3 +59,39 @@ ESP8266 cannot run the full Rust microfips stack:
 
 This bridge approach gives ESP8266 devices WiFi connectivity to FIPS
 without requiring a full protocol implementation on the ESP8266 itself.
+
+## Verified Test Results (2026-07-18)
+
+### Full FIPS Handshake Through ESP8266 WiFi Relay
+
+```
+microfips-sim → UDP → ESP8266 (192.168.13.222:2121) → WiFi → FIPS (192.168.13.221:2121)
+```
+
+| Metric | Result |
+|--------|--------|
+| Noise IK MSG1→MSG2 | ✅ Handshake complete |
+| FSP session setup | ✅ Exchanged |
+| Sustained heartbeats | ✅ 84 packets, 20+ seconds |
+| Total data relayed | 8,653 bytes through ESP8266 |
+| Packet loss | 0.00% (zero loss) |
+| Goodput | 66 Kbps |
+| ETX | 1.0 (perfect) |
+| FIPS peer transport_addr | 192.168.13.222 (ESP8266's IP) |
+| FIPS peer connectivity | connected |
+
+### ESP8266 Resource Usage
+
+| Resource | Value |
+|----------|-------|
+| Flash | 278KB (of 4MB) |
+| RAM | 50KB free (of 80KB) |
+| CPU | 80 MHz |
+| WiFi RSSI | -70 dBm |
+| Stability | No crashes, no disconnects |
+
+### Hardware
+
+- ESP8266EX, 4MB flash, CH340 USB-serial
+- MAC: 5c:cf:7f:a4:87:5f
+- IP: 192.168.13.222 (via WiFi DHCP)
