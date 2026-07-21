@@ -9,5 +9,5 @@ microfips-core = { path = "../microfips-core" }
 microfips-protocol = { path = "../microfips-protocol", features = ["std"] }
 microfips-esp-common = { path = "../microfips-esp-common" }
 heapless = "0.9"
-embassy-sync = "0.7.2"
+embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"

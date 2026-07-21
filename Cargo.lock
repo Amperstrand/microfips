@@ -240,7 +240,7 @@ dependencies = [
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "futures-intrusive",
- "heapless 0.8.0",
+ "heapless 0.9.3",
 ]
 
 [[package]]
@@ -2375,7 +2375,7 @@ name = "microfips-l2cap-test"
 version = "0.1.0"
 dependencies = [
  "embassy-futures",
- "embassy-sync 0.7.2",
+ "embassy-sync 0.8.0",
  "heapless 0.9.3",
  "microfips-core",
  "microfips-esp-common",
