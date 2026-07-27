@@ -244,6 +244,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bt-hci"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f3c66fd0a41a3b3a5906847b1bf5516048ce083e24fa9341a0fa31d3b4cd73d"
+dependencies = [
+ "btuuid",
+ "embassy-sync 0.8.0",
+ "embedded-io 0.7.1",
+ "embedded-io-async 0.7.0",
+ "futures-intrusive",
+ "heapless 0.9.3",
+]
+
+[[package]]
 name = "btuuid"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1456,7 +1470,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23fbff98b06a96b6ce3791ecec5c668524052a068e23aacd23afe17ddba844ce"
 dependencies = [
  "allocator-api2",
- "bt-hci",
+ "bt-hci 0.8.1",
  "cfg-if",
  "docsplay",
  "document-features",
@@ -2231,7 +2245,7 @@ dependencies = [
 name = "microfips-esp-transport"
 version = "0.1.0"
 dependencies = [
- "bt-hci",
+ "bt-hci 0.9.0",
  "embassy-executor",
  "embassy-futures",
  "embassy-net",
@@ -2261,7 +2275,7 @@ dependencies = [
 name = "microfips-esp32"
 version = "0.1.0"
 dependencies = [
- "bt-hci",
+ "bt-hci 0.9.0",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -2321,7 +2335,7 @@ dependencies = [
 name = "microfips-esp32s3"
 version = "0.1.0"
 dependencies = [
- "bt-hci",
+ "bt-hci 0.9.0",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -3447,7 +3461,7 @@ name = "trouble-host"
 version = "0.6.0"
 source = "git+https://github.com/embassy-rs/trouble?rev=c103e97ff7d333c2cb76b643477e3c4141d0ff74#c103e97ff7d333c2cb76b643477e3c4141d0ff74"
 dependencies = [
- "bt-hci",
+ "bt-hci 0.8.1",
  "embassy-futures",
  "embassy-sync 0.8.0",
  "embassy-time",
