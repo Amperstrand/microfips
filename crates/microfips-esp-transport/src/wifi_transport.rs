@@ -8,7 +8,7 @@ use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
 use microfips_esp_common::dns::resolve_vps_ipv4;
 use microfips_esp_common::mdns::{discover_fips, DiscoveryFilter};
-use microfips_esp_common::udp_transport::UdpTransport;
+use microfips_esp_common::udp_transport::{UdpTransport, UdpTransportError};
 use microfips_protocol::transport::Transport;
 use static_cell::StaticCell;
 
@@ -21,7 +21,7 @@ pub enum WifiInitError {
 }
 
 pub struct WifiTransport {
-    _wifi_controller: WifiController<'static>,
+    wifi_controller: WifiController<'static>,
     stack: Stack<'static>,
     /// x-only key of the peer this transport is bound to (compiled-in, or
     /// taken from the mDNS advert in open mode). Re-discovery pins to it.
@@ -38,6 +38,50 @@ impl Transport for WifiTransport {
     async fn wait_ready(&mut self) -> Result<(), Self::Error> {
         if self.sessions > 0 {
             // The previous session ended (link dead or handshake failure).
+            // First make sure WiFi is still associated — an AP reboot or
+            // roam drops the association and esp-radio does not reconnect
+            // by itself. One attempt per call; on failure the Node's
+            // retry/backoff loop brings us back here.
+            if !self.wifi_controller.is_connected() {
+                #[cfg(feature = "log")]
+                log::info!("WiFi: association lost, reconnecting");
+                match with_timeout(
+                    Duration::from_secs(30),
+                    self.wifi_controller.connect_async(),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {
+                        let dhcp =
+                            with_timeout(Duration::from_secs(WIFI_DHCP_TIMEOUT_SECS), async {
+                                loop {
+                                    if let Some(c) = self.stack.config_v4() {
+                                        break c;
+                                    }
+                                    Timer::after(Duration::from_millis(500)).await;
+                                }
+                            })
+                            .await;
+                        match dhcp {
+                            Ok(config_v4) => {
+                                #[cfg(feature = "log")]
+                                log::info!("WiFi reconnected, IP: {}", config_v4.address);
+                            }
+                            Err(_) => {
+                                #[cfg(feature = "log")]
+                                log::error!("WiFi reconnected but DHCP timed out");
+                                return Err(UdpTransportError::NotReady);
+                            }
+                        }
+                    }
+                    _ => {
+                        #[cfg(feature = "log")]
+                        log::error!("WiFi reconnect failed");
+                        return Err(UdpTransportError::NotReady);
+                    }
+                }
+            }
+
             // The daemon may have moved (DHCP lease change, restart on a
             // different host) — re-discover the bound peer key on the LAN
             // and follow it before retrying.
@@ -281,7 +325,7 @@ pub async fn build_wifi_transport(
     let peer_key: [u8; 32] = peer_npub[1..33].try_into().unwrap();
     Ok((
         WifiTransport {
-            _wifi_controller: wifi_controller,
+            wifi_controller,
             stack,
             peer_key,
             sessions: 0,
