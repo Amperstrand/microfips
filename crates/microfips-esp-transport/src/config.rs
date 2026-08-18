@@ -161,6 +161,14 @@ pub const RESET_REGISTER: usize = 0x6000_8000;
 #[cfg(feature = "esp32c3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
 
+// Open-mode mDNS discovery (feature `mdns-open`): required advert scope.
+// Empty (the default) accepts any scope.
+#[cfg(feature = "wifi")]
+pub const FIPS_DISCOVERY_SCOPE: &str = match option_env!("FIPS_DISCOVERY_SCOPE") {
+    Some(v) => v,
+    None => "",
+};
+
 #[cfg(feature = "wifi")]
 pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
     Some(v) => v,

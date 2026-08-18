@@ -12,6 +12,7 @@ default = ["wifi"]
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
 wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "dep:embassy-net", "microfips-esp-transport/wifi"]
+mdns-open = ["wifi", "microfips-esp-transport/mdns-open"]
 
 [[bin]]
 name = "microfips-esp32s3-uart"

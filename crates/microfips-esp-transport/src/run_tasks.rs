@@ -1,4 +1,4 @@
-#[cfg(any(feature = "ble", feature = "wifi"))]
+#[cfg(any(feature = "ble", feature = "esp-now"))]
 use microfips_core::identity::VPS_NPUB;
 
 #[cfg(feature = "ble")]
@@ -142,7 +142,7 @@ pub async fn run_wifi_node(
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
-    let transport = match build_wifi_transport(
+    let (transport, peer_npub) = match build_wifi_transport(
         spawner,
         wifi,
         &mut trng,
@@ -168,7 +168,7 @@ pub async fn run_wifi_node(
     };
 
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, config::DEVICE_NSEC, VPS_NPUB);
+    let mut node = Node::new(transport, rng, config::DEVICE_NSEC, peer_npub);
     node.set_raw_framing(true);
 
     let fsp = build_demo_fsp(
@@ -182,7 +182,7 @@ pub async fn run_wifi_node(
     let mut handler = SharedEspHandler { led: &mut led, fsp };
 
     crate::control::init_control(&identity, "wifi");
-    crate::control::set_peer_pub(VPS_NPUB);
+    crate::control::set_peer_pub(peer_npub);
     if let Ok(token) = crate::control::control_task() {
         spawner.spawn(token);
     }
