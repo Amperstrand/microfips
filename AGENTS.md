@@ -7,6 +7,7 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
 - **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
+- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.)
 
 ## Workspace architecture
 
@@ -525,6 +526,112 @@ the detection script above. The M5 Stack (`0403:6001`, `/dev/ttyUSB0`) is a sepa
 2. Hold for 3 seconds, then release
 3. `espflash erase-flash --chip esp32s3`
 4. `espflash flash --chip esp32s3` with the firmware binary
+
+### ESP32-S3 Walter (QuickSpot)
+
+The [Walter](https://www.quickspot.io/) (DPTechnics) is an ESP32-S3-WROOM-1-N16R2 board:
+16 MB flash, 2 MB PSRAM, chip rev v0.2, onboard Sequans GM02SP LTE-M/NB-IoT modem
+(unused by microfips). It runs the standard `microfips-esp32s3` crate with the `esp32s3`
+identity from `keys.json` — no board-specific code needed.
+Hardware-verified 2026-08-18: WiFi transport, Noise IK handshake with local
+fips 0.5.0-dev daemon, sustained heartbeats (0% loss, ETX 1.0), mDNS discovery,
+re-discovery on link death, and WiFi re-association on AP loss.
+
+**Serial port:** native USB Serial JTAG (VID:PID `303a:1001`, `/dev/ttyACM*`), same
+detection as the TiLDAGON — always detect by VID:PID, never hardcode the tty number.
+This machine's Walter has MAC `cc:8d:a2:2c:91:98`. espflash auto-reset works via
+DTR/RTS, no button pressing. Firmware logs appear on the same USB JTAG port
+(`esp-println` with `jtag-serial`).
+
+**LED:** the firmware drives GPIO2 as the status LED; on the Walter that is an exposed
+header pin with no onboard LED — wire one externally for LED state visibility.
+
+**Build (WiFi, LAN daemon via mDNS pinned discovery):**
+```bash
+# .env (gitignored): WIFI_SSID=..., WIFI_PASSWORD=... (2.4 GHz only)
+. ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  WIFI_SSID="<ssid>" WIFI_PASSWORD="<pass>" \
+  DEVICE_NPUB_HEX_vps="<local daemon npub_hex, see keys.json 'linux' entry>" \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+# Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
+```
+The `DEVICE_NPUB_HEX_vps` env override (see "Build-time identity overrides" below) pins
+the peer to the LAN daemon's key; mDNS discovery then finds its address at boot, so no
+`FIPS_TARGET_HOST` or hardcoded IP is needed. Omit the override to target the VPS.
+
+**Flash + monitor:**
+```bash
+fuser -k /dev/ttyACM<N> 2>/dev/null
+espflash flash -p /dev/ttyACM<N> --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
+python3 -c "
+import serial, time
+s = serial.Serial('/dev/ttyACM<N>', 115200, timeout=2)
+deadline = time.time() + 45
+while time.time() < deadline:
+    line = s.readline().decode(errors='replace').strip()
+    if line: print(line, flush=True)
+s.close()"
+```
+**Expected boot log:** `WiFi connected` → `IP: ...` → `mDNS: pinned FIPS peer discovered
+at <ip>:2121` → `session: handshake ok, entering steady` → heartbeats every ~10 s.
+Verify on the daemon: `fipsctl show peers` lists node_addr `6bef476b...` as connected.
+
+### mDNS LAN Discovery (WiFi transports)
+
+WiFi builds (D0WD and S3) discover the FIPS daemon on the local network via mDNS-SD
+(RFC 6762/6763) instead of relying only on the compiled-in target host. Requires a
+FIPS daemon with `lan-mdns` (verified against fips 0.5.0-dev), which advertises
+`_fips._udp.local.` with TXT keys `npub=<bech32>`, `scope=<mesh name>`, `v=1`
+automatically — no daemon configuration needed.
+
+**Mechanism:** one-shot PTR queries from an ephemeral UDP port, so responders answer
+by **unicast** (RFC 6762 §6.7 legacy queries) — multicast TX only, no group join, no
+dependence on lossy WiFi multicast RX. 3 attempts × 1.5 s window, then fallback to the
+static target (DNS resolve of `VPS_HOST`). The advert is a **routing hint, never
+identity** — the Noise IK handshake against the discovered endpoint proves the key.
+
+**Pinned mode (default):** only an advert whose TXT npub bech32-decodes to the
+compiled-in peer key (`DEVICE_NPUB_HEX_vps`) supplies the endpoint. Other daemons on
+the LAN are ignored. A spoofed advert can at worst redirect to an endpoint that must
+still prove the pinned key.
+
+**Open mode (`--features mdns-open`):** the first scope- and version-compatible advert
+supplies endpoint AND peer npub (trust-on-first-advert — use only on LANs the operator
+controls). Optional `FIPS_DISCOVERY_SCOPE` env at build time restricts matching to one
+mesh scope (e.g. `fips-overlay-v1`); empty accepts any scope. With multiple same-scope
+daemons on the LAN, the fastest responder wins.
+
+**Self-healing (both modes):** the transport re-runs on every reconnect attempt after
+the first session ends, in order: re-associate WiFi if the AP dropped us (esp-radio
+does not auto-reconnect) → re-acquire DHCP → re-discover the bound peer key via mDNS
+(follows daemon IP changes) → handshake. Re-discovery always pins to the key bound at
+boot, so a different daemon appearing mid-run can never hijack the link. Verified
+recovery time: ~1 s after daemon disconnect, ~2 s after WiFi disassociation.
+
+**Implementation:** parser + `discover_fips()` in `microfips-esp-common/src/mdns.rs`
+(host-tested against a captured fips 0.5.0-dev response fixture), bech32 npub decode in
+`fips-identity/src/bech32.rs`, transport wiring in
+`microfips-esp-transport/src/wifi_transport.rs::wait_ready`. A diagnostic spike binary
+(`microfips-esp32s3-mdns-spike`) verifies multicast TX/RX + unicast responses on
+hardware. Host-side advert check: `avahi-browse -rt _fips._udp`.
+
+### Build-time identity overrides
+
+`microfips-build` lets a same-named env var override any `keys.json` value at build
+time, without editing the file:
+
+```bash
+DEVICE_NPUB_HEX_vps=02...   # repoint the firmware's peer key (e.g. at the local daemon)
+DEVICE_NSEC_HEX_esp32s3=... # override a device secret
+FIPS_TARGET_HOST=host-or-ip # override the static target (IPv4 literals skip DNS)
+FIPS_DISCOVERY_SCOPE=name   # open-mode mDNS scope filter
+```
+
+The local Linux daemon's current npub lives in `/etc/fips/fips.pub` and is mirrored in
+the `keys.json` `linux` entry. **If handshakes are silently ignored, check for a stale
+peer key first** — fips logs all MSG1 rejections at `debug` level or not at all, so a
+wrong responder key produces no daemon log output at the default INFO level
+(re-run with `RUST_LOG=debug` to see `Failed to process msg1` / `Invalid msg1 header`).
 
 ### ESP32 flash and monitor
 
