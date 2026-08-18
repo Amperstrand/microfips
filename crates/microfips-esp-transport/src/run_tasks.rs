@@ -201,9 +201,9 @@ pub async fn run_esp_now_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use core::sync::atomic::Ordering;
     use crate::node_info::NodeIdentity;
     use crate::stats::STATS;
+    use core::sync::atomic::Ordering;
 
     crate::logger::init();
     STATS.boot_tick_ms.store(
@@ -229,5 +229,13 @@ pub async fn run_esp_now_node(
 
     log::info!("ESP-NOW transport ready (stub mode)");
 
-    crate::runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, crate::runner::NodeOpts::default()).await
+    crate::runner::run_node(
+        transport,
+        trng_source,
+        trng,
+        &mut led,
+        VPS_NPUB,
+        crate::runner::NodeOpts::default(),
+    )
+    .await
 }
