@@ -11,7 +11,7 @@ name = "microfips_esp32s3"
 default = ["wifi"]
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
-wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
+wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "dep:embassy-net", "microfips-esp-transport/wifi"]
 
 [[bin]]
 name = "microfips-esp32s3-uart"
@@ -36,6 +36,12 @@ name = "microfips-esp32s3"
 path = "src/bin/wifi.rs"
 required-features = ["wifi"]
 
+# Diagnostic spike: mDNS multicast TX/RX viability test (not a FIPS node)
+[[bin]]
+name = "microfips-esp32s3-mdns-spike"
+path = "src/bin/mdns_spike.rs"
+required-features = ["wifi"]
+
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }
 microfips-esp-common = { path = "../microfips-esp-common" }
@@ -44,6 +50,7 @@ microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
 rand_core = { workspace = true }
+embassy-net = { workspace = true, features = ["dhcpv4", "udp", "multicast"], optional = true }
 esp-hal = { workspace = true, features = ["esp32s3", "unstable"] }
 esp-rtos = { workspace = true, features = ["esp32s3", "embassy", "esp-alloc", "esp-radio"] }
 esp-bootloader-esp-idf = { workspace = true, features = ["esp32s3"] }
