@@ -1,5 +1,5 @@
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{Config, IpAddress, IpEndpoint, Runner, StackResources};
+use embassy_net::{Config, IpAddress, IpEndpoint, Runner, Stack, StackResources};
 use embassy_time::{with_timeout, Duration, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Trng;
@@ -22,6 +22,13 @@ pub enum WifiInitError {
 
 pub struct WifiTransport {
     _wifi_controller: WifiController<'static>,
+    stack: Stack<'static>,
+    /// x-only key of the peer this transport is bound to (compiled-in, or
+    /// taken from the mDNS advert in open mode). Re-discovery pins to it.
+    peer_key: [u8; 32],
+    /// Number of `wait_ready` calls so far; the Node calls it once per
+    /// connection attempt, so >0 means the previous session ended.
+    sessions: u32,
     inner: UdpTransport<'static>,
 }
 
@@ -29,6 +36,35 @@ impl Transport for WifiTransport {
     type Error = <UdpTransport<'static> as Transport>::Error;
 
     async fn wait_ready(&mut self) -> Result<(), Self::Error> {
+        if self.sessions > 0 {
+            // The previous session ended (link dead or handshake failure).
+            // The daemon may have moved (DHCP lease change, restart on a
+            // different host) — re-discover the bound peer key on the LAN
+            // and follow it before retrying.
+            match discover_fips(self.stack, DiscoveryFilter::Pinned(&self.peer_key)).await {
+                Some((ip, port, _)) => {
+                    let endpoint = IpEndpoint::new(IpAddress::Ipv4(ip), port);
+                    if endpoint != self.inner.peer {
+                        #[cfg(feature = "log")]
+                        log::info!(
+                            "mDNS re-discovery: peer moved {} -> {}:{}",
+                            self.inner.peer,
+                            ip,
+                            port
+                        );
+                        self.inner.peer = endpoint;
+                    } else {
+                        #[cfg(feature = "log")]
+                        log::info!("mDNS re-discovery: peer still at {}", endpoint);
+                    }
+                }
+                None => {
+                    #[cfg(feature = "log")]
+                    log::info!("mDNS re-discovery: no advert, keeping {}", self.inner.peer);
+                }
+            }
+        }
+        self.sessions = self.sessions.wrapping_add(1);
         self.inner.wait_ready().await
     }
 
@@ -242,9 +278,13 @@ pub async fn build_wifi_transport(
     let peer = IpEndpoint::new(IpAddress::Ipv4(vps_ip), vps_port);
     let inner = UdpTransport { socket, peer };
 
+    let peer_key: [u8; 32] = peer_npub[1..33].try_into().unwrap();
     Ok((
         WifiTransport {
             _wifi_controller: wifi_controller,
+            stack,
+            peer_key,
+            sessions: 0,
             inner,
         },
         peer_npub,
