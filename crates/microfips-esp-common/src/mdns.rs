@@ -176,19 +176,50 @@ pub const DISCOVERY_ATTEMPTS: u32 = 3;
 /// How long to collect responses after each query.
 pub const DISCOVERY_WINDOW_MS: u64 = 1500;
 
-/// Pinned-mode LAN discovery: find the FIPS daemon whose advertised npub
-/// decodes to exactly `pinned_x_only`, returning its endpoint.
+/// Acceptance policy for a parsed advert (identity hint already decoded).
+#[derive(Debug, Clone, Copy)]
+pub enum DiscoveryFilter<'a> {
+    /// Accept only the daemon holding exactly this x-only key.
+    Pinned(&'a [u8; 32]),
+    /// Accept any daemon whose advert matches the scope (when given) and
+    /// does not declare an incompatible protocol version. The npub is
+    /// taken from the advert — trust-on-first-advert, for LANs the
+    /// operator controls.
+    Open { scope: Option<&'a str> },
+}
+
+/// Pure acceptance check, host-testable. `key` is the advert npub after
+/// bech32 decoding.
+pub fn advert_matches(
+    advert: &FipsAdvert<'_>,
+    key: &[u8; 32],
+    filter: DiscoveryFilter<'_>,
+) -> bool {
+    match filter {
+        DiscoveryFilter::Pinned(pinned) => key == pinned,
+        DiscoveryFilter::Open { scope } => {
+            let version_ok = matches!(advert.version, None | Some("1"));
+            let scope_ok = match scope {
+                Some(want) => advert.scope == Some(want),
+                None => true,
+            };
+            version_ok && scope_ok
+        }
+    }
+}
+
+/// LAN discovery core: one-shot PTR queries, unicast responses, first
+/// advert passing `filter` wins. Returns the endpoint plus the advert's
+/// decoded x-only npub.
 ///
-/// Sends one-shot PTR queries and reads the unicast responses; adverts
-/// from other daemons (or with undecodable npubs) are ignored, so a
-/// spoofed advert can at worst redirect us to an endpoint that must
-/// still prove the pinned key in the Noise IK handshake. Returns `None`
-/// after [`DISCOVERY_ATTEMPTS`] silent windows — callers fall back to
-/// their static target.
-pub async fn discover_pinned_fips(
+/// The advert stays a routing hint — even in open mode the returned key
+/// must be proven by the Noise IK handshake against that endpoint.
+/// Returns `None` after [`DISCOVERY_ATTEMPTS`] silent windows — callers
+/// fall back to their static target.
+pub async fn discover_fips(
     stack: Stack<'static>,
-    pinned_x_only: &[u8; 32],
-) -> Option<(Ipv4Address, u16)> {
+    filter: DiscoveryFilter<'_>,
+) -> Option<(Ipv4Address, u16, [u8; 32])> {
     let mut rx_meta = [PacketMetadata::EMPTY; 4];
     let mut rx_buf = [0u8; 1024];
     let mut tx_meta = [PacketMetadata::EMPTY; 2];
@@ -216,12 +247,23 @@ pub async fn discover_pinned_fips(
             let Some(key) = microfips_core::identity::bech32::npub_to_x_only(advert.npub) else {
                 continue;
             };
-            if &key == pinned_x_only {
-                return Some((Ipv4Address::from(advert.addr), advert.port));
+            if advert_matches(&advert, &key, filter) {
+                return Some((Ipv4Address::from(advert.addr), advert.port, key));
             }
         }
     }
     None
+}
+
+/// Pinned-mode LAN discovery: find the FIPS daemon whose advertised npub
+/// decodes to exactly `pinned_x_only`, returning its endpoint.
+pub async fn discover_pinned_fips(
+    stack: Stack<'static>,
+    pinned_x_only: &[u8; 32],
+) -> Option<(Ipv4Address, u16)> {
+    discover_fips(stack, DiscoveryFilter::Pinned(pinned_x_only))
+        .await
+        .map(|(ip, port, _)| (ip, port))
 }
 
 #[cfg(test)]
@@ -279,6 +321,58 @@ mod tests {
             // Must never panic, and must never succeed on a truncated packet.
             assert!(parse_fips_response(&packet[..n]).is_err(), "len {}", n);
         }
+    }
+
+    #[test]
+    fn filter_semantics() {
+        let packet = fixture();
+        let advert = parse_fips_response(&packet).unwrap();
+        let key = microfips_core::identity::bech32::npub_to_x_only(advert.npub).unwrap();
+        let other_key = [0u8; 32];
+
+        assert!(advert_matches(&advert, &key, DiscoveryFilter::Pinned(&key)));
+        assert!(!advert_matches(
+            &advert,
+            &key,
+            DiscoveryFilter::Pinned(&other_key)
+        ));
+
+        // Open: scope must match when required, any scope otherwise.
+        assert!(advert_matches(
+            &advert,
+            &key,
+            DiscoveryFilter::Open { scope: None }
+        ));
+        assert!(advert_matches(
+            &advert,
+            &key,
+            DiscoveryFilter::Open {
+                scope: Some("fips-overlay-v1")
+            }
+        ));
+        assert!(!advert_matches(
+            &advert,
+            &key,
+            DiscoveryFilter::Open {
+                scope: Some("other-mesh")
+            }
+        ));
+
+        // Open: explicit incompatible protocol version is rejected,
+        // missing version is tolerated.
+        let mut v2 = FipsAdvert { ..advert };
+        v2.version = Some("2");
+        assert!(!advert_matches(
+            &v2,
+            &key,
+            DiscoveryFilter::Open { scope: None }
+        ));
+        v2.version = None;
+        assert!(advert_matches(
+            &v2,
+            &key,
+            DiscoveryFilter::Open { scope: None }
+        ));
     }
 
     #[test]

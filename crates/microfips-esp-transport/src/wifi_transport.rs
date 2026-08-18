@@ -7,7 +7,7 @@ use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
 use microfips_esp_common::dns::resolve_vps_ipv4;
-use microfips_esp_common::mdns::discover_pinned_fips;
+use microfips_esp_common::mdns::{discover_fips, DiscoveryFilter};
 use microfips_esp_common::udp_transport::UdpTransport;
 use microfips_protocol::transport::Transport;
 use static_cell::StaticCell;
@@ -46,13 +46,16 @@ async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
     runner.run().await;
 }
 
+/// Build the WiFi transport. Also returns the peer npub actually in
+/// effect: the compiled-in key, or — with the `mdns-open` feature — the
+/// key taken from the discovered daemon's mDNS advert.
 pub async fn build_wifi_transport(
     spawner: embassy_executor::Spawner,
     wifi: WIFI<'static>,
     trng: &mut Trng,
     wifi_ssid: &str,
     wifi_password: &str,
-) -> Result<WifiTransport, WifiInitError> {
+) -> Result<(WifiTransport, [u8; 33]), WifiInitError> {
     crate::heap::init();
 
     const MAX_WIFI_RETRIES: u32 = 5;
@@ -86,7 +89,7 @@ pub async fn build_wifi_transport(
         .expect("set wifi station config");
 
     Timer::after(Duration::from_secs(2)).await;
-    let (_, vps_ip, vps_port) = {
+    let (_, vps_ip, vps_port, peer_npub) = {
         let mut retry = 0u32;
         loop {
             let init_result: Result<_, WifiInitError> = match with_timeout(
@@ -125,22 +128,57 @@ pub async fn build_wifi_transport(
                     #[cfg(feature = "log")]
                     log::info!("IP: {} (target: {})", config_v4.address, VPS_HOST);
 
-                    // Pinned-mode LAN discovery: if the daemon holding the
-                    // compiled-in peer key advertises on this link via mDNS,
-                    // use its live endpoint instead of the static target.
-                    let pinned: [u8; 32] = microfips_core::identity::VPS_NPUB[1..33]
-                        .try_into()
-                        .unwrap();
-                    if let Some((ip, port)) = discover_pinned_fips(stack, &pinned).await {
-                        #[cfg(feature = "log")]
-                        log::info!("mDNS: pinned FIPS peer discovered at {}:{}", ip, port);
-                        Ok((config_v4, ip, port))
+                    // LAN discovery via mDNS. Pinned mode (default): only an
+                    // advert matching the compiled-in peer key supplies the
+                    // endpoint. Open mode (`mdns-open`): the first scope- and
+                    // version-compatible advert supplies endpoint AND peer
+                    // key — trust-on-first-advert, still proven by Noise IK.
+                    #[cfg(feature = "mdns-open")]
+                    let discovered = {
+                        let scope = crate::config::FIPS_DISCOVERY_SCOPE;
+                        let scope = if scope.is_empty() { None } else { Some(scope) };
+                        discover_fips(stack, DiscoveryFilter::Open { scope })
+                            .await
+                            .map(|(ip, port, key)| {
+                                let mut npub = [0u8; 33];
+                                npub[0] = 0x02;
+                                npub[1..].copy_from_slice(&key);
+                                #[cfg(feature = "log")]
+                                log::info!(
+                                    "mDNS open: FIPS peer discovered at {}:{} (npub from advert)",
+                                    ip,
+                                    port
+                                );
+                                (ip, port, npub)
+                            })
+                    };
+                    #[cfg(not(feature = "mdns-open"))]
+                    let discovered = {
+                        let pinned: [u8; 32] = microfips_core::identity::VPS_NPUB[1..33]
+                            .try_into()
+                            .unwrap();
+                        discover_fips(stack, DiscoveryFilter::Pinned(&pinned))
+                            .await
+                            .map(|(ip, port, _)| {
+                                #[cfg(feature = "log")]
+                                log::info!("mDNS: pinned FIPS peer discovered at {}:{}", ip, port);
+                                (ip, port, microfips_core::identity::VPS_NPUB)
+                            })
+                    };
+
+                    if let Some((ip, port, npub)) = discovered {
+                        Ok((config_v4, ip, port, npub))
                     } else {
                         #[cfg(feature = "log")]
-                        log::info!("mDNS: no pinned peer advert, resolving {}", VPS_HOST);
+                        log::info!("mDNS: no matching advert, resolving {}", VPS_HOST);
                         let dns_server = config_v4.dns_servers[0];
                         match resolve_vps_ipv4(stack, dns_server, VPS_HOST).await {
-                            Ok(vps_ip) => Ok((config_v4, vps_ip, VPS_PORT)),
+                            Ok(vps_ip) => Ok((
+                                config_v4,
+                                vps_ip,
+                                VPS_PORT,
+                                microfips_core::identity::VPS_NPUB,
+                            )),
                             Err(e) => {
                                 #[cfg(feature = "log")]
                                 log::error!("DNS resolve failed for {}: {:?}", VPS_HOST, e);
@@ -204,8 +242,11 @@ pub async fn build_wifi_transport(
     let peer = IpEndpoint::new(IpAddress::Ipv4(vps_ip), vps_port);
     let inner = UdpTransport { socket, peer };
 
-    Ok(WifiTransport {
-        _wifi_controller: wifi_controller,
-        inner,
-    })
+    Ok((
+        WifiTransport {
+            _wifi_controller: wifi_controller,
+            inner,
+        },
+        peer_npub,
+    ))
 }

@@ -16,6 +16,9 @@ log = ["dep:log"]
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "log"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "log"]
 wifi = ["dep:esp-radio", "dep:embassy-net", "dep:esp-println", "log"]
+# Open-mode mDNS discovery: accept any scope/version-compatible LAN advert
+# and take the peer npub from it (trust-on-first-advert). Implies wifi.
+mdns-open = ["wifi"]
 esp-now = ["dep:esp-radio", "dep:esp-println", "log"]
 
 [build-dependencies]
