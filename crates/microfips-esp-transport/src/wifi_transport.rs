@@ -7,6 +7,7 @@ use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
 use microfips_esp_common::dns::resolve_vps_ipv4;
+use microfips_esp_common::mdns::discover_pinned_fips;
 use microfips_esp_common::udp_transport::UdpTransport;
 use microfips_protocol::transport::Transport;
 use static_cell::StaticCell;
@@ -85,7 +86,7 @@ pub async fn build_wifi_transport(
         .expect("set wifi station config");
 
     Timer::after(Duration::from_secs(2)).await;
-    let (_, vps_ip) = {
+    let (_, vps_ip, vps_port) = {
         let mut retry = 0u32;
         loop {
             let init_result: Result<_, WifiInitError> = match with_timeout(
@@ -124,14 +125,28 @@ pub async fn build_wifi_transport(
                     #[cfg(feature = "log")]
                     log::info!("IP: {} (target: {})", config_v4.address, VPS_HOST);
 
-                    let dns_server = config_v4.dns_servers[0];
-                    match resolve_vps_ipv4(stack, dns_server, VPS_HOST).await {
-                        Ok(vps_ip) => Ok((config_v4, vps_ip)),
-                        Err(e) => {
-                            #[cfg(feature = "log")]
-                            log::error!("DNS resolve failed for {}: {:?}", VPS_HOST, e);
-                            let _ = wifi_controller.disconnect_async().await;
-                            Err(WifiInitError::DnsFailed)
+                    // Pinned-mode LAN discovery: if the daemon holding the
+                    // compiled-in peer key advertises on this link via mDNS,
+                    // use its live endpoint instead of the static target.
+                    let pinned: [u8; 32] = microfips_core::identity::VPS_NPUB[1..33]
+                        .try_into()
+                        .unwrap();
+                    if let Some((ip, port)) = discover_pinned_fips(stack, &pinned).await {
+                        #[cfg(feature = "log")]
+                        log::info!("mDNS: pinned FIPS peer discovered at {}:{}", ip, port);
+                        Ok((config_v4, ip, port))
+                    } else {
+                        #[cfg(feature = "log")]
+                        log::info!("mDNS: no pinned peer advert, resolving {}", VPS_HOST);
+                        let dns_server = config_v4.dns_servers[0];
+                        match resolve_vps_ipv4(stack, dns_server, VPS_HOST).await {
+                            Ok(vps_ip) => Ok((config_v4, vps_ip, VPS_PORT)),
+                            Err(e) => {
+                                #[cfg(feature = "log")]
+                                log::error!("DNS resolve failed for {}: {:?}", VPS_HOST, e);
+                                let _ = wifi_controller.disconnect_async().await;
+                                Err(WifiInitError::DnsFailed)
+                            }
                         }
                     }
                 }
@@ -184,9 +199,9 @@ pub async fn build_wifi_transport(
     socket.bind(0).expect("udp bind");
 
     #[cfg(feature = "log")]
-    log::info!("Resolved {} -> {}", VPS_HOST, vps_ip);
+    log::info!("FIPS target: {}:{}", vps_ip, vps_port);
 
-    let peer = IpEndpoint::new(IpAddress::Ipv4(vps_ip), VPS_PORT);
+    let peer = IpEndpoint::new(IpAddress::Ipv4(vps_ip), vps_port);
     let inner = UdpTransport { socket, peer };
 
     Ok(WifiTransport {

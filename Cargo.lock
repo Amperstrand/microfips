@@ -2324,6 +2324,7 @@ dependencies = [
  "bt-hci",
  "embassy-executor",
  "embassy-futures",
+ "embassy-net",
  "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-io 0.7.1",

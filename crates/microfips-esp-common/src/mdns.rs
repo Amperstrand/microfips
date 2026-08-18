@@ -14,6 +14,10 @@
 //! never identity — the Noise IK handshake against the discovered endpoint
 //! is what authenticates the peer.
 
+use embassy_net::udp::{PacketMetadata, UdpSocket};
+use embassy_net::{IpAddress, IpEndpoint, Ipv4Address, Stack};
+use embassy_time::{with_timeout, Duration, Instant};
+
 /// One-shot PTR question for `_fips._udp.local.` (IN class, QM).
 pub const FIPS_PTR_QUERY: &[u8] =
     b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x05_fips\x04_udp\x05local\x00\x00\x0c\x00\x01";
@@ -165,6 +169,59 @@ pub fn parse_fips_response(packet: &[u8]) -> Result<FipsAdvert<'_>, MdnsParseErr
         }),
         _ => Err(MdnsParseError::IncompleteAdvert),
     }
+}
+
+/// Query attempts before giving up (multicast over WiFi is lossy).
+pub const DISCOVERY_ATTEMPTS: u32 = 3;
+/// How long to collect responses after each query.
+pub const DISCOVERY_WINDOW_MS: u64 = 1500;
+
+/// Pinned-mode LAN discovery: find the FIPS daemon whose advertised npub
+/// decodes to exactly `pinned_x_only`, returning its endpoint.
+///
+/// Sends one-shot PTR queries and reads the unicast responses; adverts
+/// from other daemons (or with undecodable npubs) are ignored, so a
+/// spoofed advert can at worst redirect us to an endpoint that must
+/// still prove the pinned key in the Noise IK handshake. Returns `None`
+/// after [`DISCOVERY_ATTEMPTS`] silent windows — callers fall back to
+/// their static target.
+pub async fn discover_pinned_fips(
+    stack: Stack<'static>,
+    pinned_x_only: &[u8; 32],
+) -> Option<(Ipv4Address, u16)> {
+    let mut rx_meta = [PacketMetadata::EMPTY; 4];
+    let mut rx_buf = [0u8; 1024];
+    let mut tx_meta = [PacketMetadata::EMPTY; 2];
+    let mut tx_buf = [0u8; 64];
+    let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
+    // Ephemeral source port => responders answer by unicast (RFC 6762 §6.7).
+    socket.bind(0).ok()?;
+    let dest = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::from(MDNS_GROUP)), MDNS_PORT);
+
+    let mut buf = [0u8; 512];
+    for _ in 0..DISCOVERY_ATTEMPTS {
+        if socket.send_to(FIPS_PTR_QUERY, dest).await.is_err() {
+            continue;
+        }
+        let deadline = Instant::now() + Duration::from_millis(DISCOVERY_WINDOW_MS);
+        while Instant::now() < deadline {
+            let Ok(Ok((n, _))) =
+                with_timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await
+            else {
+                continue;
+            };
+            let Ok(advert) = parse_fips_response(&buf[..n]) else {
+                continue;
+            };
+            let Some(key) = microfips_core::identity::bech32::npub_to_x_only(advert.npub) else {
+                continue;
+            };
+            if &key == pinned_x_only {
+                return Some((Ipv4Address::from(advert.addr), advert.port));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
