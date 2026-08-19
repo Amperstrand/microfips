@@ -191,9 +191,45 @@ impl Default for SrcReassembler {
     }
 }
 
+/// Pack a MAC into an atomic-friendly u64: bit 63 = valid flag, low 48
+/// bits = MAC (big-endian). Lets relay tasks share a learned peer MAC
+/// through a single `AtomicU64` (0 = not learned yet).
+pub fn pack_mac(mac: [u8; 6]) -> u64 {
+    let mut v = 0u64;
+    let mut i = 0;
+    while i < 6 {
+        v = (v << 8) | mac[i] as u64;
+        i += 1;
+    }
+    v | (1u64 << 63)
+}
+
+/// Inverse of [`pack_mac`]; `None` if the valid flag is unset.
+pub fn unpack_mac(v: u64) -> Option<[u8; 6]> {
+    if v & (1u64 << 63) == 0 {
+        return None;
+    }
+    let mut mac = [0u8; 6];
+    let mut i = 0;
+    while i < 6 {
+        mac[5 - i] = (v >> (8 * i)) as u8;
+        i += 1;
+    }
+    Some(mac)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mac_pack_roundtrip() {
+        assert_eq!(unpack_mac(0), None);
+        let mac = [0xcc, 0x8d, 0xa2, 0x2c, 0x94, 0x08];
+        assert_eq!(unpack_mac(pack_mac(mac)), Some(mac));
+        let zero_mac = [0u8; 6];
+        assert_eq!(unpack_mac(pack_mac(zero_mac)), Some(zero_mac));
+    }
 
     fn roundtrip(len: usize) {
         let data: alloc::vec::Vec<u8> = (0..len).map(|i| (i * 7 + 3) as u8).collect();

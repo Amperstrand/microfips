@@ -55,6 +55,12 @@ name = "microfips-esp32s3-espnow-gw"
 path = "src/bin/espnow_gw.rs"
 required-features = ["esp-now"]
 
+# Standalone ESP-NOW <-> WiFi/UDP relay (no host, no serial bridge)
+[[bin]]
+name = "microfips-esp32s3-espnow-wifi-gw"
+path = "src/bin/espnow_wifi_gw.rs"
+required-features = ["esp-now", "wifi"]
+
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }
 microfips-esp-common = { path = "../microfips-esp-common" }

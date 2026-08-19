@@ -20,12 +20,11 @@ use esp_radio::esp_now::{
     EspNowManager, EspNowReceiver, EspNowSender, EspNowWifiInterface, PeerInfo, BROADCAST_ADDRESS,
 };
 use microfips_esp_common::espnow_frag::{
-    Fragmenter, SrcReassembler, ESP_NOW_MAX_PAYLOAD, MAX_MESSAGE,
+    pack_mac, unpack_mac, Fragmenter, SrcReassembler, ESP_NOW_MAX_PAYLOAD, MAX_MESSAGE,
 };
 use portable_atomic::{AtomicU64, Ordering};
 
 /// Last-seen node MAC, shared between the two relay directions.
-/// Bit 63 = valid flag, low 48 bits = MAC (big-endian).
 static PEER_MAC: AtomicU64 = AtomicU64::new(0);
 
 /// If the host stops draining USB (bridge not running), writes stall on a
@@ -34,29 +33,6 @@ static PEER_MAC: AtomicU64 = AtomicU64::new(0);
 /// timed-out partial write is cleaned up by the bridge's length-prefix
 /// resynchronization.
 const USB_WRITE_TIMEOUT_MS: u64 = 500;
-
-fn pack_mac(mac: [u8; 6]) -> u64 {
-    let mut v = 0u64;
-    let mut i = 0;
-    while i < 6 {
-        v = (v << 8) | mac[i] as u64;
-        i += 1;
-    }
-    v | (1u64 << 63)
-}
-
-fn unpack_mac(v: u64) -> Option<[u8; 6]> {
-    if v & (1u64 << 63) == 0 {
-        return None;
-    }
-    let mut mac = [0u8; 6];
-    let mut i = 0;
-    while i < 6 {
-        mac[5 - i] = (v >> (8 * i)) as u8;
-        i += 1;
-    }
-    Some(mac)
-}
 
 /// Host → radio: parse length-prefixed frames from USB, fragment, send.
 #[embassy_executor::task]
