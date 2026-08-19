@@ -242,6 +242,37 @@ const fn parse_espnow_channel(v: Option<&str>) -> u8 {
     value as u8
 }
 
+// Hybrid transport: while running on ESP-NOW, scan for the configured SSID
+// this often; when it reappears, switch back to the direct WiFi path.
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub const HYBRID_WIFI_PROBE_SECS: u64 = parse_secs(option_env!("HYBRID_WIFI_PROBE_SECS"), 300);
+
+// Hybrid transport chaos knob for hardware testing: while uptime is below
+// this many seconds, the WiFi path reports itself as down (associations are
+// never attempted), forcing the ESP-NOW path. 0 = disabled.
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub const HYBRID_TEST_WIFI_DOWN_SECS: u64 =
+    parse_secs(option_env!("HYBRID_TEST_WIFI_DOWN_SECS"), 0);
+
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+const fn parse_secs(v: Option<&str>, default: u64) -> u64 {
+    let Some(s) = v else {
+        return default;
+    };
+    let bytes = s.as_bytes();
+    let mut value = 0u64;
+    let mut i = 0;
+    while i < bytes.len() {
+        assert!(
+            bytes[i] >= b'0' && bytes[i] <= b'9',
+            "seconds value must be a decimal number"
+        );
+        value = value * 10 + (bytes[i] - b'0') as u64;
+        i += 1;
+    }
+    value
+}
+
 #[cfg(feature = "wifi")]
 pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
     Some(v) => v,

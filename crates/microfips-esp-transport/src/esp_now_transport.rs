@@ -42,7 +42,8 @@ pub struct EspNowTransport {
     /// Broadcasts sent on the current channel while unlocked.
     unlocked_sends: u8,
     /// Keeps the WiFi driver alive — dropping it stops the radio.
-    _wifi_controller: WifiController<'static>,
+    /// `None` when someone else (e.g. the hybrid transport) owns it.
+    _wifi_controller: Option<WifiController<'static>>,
 }
 
 impl EspNowTransport {
@@ -57,6 +58,15 @@ impl EspNowTransport {
             #[cfg(feature = "log")]
             log::error!("ESP-NOW: set_channel({}) failed: {:?}", channel, _e);
         }
+        let mut transport = Self::new_shared(esp_now, channel);
+        transport._wifi_controller = Some(wifi_controller);
+        transport
+    }
+
+    /// Like [`Self::new`], but without taking the WiFi controller and
+    /// without touching the channel — for embedding in a transport that
+    /// manages the controller (and possibly an association) itself.
+    pub(crate) fn new_shared(esp_now: EspNow<'static>, channel: u8) -> Self {
         let (manager, sender, receiver) = esp_now.split();
         Self {
             manager,
@@ -68,8 +78,15 @@ impl EspNowTransport {
             sessions: 0,
             channel,
             unlocked_sends: 0,
-            _wifi_controller: wifi_controller,
+            _wifi_controller: None,
         }
+    }
+
+    /// Forget the locked peer and restart broadcast discovery (the channel
+    /// sweep resumes from the current channel).
+    pub(crate) fn reset_discovery(&mut self) {
+        self.peer_mac = None;
+        self.unlocked_sends = 0;
     }
 
     fn lock_peer(&mut self, mac: [u8; 6]) {

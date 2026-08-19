@@ -70,3 +70,5 @@ pub mod esp_now_transport;
 pub mod espnow_gateway;
 #[cfg(all(feature = "esp-now", feature = "wifi"))]
 pub mod espnow_wifi_gateway;
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub mod hybrid_transport;
