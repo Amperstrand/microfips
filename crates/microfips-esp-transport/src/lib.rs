@@ -68,3 +68,5 @@ pub mod rate_limit;
 pub mod esp_now_transport;
 #[cfg(all(feature = "esp-now", any(feature = "esp32s3", feature = "esp32c3")))]
 pub mod espnow_gateway;
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub mod espnow_wifi_gateway;

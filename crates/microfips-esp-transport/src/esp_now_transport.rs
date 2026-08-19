@@ -20,6 +20,13 @@ use microfips_protocol::transport::Transport;
 #[derive(Debug)]
 pub struct EspNowTransportError;
 
+/// Broadcast sends on one channel before hopping to the next during
+/// discovery. A gateway associated to an AP is pinned to the AP's channel,
+/// which this node cannot know in advance — sweeping finds it.
+const SENDS_PER_CHANNEL: u8 = 2;
+/// Sweep 1..=13 (ETSI); the extra channels are region-gated anyway.
+const SWEEP_MAX_CHANNEL: u8 = 13;
+
 pub struct EspNowTransport {
     manager: EspNowManager<'static>,
     sender: EspNowSender<'static>,
@@ -30,6 +37,10 @@ pub struct EspNowTransport {
     peer_mac: Option<[u8; 6]>,
     /// `wait_ready` calls so far; >0 means the previous session ended.
     sessions: u32,
+    /// Current radio channel; advanced by the discovery sweep.
+    channel: u8,
+    /// Broadcasts sent on the current channel while unlocked.
+    unlocked_sends: u8,
     /// Keeps the WiFi driver alive — dropping it stops the radio.
     _wifi_controller: WifiController<'static>,
 }
@@ -55,6 +66,8 @@ impl EspNowTransport {
             reassembler: SrcReassembler::new(),
             peer_mac: None,
             sessions: 0,
+            channel,
+            unlocked_sends: 0,
             _wifi_controller: wifi_controller,
         }
     }
@@ -97,6 +110,9 @@ impl Transport for EspNowTransport {
             // different device — fall back to broadcast and re-learn the
             // MAC from its next frame.
             if self.peer_mac.take().is_some() {
+                // Resume the sweep from the current channel — the peer most
+                // likely reappears where it was.
+                self.unlocked_sends = 0;
                 #[cfg(feature = "log")]
                 log::info!("ESP-NOW: session ended, reverting to broadcast discovery");
             }
@@ -124,6 +140,26 @@ impl Transport for EspNowTransport {
                     log::warn!("ESP-NOW: send failed: {:?}", _e);
                     EspNowTransportError
                 })?;
+        }
+        // Discovery sweep: while no peer is locked, hop channels between
+        // broadcasts so a gateway pinned to an unknown AP channel is found.
+        if self.peer_mac.is_none() {
+            self.unlocked_sends = self.unlocked_sends.saturating_add(1);
+            if self.unlocked_sends >= SENDS_PER_CHANNEL {
+                self.unlocked_sends = 0;
+                self.channel = if self.channel >= SWEEP_MAX_CHANNEL {
+                    1
+                } else {
+                    self.channel + 1
+                };
+                if self.manager.set_channel(self.channel).is_ok() {
+                    #[cfg(feature = "log")]
+                    log::info!(
+                        "ESP-NOW: discovery sweep, hopping to channel {}",
+                        self.channel
+                    );
+                }
+            }
         }
         Ok(())
     }
