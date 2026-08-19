@@ -13,6 +13,7 @@ ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "de
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
 wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "dep:embassy-net", "microfips-esp-transport/wifi"]
 mdns-open = ["wifi", "microfips-esp-transport/mdns-open"]
+esp-now = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/esp-now"]
 
 [[bin]]
 name = "microfips-esp32s3-uart"
@@ -42,6 +43,17 @@ required-features = ["wifi"]
 name = "microfips-esp32s3-mdns-spike"
 path = "src/bin/mdns_spike.rs"
 required-features = ["wifi"]
+
+[[bin]]
+name = "microfips-esp32s3-espnow"
+path = "src/bin/espnow.rs"
+required-features = ["esp-now"]
+
+# ESP-NOW <-> USB-serial relay for the host-side serial_udp_bridge.py
+[[bin]]
+name = "microfips-esp32s3-espnow-gw"
+path = "src/bin/espnow_gw.rs"
+required-features = ["esp-now"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }

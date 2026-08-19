@@ -72,3 +72,8 @@ pub use microfips_esp_transport::run_tasks::run_l2cap_node;
 
 #[cfg(feature = "wifi")]
 pub use microfips_esp_transport::run_tasks::run_wifi_node;
+
+#[cfg(feature = "esp-now")]
+pub use microfips_esp_transport::espnow_gateway::run_espnow_gateway;
+#[cfg(feature = "esp-now")]
+pub use microfips_esp_transport::run_tasks::run_esp_now_node;
