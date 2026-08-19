@@ -7,7 +7,7 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
 - **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
-- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.) OR ESP-NOW transport → second Walter as radio↔USB gateway → serial_udp_bridge.py → daemon (no IP stack on the node; hardware-verified 2026-08-19, see "ESP-NOW Transport" section.)
+- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.) OR ESP-NOW transport → second Walter as gateway → daemon (no IP stack on the node; gateway is either standalone WiFi/UDP or radio↔USB + serial_udp_bridge.py; hardware-verified 2026-08-19 incl. channel sweep, see "ESP-NOW Transport" section.)
 
 ## Workspace architecture
 
@@ -630,24 +630,37 @@ FIPS over raw ESP-NOW (802.11 vendor action frames): the node needs no AP, no
 DHCP, no IP stack. Hardware-verified 2026-08-19 Walter↔Walter: Noise IK handshake,
 heartbeats, FSP sessions, 1071-byte FilterAnnounce frames, ETX 1.0, 0% loss.
 
-**Topology:** node board (`microfips-esp32s3-espnow`, a full FIPS node) ↔ ESP-NOW ↔
-gateway board (`microfips-esp32s3-espnow-gw`, a dumb radio↔USB relay on host USB) ↔
-`serial_udp_bridge.py` ↔ FIPS daemon UDP. The gateway is single-peer: it unicasts to
-whichever node's frame it saw last.
+**Topologies** (node = `microfips-esp32s3-espnow`, a full FIPS node; both gateways are
+single-peer relays that unicast to whichever node's frame they saw last):
+1. **Standalone (preferred):** node ↔ ESP-NOW ↔ `microfips-esp32s3-espnow-wifi-gw`
+   (joins the AP as station, mDNS-discovers the pinned daemon, relays straight to its
+   UDP port; runs on any power brick — no host machine in the data path). Hardware-
+   verified 2026-08-19.
+2. **USB-bridged:** node ↔ ESP-NOW ↔ `microfips-esp32s3-espnow-gw` (radio↔USB relay on
+   host USB) ↔ `serial_udp_bridge.py` ↔ daemon UDP. Useful when a host is attached
+   anyway — the bridge's frame log is handy for debugging.
 
-**Build + flash (both binaries in one invocation):**
+**Build + flash (standalone gateway + node):**
 ```bash
 . ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  WIFI_SSID="<ssid>" WIFI_PASSWORD="<pass>" \
   DEVICE_NPUB_HEX_vps="<daemon npub_hex, keys.json 'linux' entry for the local daemon>" \
   cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
-  -Zbuild-std=core,alloc --no-default-features --features esp-now \
-  --bin microfips-esp32s3-espnow --bin microfips-esp32s3-espnow-gw
+  -Zbuild-std=core,alloc --no-default-features --features esp-now,wifi \
+  --bin microfips-esp32s3-espnow --bin microfips-esp32s3-espnow-wifi-gw
+espflash flash -p /dev/ttyACM<gw>   --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-espnow-wifi-gw
 espflash flash -p /dev/ttyACM<node> --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-espnow
-espflash flash -p /dev/ttyACM<gw>   --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-espnow-gw
-python3 -u tools/serial_udp_bridge.py --serial /dev/ttyACM<gw> --udp-host 127.0.0.1 --udp-port 2121
 ```
-`ESP_NOW_CHANNEL` build env (default 1) must match on both boards — ESP-NOW peers are
-unassociated, nothing negotiates the channel.
+(For the USB-bridged variant, build `--features esp-now --bin microfips-esp32s3-espnow-gw`
+and run `python3 -u tools/serial_udp_bridge.py --serial /dev/ttyACM<gw> --udp-host
+127.0.0.1 --udp-port 2121`.)
+
+**Channels:** the standalone gateway is pinned to the AP's channel by its station
+association; the node cannot know it in advance, so it **sweeps channels 1–13** during
+broadcast discovery (2 broadcasts per channel, stops on peer lock, resumes on session
+death — verified: node started on ch 5, swept to the AP's ch 1, locked, handshaked).
+`ESP_NOW_CHANNEL` (default 1) is only the sweep's starting channel; for the USB-bridged
+gateway (unassociated) it is that gateway's fixed channel.
 
 **Wire format:** ESP-NOW caps payloads at 250 bytes; FMP frames go up to 2048. Each
 frame is chunked with a 2-byte header (msg id, last-flag|fragment index), reassembled
@@ -666,10 +679,11 @@ gateway ACKs), daemon loss is detected by the Node's RX-silence link-death timeo
 bridge returns. The gateway drops radio→host frames after a 500 ms USB write timeout
 when nothing drains USB, so a stopped bridge cannot wedge it.
 
-**Console:** the node logs on its own USB JTAG port as usual. The gateway
-intentionally never initializes the logger — its USB channel carries frames, and log
-text would corrupt the stream (only ROM boot text and panics appear there; the bridge's
-length-prefix resync skips that noise).
+**Console:** the node and the standalone WiFi gateway log on their USB JTAG ports as
+usual (the WiFi gateway logs association, mDNS discovery, and `node locked <mac>`).
+Only the USB-bridged gateway never initializes the logger — its USB channel carries
+frames, and log text would corrupt the stream (only ROM boot text and panics appear
+there; the bridge's length-prefix resync skips that noise).
 
 **Pitfalls:**
 - When testing bridge outages, kill the bridge's *python* PID, not the wrapping shell —
