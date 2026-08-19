@@ -7,7 +7,7 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
 - **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
-- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.)
+- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.) OR ESP-NOW transport → second Walter as radio↔USB gateway → serial_udp_bridge.py → daemon (no IP stack on the node; hardware-verified 2026-08-19, see "ESP-NOW Transport" section.)
 
 ## Workspace architecture
 
@@ -539,9 +539,18 @@ re-discovery on link death, and WiFi re-association on AP loss.
 
 **Serial port:** native USB Serial JTAG (VID:PID `303a:1001`, `/dev/ttyACM*`), same
 detection as the TiLDAGON — always detect by VID:PID, never hardcode the tty number.
-This machine's Walter has MAC `cc:8d:a2:2c:91:98`. espflash auto-reset works via
+This machine has two Walters: #1 MAC `cc:8d:a2:2c:91:98` (identity `esp32s3`,
+generator*5), #2 MAC `cc:8d:a2:2c:94:08` (identity `esp32s3b`, generator*7 —
+apply via `DEVICE_NSEC_HEX_esp32s3` build override). They share VID:PID, so always
+disambiguate by serial number (`udevadm info -q property /dev/ttyACM<N> | grep
+ID_SERIAL_SHORT` — the serial IS the MAC). espflash auto-reset works via
 DTR/RTS, no button pressing. Firmware logs appear on the same USB JTAG port
 (`esp-println` with `jtag-serial`).
+**pyserial DTR/RTS hazard:** opening the port with default control-line handling can
+reset the chip — a wrong DTR/RTS sequence resets it into DOWNLOAD mode (`waiting for
+download`, firmware not running). To open without touching the chip: construct
+`serial.Serial()` unopened, set `.dtr = False; .rts = False`, then `.open()`. Recover a
+download-mode board with `espflash reset -p /dev/ttyACM<N>`.
 
 **LED:** the firmware drives GPIO2 as the status LED; on the Walter that is an exposed
 header pin with no onboard LED — wire one externally for LED state visibility.
@@ -614,6 +623,64 @@ recovery time: ~1 s after daemon disconnect, ~2 s after WiFi disassociation.
 `microfips-esp-transport/src/wifi_transport.rs::wait_ready`. A diagnostic spike binary
 (`microfips-esp32s3-mdns-spike`) verifies multicast TX/RX + unicast responses on
 hardware. Host-side advert check: `avahi-browse -rt _fips._udp`.
+
+### ESP-NOW Transport (radio-only, no IP)
+
+FIPS over raw ESP-NOW (802.11 vendor action frames): the node needs no AP, no
+DHCP, no IP stack. Hardware-verified 2026-08-19 Walter↔Walter: Noise IK handshake,
+heartbeats, FSP sessions, 1071-byte FilterAnnounce frames, ETX 1.0, 0% loss.
+
+**Topology:** node board (`microfips-esp32s3-espnow`, a full FIPS node) ↔ ESP-NOW ↔
+gateway board (`microfips-esp32s3-espnow-gw`, a dumb radio↔USB relay on host USB) ↔
+`serial_udp_bridge.py` ↔ FIPS daemon UDP. The gateway is single-peer: it unicasts to
+whichever node's frame it saw last.
+
+**Build + flash (both binaries in one invocation):**
+```bash
+. ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  DEVICE_NPUB_HEX_vps="<daemon npub_hex, keys.json 'linux' entry for the local daemon>" \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc --no-default-features --features esp-now \
+  --bin microfips-esp32s3-espnow --bin microfips-esp32s3-espnow-gw
+espflash flash -p /dev/ttyACM<node> --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-espnow
+espflash flash -p /dev/ttyACM<gw>   --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-espnow-gw
+python3 -u tools/serial_udp_bridge.py --serial /dev/ttyACM<gw> --udp-host 127.0.0.1 --udp-port 2121
+```
+`ESP_NOW_CHANNEL` build env (default 1) must match on both boards — ESP-NOW peers are
+unassociated, nothing negotiates the channel.
+
+**Wire format:** ESP-NOW caps payloads at 250 bytes; FMP frames go up to 2048. Each
+frame is chunked with a 2-byte header (msg id, last-flag|fragment index), reassembled
+strictly in order; any gap/interleave drops the message and the protocol layers retry
+(codec: `microfips-esp-common/src/espnow_frag.rs`, host-tested). Gateway↔host framing
+is the standard 2-byte LE length prefix.
+
+**Peer discovery / self-healing:** the node broadcasts its handshake, locks onto the
+first responding MAC for unicast (MAC-level ACK+retry), and reverts to broadcast when
+a session ends. The MAC is a routing hint only — Noise IK against the pinned npub
+(`DEVICE_NPUB_HEX_vps`) proves identity, same trust model as mDNS discovery.
+Because sends keep succeeding at MAC level while the daemon is unreachable (the
+gateway ACKs), daemon loss is detected by the Node's RX-silence link-death timeout
+(`link_dead_timeout_secs`, 30 s): verified cycle = bridge killed → `steady: link dead,
+31s without valid frames` → broadcast re-discovery → re-handshake ~5 s after the
+bridge returns. The gateway drops radio→host frames after a 500 ms USB write timeout
+when nothing drains USB, so a stopped bridge cannot wedge it.
+
+**Console:** the node logs on its own USB JTAG port as usual. The gateway
+intentionally never initializes the logger — its USB channel carries frames, and log
+text would corrupt the stream (only ROM boot text and panics appear there; the bridge's
+length-prefix resync skips that noise).
+
+**Pitfalls:**
+- When testing bridge outages, kill the bridge's *python* PID, not the wrapping shell —
+  an orphaned bridge keeps the port open and both processes steal bytes from each other
+  (pyserial then reports "device reports readiness to read but returned no data /
+  multiple access on port").
+- Bridge reconnection pins to the board's USB serial number; with two Walters attached
+  this prevents re-attaching to the node's console (VID:PID alone is ambiguous).
+- ESP-NOW node ↔ WiFi node identity collision: both Walters must not run with the same
+  `keys.json` identity against one daemon — use the `esp32s3b` entry for the second
+  board.
 
 ### Build-time identity overrides
 
