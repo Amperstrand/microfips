@@ -116,7 +116,7 @@ pub async fn run_espnow_wifi_gateway(
     crate::logger::init();
     let mut led = crate::runner::make_led(gpio2);
     // TrngSource must outlive the WiFi driver; this function never returns.
-    let (_trng_source, mut trng) = crate::runner::init_trng(rng_periph, adc1);
+    let (_trng_source, trng) = crate::runner::init_trng(rng_periph, adc1);
 
     log::info!("ESP-NOW WiFi gateway starting");
 

@@ -61,6 +61,12 @@ name = "microfips-esp32s3-espnow-wifi-gw"
 path = "src/bin/espnow_wifi_gw.rs"
 required-features = ["esp-now", "wifi"]
 
+# Hybrid node: direct WiFi/UDP when AP+daemon reachable, ESP-NOW otherwise
+[[bin]]
+name = "microfips-esp32s3-hybrid"
+path = "src/bin/hybrid.rs"
+required-features = ["esp-now", "wifi"]
+
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }
 microfips-esp-common = { path = "../microfips-esp-common" }
