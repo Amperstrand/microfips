@@ -129,35 +129,80 @@ pub const DEVICE_NAME: &str = "microfips-esp32s3";
 #[cfg(feature = "esp32c3")]
 pub const DEVICE_NAME: &str = "microfips-esp32c3";
 
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32")]
 pub const UART0_BASE: usize = 0x3FF4_0000;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32s3")]
 pub const UART0_BASE: usize = 0x6000_0000;
 
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32")]
 pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32s3")]
 pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_9000;
 
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32")]
 pub const UART_RX_GPIO_NUM: u32 = 3;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32s3")]
 pub const UART_RX_GPIO_NUM: u32 = 44;
 
 // Reset register address (RTC_CNTL_OPTIONS0_REG)
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32")]
 pub const RESET_REGISTER: usize = 0x3FF4_8000;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32s3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32c3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
 
@@ -168,6 +213,34 @@ pub const FIPS_DISCOVERY_SCOPE: &str = match option_env!("FIPS_DISCOVERY_SCOPE")
     Some(v) => v,
     None => "",
 };
+
+// ESP-NOW primary channel (1-14). Both ends of an ESP-NOW link are
+// unassociated, so nothing negotiates this — it must match on both sides.
+#[cfg(feature = "esp-now")]
+pub const ESP_NOW_CHANNEL: u8 = parse_espnow_channel(option_env!("ESP_NOW_CHANNEL"));
+
+#[cfg(feature = "esp-now")]
+const fn parse_espnow_channel(v: Option<&str>) -> u8 {
+    let Some(s) = v else {
+        return 1;
+    };
+    let bytes = s.as_bytes();
+    let mut value = 0u32;
+    let mut i = 0;
+    while i < bytes.len() {
+        assert!(
+            bytes[i] >= b'0' && bytes[i] <= b'9',
+            "ESP_NOW_CHANNEL must be a decimal number"
+        );
+        value = value * 10 + (bytes[i] - b'0') as u32;
+        i += 1;
+    }
+    assert!(
+        value >= 1 && value <= 14,
+        "ESP_NOW_CHANNEL must be between 1 and 14"
+    );
+    value as u8
+}
 
 #[cfg(feature = "wifi")]
 pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {

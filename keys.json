@@ -83,6 +83,15 @@
       "node_addr": "c6e87880c9204af27d2c02e857dfb4f4",
       "comment": "secp256k1 generator * 6",
       "source": "Added for microfips-esp32c3 crate"
+    },
+    "esp32s3b": {
+      "label": "ESP32-S3 Walter #2 (MAC cc:8d:a2:2c:94:08)",
+      "type": "mcu",
+      "nsec_hex": "0000000000000000000000000000000000000000000000000000000000000007",
+      "npub_hex": "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+      "node_addr": "cd9177582b93ca2144ee27a0ecf19741",
+      "comment": "secp256k1 generator * 7. Second Walter board; build with DEVICE_NSEC_HEX_esp32s3 override to use it alongside the first (generator * 5).",
+      "source": "keys.json only (env override at build time)"
     }
   }
 }
