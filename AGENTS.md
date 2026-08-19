@@ -630,8 +630,23 @@ FIPS over raw ESP-NOW (802.11 vendor action frames): the node needs no AP, no
 DHCP, no IP stack. Hardware-verified 2026-08-19 Walter↔Walter: Noise IK handshake,
 heartbeats, FSP sessions, 1071-byte FilterAnnounce frames, ETX 1.0, 0% loss.
 
-**Topologies** (node = `microfips-esp32s3-espnow`, a full FIPS node; both gateways are
-single-peer relays that unicast to whichever node's frame they saw last):
+**Hybrid node (`microfips-esp32s3-hybrid`, preferred for leaf boards):** one binary
+that uses direct WiFi/UDP when the AP and daemon are reachable and falls back to
+ESP-NOW via a gateway otherwise — same pinned npub and end-to-end Noise IK on both
+paths, so switching changes the route, never the trust model. Switching happens at
+session boundaries: boot tries WiFi twice then starts on ESP-NOW; in WiFi mode, 2
+consecutive failed connection attempts fall back to ESP-NOW; in ESP-NOW mode an
+SSID-filtered scan (no association) runs every `HYBRID_WIFI_PROBE_SECS` (default 300)
+and only a visible AP *plus* fresh mDNS confirmation of the daemon triggers the switch
+back — a reachable AP with an unreachable daemon keeps the working ESP-NOW link.
+Build with `--features esp-now,wifi --bin microfips-esp32s3-hybrid` (needs WiFi creds
+AND the npub override). Chaos knob for testing: `HYBRID_TEST_WIFI_DOWN_SECS=<n>`
+forces the WiFi path down for the first n seconds of uptime (hardware-verified:
+boots onto ESP-NOW via gateway, then switches to WiFi in ~2 s once the window ends).
+
+**Single-transport topologies** (node = `microfips-esp32s3-espnow`, a full FIPS node;
+both gateways are single-peer relays that unicast to whichever node's frame they saw
+last):
 1. **Standalone (preferred):** node ↔ ESP-NOW ↔ `microfips-esp32s3-espnow-wifi-gw`
    (joins the AP as station, mDNS-discovers the pinned daemon, relays straight to its
    UDP port; runs on any power brick — no host machine in the data path). Hardware-
