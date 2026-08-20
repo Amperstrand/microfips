@@ -72,3 +72,5 @@ pub mod espnow_gateway;
 pub mod espnow_wifi_gateway;
 #[cfg(all(feature = "esp-now", feature = "wifi"))]
 pub mod hybrid_transport;
+#[cfg(feature = "relay-ap")]
+pub mod relay_ap;

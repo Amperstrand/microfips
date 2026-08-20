@@ -283,3 +283,23 @@ pub const WIFI_PASSWORD: &str = match option_env!("WIFI_PASSWORD") {
     Some(v) => v,
     None => "",
 };
+
+// FIPS relay AP (feature `relay-ap`): the open access point it offers and
+// the uplink it joins. Router: uplink = the daemon's LAN (defaults to the
+// WiFi credentials). Extender: RELAY_UPLINK_SSID="!FIPS" with an empty
+// RELAY_UPLINK_PASSWORD to chain off another relay.
+#[cfg(feature = "relay-ap")]
+pub const RELAY_AP_SSID: &str = match option_env!("RELAY_AP_SSID") {
+    Some(v) => v,
+    None => "!FIPS",
+};
+#[cfg(feature = "relay-ap")]
+pub const RELAY_UPLINK_SSID: &str = match option_env!("RELAY_UPLINK_SSID") {
+    Some(v) => v,
+    None => WIFI_SSID,
+};
+#[cfg(feature = "relay-ap")]
+pub const RELAY_UPLINK_PASSWORD: &str = match option_env!("RELAY_UPLINK_PASSWORD") {
+    Some(v) => v,
+    None => WIFI_PASSWORD,
+};

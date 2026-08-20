@@ -88,6 +88,54 @@ pub fn npub_to_x_only(npub: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// Encode a 32-byte x-only public key as a bech32 `npub1...` string
+/// (NIP-19). Output is ASCII; use `core::str::from_utf8` on it.
+pub fn x_only_to_npub(key: &[u8; 32]) -> [u8; NPUB_BECH32_LEN] {
+    // 8-bit -> 5-bit (256 bits -> 52 values, last padded with 4 zero bits).
+    let mut values = [0u8; 52];
+    let mut acc: u32 = 0;
+    let mut bits: u32 = 0;
+    let mut n = 0usize;
+    for &b in key {
+        acc = (acc << 8) | b as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            values[n] = ((acc >> bits) & 0x1f) as u8;
+            n += 1;
+        }
+    }
+    if bits > 0 {
+        values[n] = ((acc << (5 - bits)) & 0x1f) as u8;
+    }
+
+    let mut chk: u32 = 1;
+    for &b in b"npub" {
+        chk = polymod_step(chk, b >> 5);
+    }
+    chk = polymod_step(chk, 0);
+    for &b in b"npub" {
+        chk = polymod_step(chk, b & 0x1f);
+    }
+    for &v in &values {
+        chk = polymod_step(chk, v);
+    }
+    for _ in 0..6 {
+        chk = polymod_step(chk, 0);
+    }
+    let pm = chk ^ 1;
+
+    let mut out = [0u8; NPUB_BECH32_LEN];
+    out[..5].copy_from_slice(b"npub1");
+    for (i, &v) in values.iter().enumerate() {
+        out[5 + i] = CHARSET[v as usize];
+    }
+    for i in 0..6 {
+        out[5 + 52 + i] = CHARSET[((pm >> (5 * (5 - i))) & 0x1f) as usize];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +193,22 @@ mod tests {
             npub_to_x_only("npub1brkus89jjs030qz34df6e8nmrd96rwpde6c3ecwsafqehvw7m4aqt7p7mn"),
             None
         );
+    }
+
+    #[test]
+    fn encode_roundtrip_and_known_vector() {
+        let key = hex32("2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4");
+        let enc = x_only_to_npub(&key);
+        let s = core::str::from_utf8(&enc).unwrap();
+        assert_eq!(
+            s,
+            "npub1979aung6qusfx4d55ujs5hz39r5ghp9am3se4d7t4r2knvjqaljqevzcrp"
+        );
+        assert_eq!(npub_to_x_only(s), Some(key));
+        for seed in [0u8, 1, 0x55, 0xff] {
+            let k = [seed; 32];
+            let e = x_only_to_npub(&k);
+            assert_eq!(npub_to_x_only(core::str::from_utf8(&e).unwrap()), Some(k));
+        }
     }
 }

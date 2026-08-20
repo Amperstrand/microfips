@@ -5,9 +5,11 @@
 extern crate alloc;
 
 pub mod config;
+pub mod dhcp_server;
 pub mod dns;
 pub mod espnow_frag;
 pub mod mdns;
+pub mod mdns_responder;
 pub mod node_info;
 pub mod stats;
 pub mod udp_transport;

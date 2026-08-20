@@ -81,3 +81,6 @@ pub use microfips_esp_transport::espnow_wifi_gateway::run_espnow_wifi_gateway;
 pub use microfips_esp_transport::run_tasks::run_esp_now_node;
 #[cfg(all(feature = "esp-now", feature = "wifi"))]
 pub use microfips_esp_transport::run_tasks::run_hybrid_node;
+
+#[cfg(feature = "relay-ap")]
+pub use microfips_esp_transport::relay_ap::run_relay_ap;
