@@ -7,7 +7,7 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
 - **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
-- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.) OR ESP-NOW transport → second Walter as gateway → daemon (no IP stack on the node; gateway is either standalone WiFi/UDP or radio↔USB + serial_udp_bridge.py; hardware-verified 2026-08-19 incl. channel sweep, see "ESP-NOW Transport" section.)
+- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.) OR ESP-NOW transport → second Walter as gateway → daemon (no IP stack on the node; gateway is either standalone WiFi/UDP or radio↔USB + serial_udp_bridge.py; hardware-verified 2026-08-19 incl. channel sweep, see "ESP-NOW Transport" section.) OR **FIPS relay AP**: open `!FIPS` access point with DHCP + mDNS advert + UDP relay to the daemon, chainable Router→Extender (hardware-verified 2026-08-20, see "FIPS Relay Access Point" section.)
 
 ## Workspace architecture
 
@@ -710,6 +710,57 @@ there; the bridge's length-prefix resync skips that noise).
 - ESP-NOW node ↔ WiFi node identity collision: both Walters must not run with the same
   `keys.json` identity against one daemon — use the `esp32s3b` entry for the second
   board.
+
+### FIPS Relay Access Point (`!FIPS` Router / Extender)
+
+`microfips-esp32s3-relay-ap` turns a Walter into a **FIPS-blind relay AP**: radio in
+AP+STA mode, open access point (default SSID `!FIPS`, 192.168.4.1/24) for clients, station
+uplink toward the daemon's network. Clients get **FIPS connectivity only** — embassy-net has
+no IP forwarding/NAT, so no internet or LAN access through `!FIPS`. Noise IK runs end-to-end
+between client and daemon; the relay cannot read or forge traffic, so the open AP exposes no
+more than the daemon's default-open LAN ACL already does. Hardware-verified 2026-08-20.
+
+**What the AP side provides:** DHCP server (8-address pool from .10, MAC-keyed leases),
+mDNS responder advertising `_fips._udp.local.` with the *upstream daemon's* npub/scope and
+the relay's own address (instance `fips-relay-<last 2 MAC bytes>`), and a per-client UDP
+relay (4 concurrent flows → own uplink socket each, idle slots recycled after 120 s).
+Because the advert carries the daemon's npub, clients' **pinned** discovery accepts the
+relay with no configuration change — zero-touch peering. Clients see the AP and get DHCP
+before the uplink is up; the advert appears once the daemon is found.
+
+**Roles are uplink config only** (same binary):
+```bash
+# Router: uplink = the daemon's LAN (defaults to WIFI_SSID/WIFI_PASSWORD)
+. ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  WIFI_SSID="<home ssid>" WIFI_PASSWORD="<home pass>" \
+  DEVICE_NPUB_HEX_vps="<daemon npub_hex>" \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc --no-default-features --features relay-ap --bin microfips-esp32s3-relay-ap
+# Extender: uplink = another relay's !FIPS; re-advertises what it discovers upstream
+RELAY_UPLINK_SSID='!FIPS' RELAY_UPLINK_PASSWORD='' <same build command>
+# Client node for the !FIPS network (any WiFi node firmware):
+WIFI_SSID='!FIPS' WIFI_PASSWORD='' DEVICE_NPUB_HEX_vps="<daemon npub_hex>" cargo build -p microfips-esp32s3 ...
+```
+`RELAY_AP_SSID` overrides the offered SSID. **Run `cargo clean -p microfips-esp-transport -p
+microfips-esp32s3` between builds with different env values** (compiled-in, see the identity
+pitfall). Extender and Router share the SSID; the uplink scan picks the strongest BSSID that
+is not the board's own AP MAC, so an Extender never chains to itself. In AP+STA mode the AP
+follows the uplink's channel. Each hop uses 192.168.4.0/24 on both its AP and STA side —
+fine, because the two stacks are independent and nothing routes between them.
+
+**Verified chain:** Router (Walter #2) → daemon; client node joined `!FIPS`, got .10 by
+DHCP, discovered the relay via pinned mDNS, handshaked through it (ETX 1.0, 0% loss both
+directions, ~50 kbit/s goodput — same as direct). Extender (Walter #1) joined the Router
+(own BSSID excluded), took a lease, adopted the Router's advert as upstream and re-advertises.
+Not yet verified: a client on the Extender's segment (3-hop) — needs a third device; the
+daemon host itself cannot be the client because it is the uplink target.
+
+**Open-AP pitfall (fixed):** esp-radio's default station auth threshold is WPA2; joining an
+open network failed with `NoAccessPointFoundInAuthmodeThreshold`. All station paths now use
+`wifi_transport::station_config()`, which selects open auth for an empty password.
+
+**Logs:** `relay: DHCP reply to <mac> -> <ip> (<n> leases)`, `relay: uplink '<ssid>' via
+<bssid>`, `relay: upstream FIPS endpoint <ip:port>`; LED = upstream known.
 
 ### Build-time identity overrides
 
