@@ -12,6 +12,20 @@ use microfips_esp_common::udp_transport::{UdpTransport, UdpTransportError};
 use microfips_protocol::transport::Transport;
 use static_cell::StaticCell;
 
+/// Station config for `ssid`/`password`. An empty password means an open
+/// network: esp-radio's default auth threshold is WPA2, which would reject
+/// the AP with `NoAccessPointFoundInAuthmodeThreshold`.
+pub(crate) fn station_config(ssid: &str, password: &str) -> StationConfig {
+    let cfg = StationConfig::default()
+        .with_ssid(ssid)
+        .with_password(alloc::string::String::from(password));
+    if password.is_empty() {
+        cfg.with_auth_method(esp_radio::wifi::AuthenticationMethod::None)
+    } else {
+        cfg
+    }
+}
+
 #[derive(Debug)]
 pub enum WifiInitError {
     ConnectFailed,
@@ -161,9 +175,7 @@ pub async fn build_wifi_transport(
     );
     spawner.spawn(net_task(runner).expect("spawn net task failed"));
 
-    let station_config = StationConfig::default()
-        .with_ssid(wifi_ssid)
-        .with_password(alloc::string::String::from(wifi_password));
+    let station_config = station_config(wifi_ssid, wifi_password);
     wifi_controller
         .set_config(&WifiConfig::Station(station_config))
         .expect("set wifi station config");
