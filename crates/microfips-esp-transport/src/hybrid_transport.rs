@@ -203,7 +203,6 @@ pub async fn build_hybrid_transport(
 ) -> (HybridTransport, [u8; 33]) {
     use embassy_net::udp::PacketMetadata;
     use embassy_net::{Config, StackResources};
-    use esp_radio::wifi::sta::StationConfig;
     use esp_radio::wifi::Config as WifiConfig;
     use microfips_esp_common::config::{VPS_HOST, VPS_PORT};
     use microfips_esp_common::dns::resolve_vps_ipv4;
@@ -231,9 +230,7 @@ pub async fn build_hybrid_transport(
     );
     spawner.spawn(hybrid_net_task(runner).expect("spawn net task failed"));
 
-    let station_config = StationConfig::default()
-        .with_ssid(wifi_ssid)
-        .with_password(alloc::string::String::from(wifi_password));
+    let station_config = crate::wifi_transport::station_config(wifi_ssid, wifi_password);
     controller
         .set_config(&WifiConfig::Station(station_config))
         .expect("set wifi station config");

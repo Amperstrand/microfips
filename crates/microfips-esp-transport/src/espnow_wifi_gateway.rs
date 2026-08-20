@@ -17,7 +17,6 @@ use esp_hal::peripherals::WIFI;
 use esp_radio::esp_now::{
     EspNowManager, EspNowReceiver, EspNowSender, EspNowWifiInterface, PeerInfo, BROADCAST_ADDRESS,
 };
-use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
 use microfips_esp_common::dns::resolve_vps_ipv4;
@@ -141,9 +140,10 @@ pub async fn run_espnow_wifi_gateway(
     );
     spawner.spawn(gw_net_task(runner).expect("spawn net task failed"));
 
-    let station_config = StationConfig::default()
-        .with_ssid(crate::config::WIFI_SSID)
-        .with_password(alloc::string::String::from(crate::config::WIFI_PASSWORD));
+    let station_config = crate::wifi_transport::station_config(
+        crate::config::WIFI_SSID,
+        crate::config::WIFI_PASSWORD,
+    );
     wifi_controller
         .set_config(&WifiConfig::Station(station_config))
         .expect("set wifi station config");
