@@ -26,9 +26,11 @@ pub const FIPS_PTR_QUERY: &[u8] =
 pub const MDNS_GROUP: [u8; 4] = [224, 0, 0, 251];
 pub const MDNS_PORT: u16 = 5353;
 
-const TYPE_A: u16 = 1;
-const TYPE_TXT: u16 = 16;
-const TYPE_SRV: u16 = 33;
+pub(crate) const TYPE_A: u16 = 1;
+pub(crate) const TYPE_PTR: u16 = 12;
+pub(crate) const TYPE_TXT: u16 = 16;
+pub(crate) const TYPE_SRV: u16 = 33;
+pub(crate) const TYPE_ANY: u16 = 255;
 
 /// A FIPS daemon advert parsed out of one mDNS response packet.
 ///
@@ -51,7 +53,7 @@ pub enum MdnsParseError {
     IncompleteAdvert,
 }
 
-fn read_u16(packet: &[u8], off: usize) -> Result<u16, MdnsParseError> {
+pub(crate) fn read_u16(packet: &[u8], off: usize) -> Result<u16, MdnsParseError> {
     match packet.get(off..off + 2) {
         Some(b) => Ok(((b[0] as u16) << 8) | b[1] as u16),
         None => Err(MdnsParseError::Truncated),
@@ -59,7 +61,7 @@ fn read_u16(packet: &[u8], off: usize) -> Result<u16, MdnsParseError> {
 }
 
 /// Skip an (possibly compressed) DNS name, returning the offset just past it.
-fn skip_name(packet: &[u8], mut off: usize) -> Result<usize, MdnsParseError> {
+pub(crate) fn skip_name(packet: &[u8], mut off: usize) -> Result<usize, MdnsParseError> {
     loop {
         let len = *packet.get(off).ok_or(MdnsParseError::Truncated)? as usize;
         if len == 0 {
@@ -220,6 +222,39 @@ pub async fn discover_fips(
     stack: Stack<'static>,
     filter: DiscoveryFilter<'_>,
 ) -> Option<(Ipv4Address, u16, [u8; 32])> {
+    discover_fips_advert(stack, filter)
+        .await
+        .map(|d| (d.ip, d.port, d.key))
+}
+
+/// Everything a relay needs to re-advertise a discovered daemon.
+#[derive(Debug, Clone, Copy)]
+pub struct DiscoveredFips {
+    pub ip: Ipv4Address,
+    pub port: u16,
+    /// Decoded x-only npub from the advert (a hint until Noise proves it).
+    pub key: [u8; 32],
+    scope: [u8; MAX_SCOPE_LEN],
+    scope_len: u8,
+}
+
+/// Longest mesh scope name retained from an advert.
+pub const MAX_SCOPE_LEN: usize = 32;
+
+impl DiscoveredFips {
+    pub fn scope(&self) -> Option<&str> {
+        if self.scope_len == 0 {
+            return None;
+        }
+        core::str::from_utf8(&self.scope[..self.scope_len as usize]).ok()
+    }
+}
+
+/// [`discover_fips`] variant that also keeps the advert's scope.
+pub async fn discover_fips_advert(
+    stack: Stack<'static>,
+    filter: DiscoveryFilter<'_>,
+) -> Option<DiscoveredFips> {
     let mut rx_meta = [PacketMetadata::EMPTY; 4];
     let mut rx_buf = [0u8; 1024];
     let mut tx_meta = [PacketMetadata::EMPTY; 2];
@@ -248,7 +283,22 @@ pub async fn discover_fips(
                 continue;
             };
             if advert_matches(&advert, &key, filter) {
-                return Some((Ipv4Address::from(advert.addr), advert.port, key));
+                let mut scope = [0u8; MAX_SCOPE_LEN];
+                let mut scope_len = 0u8;
+                if let Some(s) = advert.scope {
+                    let b = s.as_bytes();
+                    if b.len() <= MAX_SCOPE_LEN {
+                        scope[..b.len()].copy_from_slice(b);
+                        scope_len = b.len() as u8;
+                    }
+                }
+                return Some(DiscoveredFips {
+                    ip: Ipv4Address::from(advert.addr),
+                    port: advert.port,
+                    key,
+                    scope,
+                    scope_len,
+                });
             }
         }
     }

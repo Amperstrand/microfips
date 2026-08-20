@@ -14,6 +14,7 @@ l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "
 wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "dep:embassy-net", "microfips-esp-transport/wifi"]
 mdns-open = ["wifi", "microfips-esp-transport/mdns-open"]
 esp-now = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/esp-now"]
+relay-ap = ["wifi", "microfips-esp-transport/relay-ap"]
 
 [[bin]]
 name = "microfips-esp32s3-uart"
@@ -66,6 +67,12 @@ required-features = ["esp-now", "wifi"]
 name = "microfips-esp32s3-hybrid"
 path = "src/bin/hybrid.rs"
 required-features = ["esp-now", "wifi"]
+
+# FIPS relay access point (Router/Extender by uplink config; not a node)
+[[bin]]
+name = "microfips-esp32s3-relay-ap"
+path = "src/bin/relay_ap.rs"
+required-features = ["relay-ap"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }

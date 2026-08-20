@@ -20,6 +20,8 @@ wifi = ["dep:esp-radio", "dep:embassy-net", "dep:esp-println", "log"]
 # and take the peer npub from it (trust-on-first-advert). Implies wifi.
 mdns-open = ["wifi"]
 esp-now = ["dep:esp-radio", "esp-radio/esp-now", "dep:esp-println", "log"]
+# FIPS relay access point (open AP + DHCP + mDNS advert + UDP relay). Implies wifi.
+relay-ap = ["wifi"]
 
 [build-dependencies]
 microfips-build = { workspace = true }
