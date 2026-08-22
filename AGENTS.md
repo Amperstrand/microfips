@@ -7,7 +7,7 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
 - **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
-- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.) OR ESP-NOW transport → second Walter as gateway → daemon (no IP stack on the node; gateway is either standalone WiFi/UDP or radio↔USB + serial_udp_bridge.py; hardware-verified 2026-08-19 incl. channel sweep, see "ESP-NOW Transport" section.) OR **FIPS relay AP**: open `!FIPS` access point with DHCP + mDNS advert + UDP relay to the daemon, chainable Router→Extender (hardware-verified 2026-08-20, see "FIPS Relay Access Point" section.)
+- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.) OR ESP-NOW transport → second Walter as gateway → daemon (no IP stack on the node; gateway is either standalone WiFi/UDP or radio↔USB + serial_udp_bridge.py; hardware-verified 2026-08-19 incl. channel sweep, see "ESP-NOW Transport" section.) OR **FIPS relay AP**: open `!FIPS` access point with DHCP + mDNS advert + UDP relay to the daemon, chainable Router→Extender (hardware-verified 2026-08-20), optionally also a FIPS peer itself (`relay-ap-peer`, verified 2026-08-22; see "FIPS Relay Access Point" section.)
 
 ## Workspace architecture
 
@@ -760,7 +760,28 @@ open network failed with `NoAccessPointFoundInAuthmodeThreshold`. All station pa
 `wifi_transport::station_config()`, which selects open auth for an empty password.
 
 **Logs:** `relay: DHCP reply to <mac> -> <ip> (<n> leases)`, `relay: uplink '<ssid>' via
-<bssid>`, `relay: upstream FIPS endpoint <ip:port>`; LED = upstream known.
+<bssid>`, `relay: upstream FIPS endpoint <ip:port>`; LED = upstream known. The relay logs
+only state changes — a silent console after boot is a settled, healthy relay.
+
+**Peer variant (`microfips-esp32s3-relay-ap-peer`, hardware-verified 2026-08-22):** same
+relay plus a full FIPS `Node` with the compiled-in device identity (`DEVICE_NSEC_HEX_esp32s3`)
+over the same uplink. `RelayPeerTransport` is one more UDP flow on the station stack toward
+whatever `uplink_task` published as upstream — the daemon on a Router, the upstream relay on
+an Extender — so a peering Extender runs Noise IK through the Router like any client. Raw
+framing (FIPS UDP). Each node session waits for/re-reads the upstream, so it follows daemon
+moves without owning the WiFi controller. Relay path stays FIPS-blind. In peer mode the LED
+shows the **node session** (not the uplink). Build = relay build + `--bin
+microfips-esp32s3-relay-ap-peer`. Verified Router+peer: mDNS-pinned upstream 192.168.1.97:2121,
+`handshake ok, entering steady`, heartbeats both ways, 1071-byte FilterAnnounce frames.
+Cost: +~12 KB RAM (socket buffers + node), +~180 KB flash.
+
+**Pinned-key pitfall (bit again 2026-08-22):** building without `DEVICE_NPUB_HEX_vps=<local
+daemon npub_hex>` pins the firmware to the real VPS key. Symptom on a relay: the uplink
+receives and parses the daemon's mDNS advert but the pinned filter rejects it, so it falls
+through to DNS and announces the VPS (`upstream FIPS endpoint 91.99.211.197:2121`), and a
+peer node then fails its handshake with `Timeout`. Also: `export $(grep -v '^#' .env | xargs)`
+splits `WIFI_SSID` values containing spaces — load `.env` line-wise
+(`while IFS='=' read -r k v; do export "$k=$v"; done < .env`).
 
 ### Build-time identity overrides
 

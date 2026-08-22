@@ -83,4 +83,4 @@ pub use microfips_esp_transport::run_tasks::run_esp_now_node;
 pub use microfips_esp_transport::run_tasks::run_hybrid_node;
 
 #[cfg(feature = "relay-ap")]
-pub use microfips_esp_transport::relay_ap::run_relay_ap;
+pub use microfips_esp_transport::relay_ap::{run_relay_ap, run_relay_ap_peer};

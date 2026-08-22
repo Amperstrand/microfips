@@ -74,6 +74,12 @@ name = "microfips-esp32s3-relay-ap"
 path = "src/bin/relay_ap.rs"
 required-features = ["relay-ap"]
 
+# Relay AP that is also a FIPS peer (compiled-in identity, node over the uplink)
+[[bin]]
+name = "microfips-esp32s3-relay-ap-peer"
+path = "src/bin/relay_ap_peer.rs"
+required-features = ["relay-ap"]
+
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }
 microfips-esp-common = { path = "../microfips-esp-common" }
