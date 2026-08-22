@@ -1420,6 +1420,7 @@ When not set, tools panic — no default device identity is allowed.
 | #90 | L2CAP RX channel capacity overflow | bug | Fixed: RX channel increased 5→16 slots (commit `dcf3dc8`). Needs hardware verification. |
 | #88 | FRAME_CAP vs FIPS MTU RAM tradeoff | analysis | Resolved: FRAME_CAP=768 (max that links on ESP32-D0WD DRAM budget). MTU stays 2048. |
 | #77 | Firmware DoS hardening | security | Reconnect limits, memory protection. See also FIPS #57 (packet loss degradation on ESP32-S3). |
+| #91 | ESP32-S3 STA WiFi power-save latency spikes | analysis | Intermittent 170–800 ms RTT bursts on a healthy ~10 ms baseline. Root-caused to STA modem-sleep/DTIM buffering; `set_power_saving(None)` breaks the data path on esp-radio 0.18. See "ESP32-S3 WiFi Power-Save Latency" below. |
 
 ### FIPS Issues Affecting microfips
 
@@ -1435,6 +1436,57 @@ Tracking upstream FIPS GitHub issues (Amperstrand/fips) that affect microfips:
 | #56 | 0-byte frame fatal disconnect | CLOSED | **Verified fixed** — FIPS now handles gracefully. ESP32 never sends 0-byte frames. |
 | #66 | ESP32-S3 MTU limitation and bloom filter skip | CLOSED | **Verified** — FIPS skips FilterAnnounce to MTU-limited peers. |
 | #55 | Dual-role tie-breaker deadlock | CLOSED | **Verified fixed** — FIPS adds disconnect+settle delay after yield. |
+
+## ESP32-S3 WiFi Power-Save Latency (Issue #91)
+
+**Symptom.** Ping to an ESP32-S3 WiFi node (any `!FIPS` client, an Extender, or a plain
+STA on the home router) is a healthy ~10 ms for the first ~30 s after association, then
+degrades into intermittent episodes of **170–800 ms RTT with bunched replies** (`ping`
+reports `pipe 2–5`). During an episode even the *minimum* RTT rises to a beacon-multiple
+floor — every packet is delayed, not just some. Between episodes it returns to ~10 ms. It
+is **not** a constant tax; it is periodic bursts on a fast baseline.
+
+**Root cause (investigated 2026-08-22).** STA-side WiFi modem-sleep / DTIM buffering. The
+esp-radio blob defaults to `WIFI_PS_MIN_MODEM`; after the link goes idle the station parks
+its receiver between the AP's DTIM beacons, so the AP buffers downlink and releases it in
+bursts. Confirmed by elimination — each test isolates one variable:
+
+| Test | Result | Rules out |
+|------|--------|-----------|
+| Idle-yield probe during a spike | executor polled 140k/s → **116/s** | raw CPU load (core is starved of *wakeups*, not busy) |
+| Heap sampled through spikes | flat 50–53 KB | memory leak / allocator stall |
+| Slow with **no USB reader** attached | still slow | serial-JTAG logging FIFO |
+| **Pure STA** build (no peer-node, no relay) | still slow | the `relay-ap-peer` code |
+| **1 ping/s vs 5 ping/s** | both hit the same floor | throughput/backlog — it is per-packet *latency* |
+| Phone confirmed on the home AP, not `!FIPS` | spikes persist | a sleeping client on our softAP |
+| **Bare STA on the home router, no softAP** | still spikes, ~30 s onset | AP+STA single-radio coexistence |
+
+The last row is decisive: a plain station with no softAP and no hop chain still spikes, so
+the buffering is the station's own sleep against the upstream AP.
+
+**The obvious fix does NOT work — do not just re-add it.** Calling
+`wifi_controller.set_power_saving(esp_radio::wifi::PowerSaveMode::None)` after `set_config`
+(STA path) applies cleanly (`wifi: power save disabled (PS None)` logs, returns `Ok`, the
+Noise link still handshakes) **but that build then answers 0 pings** — reproducible across a
+hard reset, while the byte-identical build without the call answers fine. On **esp-radio
+0.18 / esp32s3** `esp_wifi_set_ps(WIFI_PS_NONE)` breaks the FSP data path (link up, session
+datagrams do not flow). Reverted; nothing committed.
+
+**Untried fix candidates (need a clean session — see caveat).** (a) set the PS mode in the
+radio *init* config rather than post-`set_config`; (b) call it *before* `connect_async` then
+force a re-association so the assoc frame carries the new listen-interval; (c) tune DTIM /
+`listen_interval` in `StationConfig` (and `AccessPointConfig` for a relay's softAP). Likely
+related to upstream FIPS #57 (monotonic packet-loss degradation on ESP32-S3) — same chip,
+same WiFi-stack surface.
+
+**Testing caveat (bit me repeatedly).** Reflashing the *same* device identity many times in
+a row leaves stale link/session state on the daemon for that node address, which produces
+flaky ICMP (link `connected` in `fipsctl show links` but 0 % echo) that is easy to mistake
+for a firmware regression. When validating a fix, flash a *fresh* identity, or restart the
+daemon, and confirm against `fipsctl show links` / `show peers` before trusting a ping
+result. Measure with `ping -c10 -i0.2` and read the **min** (baseline health) separately
+from avg/max (episode severity); a single 5-ping burst is too short to catch the ~30 s
+onset.
 
 ## BLE Address Type Pitfall (Issue #81)
 
