@@ -18,6 +18,14 @@
 //!   as uplink (BSSID selection excludes our AP MAC).
 //!
 //! Clients get FIPS connectivity only — no IP forwarding or NAT.
+//!
+//! Peer mode (`run_relay_ap_peer`): additionally runs a full FIPS `Node`
+//! with the compiled-in device identity over the same uplink, toward
+//! whatever `uplink_task` published as upstream (the daemon directly on a
+//! Router, the upstream relay on an Extender — Noise IK is pinned to the
+//! daemon npub either way). The relay path stays FIPS-blind; the node is
+//! just one more UDP flow on the station interface. In peer mode the LED
+//! shows the node's session state rather than the uplink state.
 
 use core::cell::RefCell;
 
@@ -43,7 +51,9 @@ use microfips_esp_common::mdns::{
 use microfips_esp_common::mdns_responder::{
     build_fips_response, parse_fips_query, MAX_RESPONSE_LEN,
 };
+use microfips_esp_common::udp_transport::UdpTransportError;
 use microfips_protocol::node::MAX_FRAME_SIZE;
+use microfips_protocol::transport::Transport;
 use static_cell::StaticCell;
 
 /// AP-side addressing.
@@ -379,7 +389,7 @@ async fn uplink_task(
     mut controller: WifiController<'static>,
     sta_stack: Stack<'static>,
     own_ap_mac: [u8; 6],
-    led: &'static Mutex<CriticalSectionRawMutex, RefCell<crate::led::Led>>,
+    led: Option<&'static Mutex<CriticalSectionRawMutex, RefCell<crate::led::Led>>>,
 ) {
     let ssid = crate::config::RELAY_UPLINK_SSID;
     let password = crate::config::RELAY_UPLINK_PASSWORD;
@@ -391,7 +401,9 @@ async fn uplink_task(
     loop {
         if !controller.is_connected() {
             UPSTREAM.lock(|u| *u.borrow_mut() = None);
-            led.lock(|l| l.borrow_mut().set_state(crate::config::LED_OFF));
+            if let Some(led) = led {
+                led.lock(|l| l.borrow_mut().set_state(crate::config::LED_OFF));
+            }
             let bssid = pick_uplink_bssid(&mut controller, ssid, own_ap_mac).await;
             match bssid {
                 Some(b) => log::info!(
@@ -482,7 +494,9 @@ async fn uplink_task(
                             scope_len,
                         })
                     });
-                    led.lock(|l| l.borrow_mut().set_state(crate::config::LED_ON));
+                    if let Some(led) = led {
+                        led.lock(|l| l.borrow_mut().set_state(crate::config::LED_ON));
+                    }
                     if changed {
                         log::info!("relay: upstream FIPS endpoint {}", endpoint);
                     }
@@ -497,6 +511,55 @@ async fn uplink_task(
     }
 }
 
+/// Node transport for peer mode: one UDP flow on the station stack toward
+/// the upstream endpoint published by `uplink_task`. Each session waits
+/// for an upstream to exist and re-reads it, so the node follows daemon
+/// moves and uplink re-associations without owning the WiFi controller.
+pub struct RelayPeerTransport {
+    socket: &'static UdpSocket<'static>,
+    peer: Option<IpEndpoint>,
+}
+
+impl Transport for RelayPeerTransport {
+    type Error = UdpTransportError;
+
+    async fn wait_ready(&mut self) -> Result<(), Self::Error> {
+        let endpoint = loop {
+            if let Some(u) = upstream() {
+                break u.endpoint;
+            }
+            Timer::after(Duration::from_secs(1)).await;
+        };
+        if self.peer != Some(endpoint) {
+            log::info!("relay peer: node session toward {}", endpoint);
+            self.peer = Some(endpoint);
+        }
+        Ok(())
+    }
+
+    async fn send(&mut self, data: &[u8]) -> Result<(), Self::Error> {
+        let peer = self.peer.ok_or(UdpTransportError::NotReady)?;
+        self.socket
+            .send_to(data, peer)
+            .await
+            .map_err(|_| UdpTransportError::Send)
+    }
+
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        let peer = self.peer.ok_or(UdpTransportError::NotReady)?;
+        loop {
+            let (n, meta) = self
+                .socket
+                .recv_from(buf)
+                .await
+                .map_err(|_| UdpTransportError::Recv)?;
+            if meta.endpoint == peer {
+                return Ok(n);
+            }
+        }
+    }
+}
+
 pub async fn run_relay_ap(
     spawner: embassy_executor::Spawner,
     gpio2: esp_hal::peripherals::GPIO2<'static>,
@@ -504,18 +567,46 @@ pub async fn run_relay_ap(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
+    run_relay_ap_opts(spawner, gpio2, wifi, rng_periph, adc1, false).await
+}
+
+/// Relay AP that is also a FIPS peer (see module docs).
+pub async fn run_relay_ap_peer(
+    spawner: embassy_executor::Spawner,
+    gpio2: esp_hal::peripherals::GPIO2<'static>,
+    wifi: WIFI<'static>,
+    rng_periph: esp_hal::peripherals::RNG<'static>,
+    adc1: esp_hal::peripherals::ADC1<'static>,
+) -> ! {
+    run_relay_ap_opts(spawner, gpio2, wifi, rng_periph, adc1, true).await
+}
+
+async fn run_relay_ap_opts(
+    spawner: embassy_executor::Spawner,
+    gpio2: esp_hal::peripherals::GPIO2<'static>,
+    wifi: WIFI<'static>,
+    rng_periph: esp_hal::peripherals::RNG<'static>,
+    adc1: esp_hal::peripherals::ADC1<'static>,
+    peer: bool,
+) -> ! {
     crate::heap::init();
     crate::logger::init();
     let led = crate::runner::make_led(gpio2);
     static LED: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<crate::led::Led>>> =
         StaticCell::new();
-    let led: &'static _ = LED.init(Mutex::new(RefCell::new(led)));
-    let (_trng_source, trng) = crate::runner::init_trng(rng_periph, adc1);
+    // Relay-only: the uplink task drives the LED. Peer: the node does.
+    let (relay_led, mut node_led) = if peer {
+        (None, Some(led))
+    } else {
+        (Some(&*LED.init(Mutex::new(RefCell::new(led)))), None)
+    };
+    let (trng_source, trng) = crate::runner::init_trng(rng_periph, adc1);
 
     log::info!(
-        "FIPS relay AP starting: AP '{}' open, uplink '{}'",
+        "FIPS relay AP starting: AP '{}' open, uplink '{}', peer {}",
         crate::config::RELAY_AP_SSID,
-        crate::config::RELAY_UPLINK_SSID
+        crate::config::RELAY_UPLINK_SSID,
+        if peer { "yes" } else { "no" }
     );
 
     static STA_RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
@@ -529,6 +620,9 @@ pub async fn run_relay_ap(
     static UP_BUF: StaticCell<[[u8; 2048]; RELAY_SLOTS * 2]> = StaticCell::new();
     static UP_SOCKETS: StaticCell<[UdpSocket<'static>; RELAY_SLOTS]> = StaticCell::new();
     static LABELS: StaticCell<Labels> = StaticCell::new();
+    static PEER_META: StaticCell<[PacketMetadata; 8]> = StaticCell::new();
+    static PEER_BUF: StaticCell<[u8; 4096]> = StaticCell::new();
+    static PEER_SOCKET: StaticCell<UdpSocket<'static>> = StaticCell::new();
 
     let (mut controller, interfaces) =
         esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
@@ -606,7 +700,7 @@ pub async fn run_relay_ap(
     for (i, s) in up_sockets.iter().enumerate() {
         spawner.spawn(up_rx_task(i, s, ap_socket).expect("spawn up rx"));
     }
-    spawner.spawn(uplink_task(controller, sta_stack, own_ap_mac, led).expect("spawn uplink"));
+    spawner.spawn(uplink_task(controller, sta_stack, own_ap_mac, relay_led).expect("spawn uplink"));
 
     log::info!(
         "relay: AP {}.{}.{}.{}/{} up, advert instance '{}'",
@@ -617,7 +711,34 @@ pub async fn run_relay_ap(
         AP_PREFIX,
         labels.instance.as_str()
     );
-    loop {
-        Timer::after(Duration::from_secs(3600)).await;
+    if !peer {
+        loop {
+            Timer::after(Duration::from_secs(3600)).await;
+        }
     }
+
+    // Peer mode: the relay keeps running in its tasks; this task becomes
+    // the FIPS node over the uplink.
+    let meta = PEER_META.init([PacketMetadata::EMPTY; 8]);
+    let buf = PEER_BUF.init([0u8; 4096]);
+    let (rx_meta, tx_meta) = meta.split_at_mut(4);
+    let (rx_buf, tx_buf) = buf.split_at_mut(2048);
+    let mut socket = UdpSocket::new(sta_stack, rx_meta, rx_buf, tx_meta, tx_buf);
+    socket.bind(0).expect("peer bind");
+    let socket: &'static UdpSocket<'static> = PEER_SOCKET.init(socket);
+    let transport = RelayPeerTransport { socket, peer: None };
+    let led = node_led.as_mut().expect("peer mode owns the LED");
+    crate::runner::run_node(
+        transport,
+        trng_source,
+        trng,
+        led,
+        microfips_core::identity::VPS_NPUB,
+        // FIPS UDP carries raw FMP frames (no length prefix).
+        crate::runner::NodeOpts {
+            raw_framing: true,
+            peer_sent_first: false,
+        },
+    )
+    .await
 }
