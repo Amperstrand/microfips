@@ -17,6 +17,7 @@ pub mod fsp;
 pub mod generated;
 pub mod hex;
 pub mod identity;
+pub mod ipv6_shim;
 pub mod mmp;
 pub mod noise;
 pub mod wire;

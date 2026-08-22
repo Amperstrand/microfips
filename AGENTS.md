@@ -775,6 +775,36 @@ microfips-esp32s3-relay-ap-peer`. Verified Router+peer: mDNS-pinned upstream 192
 `handshake ok, entering steady`, heartbeats both ways, 1071-byte FilterAnnounce frames.
 Cost: +~12 KB RAM (socket buffers + node), +~180 KB flash.
 
+**Verified chain 2026-08-22 (both peers):** Walter #2 Router+peer (`esp32s3b`, 192.168.1.80)
+→ daemon; Walter #1 Extender+peer (`esp32s3`, 192.168.4.10 behind #2) → daemon through #2.
+`fipsctl show peers` lists both (`npub1tj7l…jus6` = #2 `fdcd:9177:582b:93ca:2144:ee27:a0ec:f197`,
+`npub1979a…zcrp` = #1 `fd6b:ef47:6b39:1177:c1d5:87c4:344:ddca`), `has_bloom_filter: false,
+has_tree_position: false` (leaf). `ping <fips-addr>` from the daemon host: 5/5 both, min
+10.5 ms (#2) / 14.7 ms (#1, two radio hops); first reply ~0.7 s (FSP session setup).
+
+**ICMPv6 echo over the IPv6 shim (added 2026-08-22):** the daemon delivers `ping` as an FSP
+DataPacket to port 256 (`[src_port:2 LE][dst_port:2 LE][format 0x00][ver_tc_flow:4]
+[next_header][hop_limit][ICMPv6…]`, current FIPS `upper/ipv6_shim.rs` — note the older
+6-byte `fsp::Ipv6Shim` in microfips-core has no format byte). Before this the request was
+handed to the demo request dispatcher, which answered with a text error, so nodes were
+unpingable. `microfips_core::ipv6_shim::icmpv6_echo_reply` now answers in
+`FspDualHandler::handle_responder` before the app sees the message; the checksum is updated
+incrementally (only the type byte changes; the swapped pseudo-header addresses are
+sum-invariant), so no address reconstruction is needed. The handler also logs every inbound
+session datagram (`fsp: datagram in len=… fsp_type=… src=… -> …`) at INFO.
+
+**Host tooling:** `fipsctl show {peers,links,sessions,routing,tree,bloom,…}` talks to
+`/run/fips/control.sock` (JSON) — use it to confirm a Walter's link from the daemon side
+(IK sessions are not in the daemon's INFO log). `fipstop` is the live monitor.
+
+**Console-tap pitfall:** opening the Walter's USB-Serial-JTAG port with pyserial resets the
+board even with `dtr=False; rts=False` set before `open()`. Keep one long-lived reader per
+board in the background (`nohup python3 tap.py 900 > tap.out &`, anchored `pgrep -f
+"^python3 tap.py"` to stop it — an unanchored `pkill -f` matches and kills the calling
+shell) and wait for `handshake ok` before measuring. `cargo clean -p …` without `--release
+--target xtensa-esp32s3-none-elf` removes 0 files and the next build silently reuses the
+previous identity/uplink env — always clean with profile and target when env changes.
+
 **Pinned-key pitfall (bit again 2026-08-22):** building without `DEVICE_NPUB_HEX_vps=<local
 daemon npub_hex>` pins the firmware to the real VPS key. Symptom on a relay: the uplink
 receives and parses the daemon's mDNS advert but the pinned filter rejects it, so it falls
