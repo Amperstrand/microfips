@@ -1420,7 +1420,7 @@ When not set, tools panic — no default device identity is allowed.
 | #90 | L2CAP RX channel capacity overflow | bug | Fixed: RX channel increased 5→16 slots (commit `dcf3dc8`). Needs hardware verification. |
 | #88 | FRAME_CAP vs FIPS MTU RAM tradeoff | analysis | Resolved: FRAME_CAP=768 (max that links on ESP32-D0WD DRAM budget). MTU stays 2048. |
 | #77 | Firmware DoS hardening | security | Reconnect limits, memory protection. See also FIPS #57 (packet loss degradation on ESP32-S3). |
-| #91 | ESP32-S3 STA WiFi power-save latency spikes | analysis | Intermittent 170–800 ms RTT bursts on a healthy ~10 ms baseline. Root-caused to STA modem-sleep/DTIM buffering; `set_power_saving(None)` breaks the data path on esp-radio 0.18. See "ESP32-S3 WiFi Power-Save Latency" below. |
+| #91 | ESP32-S3 STA WiFi power-save latency spikes | fixed (STA) | Pure-STA path fixed via init-config PS=None (commit `07bbdcf`, min ~9 ms across a 5-min soak). Relay AP+STA must keep default power save — disabling it regresses to 180–830 ms. See "ESP32-S3 WiFi Power-Save Latency" below. |
 
 ### FIPS Issues Affecting microfips
 
@@ -1464,20 +1464,38 @@ bursts. Confirmed by elimination — each test isolates one variable:
 The last row is decisive: a plain station with no softAP and no hop chain still spikes, so
 the buffering is the station's own sleep against the upstream AP.
 
-**The obvious fix does NOT work — do not just re-add it.** Calling
-`wifi_controller.set_power_saving(esp_radio::wifi::PowerSaveMode::None)` after `set_config`
-(STA path) applies cleanly (`wifi: power save disabled (PS None)` logs, returns `Ok`, the
-Noise link still handshakes) **but that build then answers 0 pings** — reproducible across a
-hard reset, while the byte-identical build without the call answers fine. On **esp-radio
-0.18 / esp32s3** `esp_wifi_set_ps(WIFI_PS_NONE)` breaks the FSP data path (link up, session
-datagrams do not flow). Reverted; nothing committed.
+**FIX for the pure-STA path (verified, committed `07bbdcf`).** Disable STA power save via
+esp-radio's *init-config*, not a post-`set_config` call. `esp_radio::wifi::new()` runs
+`set_power_saving(None)` and then `set_config(initial_config)` as one init with a single
+`esp_wifi_start`, so passing the station config as `ControllerConfig::default()
+.with_initial_config(Config::Station(...))` keeps PS=None from being clobbered:
 
-**Untried fix candidates (need a clean session — see caveat).** (a) set the PS mode in the
-radio *init* config rather than post-`set_config`; (b) call it *before* `connect_async` then
-force a re-association so the assoc frame carries the new listen-interval; (c) tune DTIM /
-`listen_interval` in `StationConfig` (and `AccessPointConfig` for a relay's softAP). Likely
-related to upstream FIPS #57 (monotonic packet-loss degradation on ESP32-S3) — same chip,
-same WiFi-stack surface.
+```rust
+let controller_config = esp_radio::wifi::ControllerConfig::default()
+    .with_initial_config(WifiConfig::Station(station_config(ssid, password)));
+let (mut wifi_controller, interfaces) = esp_radio::wifi::new(wifi, controller_config)?;
+// ...no separate set_config; connect_async() directly.
+```
+
+Verified A/B on one board/identity (bare STA on the home router): before, min RTT jumped to
+170 ms in ~30 s-onset episodes (windows 170–850 ms); after, **min holds ~9 ms across a 5-min
+soak**, only sporadic single-packet jitter to ~180 ms. Applies to `wifi_transport.rs`
+(plain WiFi / hybrid leaf node).
+
+**Do NOT call `set_power_saving(None)` yourself after a separate `set_config` on the pure-STA
+path** — that applies cleanly (logs `Ok`, Noise link handshakes) but the build then answers
+**0 pings** (link `connected`, FSP datagrams stall), reproducible across a hard reset. Use
+the init-config form above instead.
+
+**Do NOT disable STA power save on the relay (AP+STA) path — it REGRESSES latency.** In
+AP+STA the default `WIFI_PS_MIN_MODEM` is the *good* config. Head-to-head, same instant:
+a Router with `set_power_saving(None)` added to `apply_config` ran a **uniform 180–830 ms**
+(every window, no fast samples), while the unmodified committed Router beside it held
+**9–22 ms**. Forcing the station awake breaks the single-radio AP+STA time-sharing. The
+relay's own latency is intermittent spikes on a ~9 ms baseline (a milder, separate
+coexistence effect, related to upstream FIPS #57) and is **not** helped by any PS change;
+leave the relay on the default. If a relay-side fix is ever needed, the lever is softAP
+DTIM/beacon tuning in `AccessPointConfig`, not STA power save.
 
 **Testing caveat (bit me repeatedly).** Reflashing the *same* device identity many times in
 a row leaves stale link/session state on the daemon for that node address, which produces
