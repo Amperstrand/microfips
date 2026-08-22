@@ -161,8 +161,17 @@ pub async fn build_wifi_transport(
     static TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static TX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
 
+    // Init-config power-save workaround (#91): apply the station config as esp-radio's
+    // `initial_config` instead of a separate post-init `set_config`. esp-radio's `new()`
+    // runs `set_power_saving(None)` and then `set_config(initial_config)` as one init with a
+    // single `esp_wifi_start`, so PS=None is not clobbered by a second `set_config`/start.
+    // Calling `set_power_saving(None)` ourselves after `set_config` instead broke the FSP
+    // data path on esp-radio 0.18/esp32s3 (link up, session datagrams stalled).
+    let controller_config = esp_radio::wifi::ControllerConfig::default().with_initial_config(
+        WifiConfig::Station(station_config(wifi_ssid, wifi_password)),
+    );
     let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
+        esp_radio::wifi::new(wifi, controller_config).expect("wifi::new failed");
     let wifi_device = interfaces.station;
 
     let resources = RESOURCES.init(StackResources::new());
@@ -174,11 +183,6 @@ pub async fn build_wifi_transport(
         seed,
     );
     spawner.spawn(net_task(runner).expect("spawn net task failed"));
-
-    let station_config = station_config(wifi_ssid, wifi_password);
-    wifi_controller
-        .set_config(&WifiConfig::Station(station_config))
-        .expect("set wifi station config");
 
     Timer::after(Duration::from_secs(2)).await;
     let (_, vps_ip, vps_port, peer_npub) = {
