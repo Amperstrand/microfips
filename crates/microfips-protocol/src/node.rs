@@ -743,8 +743,22 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         #[allow(unused_mut, unused_variables)]
         let mut sr_start_ts: u32 = embassy_time::Instant::now().as_millis() as u32;
         let mut dec_buf = [0u8; MAX_FRAME_SIZE];
+        // Refreshed on every authenticated frame. On transports where sends
+        // keep succeeding after the peer is gone (e.g. ESP-NOW MAC-level
+        // ACKs from a relay), RX silence is the only death signal.
+        let mut last_rx = embassy_time::Instant::now();
 
         loop {
+            let idle_secs = embassy_time::Instant::now()
+                .saturating_duration_since(last_rx)
+                .as_secs();
+            if idle_secs > self.timing.link_dead_timeout_secs {
+                log_steady!("steady: link dead, {}s without valid frames", idle_secs);
+                self.send_disconnect(ks, them, &mut send_ctr, wire::DISC_REASON_TRANSPORT_FAILURE)
+                    .await;
+                return Err(ProtocolError::Timeout);
+            }
+
             let mut rx = [0u8; RECV_BUF_SIZE];
             let rx_fut = self.transport.recv(&mut rx);
             let tick = handler.poll_at();
@@ -788,6 +802,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         let frame = decrypt_established_frame(kr, frame_data, &mut dec_buf);
                         if frame.is_some() {
                             self.policy.record_good_frame();
+                            last_rx = embassy_time::Instant::now();
                         } else {
                             self.policy.record_bad_frame();
                         }
@@ -3632,6 +3647,61 @@ mod tests {
             };
 
             join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_scripted_peer_rx_silence_ends_session() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::select::{select, Either};
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            // The peer completes the handshake, sends one heartbeat, then
+            // goes silent WITHOUT closing the transport: the node's sends
+            // keep succeeding, only RX stops (the ESP-NOW failure mode).
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+                peer.send_heartbeat().await;
+                loop {
+                    let _ = peer.recv_raw_frame().await;
+                }
+            };
+
+            let node_task = async {
+                let mut node = Node::with_timing(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                    NodeTiming {
+                        heartbeat_interval_secs: 1,
+                        link_dead_timeout_secs: 1,
+                        ..NodeTiming::default()
+                    },
+                );
+                let mut handler = RecordingHandler::default();
+                let (ks, kr, them) = node
+                    .handshake(1u64.to_le_bytes(), &mut handler)
+                    .await
+                    .unwrap();
+                node.rpos = 0;
+                node.rlen = 0;
+                let result = node.steady(&ks, &kr, them, &mut handler).await;
+                assert_eq!(result, Err(ProtocolError::Timeout));
+            };
+
+            match select(core::pin::pin!(peer_task), core::pin::pin!(node_task)).await {
+                Either::First(_) => panic!("silent peer task must not finish"),
+                Either::Second(()) => {}
+            }
         });
     }
 
