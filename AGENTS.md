@@ -1717,3 +1717,13 @@ branch; upstream conversations only after the dogfood proves value).
   `uvx --from /home/ubuntu/src/greatspectations greatspectate check --config specquotes.toml --comment-start "// " --comment-continue "//" --comment-aside "// Note:" <files>`
 - Drift is caught with file:line precision plus a "closest match (NN%)"
   hint — tamper-test verified 2026-08-29.
+
+### CYD radio: not dead, just slow (2026-08-29 correction)
+
+The CYD was misdiagnosed as radio-dead from `NoAccessPointFound` (rssi -128) inside
+a ~60s window while an Atom associated from the same desk. Reflash + a longer
+patience window: it associates fine, DHCPs, and completed an mdns-open
+trust-on-first-advert discovery + IK handshake against the lab daemon. Rule: give
+a board's WiFi retry loop at least 2-3 minutes (5 attempts) before concluding
+hardware faults — and prefer cross-checking (another board on the same AP) over
+attributing to the radio early.
