@@ -395,6 +395,29 @@ jobs:
           path: target/thumbv7em-none-eabi/release/microfips
           retention-days: 7
 
+  spec-quotes:
+    # Pinned verbatim spec quotes in source comments, validated against
+    # vendored spec documents by our experimental greatspectations fork
+    # (Amperstrand/greatspectations, branch ai-experimental-slop).
+    name: Spec Quotes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install greatspectations (experimental fork)
+        run: pip install "git+https://github.com/Amperstrand/greatspectations@ai-experimental-slop"
+
+      - name: Check pinned spec quotes
+        run: |
+          greatspectate check --config specquotes.toml \
+            --comment-start "// " --comment-continue "//" \
+            --comment-aside "// Note:" \
+            crates/fips-identity/src/bech32.rs
+
   build-esp32:
     name: Build ESP32 Firmware
     runs-on: ubuntu-latest
