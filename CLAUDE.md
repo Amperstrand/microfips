@@ -43,7 +43,7 @@ cargo run -p microfips-link
 make test-host / test-esp32-uart / test-esp32-l2cap / test-esp32-ble / test-stm32
 ```
 
-Host tools require identity via env: `FIPS_NSEC` (64 hex) and `FIPS_PEER_NPUB` (66 hex); they panic if unset. Device keys live in `keys.json`. After changing `keys.json` or identity code, `cargo clean -p <esp crate>` before rebuilding — keys are compiled in.
+Host tools require identity via env: `FIPS_NSEC` (64 hex) and `FIPS_PEER_NPUB` (66 hex); they panic if unset. Device keys live in `device-registry.json`. After changing `device-registry.json` or identity code, `cargo clean -p <esp crate>` before rebuilding — keys are compiled in.
 
 ## Architecture
 

@@ -468,7 +468,7 @@ export $(grep -v '^#' .env | xargs) \
 # Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-l2cap
 ```
 
-**IMPORTANT:** After any change to `keys.json` or identity code, MUST run
+**IMPORTANT:** After any change to `device-registry.json` or identity code, MUST run
 `cargo clean -p microfips-esp32s3` before rebuild to avoid stale compiled-in keys.
 
 **Flash:**
@@ -532,7 +532,7 @@ the detection script above. The M5 Stack (`0403:6001`, `/dev/ttyUSB0`) is a sepa
 The [Walter](https://www.quickspot.io/) (DPTechnics) is an ESP32-S3-WROOM-1-N16R2 board:
 16 MB flash, 2 MB PSRAM, chip rev v0.2, onboard Sequans GM02SP LTE-M/NB-IoT modem
 (unused by microfips). It runs the standard `microfips-esp32s3` crate with the `esp32s3`
-identity from `keys.json` — no board-specific code needed.
+identity from `device-registry.json` — no board-specific code needed.
 Hardware-verified 2026-08-18: WiFi transport, Noise IK handshake with local
 fips 0.5.0-dev daemon, sustained heartbeats (0% loss, ETX 1.0), mDNS discovery,
 re-discovery on link death, and WiFi re-association on AP loss.
@@ -560,7 +560,7 @@ header pin with no onboard LED — wire one externally for LED state visibility.
 # .env (gitignored): WIFI_SSID=..., WIFI_PASSWORD=... (2.4 GHz only)
 . ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
   WIFI_SSID="<ssid>" WIFI_PASSWORD="<pass>" \
-  DEVICE_NPUB_HEX_vps="<local daemon npub_hex, see keys.json 'linux' entry>" \
+  DEVICE_NPUB_HEX_vps="<local daemon npub_hex, see device-registry.json 'linux' entry>" \
   cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
 # Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
 ```
@@ -659,7 +659,7 @@ last):
 ```bash
 . ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
   WIFI_SSID="<ssid>" WIFI_PASSWORD="<pass>" \
-  DEVICE_NPUB_HEX_vps="<daemon npub_hex, keys.json 'linux' entry for the local daemon>" \
+  DEVICE_NPUB_HEX_vps="<daemon npub_hex, device-registry.json 'linux' entry for the local daemon>" \
   cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
   -Zbuild-std=core,alloc --no-default-features --features esp-now,wifi \
   --bin microfips-esp32s3-espnow --bin microfips-esp32s3-espnow-wifi-gw
@@ -708,7 +708,7 @@ there; the bridge's length-prefix resync skips that noise).
 - Bridge reconnection pins to the board's USB serial number; with two Walters attached
   this prevents re-attaching to the node's console (VID:PID alone is ambiguous).
 - ESP-NOW node ↔ WiFi node identity collision: both Walters must not run with the same
-  `keys.json` identity against one daemon — use the `esp32s3b` entry for the second
+  `device-registry.json` identity against one daemon — use the `esp32s3b` entry for the second
   board.
 
 ### FIPS Relay Access Point (`!FIPS` Router / Extender)
@@ -815,7 +815,7 @@ splits `WIFI_SSID` values containing spaces — load `.env` line-wise
 
 ### Build-time identity overrides
 
-`microfips-build` lets a same-named env var override any `keys.json` value at build
+`microfips-build` lets a same-named env var override any `device-registry.json` value at build
 time, without editing the file:
 
 ```bash
@@ -825,8 +825,15 @@ FIPS_TARGET_HOST=host-or-ip # override the static target (IPv4 literals skip DNS
 FIPS_DISCOVERY_SCOPE=name   # open-mode mDNS scope filter
 ```
 
+The registry is public-only (issue #134): vector devices carry `vector_key.generator_mul`
+(the scalar is derived at build time, never stored), host secrets are `RETRIEVE_FROM_*`
+markers, and `esp32c3` has NO default identity — build it with
+`DEVICE_NSEC_HEX_esp32c3=<64 hex>` (CI injects a throwaway value). See `.env.example`
+for the full env shape, including `FIPS_PEER_ALLOWLIST` (WireGuard-style responder
+allowlist, `fips-identity::load_peer_allowlist`).
+
 The local Linux daemon's current npub lives in `/etc/fips/fips.pub` and is mirrored in
-the `keys.json` `linux` entry. **If handshakes are silently ignored, check for a stale
+the `device-registry.json` `linux` entry. **If handshakes are silently ignored, check for a stale
 peer key first** — fips logs all MSG1 rejections at `debug` level or not at all, so a
 wrong responder key produces no daemon log output at the default INFO level
 (re-run with `RUST_LOG=debug` to see `Failed to process msg1` / `Invalid msg1 header`).
@@ -1382,15 +1389,18 @@ Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` wit
 
 | MCU | Source | Pubkey (x-only, hex) | npub | NodeAddr |
 |-----|--------|----------------------|------|-----------|
-| STM32 | `keys.json` stm32, nsec=`...01` | `79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798` | `npub10xlxvlh...` | `132f39a9...` |
-| ESP32-D0WD | `keys.json` esp32, nsec=`...02` | `c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5` | `npub1ccz8l9z...` | `0135da2f...` |
-| ESP32-S3 | `keys.json` esp32s3, nsec=`...05` | `2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4` | `npub1lycg5qv...` | `6bef476b...` |
+| STM32 | `device-registry.json` stm32, nsec=`...01` | `79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798` | `npub10xlxvlh...` | `132f39a9...` |
+| ESP32-D0WD | `device-registry.json` esp32, nsec=`...02` | `c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5` | `npub1ccz8l9z...` | `0135da2f...` |
+| ESP32-S3 | `device-registry.json` esp32s3, nsec=`...05` | `2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4` | `npub1lycg5qv...` | `6bef476b...` |
 | VPS | `/etc/fips/fips.pub` on VPS | `0e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21` | `npub1peaqmgq6y4wduyr2yqh0fatnvah0ncj0rjqhd5p6aqaz5wsr05ssu0cnha` | — |
 | Linux FIPS | `/etc/fips/fips.pub` on this machine | `b3989043c68d9c2d3c8f949d73e61cae27997993432c3dbbd8498117d92d95bb` | `npub1979azcrp...` | `8b5844e7...` |
 
-All MCU keys are deterministic (secp256k1 generator × N). See `keys.json` for full hex values.
+All MCU keys are deterministic (secp256k1 generator × N); the registry stores only the
+multiplier (`vector_key.generator_mul`), never the scalar — microfips-build derives
+`nsec = BE32(N)` at build time (issue #134). `crates/microfips-core/tests/device_registry.rs`
+CI-enforces the public-only schema and greps the tree for retired literals.
 ESP32-D0WD pubkey verified via FIPS peer authentication log.
-ESP32-S3 pubkey from `keys.json` (verified 2026-04-10, NodeAddr `6bef476b391177c1d587c40344ddcab1`).
+ESP32-S3 pubkey from `device-registry.json` (verified 2026-04-10, NodeAddr `6bef476b391177c1d587c40344ddcab1`).
 
 ## CI Pipeline
 
@@ -1618,7 +1628,7 @@ Tooling: `tools/lab_keygen.py`, `tools/fips-lab.yaml`, `scripts/run_lab_daemon.s
 
 ### Current bench inventory
 
-| Board | Chip | Identity (keys.json) | USB | Port |
+| Board | Chip | Identity (device-registry.json) | USB | Port |
 |-------|------|----------------------|-----|------|
 | lab workstation | — | `lab-daemon` G·8 | — | runs the FIPS lab daemon |
 | S3 board `F4:12:FA:CF:03:84` | ESP32-S3 16MB | `s3-lab` G·9 | USB-JTAG | ttyACM by-id Espressif serial |
@@ -1630,7 +1640,7 @@ Tooling: `tools/lab_keygen.py`, `tools/fips-lab.yaml`, `scripts/run_lab_daemon.s
 Identity assignment rule: **one deterministic key per physical board (MAC/serial
 labeled), never per-role**. `tools/lab_keygen.py N` derives nsec/npub/node_addr
 (generator·N, node_addr = SHA256(x)[..16]) with a self-check; write the entry into
-keys.json and override at build time (`DEVICE_NSEC_HEX_esp32s3=...` etc. — the
+device-registry.json and override at build time (`DEVICE_NSEC_HEX_esp32s3=...` etc. — the
 microfips-build env-override feature). The daemon peers pin via
 `DEVICE_NPUB_HEX_vps=<lab-daemon npub>`.
 
