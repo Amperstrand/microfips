@@ -181,9 +181,16 @@ jobs:
       # - run: cargo build -p microfips-http-demo --features http --release
 
       - name: Clone and build FIPS daemon
+        env:
+          # Pinned to a revision known protocol-compatible with this repo.
+          # Update deliberately when microfips adopts newer FIPS protocol
+          # changes — otherwise a moving upstream master breaks this job
+          # for unrelated PRs.
+          FIPS_REF: cbc3b718216c8bc6aef3faa74f62aebf43eb3470
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-dev pkg-config
-          git clone --depth 1 https://github.com/Amperstrand/fips.git /tmp/fips
+          git clone https://github.com/Amperstrand/fips.git /tmp/fips
+          git -C /tmp/fips checkout "$FIPS_REF"
           cargo build --release --manifest-path /tmp/fips/Cargo.toml --bin fips
 
       - uses: actions/upload-artifact@v4
@@ -413,9 +420,14 @@ jobs:
 
   sim-ping:
     name: Sim-to-Sim Ping via FIPS (on-demand VM)
+    # Secret-safe gating: this job executes repo scripts with SHC_API_KEY and
+    # provisions paid VMs. pull_request events (especially from forks) must
+    # never reach it — PR-controlled code could otherwise read the key. The
+    # test runs on branch pushes and manual dispatches instead.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: [build-host]
-    timeout-minutes: 8
+    timeout-minutes: 15
     env:
       SHC_API_KEY: ${{ secrets.SHC_API_KEY }}
     steps:
