@@ -253,12 +253,13 @@ Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
 | FIPS Service UUID | `9c90b790-2cc5-42c0-9f87-c9cc40648f4c` |
 | L2CAP MTU | 2048 bytes |
 | PacketPool MTU | 2054 bytes (configured via `.cargo/config.toml`) |
-| Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey][1B capability flags]` (34B payload, 36B wire with framing) |
-| Framing | 2-byte BE length prefix on all L2CAP frames, including pubkey exchange (matches FIPS `BluerStream` framing on all branches) |
-| Capability byte | `0x3C` (CAN_CENTRAL \| CAN_PERIPHERAL \| L2CAP_SUPPORTED \| PREFER_L2CAP) |
+| Pre-handshake format | **fips master dialect (2026-08-29):** raw 33B SDU `[0x00][32B x-only secp256k1 pubkey]`, no capability byte. Legacy branch dialect `[0x00][x-only 32][1B flags]` (34B payload, 36B wire, 2B BE prefix) is still parsed on RX for old daemons. |
+| Framing | **fips master:** one FMP frame per L2CAP SDU, no prefix (dialect selected by the exchange form: flags-less 33B exchange ⇒ raw SDUs). Legacy peers: 2-byte BE length prefix inside each SDU. |
+| Capability byte | `0x3C` — legacy dialect only; master has no caps/role negotiation, so `peer_sent_first=false` (the leaf always initiates Noise; `true` deadlocks both sides until recv timeout) |
 | FRAME_CAP | 768 bytes (application-level frame buffer; MTU stays 2048) |
-| BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_NSEC[27..32]` + `0xFF` prefix, MSB-first |
+| BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_NSEC[27..32]` + `0xFF` prefix, MSB-first. FIPS master dials with the **learned** LE address type since commit `1422117e` (a hardcoded LePublic dial to a Random peer fails in the kernel at mgmt level with NO HCI command and no socket error — the dialer only ever sees its own timeout) |
 | Advertising name | `microfips-l2cap` |
+| Extra allowlist key | `FIPS_EXTRA_ALLOWED_XONLY_HEX=<64 hex>` build knob accepts a lab/test daemon key beyond the production 4-entry `FIPS_ALLOWED_PUBKEYS` (registered in the microfips-build KNOBS tracker) |
 
 **Build L2CAP firmware:**
 ```bash
@@ -796,6 +797,16 @@ session datagram (`fsp: datagram in len=… fsp_type=… src=… -> …`) at INF
 **Host tooling:** `fipsctl show {peers,links,sessions,routing,tree,bloom,…}` talks to
 `/run/fips/control.sock` (JSON) — use it to confirm a Walter's link from the daemon side
 (IK sessions are not in the daemon's INFO log). `fipstop` is the live monitor.
+
+**Silent-console pitfall (CP210x atoms/D0WD):** a "dead" UART logger is usually an
+UNREAD one. The USB-serial chip/driver buffers TX with no reader attached, so logs
+stop appearing (and the buffer stays full) until something opens the port and drains
+the backlog — then hours of logs flush at once. The 2026-08-29 L2CAP session
+misread this as "logger wedged after boot": the console answered JSON the whole
+time (raw `os.open`+termios, no TIOCM), and steady-state logs appeared the moment
+a reader attached. Rule: before diagnosing a silent logger, attach a reader and
+wait for the backlog; check the control interface separately — tasks can be alive
+and working while "invisible".
 
 **Console-tap pitfall:** opening the Walter's USB-Serial-JTAG port with pyserial resets the
 board even with `dtr=False; rts=False` set before `open()`. Keep one long-lived reader per
