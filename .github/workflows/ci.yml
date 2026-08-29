@@ -530,6 +530,7 @@ jobs:
     timeout-minutes: 15
     env:
       SHC_API_KEY: ${{ secrets.SHC_API_KEY }}
+      SHC_API_IP: ${{ secrets.SHC_API_IP }}
     steps:
       - uses: actions/checkout@v4
 
@@ -548,8 +549,8 @@ jobs:
       - name: Provision VM and deploy FIPS
         id: provision
         run: |
-          if ! getent hosts blesta.sovereignhybridcompute.com >/dev/null 2>&1; then
-            echo "::notice::SHC API unresolvable (their DNS outage) — skipping sim-ping; not a code failure"
+          if ! getent hosts blesta.sovereignhybridcompute.com >/dev/null 2>&1 && [ -z "${{ secrets.SHC_API_IP }}" ]; then
+            echo "::notice::SHC API unresolvable (their DNS outage) and no SHC_API_IP pin — skipping sim-ping; not a code failure"
             exit 0
           fi
           python3 scripts/ci_sim_ping.py provision --github-output

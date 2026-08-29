@@ -1,0 +1,26 @@
+name: SHC VM Reaper
+
+# Safety net: SHC bills by VM existence — cancel is the only verb that
+# stops billing (stop keeps billing). If a CI run's cleanup step is
+# skipped (timeout, cancellation), its VM leaks until this reaper
+# cancels microfips-ci-* VMs older than the threshold.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cancel leaked microfips CI VMs
+        env:
+          SHC_API_KEY: ${{ secrets.SHC_API_KEY }}
+          SHC_API_IP: ${{ secrets.SHC_API_IP }}
+        run: python3 scripts/ci_sim_ping.py reap --max-age 6
