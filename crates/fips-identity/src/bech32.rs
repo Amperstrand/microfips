@@ -36,6 +36,10 @@ fn polymod_step(chk: u32, value: u8) -> u32 {
 /// Verifies the human-readable part is exactly `npub`, the checksum is
 /// valid (original bech32 constant, per NIP-19), and the payload is
 /// exactly 32 bytes. Returns `None` on any mismatch.
+// BIP #173: Decoders MUST NOT accept strings where some characters are uppercase and some are lowercase (such strings are referred to as mixed case strings).
+// Note: accepted deviation — this decoder lowercases before the charset lookup
+// Note: instead of rejecting mixed case. Harmless here: the decoded key is only a
+// Note: routing hint authenticated end-to-end by Noise IK (see PR #156 review).
 pub fn npub_to_x_only(npub: &str) -> Option<[u8; 32]> {
     let s = npub.as_bytes();
     if s.len() != NPUB_BECH32_LEN || !s.starts_with(b"npub1") {
@@ -90,6 +94,7 @@ pub fn npub_to_x_only(npub: &str) -> Option<[u8; 32]> {
 
 /// Encode a 32-byte x-only public key as a bech32 `npub1...` string
 /// (NIP-19). Output is ASCII; use `core::str::from_utf8` on it.
+// BIP #173: Encoders MUST always output an all lowercase Bech32 string.
 pub fn x_only_to_npub(key: &[u8; 32]) -> [u8; NPUB_BECH32_LEN] {
     // 8-bit -> 5-bit (256 bits -> 52 values, last padded with 4 zero bits).
     let mut values = [0u8; 52];

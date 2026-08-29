@@ -1696,3 +1696,24 @@ reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
 - **Verify which path actually carries traffic** before debugging protocol code: node logs
   look identical across transports. Use `ip neigh` (ARP presence), daemon-side mDNS bursts,
   and `tcpdump 'udp port 5353 or host <node-ip>'` as ground truth.
+
+### Spec quotes (greatspectations dogfood, 2026-08-29)
+
+We pin verbatim spec quotes in source comments and CI-check them against vendored
+spec documents, using our experimental fork `Amperstrand/greatspectations`
+(default branch `ai-experimental-slop` — clearly labeled as our AI-experiment
+branch; upstream conversations only after the dogfood proves value).
+
+- `specquotes.toml` + `specs/` (vendored at a pinned upstream ref, see
+  `specs/*.pin`) define the sources; the CI job `Spec Quotes` enforces them.
+- Quote syntax: `// BIP #173: <verbatim spec text>`; `// Note:` lines are
+  comment-asides (dropped from the match) used to record accepted deviations
+  with rationale, directly adjacent to the spec line they deviate from.
+- First use: `crates/fips-identity/src/bech32.rs` pins BIP-173's encoder-
+  lowercase MUST (we comply) and the mixed-case MUST NOT (documented deviation
+  from the PR #156 review — harmless because the decoded key is only a routing
+  hint authenticated by Noise IK).
+- Local run:
+  `uvx --from /home/ubuntu/src/greatspectations greatspectate check --config specquotes.toml --comment-start "// " --comment-continue "//" --comment-aside "// Note:" <files>`
+- Drift is caught with file:line precision plus a "closest match (NN%)"
+  hint — tamper-test verified 2026-08-29.
