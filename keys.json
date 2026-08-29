@@ -92,6 +92,51 @@
       "node_addr": "cd9177582b93ca2144ee27a0ecf19741",
       "comment": "secp256k1 generator * 7. Second Walter board; build with DEVICE_NSEC_HEX_esp32s3 override to use it alongside the first (generator * 5).",
       "source": "keys.json only (env override at build time)"
+    },
+    "lab-daemon": {
+      "label": "FIPS daemon on lab workstation (UDP :21213, mDNS)",
+      "type": "fips-host",
+      "nsec_hex": "0000000000000000000000000000000000000000000000000000000000000008",
+      "npub_hex": "022f01e5e15cca351daff3843fb70f3c2f0a1bdd05e5af888a67784ef3e10a2a01",
+      "node_addr": "41030f76141fc2c57575f0bf350d0aa1",
+      "comment": "secp256k1 generator * 8. Assigned 2026-08-29 for the PR #156 lab bench (see AGENTS.md).",
+      "source": "keys.json (deterministic lab bench identity; env-override at build time)"
+    },
+    "s3-lab": {
+      "label": "ESP32-S3 board USB-JTAG F4:12:FA:CF:03:84 (/dev/ttyACM0)",
+      "type": "mcu",
+      "nsec_hex": "0000000000000000000000000000000000000000000000000000000000000009",
+      "npub_hex": "03acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe",
+      "node_addr": "1c6ad0339ceb13433701dc6b4349363a",
+      "comment": "secp256k1 generator * 9. Assigned 2026-08-29 for the PR #156 lab bench (see AGENTS.md).",
+      "source": "keys.json (deterministic lab bench identity; env-override at build time)"
+    },
+    "cyd": {
+      "label": "Cheap Yellow Display ESP32-D0WD-V3 e0:5a:1b:77:70:00 (/dev/ttyUSB1, CH340)",
+      "type": "mcu",
+      "nsec_hex": "000000000000000000000000000000000000000000000000000000000000000a",
+      "npub_hex": "03a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7",
+      "node_addr": "16279d81f063bc14ab4eec516d20f1c6",
+      "comment": "secp256k1 generator * 10. Assigned 2026-08-29 for the PR #156 lab bench (see AGENTS.md).",
+      "source": "keys.json (deterministic lab bench identity; env-override at build time)"
+    },
+    "atom-a": {
+      "label": "M5 Atom ESP32-PICO-D4 d8:a0:1d:5e:bf:80 (/dev/ttyUSB2, FTDI)",
+      "type": "mcu",
+      "nsec_hex": "000000000000000000000000000000000000000000000000000000000000000b",
+      "npub_hex": "03774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
+      "node_addr": "8ee8f517ced532a16c5a94674efca1c8",
+      "comment": "secp256k1 generator * 11. Assigned 2026-08-29 for the PR #156 lab bench (see AGENTS.md).",
+      "source": "keys.json (deterministic lab bench identity; env-override at build time)"
+    },
+    "atom-b": {
+      "label": "M5 Atom ESP32-PICO-D4 d8:a0:1d:5e:70:7c (/dev/ttyUSB3, FTDI)",
+      "type": "mcu",
+      "nsec_hex": "000000000000000000000000000000000000000000000000000000000000000c",
+      "npub_hex": "03d01115d548e7561b15c38f004d734633687cf4419620095bc5b0f47070afe85a",
+      "node_addr": "4f2132f1af3b25c78a1ced3c421509bb",
+      "comment": "secp256k1 generator * 12. Assigned 2026-08-29 for the PR #156 lab bench (see AGENTS.md).",
+      "source": "keys.json (deterministic lab bench identity; env-override at build time)"
     }
   }
 }
