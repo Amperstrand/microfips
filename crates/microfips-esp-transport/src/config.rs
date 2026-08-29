@@ -48,6 +48,13 @@ pub const FIPS_BLE_ADDR: [u8; 6] = [0x24, 0xC2, 0x49, 0xFC, 0x5A, 0x14];
 /// only peers in this list are accepted on BLE L2CAP. Others are rejected
 /// to prevent cross-mesh connections (e.g. macOS FIPS grabbing an ESP32
 /// configured for the Linux mesh).
+/// Extra daemon x-only pubkey (64 lowercase hex chars) accepted on L2CAP in
+/// addition to FIPS_ALLOWED_PUBKEYS — build-time knob for lab/test daemons
+/// whose keys are not in the production allowlist.
+/// Env: FIPS_EXTRA_ALLOWED_XONLY_HEX (tracked by microfips-build KNOBS).
+#[cfg(feature = "l2cap")]
+pub const FIPS_EXTRA_ALLOWED_XONLY_HEX: Option<&str> = option_env!("FIPS_EXTRA_ALLOWED_XONLY_HEX");
+
 #[cfg(feature = "l2cap")]
 pub const FIPS_ALLOWED_PUBKEYS: [[u8; 32]; 4] = [
     [

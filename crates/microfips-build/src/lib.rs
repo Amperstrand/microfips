@@ -111,6 +111,7 @@ pub fn emit_env_trackers() {
         "RELAY_AP_SSID",
         "RELAY_UPLINK_SSID",
         "RELAY_UPLINK_PASSWORD",
+        "FIPS_EXTRA_ALLOWED_XONLY_HEX",
     ];
     for knob in KNOBS {
         println!("cargo:rerun-if-env-changed={}", knob);
