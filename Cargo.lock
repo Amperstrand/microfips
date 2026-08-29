@@ -2221,6 +2221,7 @@ version = "0.1.0"
 dependencies = [
  "embassy-net",
  "embassy-time",
+ "microfips-build",
  "microfips-core",
  "microfips-protocol",
  "portable-atomic",
