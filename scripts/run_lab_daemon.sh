@@ -37,7 +37,7 @@ if [ -n "$OLD_PID" ]; then
     sleep 2
 fi
 
-setsid "$FIPS_BIN" --config "$CONFIG" > "$LOG" 2>&1 < /dev/null &
+setsid env RUST_LOG=info "$FIPS_BIN" --config "$CONFIG" > "$LOG" 2>&1 < /dev/null &
 sleep 4
 NEW_PID=$(pgrep -f "fips --config ${CONFIG}" | head -1 || true)
 if [ -z "$NEW_PID" ]; then
