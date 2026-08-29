@@ -6,6 +6,20 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      chips:
+        description: "Comma-separated chip filter for extended firmware builds (empty = all)"
+        required: false
+        default: ""
+        type: string
+      wifi-creds:
+        description: "WiFi credentials for the built firmware: 'none' embeds nothing, 'secrets' uses WIFI_SSID/WIFI_PASSWORD repo secrets"
+        required: false
+        default: "none"
+        type: choice
+        options: [none, secrets]
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -404,6 +418,86 @@ jobs:
 
       - name: Build ESP32-C3 WiFi
         run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --features wifi
+
+  build-firmware-extended:
+    # Full variant matrix (esp-now, hybrid, relay-ap, mdns-open, gateways).
+    # Deliberately NOT run on push/PR — the esp toolchain is slow and these
+    # binaries are only needed for releases and bench flashing. Run manually
+    # (Actions tab → CI → Run workflow) or on every release publish.
+    name: Extended Firmware (${{ matrix.bin }})
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # classic ESP32 (D0WD/PICO/WROVER class — CYD, M5 Atom, LilyGo)
+          - { chip: esp32, target: xtensa-esp32-none-elf, package: microfips-esp32, features: "esp-now", bin: microfips-esp32-espnow }
+          - { chip: esp32, target: xtensa-esp32-none-elf, package: microfips-esp32, features: "esp-now,wifi", bin: microfips-esp32-espnow-wifi-gw }
+          - { chip: esp32, target: xtensa-esp32-none-elf, package: microfips-esp32, features: "mdns-open", bin: microfips-esp32-wifi }
+          # ESP32-S3 (Walter, TiLDAGON, generic S3 boards)
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "esp-now", bin: microfips-esp32s3-espnow }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "esp-now", bin: microfips-esp32s3-espnow-gw }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "esp-now", bin: microfips-esp32s3-espnow-wifi-gw }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "esp-now", bin: microfips-esp32s3-hybrid }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "relay-ap", bin: microfips-esp32s3-relay-ap }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "relay-ap", bin: microfips-esp32s3-relay-ap-peer }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "wifi", bin: microfips-esp32s3-mdns-spike }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Filter chips (manual runs)
+        id: chipfilter
+        run: |
+          if [ -n "${{ inputs.chips }}" ] && [ -n "${{ matrix.chip }}" ]; then
+            case ",${{ inputs.chips }}," in
+              *",${{ matrix.chip }},"*) echo "keep=true" >> "$GITHUB_OUTPUT" ;;
+              *) echo "keep=false" >> "$GITHUB_OUTPUT" ;;
+            esac
+          else
+            echo "keep=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Xtensa toolchain
+        if: steps.chipfilter.outputs.keep == 'true'
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32,esp32s3
+          ldproxy: false
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.chipfilter.outputs.keep == 'true'
+        with:
+          key: esp-extended
+
+      - name: Add rust-src component
+        if: steps.chipfilter.outputs.keep == 'true'
+        run: rustup component add rust-src
+
+      # Credential policy: release/dispatch default embeds NO credentials
+      # (empty SSID/password = open-network auth mode) so published firmware
+      # artifacts can never leak real WiFi passwords. 'secrets' mode (manual
+      # dispatch only) injects WIFI_SSID/WIFI_PASSWORD from repo secrets for
+      # internal bench builds — those artifacts must then be treated as
+      # containing credentials.
+      - name: Build ${{ matrix.bin }}
+        if: steps.chipfilter.outputs.keep == 'true'
+        env:
+          WIFI_SSID: ${{ (github.event_name == 'workflow_dispatch' && inputs.wifi-creds == 'secrets') && secrets.WIFI_SSID || '' }}
+          WIFI_PASSWORD: ${{ (github.event_name == 'workflow_dispatch' && inputs.wifi-creds == 'secrets') && secrets.WIFI_PASSWORD || '' }}
+        run: |
+          cargo +esp build -p ${{ matrix.package }} --release --target ${{ matrix.target }} \
+            -Zbuild-std=core,alloc --features ${{ matrix.features }} --bin ${{ matrix.bin }}
+
+      - uses: actions/upload-artifact@v4
+        if: steps.chipfilter.outputs.keep == 'true'
+        with:
+          name: firmware-${{ matrix.bin }}
+          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          retention-days: ${{ github.event_name == 'release' && 90 || 14 }}
 
   sim-ping:
     name: Sim-to-Sim Ping via FIPS
