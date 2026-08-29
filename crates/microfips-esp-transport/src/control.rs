@@ -6,7 +6,12 @@
 //! USB Serial JTAG, not UART0 — esp-println outputs via USB Serial JTAG ROM
 //! functions on S3, so control input must match).
 
-#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#![cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 
 use core::ptr::{null_mut, read_volatile, write_volatile};
 use portable_atomic::{AtomicBool, AtomicPtr, Ordering};

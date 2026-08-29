@@ -6,6 +6,8 @@ use microfips_protocol::transport::Transport;
 pub enum UdpTransportError {
     Send,
     Recv,
+    /// The underlying network link could not be (re-)established.
+    NotReady,
 }
 
 pub struct UdpTransport<'a> {

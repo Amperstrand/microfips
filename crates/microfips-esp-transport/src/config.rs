@@ -129,37 +129,149 @@ pub const DEVICE_NAME: &str = "microfips-esp32s3";
 #[cfg(feature = "esp32c3")]
 pub const DEVICE_NAME: &str = "microfips-esp32c3";
 
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32")]
 pub const UART0_BASE: usize = 0x3FF4_0000;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32s3")]
 pub const UART0_BASE: usize = 0x6000_0000;
 
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32")]
 pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32s3")]
 pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_9000;
 
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32")]
 pub const UART_RX_GPIO_NUM: u32 = 3;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32s3")]
 pub const UART_RX_GPIO_NUM: u32 = 44;
 
 // Reset register address (RTC_CNTL_OPTIONS0_REG)
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32")]
 pub const RESET_REGISTER: usize = 0x3FF4_8000;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32s3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 #[cfg(feature = "esp32c3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
+
+// Open-mode mDNS discovery (feature `mdns-open`): required advert scope.
+// Empty (the default) accepts any scope.
+#[cfg(feature = "wifi")]
+pub const FIPS_DISCOVERY_SCOPE: &str = match option_env!("FIPS_DISCOVERY_SCOPE") {
+    Some(v) => v,
+    None => "",
+};
+
+// ESP-NOW primary channel (1-14). Both ends of an ESP-NOW link are
+// unassociated, so nothing negotiates this — it must match on both sides.
+#[cfg(feature = "esp-now")]
+pub const ESP_NOW_CHANNEL: u8 = parse_espnow_channel(option_env!("ESP_NOW_CHANNEL"));
+
+#[cfg(feature = "esp-now")]
+const fn parse_espnow_channel(v: Option<&str>) -> u8 {
+    let Some(s) = v else {
+        return 1;
+    };
+    let bytes = s.as_bytes();
+    let mut value = 0u32;
+    let mut i = 0;
+    while i < bytes.len() {
+        assert!(
+            bytes[i] >= b'0' && bytes[i] <= b'9',
+            "ESP_NOW_CHANNEL must be a decimal number"
+        );
+        value = value * 10 + (bytes[i] - b'0') as u32;
+        i += 1;
+    }
+    assert!(
+        value >= 1 && value <= 14,
+        "ESP_NOW_CHANNEL must be between 1 and 14"
+    );
+    value as u8
+}
+
+// Hybrid transport: while running on ESP-NOW, scan for the configured SSID
+// this often; when it reappears, switch back to the direct WiFi path.
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub const HYBRID_WIFI_PROBE_SECS: u64 = parse_secs(option_env!("HYBRID_WIFI_PROBE_SECS"), 300);
+
+// Hybrid transport chaos knob for hardware testing: while uptime is below
+// this many seconds, the WiFi path reports itself as down (associations are
+// never attempted), forcing the ESP-NOW path. 0 = disabled.
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub const HYBRID_TEST_WIFI_DOWN_SECS: u64 =
+    parse_secs(option_env!("HYBRID_TEST_WIFI_DOWN_SECS"), 0);
+
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+const fn parse_secs(v: Option<&str>, default: u64) -> u64 {
+    let Some(s) = v else {
+        return default;
+    };
+    let bytes = s.as_bytes();
+    let mut value = 0u64;
+    let mut i = 0;
+    while i < bytes.len() {
+        assert!(
+            bytes[i] >= b'0' && bytes[i] <= b'9',
+            "seconds value must be a decimal number"
+        );
+        value = value * 10 + (bytes[i] - b'0') as u64;
+        i += 1;
+    }
+    value
+}
 
 #[cfg(feature = "wifi")]
 pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
@@ -170,4 +282,24 @@ pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
 pub const WIFI_PASSWORD: &str = match option_env!("WIFI_PASSWORD") {
     Some(v) => v,
     None => "",
+};
+
+// FIPS relay AP (feature `relay-ap`): the open access point it offers and
+// the uplink it joins. Router: uplink = the daemon's LAN (defaults to the
+// WiFi credentials). Extender: RELAY_UPLINK_SSID="!FIPS" with an empty
+// RELAY_UPLINK_PASSWORD to chain off another relay.
+#[cfg(feature = "relay-ap")]
+pub const RELAY_AP_SSID: &str = match option_env!("RELAY_AP_SSID") {
+    Some(v) => v,
+    None => "!FIPS",
+};
+#[cfg(feature = "relay-ap")]
+pub const RELAY_UPLINK_SSID: &str = match option_env!("RELAY_UPLINK_SSID") {
+    Some(v) => v,
+    None => WIFI_SSID,
+};
+#[cfg(feature = "relay-ap")]
+pub const RELAY_UPLINK_PASSWORD: &str = match option_env!("RELAY_UPLINK_PASSWORD") {
+    Some(v) => v,
+    None => WIFI_PASSWORD,
 };

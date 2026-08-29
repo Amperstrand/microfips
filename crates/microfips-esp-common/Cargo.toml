@@ -7,7 +7,7 @@ description = "Shared ESP32 code (chip-agnostic, no esp-hal dependency)"
 [dependencies]
 microfips-core = { path = "../microfips-core" }
 microfips-protocol = { path = "../microfips-protocol" }
-embassy-net = { workspace = true, features = ["dhcpv4", "udp"] }
+embassy-net = { workspace = true, features = ["dhcpv4", "udp", "multicast"] }
 embassy-time = { workspace = true }
 static_cell = { workspace = true }
 portable-atomic = { workspace = true }
