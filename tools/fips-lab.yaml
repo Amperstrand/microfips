@@ -1,0 +1,30 @@
+# Template for the microfips lab-bench FIPS daemon (AGENTS.md "Lab Bench Test Rig").
+#
+# Security posture (audit 2026-08-29):
+#  - Explicit deterministic identity (nsec from tools/lab_keygen.py, G*8).
+#    Never run a lab daemon on the workstation's persistent /etc/fips/fips.key.
+#  - bind_addr is scoped to the lab AP interface (192.168.13.221 = wlp4s0).
+#    The workstation runs NO host firewall (ufw inactive); 0.0.0.0 binds are
+#    reachable from every interface including NetBird VPN and docker bridges.
+#  - mDNS advert (rendezvous.lan) joins multicast on ALL interfaces — the
+#    mdns-sd crate has no interface filter. Advert data is public-key-only
+#    (npub/scope/v), same class as the nostr advert. Acceptable on the lab
+#    LAN; do NOT enable on hosts with untrusted L2 segments.
+#  - Dedicated port 21213 (system daemon keeps 2121; both can run together).
+node:
+  identity:
+    nsec: 0000000000000000000000000000000000000000000000000000000000000008  # lab-daemon G*8
+    persistent: false
+  log_level: debug
+  heartbeat_interval_secs: 5
+  link_dead_timeout_secs: 60
+  rendezvous:
+    lan:
+      enabled: true
+transports:
+  udp:
+    bind_addr: "192.168.13.221:21213"
+tun:
+  enabled: false
+dns:
+  enabled: false

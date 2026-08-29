@@ -1609,3 +1609,90 @@ When the `next` branch ships, microfips will need:
 3. **Version negotiation** — min/max version range, 64-bit feature bitfield, TLV extensions
 4. **Profile negotiation** — new concept, requirements TBD
 5. **Golden vector regeneration** — XX handshake vectors needed for validation
+
+## Lab Bench Test Rig (added 2026-08-29)
+
+Physical bench for hardware-testing PRs (mDNS/ESP-NOW/hybrid/link-death, e.g. PR #156).
+Tooling: `tools/lab_keygen.py`, `tools/fips-lab.yaml`, `scripts/run_lab_daemon.sh`,
+`tools/detect_lab_ports.sh`. Migration target: fips-lab (labgrid) — see bottom.
+
+### Current bench inventory
+
+| Board | Chip | Identity (keys.json) | USB | Port |
+|-------|------|----------------------|-----|------|
+| lab workstation | — | `lab-daemon` G·8 | — | runs the FIPS lab daemon |
+| S3 board `F4:12:FA:CF:03:84` | ESP32-S3 16MB | `s3-lab` G·9 | USB-JTAG | ttyACM by-id Espressif serial |
+| CYD | ESP32-D0WD-V3 | `cyd` G·10 | CH340 | ttyUSB by-path (CH340 has no serial) |
+| M5 Atom `81528A13B6` | ESP32-PICO-D4 | `atom-a` G·11 | FTDI | ttyUSB by-id |
+| M5 Atom `9D529068B4` | ESP32-PICO-D4 | `atom-b` G·12 | FTDI | ttyUSB by-id |
+| M5 Stack `Hades2001` | — | — | FTDI | **OFF-LIMITS — other project** |
+
+Identity assignment rule: **one deterministic key per physical board (MAC/serial
+labeled), never per-role**. `tools/lab_keygen.py N` derives nsec/npub/node_addr
+(generator·N, node_addr = SHA256(x)[..16]) with a self-check; write the entry into
+keys.json and override at build time (`DEVICE_NSEC_HEX_esp32s3=...` etc. — the
+microfips-build env-override feature). The daemon peers pin via
+`DEVICE_NPUB_HEX_vps=<lab-daemon npub>`.
+
+### Lab daemon security checklist (run before exposing any test daemon)
+
+1. Isolated `--config` with explicit deterministic nsec — NEVER the workstation's
+   persistent `/etc/fips/fips.key`, and never reuse `vps`/`linux` identities.
+2. `bind_addr` scoped to the lab AP interface, not `0.0.0.0` — the workstation has
+   NO host firewall (ufw inactive) and sits on NetBird VPN + docker bridges.
+3. Dedicated UDP port (21213 in use; system daemon keeps 2121 — they coexist).
+4. Know the mDNS exposure: `rendezvous.lan` joins multicast on ALL interfaces
+   (mdns-sd has no interface filter). Advert data is public-key-only; fine on the
+   lab LAN, do not enable where untrusted L2 exists.
+5. Audit with `ss -tulnp` after start; expect exactly one v4 UDP bind on the AP IP.
+
+### Lessons learned (2026-08-29 session)
+
+- **nohup is not enough.** A `nohup cmd &` launched from a tool shell dies when the
+  shell times out — the SIGTERM hits the whole process group. Use
+  `setsid cmd > log 2>&1 < /dev/null &` (see `scripts/run_lab_daemon.sh`). Symptom
+  seen: daemon silently dead 2 min after "successful" start; every later probe
+  (mDNS browse, bridge) mysteriously timed out against a corpse.
+- **pkill -f self-match** (hit AGAIN despite the warning above): the pattern
+  `fips --config /tmp/opencode/fips-lab` matched the invoking shell's own command
+  line and killed it. Kill by exact PID resolved via `pgrep -f "<config path>"`.
+- **"mdns broken" was a dead daemon.** Verify the service is alive (fresh log
+  lines, PID check) before debugging the protocol. `zeroconf` (pip) is the fastest
+  independent advert check: browse `_fips._udp.local.` for ~4s.
+- **Binary path sharing:** the systemd `fips.service` runs
+  `/home/ubuntu/src/fips/target/release/fips` — a `cargo build` there silently
+  refreshes the system daemon binary (Restart=on-failure picks it up). Build in a
+  worktree if you don't want that.
+- **espflash flash syntax:** `espflash flash -p PORT --chip CHIP IMAGE` — this
+  version has no `--no-monitor` flag; run monitors separately (pyserial).
+- **Board ports are unstable; CH340 (CYD) exposes no USB serial number** — pin by
+  `/dev/serial/by-path/` for the CYD, by-id for FTDI atoms and the S3 USB-JTAG.
+
+### Orchestration roadmap (fips-lab migration)
+
+Phase 1 — labgrid targets for the bench (S3 via espflash USB-JTAG; CYD/atoms via
+esptool), port pinning from `detect_lab_ports.sh` semantics, and a
+`LabFipsServiceDriver` (isolated config/port/identity + the security checklist).
+Phase 2 — scenario suites `test_mdns_discovery.py`, `test_espnow_gw.py`,
+`test_hybrid_switch.py`, `test_link_death.py` (daemon stop/start via the driver =
+RX-silence test), with keygen→cargo-env wiring automated in fixtures.
+Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
+reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
+
+### More lessons (same session, hybrid-switch testing)
+
+- **`option_env!` env knobs are invisible to cargo's change detection.**
+  `HYBRID_TEST_WIFI_DOWN_SECS` / `HYBRID_WIFI_PROBE_SECS` / `ESP_NOW_CHANNEL` have no
+  `rerun-if-env-changed` — setting OR clearing them silently keeps stale values in the
+  binary. Always `touch crates/microfips-esp-transport/src/config.rs` (or `cargo clean -p`)
+  when changing these, and verify the knob landed via its boot log line before drawing
+  conclusions. Fix tracked in the hybrid return-to-WiFi issue.
+- **Opening `/dev/ttyACM*` (USB-JTAG) resets the board** — pyserial asserts DTR on open.
+  For observation without disturbance use raw `os.open` + `termios` (no TIOCM touches;
+  see /tmp/opencode/raw_logger.py pattern), or keep one persistent owner.
+- **Never let two processes drive the same serial port** (logger + esptool DTR/RTS dance
+  knocked an S3 into download mode). One owner; reboot via the firmware console `reset`
+  command or via esptool while nothing else holds the port.
+- **Verify which path actually carries traffic** before debugging protocol code: node logs
+  look identical across transports. Use `ip neigh` (ARP presence), daemon-side mDNS bursts,
+  and `tcpdump 'udp port 5353 or host <node-ip>'` as ground truth.
