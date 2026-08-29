@@ -13,7 +13,10 @@
 #  - Dedicated port 21213 (system daemon keeps 2121; both can run together).
 node:
   identity:
-    nsec: 0000000000000000000000000000000000000000000000000000000000000008  # lab-daemon G*8
+    # Placeholder — substituted at launch by scripts/run_lab_daemon.sh with
+    # the derived G*8 value from tools/lab_keygen.py. Never commit the scalar
+    # itself (issue #134).
+    nsec: __LAB_DAEMON_NSEC__
     persistent: false
   log_level: debug
   heartbeat_interval_secs: 5

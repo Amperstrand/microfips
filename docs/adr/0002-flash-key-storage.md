@@ -9,7 +9,7 @@ Proposed
 All device identities in microfips are currently compiled-in pattern keys:
 31 zero bytes followed by a single device-discriminator byte (e.g., `0x01` for
 STM32, `0x02` for ESP32-D0WD, `0x05` for ESP32-S3). These keys are read at
-build time from `keys.json` → `microfips-build` → `env!("DEVICE_NSEC_HEX_*")`.
+build time from `device-registry.json` → `microfips-build` → `env!("DEVICE_NSEC_HEX_*")`.
 
 This approach is acceptable for development and CI but unsuitable for production:
 every device of the same type would have an identical identity, which breaks FIPS
@@ -98,7 +98,7 @@ On startup, the firmware attempts to load the nsec using this ordered fallback:
 
 1. **Flash nsec** — call `KeyStore::read_nsec()`. If `Some(nsec)` → use it.
 2. **Compile-time nsec** — read `DEVICE_NSEC` constant from `config.rs` (injected
-   at build time from `keys.json` via `microfips-build`). Use it.
+   at build time from `device-registry.json` via `microfips-build`). Use it.
 3. **Panic** — if neither source yields a valid key (e.g., deliberately zeroed
    compile-time constant in a production build that requires provisioning):
    `panic!("No identity: run provisioning via 'set_nsec <hex>' on UART0")`.

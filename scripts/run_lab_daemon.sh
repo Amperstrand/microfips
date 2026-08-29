@@ -13,6 +13,22 @@ set -euo pipefail
 CONFIG="${1:-/tmp/opencode/fips-lab.yaml}"
 LOG="${2:-/tmp/opencode/fips-lab.log}"
 FIPS_BIN="${FIPS_BIN:-/home/ubuntu/src/fips/target/release/fips}"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [[ ! -f "$CONFIG" ]]; then
+    # Materialize the runtime config from the template: the daemon identity
+    # is DERIVED (lab_keygen G*8) at launch, never committed (issue #134).
+    NSEC_HEX=$(python3 "$REPO_DIR/tools/lab_keygen.py" 8 \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["nsec_hex"])')
+    mkdir -p "$(dirname "$CONFIG")"
+    sed "s/__LAB_DAEMON_NSEC__/$NSEC_HEX/" \
+        "$REPO_DIR/tools/fips-lab.yaml" > "$CONFIG"
+    echo "generated $CONFIG (identity: lab_keygen G*8)"
+fi
+if grep -q '__LAB_DAEMON_NSEC__' "$CONFIG"; then
+    echo "ERROR: $CONFIG still contains the __LAB_DAEMON_NSEC__ placeholder" >&2
+    exit 1
+fi
 
 OLD_PID=$(pgrep -f "fips --config ${CONFIG}" | head -1 || true)
 if [ -n "$OLD_PID" ]; then

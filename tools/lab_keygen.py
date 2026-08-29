@@ -2,7 +2,7 @@
 """Deterministic secp256k1 test-identity generator for the microfips lab bench.
 
 Identities are secp256k1 generator * N (nsec = N in hex), matching the
-keys.json convention (stm32=1, esp32=2, sim-a=3, sim-b=4, esp32s3=5,
+device-registry.json convention (stm32=1, esp32=2, sim-a=3, sim-b=4, esp32s3=5,
 esp32c3=6, esp32s3b=7, then lab assignments 8..12, see AGENTS.md).
 
 node_addr = SHA256(x_only_pubkey)[..16]  (fips-identity NodeAddr::from_pubkey_x)
@@ -57,7 +57,7 @@ def identity(n: int) -> dict:
 
 
 def selfcheck() -> None:
-    """G*3 must match keys.json sim-a (cross-checked against a live daemon)."""
+    """G*3 must match device-registry.json sim-a (cross-checked against a live daemon)."""
     id3 = identity(3)
     assert id3["npub_hex"].startswith("02f9308a019258c31049"), "G*3 x mismatch"
     assert id3["node_addr"] == "7c79f3071e28344e8153bf6c73c294eb", "G*3 addr mismatch"
