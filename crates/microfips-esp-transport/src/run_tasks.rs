@@ -1,4 +1,4 @@
-#[cfg(any(feature = "ble", feature = "wifi"))]
+#[cfg(any(feature = "ble", feature = "esp-now"))]
 use microfips_core::identity::VPS_NPUB;
 
 #[cfg(feature = "ble")]
@@ -142,7 +142,7 @@ pub async fn run_wifi_node(
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
-    let transport = match build_wifi_transport(
+    let (transport, peer_npub) = match build_wifi_transport(
         spawner,
         wifi,
         &mut trng,
@@ -168,7 +168,7 @@ pub async fn run_wifi_node(
     };
 
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, config::DEVICE_NSEC, VPS_NPUB);
+    let mut node = Node::new(transport, rng, config::DEVICE_NSEC, peer_npub);
     node.set_raw_framing(true);
 
     let fsp = build_demo_fsp(
@@ -182,7 +182,7 @@ pub async fn run_wifi_node(
     let mut handler = SharedEspHandler { led: &mut led, fsp };
 
     crate::control::init_control(&identity, "wifi");
-    crate::control::set_peer_pub(VPS_NPUB);
+    crate::control::set_peer_pub(peer_npub);
     if let Ok(token) = crate::control::control_task() {
         spawner.spawn(token);
     }
@@ -194,17 +194,74 @@ pub async fn run_wifi_node(
     loop {}
 }
 
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub async fn run_hybrid_node(
+    spawner: embassy_executor::Spawner,
+    gpio2: esp_hal::peripherals::GPIO2<'static>,
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    rng_periph: esp_hal::peripherals::RNG<'static>,
+    adc1: esp_hal::peripherals::ADC1<'static>,
+) -> ! {
+    use crate::config;
+    use crate::hybrid_transport::build_hybrid_transport;
+    use crate::node_info::NodeIdentity;
+    use crate::stats::STATS;
+    use portable_atomic::Ordering;
+
+    crate::logger::init();
+    STATS.boot_tick_ms.store(
+        embassy_time::Instant::now().as_millis() as u32,
+        Ordering::Relaxed,
+    );
+
+    let identity = NodeIdentity::compute();
+    crate::control::init_control(&identity, "hybrid");
+
+    log::info!("Hybrid WiFi/ESP-NOW mode starting");
+
+    let mut led = crate::runner::make_led(gpio2);
+    let (trng_source, mut trng) = crate::runner::init_trng(rng_periph, adc1);
+    log::info!("trng ready");
+
+    let (transport, peer_npub) = build_hybrid_transport(
+        spawner,
+        wifi,
+        &mut trng,
+        config::WIFI_SSID,
+        config::WIFI_PASSWORD,
+    )
+    .await;
+    crate::control::set_peer_pub(peer_npub);
+    spawner.spawn(crate::control::control_task().expect("spawn control task failed"));
+
+    crate::runner::run_node(
+        transport,
+        trng_source,
+        trng,
+        &mut led,
+        peer_npub,
+        crate::runner::NodeOpts {
+            raw_framing: true,
+            peer_sent_first: false,
+        },
+    )
+    .await
+}
+
 #[cfg(feature = "esp-now")]
 pub async fn run_esp_now_node(
     spawner: embassy_executor::Spawner,
     gpio2: esp_hal::peripherals::GPIO2<'static>,
+    wifi: esp_hal::peripherals::WIFI<'static>,
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use core::sync::atomic::Ordering;
+    use crate::config;
     use crate::node_info::NodeIdentity;
     use crate::stats::STATS;
+    use portable_atomic::Ordering;
 
+    crate::heap::init();
     crate::logger::init();
     STATS.boot_tick_ms.store(
         embassy_time::Instant::now().as_millis() as u32,
@@ -221,13 +278,30 @@ pub async fn run_esp_now_node(
     let (trng_source, trng) = crate::runner::init_trng(rng_periph, adc1);
     log::info!("trng ready");
 
-    // TODO: Initialize esp-radio ESP-NOW once esp-radio 0.18 exposes a public
-    // constructor for EspNow (new_internal is pub(crate)). For now the transport
-    // is a stub that logs sends and blocks on recv.
-    let transport = crate::esp_now_transport::EspNowTransport::new();
+    let (wifi_controller, interfaces) =
+        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
+    let transport = crate::esp_now_transport::EspNowTransport::new(
+        interfaces.esp_now,
+        wifi_controller,
+        config::ESP_NOW_CHANNEL,
+    );
     spawner.spawn(crate::control::control_task().expect("spawn control task failed"));
 
-    log::info!("ESP-NOW transport ready (stub mode)");
+    log::info!(
+        "ESP-NOW transport ready (channel {})",
+        config::ESP_NOW_CHANNEL
+    );
 
-    crate::runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, crate::runner::NodeOpts::default()).await
+    crate::runner::run_node(
+        transport,
+        trng_source,
+        trng,
+        &mut led,
+        VPS_NPUB,
+        crate::runner::NodeOpts {
+            raw_framing: true,
+            peer_sent_first: false,
+        },
+    )
+    .await
 }
