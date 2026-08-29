@@ -11,3 +11,6 @@ embassy-net = { workspace = true, features = ["dhcpv4", "udp", "multicast"] }
 embassy-time = { workspace = true }
 static_cell = { workspace = true }
 portable-atomic = { workspace = true }
+
+[build-dependencies]
+microfips-build = { workspace = true }
