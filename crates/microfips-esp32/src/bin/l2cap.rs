@@ -16,7 +16,11 @@ async fn main(spawner: embassy_executor::Spawner) {
         peripherals.GPIO2,
         peripherals.RNG,
         peripherals.ADC1,
-        true,
+        // fips master has no capability/role negotiation on the L2CAP
+        // exchange: the daemon is always the Noise responder, so the leaf
+        // must send MSG1 (peer_sent_first=false). `true` is the pre-sync
+        // dialect where a flags-negotiated daemon could initiate.
+        false,
     )
     .await;
 }

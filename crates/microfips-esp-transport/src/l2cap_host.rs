@@ -48,6 +48,10 @@ static STAT_L2CAP_PERIPHERAL_OK: AtomicU32 = AtomicU32::new(0);
 static L2CAP_LAST_ROLE: AtomicU32 = AtomicU32::new(0);
 static L2CAP_LAST_REASON: AtomicU32 = AtomicU32::new(0);
 static L2CAP_PEER_CAPS: AtomicU8 = AtomicU8::new(0);
+/// Data-path dialect for the current link: fips master exchanges carry no
+/// capability flags and relay raw FMP frames, one per L2CAP SDU; legacy
+/// (pre-sync branch) peers use `[2B BE len][frame]` prefixed SDUs.
+static L2CAP_RAW_FRAMES: AtomicBool = AtomicBool::new(false);
 static STAT_L2CAP_REKEY_FRAMES: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Clone, Copy)]
@@ -219,13 +223,12 @@ where
 
     // Ported from fips pubkey exchange (issue #120): retry loop for send+recv
     for attempt in 0..3u32 {
-        // FIPS macos-ble commit 8c388cf: wire format [len:2BE][0x00][pubkey:32][flags:1]
-        let payload_len: u16 = 34;
-        let mut tx = [0u8; 36];
-        tx[0..2].copy_from_slice(&payload_len.to_be_bytes());
-        tx[2] = 0x00;
-        tx[3..35].copy_from_slice(&local_pub[1..33]);
-        tx[35] = crate::peer_caps::ESP32_DEFAULT;
+        // fips master dialect (post-sync): raw 33B SDU [0x00][x-only pubkey:32].
+        // The pre-sync/branch dialect [len:2BE][0x00][pubkey:32][flags:1] is
+        // still parsed on receive for older daemons.
+        let mut tx = [0u8; 33];
+        tx[0] = 0x00;
+        tx[1..33].copy_from_slice(&local_pub[1..33]);
 
         // Send our pubkey
         match embassy_time::with_timeout(
@@ -251,24 +254,31 @@ where
         .await
         {
             Ok(Ok(n)) => {
-                // Old: [0x0021][0x00][pubkey:32] = 35B, New: [0x0022][0x00][pubkey:32][flags:1] = 36B
-                if n < 35 {
+                let (x_off, flags): (usize, u8) = if n == 33 && rx_buf[0] == 0x00 {
+                    L2CAP_RAW_FRAMES.store(true, Ordering::Relaxed);
+                    (1, 0)
+                } else if n >= 35 {
+                    L2CAP_RAW_FRAMES.store(false, Ordering::Relaxed);
+                    // legacy framed: Old [0x0021][0x00][pubkey:32] = 35B,
+                    // New [0x0022][0x00][pubkey:32][flags:1] = 36B
+                    let recv_payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
+                    if !(recv_payload_len == 33 || recv_payload_len == 34) {
+                        log::warn!("pubkey exchange bad payload len: {}", recv_payload_len);
+                        continue;
+                    }
+                    if rx_buf[2] != 0x00 {
+                        log::warn!("pubkey exchange bad prefix: 0x{:02X}", rx_buf[2]);
+                        continue;
+                    }
+                    (3, if recv_payload_len == 34 && n == 36 { rx_buf[35] } else { 0 })
+                } else {
                     log::warn!("pubkey exchange recv too short: {}B", n);
                     continue;
-                }
-                let recv_payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
-                if !(recv_payload_len == 33 || recv_payload_len == 34) {
-                    log::warn!("pubkey exchange bad payload len: {}", recv_payload_len);
-                    continue;
-                }
-                if rx_buf[2] != 0x00 {
-                    log::warn!("pubkey exchange bad prefix: 0x{:02X}", rx_buf[2]);
-                    continue;
-                }
+                };
 
                 let mut peer_pub = [0u8; 33];
                 peer_pub[0] = 0x02;
-                peer_pub[1..33].copy_from_slice(&rx_buf[3..35]);
+                peer_pub[1..33].copy_from_slice(&rx_buf[x_off..x_off + 32]);
 
                 {
                     let mut hex = [0u8; 64];
@@ -279,12 +289,6 @@ where
                     );
                 }
 
-                // Ported from fips capabilities.rs: parse and store peer flags
-                let flags = if recv_payload_len == 34 && n == 36 {
-                    rx_buf[35]
-                } else {
-                    0
-                };
                 L2CAP_PEER_CAPS.store(flags, Ordering::Relaxed);
                 log::info!(
                     "pubkey exchange OK on attempt {} in {}ms (flags: 0x{:02X} outbound={} peripheral={})",
@@ -315,9 +319,23 @@ where
 }
 
 fn peer_is_fips(peer_pub: &[u8; 33]) -> bool {
-    FIPS_ALLOWED_PUBKEYS
+    if FIPS_ALLOWED_PUBKEYS
         .iter()
         .any(|allowed| peer_pub[1..33] == allowed[..])
+    {
+        return true;
+    }
+    match crate::config::FIPS_EXTRA_ALLOWED_XONLY_HEX {
+        Some(extra) => {
+            let mut hex = [0u8; 64];
+            microfips_esp_common::node_info::hex_encode(&peer_pub[1..33], &mut hex);
+            match core::str::from_utf8(&hex) {
+                Ok(s) => s.eq_ignore_ascii_case(extra),
+                Err(_) => false,
+            }
+        }
+        None => false,
+    }
 }
 
 /// Why the L2CAP relay disconnected.
@@ -338,14 +356,11 @@ enum DisconnectReason {
 
 /// Relay frames between L2CAP channel and internal channels.
 ///
-/// Wire format (matches FIPS `BluerStream` on `linux-ble-stability-v2`):
-///   TX: `[2B BE len][FMP frame]` → L2CAP SDU
-///   RX: L2CAP SDU → `[2B BE len][FMP frame]` → strip prefix → internal channel
-///
-/// Framing NOTE: The 2-byte BE length prefix is NOT upstream FIPS behavior.
-/// It was added in commit `42d9adb` for macOS CoreBluetooth byte-stream
-/// coalescing. On Linux SeqPacket it's redundant but harmless. Both sides
-/// must match. See FIPS `src/transport/ble/mod.rs` framing comment.
+/// Wire format depends on the peer's exchange dialect:
+///   - fips master (raw): one FMP frame per L2CAP SDU, no prefix
+///   - legacy (`linux-ble-stability-v2`): TX `[2B BE len][FMP frame]` → SDU,
+///     RX strips the prefix. The prefix was added in commit `42d9adb` for
+///     macOS CoreBluetooth byte-stream coalescing; master never carried it.
 async fn relay_l2cap_frames<T, P>(
     stack: &Stack<'_, T, P>,
     writer: &mut L2capChannelWriter<'_, P>,
@@ -368,6 +383,9 @@ where
     let mut rate_limiter = crate::rate_limit::SendRateLimiter::new(35_000, 2048);
 
     log::info!("relay starting (role context: {})", recv_disconnect_log);
+
+    let raw = L2CAP_RAW_FRAMES.load(Ordering::Relaxed);
+    log::info!("relay dialect: {}", if raw { "raw-sdu" } else { "len-prefixed" });
 
     loop {
         match select(
@@ -405,26 +423,41 @@ where
                     log::info!("relay first frame received: {}B", n);
                     first_frame_logged = true;
                 }
-                if n < 2 {
-                    log::warn!("RX: SDU too short ({}B), disconnecting", n);
-                    mark_link_down();
-                    break DisconnectReason::DataExchanged;
-                }
-                let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
-                if n < 2 + payload_len || payload_len > L2CAP_FRAME_CAP {
-                    log::warn!(
-                        "RX: bad length prefix ({}B payload in {}B SDU), disconnecting",
-                        payload_len,
-                        n
-                    );
-                    mark_link_down();
-                    break DisconnectReason::DataExchanged;
-                }
+                let payload_len = if raw {
+                    if n == 0 || n > L2CAP_FRAME_CAP {
+                        log::warn!(
+                            "RX: SDU size out of range ({}B), disconnecting",
+                            n
+                        );
+                        mark_link_down();
+                        break DisconnectReason::DataExchanged;
+                    }
+                    n
+                } else {
+                    if n < 2 {
+                        log::warn!("RX: SDU too short ({}B), disconnecting", n);
+                        mark_link_down();
+                        break DisconnectReason::DataExchanged;
+                    }
+                    let payload_len = u16::from_be_bytes([rx_buf[0], rx_buf[1]]) as usize;
+                    if n < 2 + payload_len || payload_len > L2CAP_FRAME_CAP {
+                        log::warn!(
+                            "RX: bad length prefix ({}B payload in {}B SDU), disconnecting",
+                            payload_len,
+                            n
+                        );
+                        mark_link_down();
+                        break DisconnectReason::DataExchanged;
+                    }
+                    payload_len
+                };
+                let frame_bytes = if raw {
+                    &rx_buf[..payload_len]
+                } else {
+                    &rx_buf[2..2 + payload_len]
+                };
                 let mut frame = heapless::Vec::<u8, L2CAP_FRAME_CAP>::new();
-                if frame
-                    .extend_from_slice(&rx_buf[2..2 + payload_len])
-                    .is_err()
-                {
+                if frame.extend_from_slice(frame_bytes).is_err() {
                     mark_link_down();
                     break DisconnectReason::DataExchanged;
                 }
@@ -477,9 +510,13 @@ where
             Either::Second(frame) => {
                 let len = frame.len() as u16;
                 let mut sdu = heapless::Vec::<u8, L2CAP_SDU_CAP>::new();
-                if sdu.extend_from_slice(&len.to_be_bytes()).is_err()
-                    || sdu.extend_from_slice(&frame).is_err()
-                {
+                let sdu_ok = if raw {
+                    sdu.extend_from_slice(&frame).is_ok()
+                } else {
+                    sdu.extend_from_slice(&len.to_be_bytes()).is_ok()
+                        && sdu.extend_from_slice(&frame).is_ok()
+                };
+                if !sdu_ok {
                     log::warn!("TX: frame too large for SDU ({}B)", len);
                     mark_link_down();
                     break DisconnectReason::DataExchanged;
