@@ -25,9 +25,50 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 BASE_URL = "https://blesta.sovereignhybridcompute.com/user-api/v2"
+
+# Production zone storefront (NVMe Starter, Katy TX). The old defaults
+# (package 80 / pricing 241 / order form 11) target the Cherryvale KS DEV
+# zone, which suffers scheduler hangs (shc-toolkit issue #28) — do not use.
+SHC_PACKAGE_ID = int(os.environ.get("SHC_PACKAGE_ID", "23"))
+SHC_PRICING_ID = int(os.environ.get("SHC_PRICING_ID", "55"))
+SHC_ORDER_FORM_ID = int(os.environ.get("SHC_ORDER_FORM_ID", "1"))
+SHC_MODULE_GROUP_ID = int(os.environ.get("SHC_MODULE_GROUP_ID", "4"))
+SHC_PACKAGE_GROUP_ID = int(os.environ.get("SHC_PACKAGE_GROUP_ID", "3"))
+# NVMe config options: disk 8 GB, Debian 13 cloud template, no GUI.
+# RAM/CPU/IPv4 stay at line defaults when omitted.
+SHC_TEMPLATE = os.environ.get("SHC_TEMPLATE", "debian13-cloud")
+
+
+def _ensure_api_dns() -> bool:
+    """True if the SHC API hostname resolves.
+
+    If DNS delegation is broken but SHC_API_IP is set, pin the host via
+    /etc/hosts — that keeps TLS SNI and certificate validation intact,
+    unlike switching the base URL to the bare IP.
+    """
+    hostname = urlparse(BASE_URL).hostname
+    try:
+        socket.getaddrinfo(hostname, 443)
+        return True
+    except socket.gaierror:
+        ip = os.environ.get("SHC_API_IP", "")
+        if ip:
+            hosts_line = f"{ip} {hostname}\n"
+            with open("/etc/hosts", "r+") as f:
+                if hosts_line not in f.read():
+                    f.write(hosts_line)
+            try:
+                socket.getaddrinfo(hostname, 443)
+                print(f"DNS down; pinned {hostname} to {ip} via /etc/hosts")
+                return True
+            except socket.gaierror:
+                pass
+        return False
 
 
 def _api(method: str, path: str, *, api_key: str, body: dict | None = None,
@@ -136,19 +177,30 @@ def cmd_provision(args: argparse.Namespace) -> None:
         print("ERROR: SHC_API_KEY not set", file=sys.stderr)
         sys.exit(1)
 
+    if not _ensure_api_dns():
+        print("SHC API unresolvable and no SHC_API_IP fallback set", file=sys.stderr)
+        sys.exit(1)
+
     key_path = Path(args.ssh_key)
     if not key_path.exists():
         subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", str(key_path), "-N", "", "-q"], check=True)
     pub_key = key_path.with_suffix(".pub").read_text().strip()
 
-    print("=== Ordering SHC VM ===")
+    print("=== Ordering SHC VM (production zone) ===")
     idem = f"ci-{uuid.uuid4().hex[:24]}"
     order = _api("POST", "/ordering/submit", api_key=api_key, body={
-        "package_id": 80,
-        "pricing_id": 241,
+        "package_id": SHC_PACKAGE_ID,
+        "pricing_id": SHC_PRICING_ID,
         "hostname": f"microfips-ci-{int(time.time())}",
         "ssh_key": pub_key,
-        "order_form_id": 11,
+        "order_form_id": SHC_ORDER_FORM_ID,
+        "module_group_id": SHC_MODULE_GROUP_ID,
+        "package_group_id": SHC_PACKAGE_GROUP_ID,
+        "config_options": {
+            "108": os.environ.get("SHC_DISK_GB", "8"),
+            "126": SHC_TEMPLATE,
+            "167": "none",
+        },
     }, extra_headers={"Idempotency-Key": idem})
 
     service_id = order.get("service_id") or (order.get("service_ids") or [None])[0]
@@ -295,6 +347,46 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
         print(f"Failed to cancel VM {service_id}: {e}", file=sys.stderr)
 
 
+def cmd_reap(args: argparse.Namespace) -> None:
+    """Safety net for leaked CI VMs: cancel 'microfips-ci-*' VMs older than
+    --max-age hours. Billing on SHC stops only at cancel — a stopped VM
+    still bills — so a skipped cleanup step must not mean a leak."""
+    api_key = os.environ.get("SHC_API_KEY", "")
+    if not api_key:
+        print("SHC_API_KEY not set; nothing to do", file=sys.stderr)
+        return
+    if not _ensure_api_dns():
+        print("SHC API unresolvable; reaper cannot run", file=sys.stderr)
+        return
+    vms = _api("GET", "/vm", api_key=api_key)
+    if isinstance(vms, dict):
+        vms = vms.get("data") or vms.get("vms") or []
+    now = datetime.now(timezone.utc)
+    reaped = 0
+    for vm in vms:
+        hostname = vm.get("hostname", "")
+        if not hostname.startswith("microfips-ci-"):
+            continue
+        if vm.get("date_canceled") is not None:
+            continue
+        created = vm.get("date_created", "")
+        try:
+            age_h = (now - datetime.fromisoformat(created)).total_seconds() / 3600
+        except ValueError:
+            age_h = 0.0
+        if age_h < args.max_age:
+            continue
+        sid = vm.get("id") or vm.get("service_id")
+        print(f"reaping {hostname} (service {sid}, {age_h:.1f}h old)")
+        try:
+            _api("POST", f"/vm/{sid}/cancel", api_key=api_key, body={"immediate": True},
+                 extra_headers={"Idempotency-Key": f"reap-{uuid.uuid4().hex[:24]}"})
+            reaped += 1
+        except Exception as e:
+            print(f"  cancel failed: {e}", file=sys.stderr)
+    print(f"reaped {reaped} leaked VM(s)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="CI sim-ping VM lifecycle")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -308,6 +400,10 @@ def main() -> None:
     p_clean = sub.add_parser("cleanup", help="Cancel VM")
     p_clean.add_argument("--service-id", required=True)
     p_clean.set_defaults(func=cmd_cleanup)
+
+    p_reap = sub.add_parser("reap", help="Cancel leaked microfips-ci-* VMs past --max-age")
+    p_reap.add_argument("--max-age", type=float, default=6.0, help="hours")
+    p_reap.set_defaults(func=cmd_reap)
 
     args = parser.parse_args()
     args.func(args)
