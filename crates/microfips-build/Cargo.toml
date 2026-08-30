@@ -6,3 +6,4 @@ description = "Build script helper: reads keys.json and emits compile-time env v
 
 [dependencies]
 serde_json = "1"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
