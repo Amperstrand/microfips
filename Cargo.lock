@@ -2120,9 +2120,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.29"
+version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "loom"
@@ -2220,6 +2220,7 @@ version = "0.1.0"
 dependencies = [
  "embassy-net",
  "embassy-time",
+ "microfips-build",
  "microfips-core",
  "microfips-protocol",
  "portable-atomic",
@@ -2323,6 +2324,7 @@ dependencies = [
  "bt-hci",
  "embassy-executor",
  "embassy-futures",
+ "embassy-net",
  "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-io 0.7.1",
@@ -2652,9 +2654,9 @@ dependencies = [
 
 [[package]]
 name = "portable-atomic"
-version = "1.13.1"
+version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
 
 [[package]]
 name = "portable-atomic-util"

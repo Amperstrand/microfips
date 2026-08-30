@@ -20,10 +20,10 @@ pub const ESP32_NODE_ADDR: [u8; 16] = hex_bytes_16(env!("DEVICE_NODE_ADDR_esp32"
 mod tests {
     use super::*;
 
-    /// Verify keys.json-derived constants are internally consistent.
+    /// Verify registry-derived constants are internally consistent.
     #[test]
     #[cfg(feature = "std")]
-    fn audit_keys_json_consistency() {
+    fn audit_registry_consistency() {
         use crate::noise;
 
         let stm32_pub =

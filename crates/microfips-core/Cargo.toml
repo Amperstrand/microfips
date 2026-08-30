@@ -61,6 +61,10 @@ name = "derive_test_keys"
 path = "tests/derive_test_keys.rs"
 
 [[test]]
+name = "device_registry"
+path = "tests/device_registry.rs"
+
+[[test]]
 name = "golden_vectors_ik"
 path = "tests/golden_vectors_ik.rs"
 

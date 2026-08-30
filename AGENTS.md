@@ -7,6 +7,7 @@ Both MCUs use length-prefixed framing → host bridge → UDP → VPS running st
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
 - **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
+- **ESP32-S3 Walter (QuickSpot):** WiFi transport → direct UDP to a LAN FIPS daemon found via mDNS discovery, with fallback to the VPS (hardware-verified 2026-08-18: handshake, heartbeats, mDNS pinned+open discovery, re-discovery on link death, WiFi re-association on AP loss. See "ESP32-S3 Walter" and "mDNS LAN Discovery" sections.) OR ESP-NOW transport → second Walter as gateway → daemon (no IP stack on the node; gateway is either standalone WiFi/UDP or radio↔USB + serial_udp_bridge.py; hardware-verified 2026-08-19 incl. channel sweep, see "ESP-NOW Transport" section.) OR **FIPS relay AP**: open `!FIPS` access point with DHCP + mDNS advert + UDP relay to the daemon, chainable Router→Extender (hardware-verified 2026-08-20), optionally also a FIPS peer itself (`relay-ap-peer`, verified 2026-08-22; see "FIPS Relay Access Point" section.)
 
 ## Workspace architecture
 
@@ -252,12 +253,13 @@ Same stack as BLE GATT but uses L2CAP CoC API instead of GATT characteristics.
 | FIPS Service UUID | `9c90b790-2cc5-42c0-9f87-c9cc40648f4c` |
 | L2CAP MTU | 2048 bytes |
 | PacketPool MTU | 2054 bytes (configured via `.cargo/config.toml`) |
-| Pre-handshake format | `[0x00][32B x-only secp256k1 pubkey][1B capability flags]` (34B payload, 36B wire with framing) |
-| Framing | 2-byte BE length prefix on all L2CAP frames, including pubkey exchange (matches FIPS `BluerStream` framing on all branches) |
-| Capability byte | `0x3C` (CAN_CENTRAL \| CAN_PERIPHERAL \| L2CAP_SUPPORTED \| PREFER_L2CAP) |
+| Pre-handshake format | **fips master dialect (2026-08-29):** raw 33B SDU `[0x00][32B x-only secp256k1 pubkey]`, no capability byte. Legacy branch dialect `[0x00][x-only 32][1B flags]` (34B payload, 36B wire, 2B BE prefix) is still parsed on RX for old daemons. |
+| Framing | **fips master:** one FMP frame per L2CAP SDU, no prefix (dialect selected by the exchange form: flags-less 33B exchange ⇒ raw SDUs). Legacy peers: 2-byte BE length prefix inside each SDU. |
+| Capability byte | `0x3C` — legacy dialect only; master has no caps/role negotiation, so `peer_sent_first=false` (the leaf always initiates Noise; `true` deadlocks both sides until recv timeout) |
 | FRAME_CAP | 768 bytes (application-level frame buffer; MTU stays 2048) |
-| BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_NSEC[27..32]` + `0xFF` prefix, MSB-first |
+| BLE address | Random static (`02:00:00:00:00:FF`) — deterministic from `ESP32_NSEC[27..32]` + `0xFF` prefix, MSB-first. FIPS master dials with the **learned** LE address type since commit `1422117e` (a hardcoded LePublic dial to a Random peer fails in the kernel at mgmt level with NO HCI command and no socket error — the dialer only ever sees its own timeout) |
 | Advertising name | `microfips-l2cap` |
+| Extra allowlist key | `FIPS_EXTRA_ALLOWED_XONLY_HEX=<64 hex>` build knob accepts a lab/test daemon key beyond the production 4-entry `FIPS_ALLOWED_PUBKEYS` (registered in the microfips-build KNOBS tracker) |
 
 **Build L2CAP firmware:**
 ```bash
@@ -467,7 +469,7 @@ export $(grep -v '^#' .env | xargs) \
 # Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-l2cap
 ```
 
-**IMPORTANT:** After any change to `keys.json` or identity code, MUST run
+**IMPORTANT:** After any change to `device-registry.json` or identity code, MUST run
 `cargo clean -p microfips-esp32s3` before rebuild to avoid stale compiled-in keys.
 
 **Flash:**
@@ -525,6 +527,327 @@ the detection script above. The M5 Stack (`0403:6001`, `/dev/ttyUSB0`) is a sepa
 2. Hold for 3 seconds, then release
 3. `espflash erase-flash --chip esp32s3`
 4. `espflash flash --chip esp32s3` with the firmware binary
+
+### ESP32-S3 Walter (QuickSpot)
+
+The [Walter](https://www.quickspot.io/) (DPTechnics) is an ESP32-S3-WROOM-1-N16R2 board:
+16 MB flash, 2 MB PSRAM, chip rev v0.2, onboard Sequans GM02SP LTE-M/NB-IoT modem
+(unused by microfips). It runs the standard `microfips-esp32s3` crate with the `esp32s3`
+identity from `device-registry.json` — no board-specific code needed.
+Hardware-verified 2026-08-18: WiFi transport, Noise IK handshake with local
+fips 0.5.0-dev daemon, sustained heartbeats (0% loss, ETX 1.0), mDNS discovery,
+re-discovery on link death, and WiFi re-association on AP loss.
+
+**Serial port:** native USB Serial JTAG (VID:PID `303a:1001`, `/dev/ttyACM*`), same
+detection as the TiLDAGON — always detect by VID:PID, never hardcode the tty number.
+This machine has two Walters: #1 MAC `cc:8d:a2:2c:91:98` (identity `esp32s3`,
+generator*5), #2 MAC `cc:8d:a2:2c:94:08` (identity `esp32s3b`, generator*7 —
+apply via `DEVICE_NSEC_HEX_esp32s3` build override). They share VID:PID, so always
+disambiguate by serial number (`udevadm info -q property /dev/ttyACM<N> | grep
+ID_SERIAL_SHORT` — the serial IS the MAC). espflash auto-reset works via
+DTR/RTS, no button pressing. Firmware logs appear on the same USB JTAG port
+(`esp-println` with `jtag-serial`).
+**pyserial DTR/RTS hazard:** opening the port with default control-line handling can
+reset the chip — a wrong DTR/RTS sequence resets it into DOWNLOAD mode (`waiting for
+download`, firmware not running). To open without touching the chip: construct
+`serial.Serial()` unopened, set `.dtr = False; .rts = False`, then `.open()`. Recover a
+download-mode board with `espflash reset -p /dev/ttyACM<N>`.
+
+**LED:** the firmware drives GPIO2 as the status LED; on the Walter that is an exposed
+header pin with no onboard LED — wire one externally for LED state visibility.
+
+**Build (WiFi, LAN daemon via mDNS pinned discovery):**
+```bash
+# .env (gitignored): WIFI_SSID=..., WIFI_PASSWORD=... (2.4 GHz only)
+. ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  WIFI_SSID="<ssid>" WIFI_PASSWORD="<pass>" \
+  DEVICE_NPUB_HEX_vps="<local daemon npub_hex, see device-registry.json 'linux' entry>" \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+# Output: target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
+```
+The `DEVICE_NPUB_HEX_vps` env override (see "Build-time identity overrides" below) pins
+the peer to the LAN daemon's key; mDNS discovery then finds its address at boot, so no
+`FIPS_TARGET_HOST` or hardcoded IP is needed. Omit the override to target the VPS.
+
+**Flash + monitor:**
+```bash
+fuser -k /dev/ttyACM<N> 2>/dev/null
+espflash flash -p /dev/ttyACM<N> --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3
+python3 -c "
+import serial, time
+s = serial.Serial('/dev/ttyACM<N>', 115200, timeout=2)
+deadline = time.time() + 45
+while time.time() < deadline:
+    line = s.readline().decode(errors='replace').strip()
+    if line: print(line, flush=True)
+s.close()"
+```
+**Expected boot log:** `WiFi connected` → `IP: ...` → `mDNS: pinned FIPS peer discovered
+at <ip>:2121` → `session: handshake ok, entering steady` → heartbeats every ~10 s.
+Verify on the daemon: `fipsctl show peers` lists node_addr `6bef476b...` as connected.
+
+### mDNS LAN Discovery (WiFi transports)
+
+WiFi builds (D0WD and S3) discover the FIPS daemon on the local network via mDNS-SD
+(RFC 6762/6763) instead of relying only on the compiled-in target host. Requires a
+FIPS daemon with `lan-mdns` (verified against fips 0.5.0-dev), which advertises
+`_fips._udp.local.` with TXT keys `npub=<bech32>`, `scope=<mesh name>`, `v=1`
+automatically — no daemon configuration needed.
+
+**Mechanism:** one-shot PTR queries from an ephemeral UDP port, so responders answer
+by **unicast** (RFC 6762 §6.7 legacy queries) — multicast TX only, no group join, no
+dependence on lossy WiFi multicast RX. 3 attempts × 1.5 s window, then fallback to the
+static target (DNS resolve of `VPS_HOST`). The advert is a **routing hint, never
+identity** — the Noise IK handshake against the discovered endpoint proves the key.
+
+**Pinned mode (default):** only an advert whose TXT npub bech32-decodes to the
+compiled-in peer key (`DEVICE_NPUB_HEX_vps`) supplies the endpoint. Other daemons on
+the LAN are ignored. A spoofed advert can at worst redirect to an endpoint that must
+still prove the pinned key.
+
+**Open mode (`--features mdns-open`):** the first scope- and version-compatible advert
+supplies endpoint AND peer npub (trust-on-first-advert — use only on LANs the operator
+controls). Optional `FIPS_DISCOVERY_SCOPE` env at build time restricts matching to one
+mesh scope (e.g. `fips-overlay-v1`); empty accepts any scope. With multiple same-scope
+daemons on the LAN, the fastest responder wins.
+
+**Self-healing (both modes):** the transport re-runs on every reconnect attempt after
+the first session ends, in order: re-associate WiFi if the AP dropped us (esp-radio
+does not auto-reconnect) → re-acquire DHCP → re-discover the bound peer key via mDNS
+(follows daemon IP changes) → handshake. Re-discovery always pins to the key bound at
+boot, so a different daemon appearing mid-run can never hijack the link. Verified
+recovery time: ~1 s after daemon disconnect, ~2 s after WiFi disassociation.
+
+**Implementation:** parser + `discover_fips()` in `microfips-esp-common/src/mdns.rs`
+(host-tested against a captured fips 0.5.0-dev response fixture), bech32 npub decode in
+`fips-identity/src/bech32.rs`, transport wiring in
+`microfips-esp-transport/src/wifi_transport.rs::wait_ready`. A diagnostic spike binary
+(`microfips-esp32s3-mdns-spike`) verifies multicast TX/RX + unicast responses on
+hardware. Host-side advert check: `avahi-browse -rt _fips._udp`.
+
+### ESP-NOW Transport (radio-only, no IP)
+
+FIPS over raw ESP-NOW (802.11 vendor action frames): the node needs no AP, no
+DHCP, no IP stack. Hardware-verified 2026-08-19 Walter↔Walter: Noise IK handshake,
+heartbeats, FSP sessions, 1071-byte FilterAnnounce frames, ETX 1.0, 0% loss.
+
+**Hybrid node (`microfips-esp32s3-hybrid`, preferred for leaf boards):** one binary
+that uses direct WiFi/UDP when the AP and daemon are reachable and falls back to
+ESP-NOW via a gateway otherwise — same pinned npub and end-to-end Noise IK on both
+paths, so switching changes the route, never the trust model. Switching happens at
+session boundaries: boot tries WiFi twice then starts on ESP-NOW; in WiFi mode, 2
+consecutive failed connection attempts fall back to ESP-NOW; in ESP-NOW mode an
+SSID-filtered scan (no association) runs every `HYBRID_WIFI_PROBE_SECS` (default 300)
+and only a visible AP *plus* fresh mDNS confirmation of the daemon triggers the switch
+back — a reachable AP with an unreachable daemon keeps the working ESP-NOW link.
+Build with `--features esp-now,wifi --bin microfips-esp32s3-hybrid` (needs WiFi creds
+AND the npub override). Chaos knob for testing: `HYBRID_TEST_WIFI_DOWN_SECS=<n>`
+forces the WiFi path down for the first n seconds of uptime (hardware-verified:
+boots onto ESP-NOW via gateway, then switches to WiFi in ~2 s once the window ends).
+
+**Single-transport topologies** (node = `microfips-esp32s3-espnow`, a full FIPS node;
+both gateways are single-peer relays that unicast to whichever node's frame they saw
+last):
+1. **Standalone (preferred):** node ↔ ESP-NOW ↔ `microfips-esp32s3-espnow-wifi-gw`
+   (joins the AP as station, mDNS-discovers the pinned daemon, relays straight to its
+   UDP port; runs on any power brick — no host machine in the data path). Hardware-
+   verified 2026-08-19.
+2. **USB-bridged:** node ↔ ESP-NOW ↔ `microfips-esp32s3-espnow-gw` (radio↔USB relay on
+   host USB) ↔ `serial_udp_bridge.py` ↔ daemon UDP. Useful when a host is attached
+   anyway — the bridge's frame log is handy for debugging.
+
+**Build + flash (standalone gateway + node):**
+```bash
+. ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  WIFI_SSID="<ssid>" WIFI_PASSWORD="<pass>" \
+  DEVICE_NPUB_HEX_vps="<daemon npub_hex, device-registry.json 'linux' entry for the local daemon>" \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc --no-default-features --features esp-now,wifi \
+  --bin microfips-esp32s3-espnow --bin microfips-esp32s3-espnow-wifi-gw
+espflash flash -p /dev/ttyACM<gw>   --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-espnow-wifi-gw
+espflash flash -p /dev/ttyACM<node> --chip esp32s3 target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-espnow
+```
+(For the USB-bridged variant, build `--features esp-now --bin microfips-esp32s3-espnow-gw`
+and run `python3 -u tools/serial_udp_bridge.py --serial /dev/ttyACM<gw> --udp-host
+127.0.0.1 --udp-port 2121`.)
+
+**Channels:** the standalone gateway is pinned to the AP's channel by its station
+association; the node cannot know it in advance, so it **sweeps channels 1–13** during
+broadcast discovery (2 broadcasts per channel, stops on peer lock, resumes on session
+death — verified: node started on ch 5, swept to the AP's ch 1, locked, handshaked).
+`ESP_NOW_CHANNEL` (default 1) is only the sweep's starting channel; for the USB-bridged
+gateway (unassociated) it is that gateway's fixed channel.
+
+**Wire format:** ESP-NOW caps payloads at 250 bytes; FMP frames go up to 2048. Each
+frame is chunked with a 2-byte header (msg id, last-flag|fragment index), reassembled
+strictly in order; any gap/interleave drops the message and the protocol layers retry
+(codec: `microfips-esp-common/src/espnow_frag.rs`, host-tested). Gateway↔host framing
+is the standard 2-byte LE length prefix.
+
+**Peer discovery / self-healing:** the node broadcasts its handshake, locks onto the
+first responding MAC for unicast (MAC-level ACK+retry), and reverts to broadcast when
+a session ends. The MAC is a routing hint only — Noise IK against the pinned npub
+(`DEVICE_NPUB_HEX_vps`) proves identity, same trust model as mDNS discovery.
+Because sends keep succeeding at MAC level while the daemon is unreachable (the
+gateway ACKs), daemon loss is detected by the Node's RX-silence link-death timeout
+(`link_dead_timeout_secs`, 30 s): verified cycle = bridge killed → `steady: link dead,
+31s without valid frames` → broadcast re-discovery → re-handshake ~5 s after the
+bridge returns. The gateway drops radio→host frames after a 500 ms USB write timeout
+when nothing drains USB, so a stopped bridge cannot wedge it.
+
+**Console:** the node and the standalone WiFi gateway log on their USB JTAG ports as
+usual (the WiFi gateway logs association, mDNS discovery, and `node locked <mac>`).
+Only the USB-bridged gateway never initializes the logger — its USB channel carries
+frames, and log text would corrupt the stream (only ROM boot text and panics appear
+there; the bridge's length-prefix resync skips that noise).
+
+**Pitfalls:**
+- When testing bridge outages, kill the bridge's *python* PID, not the wrapping shell —
+  an orphaned bridge keeps the port open and both processes steal bytes from each other
+  (pyserial then reports "device reports readiness to read but returned no data /
+  multiple access on port").
+- Bridge reconnection pins to the board's USB serial number; with two Walters attached
+  this prevents re-attaching to the node's console (VID:PID alone is ambiguous).
+- ESP-NOW node ↔ WiFi node identity collision: both Walters must not run with the same
+  `device-registry.json` identity against one daemon — use the `esp32s3b` entry for the second
+  board.
+
+### FIPS Relay Access Point (`!FIPS` Router / Extender)
+
+`microfips-esp32s3-relay-ap` turns a Walter into a **FIPS-blind relay AP**: radio in
+AP+STA mode, open access point (default SSID `!FIPS`, 192.168.4.1/24) for clients, station
+uplink toward the daemon's network. Clients get **FIPS connectivity only** — embassy-net has
+no IP forwarding/NAT, so no internet or LAN access through `!FIPS`. Noise IK runs end-to-end
+between client and daemon; the relay cannot read or forge traffic, so the open AP exposes no
+more than the daemon's default-open LAN ACL already does. Hardware-verified 2026-08-20.
+
+**What the AP side provides:** DHCP server (8-address pool from .10, MAC-keyed leases),
+mDNS responder advertising `_fips._udp.local.` with the *upstream daemon's* npub/scope and
+the relay's own address (instance `fips-relay-<last 2 MAC bytes>`), and a per-client UDP
+relay (4 concurrent flows → own uplink socket each, idle slots recycled after 120 s).
+Because the advert carries the daemon's npub, clients' **pinned** discovery accepts the
+relay with no configuration change — zero-touch peering. Clients see the AP and get DHCP
+before the uplink is up; the advert appears once the daemon is found.
+
+**Roles are uplink config only** (same binary):
+```bash
+# Router: uplink = the daemon's LAN (defaults to WIFI_SSID/WIFI_PASSWORD)
+. ~/export-esp.sh && RUSTUP_TOOLCHAIN=esp \
+  WIFI_SSID="<home ssid>" WIFI_PASSWORD="<home pass>" \
+  DEVICE_NPUB_HEX_vps="<daemon npub_hex>" \
+  cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc --no-default-features --features relay-ap --bin microfips-esp32s3-relay-ap
+# Extender: uplink = another relay's !FIPS; re-advertises what it discovers upstream
+RELAY_UPLINK_SSID='!FIPS' RELAY_UPLINK_PASSWORD='' <same build command>
+# Client node for the !FIPS network (any WiFi node firmware):
+WIFI_SSID='!FIPS' WIFI_PASSWORD='' DEVICE_NPUB_HEX_vps="<daemon npub_hex>" cargo build -p microfips-esp32s3 ...
+```
+`RELAY_AP_SSID` overrides the offered SSID. **Run `cargo clean -p microfips-esp-transport -p
+microfips-esp32s3` between builds with different env values** (compiled-in, see the identity
+pitfall). Extender and Router share the SSID; the uplink scan picks the strongest BSSID that
+is not the board's own AP MAC, so an Extender never chains to itself. In AP+STA mode the AP
+follows the uplink's channel. Each hop uses 192.168.4.0/24 on both its AP and STA side —
+fine, because the two stacks are independent and nothing routes between them.
+
+**Verified chain:** Router (Walter #2) → daemon; client node joined `!FIPS`, got .10 by
+DHCP, discovered the relay via pinned mDNS, handshaked through it (ETX 1.0, 0% loss both
+directions, ~50 kbit/s goodput — same as direct). Extender (Walter #1) joined the Router
+(own BSSID excluded), took a lease, adopted the Router's advert as upstream and re-advertises.
+Not yet verified: a client on the Extender's segment (3-hop) — needs a third device; the
+daemon host itself cannot be the client because it is the uplink target.
+
+**Open-AP pitfall (fixed):** esp-radio's default station auth threshold is WPA2; joining an
+open network failed with `NoAccessPointFoundInAuthmodeThreshold`. All station paths now use
+`wifi_transport::station_config()`, which selects open auth for an empty password.
+
+**Logs:** `relay: DHCP reply to <mac> -> <ip> (<n> leases)`, `relay: uplink '<ssid>' via
+<bssid>`, `relay: upstream FIPS endpoint <ip:port>`; LED = upstream known. The relay logs
+only state changes — a silent console after boot is a settled, healthy relay.
+
+**Peer variant (`microfips-esp32s3-relay-ap-peer`, hardware-verified 2026-08-22):** same
+relay plus a full FIPS `Node` with the compiled-in device identity (`DEVICE_NSEC_HEX_esp32s3`)
+over the same uplink. `RelayPeerTransport` is one more UDP flow on the station stack toward
+whatever `uplink_task` published as upstream — the daemon on a Router, the upstream relay on
+an Extender — so a peering Extender runs Noise IK through the Router like any client. Raw
+framing (FIPS UDP). Each node session waits for/re-reads the upstream, so it follows daemon
+moves without owning the WiFi controller. Relay path stays FIPS-blind. In peer mode the LED
+shows the **node session** (not the uplink). Build = relay build + `--bin
+microfips-esp32s3-relay-ap-peer`. Verified Router+peer: mDNS-pinned upstream 192.168.1.97:2121,
+`handshake ok, entering steady`, heartbeats both ways, 1071-byte FilterAnnounce frames.
+Cost: +~12 KB RAM (socket buffers + node), +~180 KB flash.
+
+**Verified chain 2026-08-22 (both peers):** Walter #2 Router+peer (`esp32s3b`, 192.168.1.80)
+→ daemon; Walter #1 Extender+peer (`esp32s3`, 192.168.4.10 behind #2) → daemon through #2.
+`fipsctl show peers` lists both (`npub1tj7l…jus6` = #2 `fdcd:9177:582b:93ca:2144:ee27:a0ec:f197`,
+`npub1979a…zcrp` = #1 `fd6b:ef47:6b39:1177:c1d5:87c4:344:ddca`), `has_bloom_filter: false,
+has_tree_position: false` (leaf). `ping <fips-addr>` from the daemon host: 5/5 both, min
+10.5 ms (#2) / 14.7 ms (#1, two radio hops); first reply ~0.7 s (FSP session setup).
+
+**ICMPv6 echo over the IPv6 shim (added 2026-08-22):** the daemon delivers `ping` as an FSP
+DataPacket to port 256 (`[src_port:2 LE][dst_port:2 LE][format 0x00][ver_tc_flow:4]
+[next_header][hop_limit][ICMPv6…]`, current FIPS `upper/ipv6_shim.rs` — note the older
+6-byte `fsp::Ipv6Shim` in microfips-core has no format byte). Before this the request was
+handed to the demo request dispatcher, which answered with a text error, so nodes were
+unpingable. `microfips_core::ipv6_shim::icmpv6_echo_reply` now answers in
+`FspDualHandler::handle_responder` before the app sees the message; the checksum is updated
+incrementally (only the type byte changes; the swapped pseudo-header addresses are
+sum-invariant), so no address reconstruction is needed. The handler also logs every inbound
+session datagram (`fsp: datagram in len=… fsp_type=… src=… -> …`) at INFO.
+
+**Host tooling:** `fipsctl show {peers,links,sessions,routing,tree,bloom,…}` talks to
+`/run/fips/control.sock` (JSON) — use it to confirm a Walter's link from the daemon side
+(IK sessions are not in the daemon's INFO log). `fipstop` is the live monitor.
+
+**Silent-console pitfall (CP210x atoms/D0WD):** a "dead" UART logger is usually an
+UNREAD one. The USB-serial chip/driver buffers TX with no reader attached, so logs
+stop appearing (and the buffer stays full) until something opens the port and drains
+the backlog — then hours of logs flush at once. The 2026-08-29 L2CAP session
+misread this as "logger wedged after boot": the console answered JSON the whole
+time (raw `os.open`+termios, no TIOCM), and steady-state logs appeared the moment
+a reader attached. Rule: before diagnosing a silent logger, attach a reader and
+wait for the backlog; check the control interface separately — tasks can be alive
+and working while "invisible".
+
+**Console-tap pitfall:** opening the Walter's USB-Serial-JTAG port with pyserial resets the
+board even with `dtr=False; rts=False` set before `open()`. Keep one long-lived reader per
+board in the background (`nohup python3 tap.py 900 > tap.out &`, anchored `pgrep -f
+"^python3 tap.py"` to stop it — an unanchored `pkill -f` matches and kills the calling
+shell) and wait for `handshake ok` before measuring. `cargo clean -p …` without `--release
+--target xtensa-esp32s3-none-elf` removes 0 files and the next build silently reuses the
+previous identity/uplink env — always clean with profile and target when env changes.
+
+**Pinned-key pitfall (bit again 2026-08-22):** building without `DEVICE_NPUB_HEX_vps=<local
+daemon npub_hex>` pins the firmware to the real VPS key. Symptom on a relay: the uplink
+receives and parses the daemon's mDNS advert but the pinned filter rejects it, so it falls
+through to DNS and announces the VPS (`upstream FIPS endpoint 91.99.211.197:2121`), and a
+peer node then fails its handshake with `Timeout`. Also: `export $(grep -v '^#' .env | xargs)`
+splits `WIFI_SSID` values containing spaces — load `.env` line-wise
+(`while IFS='=' read -r k v; do export "$k=$v"; done < .env`).
+
+### Build-time identity overrides
+
+`microfips-build` lets a same-named env var override any `device-registry.json` value at build
+time, without editing the file:
+
+```bash
+DEVICE_NPUB_HEX_vps=02...   # repoint the firmware's peer key (e.g. at the local daemon)
+DEVICE_NSEC_HEX_esp32s3=... # override a device secret
+FIPS_TARGET_HOST=host-or-ip # override the static target (IPv4 literals skip DNS)
+FIPS_DISCOVERY_SCOPE=name   # open-mode mDNS scope filter
+```
+
+The registry is public-only (issue #134): vector devices carry `vector_key.generator_mul`
+(the scalar is derived at build time, never stored), host secrets are `RETRIEVE_FROM_*`
+markers, and `esp32c3` has NO default identity — build it with
+`DEVICE_NSEC_HEX_esp32c3=<64 hex>` (CI injects a throwaway value). See `.env.example`
+for the full env shape, including `FIPS_PEER_ALLOWLIST` (WireGuard-style responder
+allowlist, `fips-identity::load_peer_allowlist`).
+
+The local Linux daemon's current npub lives in `/etc/fips/fips.pub` and is mirrored in
+the `device-registry.json` `linux` entry. **If handshakes are silently ignored, check for a stale
+peer key first** — fips logs all MSG1 rejections at `debug` level or not at all, so a
+wrong responder key produces no daemon log output at the default INFO level
+(re-run with `RUST_LOG=debug` to see `Failed to process msg1` / `Invalid msg1 header`).
 
 ### ESP32 flash and monitor
 
@@ -1069,23 +1392,33 @@ echo "=== ESP32-S3 (USB JTAG) ==="
 for p in /dev/ttyACM*; do vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2); [ "$vid" = "303a/1001/101" ] && echo "  S3 on $p"; done
 ```
 
-## Nightly Toolchain
+## Toolchain
 
-Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` with `toolchain: nightly`.
+Host crates and STM32 firmware build on **stable** (verified 2026-08-30: core
+tests, protocol suite 135/135, thumbv7em release build — embassy has needed no
+nightly features since async-fn-in-trait stabilized in Rust 1.75). No
+`rust-toolchain.toml`: repos ride the machine default (stable) per
+hackathon-tooling's rust-toolchain policy. ESP32/xtensa builds explicitly set
+`RUSTUP_TOOLCHAIN=esp` (env override beats any toolchain file — that fork of
+nightly is required for `-Zbuild-std`). CI jobs pin their own toolchains via
+`dtolnay/rust-toolchain@v1` independent of local files.
 
 ## Actual MCU Keys (verified 2026-03-30)
 
 | MCU | Source | Pubkey (x-only, hex) | npub | NodeAddr |
 |-----|--------|----------------------|------|-----------|
-| STM32 | `keys.json` stm32, nsec=`...01` | `79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798` | `npub10xlxvlh...` | `132f39a9...` |
-| ESP32-D0WD | `keys.json` esp32, nsec=`...02` | `c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5` | `npub1ccz8l9z...` | `0135da2f...` |
-| ESP32-S3 | `keys.json` esp32s3, nsec=`...05` | `2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4` | `npub1lycg5qv...` | `6bef476b...` |
+| STM32 | `device-registry.json` stm32, nsec=`...01` | `79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798` | `npub10xlxvlh...` | `132f39a9...` |
+| ESP32-D0WD | `device-registry.json` esp32, nsec=`...02` | `c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5` | `npub1ccz8l9z...` | `0135da2f...` |
+| ESP32-S3 | `device-registry.json` esp32s3, nsec=`...05` | `2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4` | `npub1lycg5qv...` | `6bef476b...` |
 | VPS | `/etc/fips/fips.pub` on VPS | `0e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21` | `npub1peaqmgq6y4wduyr2yqh0fatnvah0ncj0rjqhd5p6aqaz5wsr05ssu0cnha` | — |
 | Linux FIPS | `/etc/fips/fips.pub` on this machine | `b3989043c68d9c2d3c8f949d73e61cae27997993432c3dbbd8498117d92d95bb` | `npub1979azcrp...` | `8b5844e7...` |
 
-All MCU keys are deterministic (secp256k1 generator × N). See `keys.json` for full hex values.
+All MCU keys are deterministic (secp256k1 generator × N); the registry stores only the
+multiplier (`vector_key.generator_mul`), never the scalar — microfips-build derives
+`nsec = BE32(N)` at build time (issue #134). `crates/microfips-core/tests/device_registry.rs`
+CI-enforces the public-only schema and greps the tree for retired literals.
 ESP32-D0WD pubkey verified via FIPS peer authentication log.
-ESP32-S3 pubkey from `keys.json` (verified 2026-04-10, NodeAddr `6bef476b391177c1d587c40344ddcab1`).
+ESP32-S3 pubkey from `device-registry.json` (verified 2026-04-10, NodeAddr `6bef476b391177c1d587c40344ddcab1`).
 
 ## CI Pipeline
 
@@ -1115,6 +1448,7 @@ When not set, tools panic — no default device identity is allowed.
 | #90 | L2CAP RX channel capacity overflow | bug | Fixed: RX channel increased 5→16 slots (commit `dcf3dc8`). Needs hardware verification. |
 | #88 | FRAME_CAP vs FIPS MTU RAM tradeoff | analysis | Resolved: FRAME_CAP=768 (max that links on ESP32-D0WD DRAM budget). MTU stays 2048. |
 | #77 | Firmware DoS hardening | security | Reconnect limits, memory protection. See also FIPS #57 (packet loss degradation on ESP32-S3). |
+| #91 | ESP32-S3 STA WiFi power-save latency spikes | fixed (STA) | Pure-STA path fixed via init-config PS=None (commit `07bbdcf`, min ~9 ms across a 5-min soak). Relay AP+STA must keep default power save — disabling it regresses to 180–830 ms. See "ESP32-S3 WiFi Power-Save Latency" below. |
 
 ### FIPS Issues Affecting microfips
 
@@ -1130,6 +1464,75 @@ Tracking upstream FIPS GitHub issues (Amperstrand/fips) that affect microfips:
 | #56 | 0-byte frame fatal disconnect | CLOSED | **Verified fixed** — FIPS now handles gracefully. ESP32 never sends 0-byte frames. |
 | #66 | ESP32-S3 MTU limitation and bloom filter skip | CLOSED | **Verified** — FIPS skips FilterAnnounce to MTU-limited peers. |
 | #55 | Dual-role tie-breaker deadlock | CLOSED | **Verified fixed** — FIPS adds disconnect+settle delay after yield. |
+
+## ESP32-S3 WiFi Power-Save Latency (Issue #91)
+
+**Symptom.** Ping to an ESP32-S3 WiFi node (any `!FIPS` client, an Extender, or a plain
+STA on the home router) is a healthy ~10 ms for the first ~30 s after association, then
+degrades into intermittent episodes of **170–800 ms RTT with bunched replies** (`ping`
+reports `pipe 2–5`). During an episode even the *minimum* RTT rises to a beacon-multiple
+floor — every packet is delayed, not just some. Between episodes it returns to ~10 ms. It
+is **not** a constant tax; it is periodic bursts on a fast baseline.
+
+**Root cause (investigated 2026-08-22).** STA-side WiFi modem-sleep / DTIM buffering. The
+esp-radio blob defaults to `WIFI_PS_MIN_MODEM`; after the link goes idle the station parks
+its receiver between the AP's DTIM beacons, so the AP buffers downlink and releases it in
+bursts. Confirmed by elimination — each test isolates one variable:
+
+| Test | Result | Rules out |
+|------|--------|-----------|
+| Idle-yield probe during a spike | executor polled 140k/s → **116/s** | raw CPU load (core is starved of *wakeups*, not busy) |
+| Heap sampled through spikes | flat 50–53 KB | memory leak / allocator stall |
+| Slow with **no USB reader** attached | still slow | serial-JTAG logging FIFO |
+| **Pure STA** build (no peer-node, no relay) | still slow | the `relay-ap-peer` code |
+| **1 ping/s vs 5 ping/s** | both hit the same floor | throughput/backlog — it is per-packet *latency* |
+| Phone confirmed on the home AP, not `!FIPS` | spikes persist | a sleeping client on our softAP |
+| **Bare STA on the home router, no softAP** | still spikes, ~30 s onset | AP+STA single-radio coexistence |
+
+The last row is decisive: a plain station with no softAP and no hop chain still spikes, so
+the buffering is the station's own sleep against the upstream AP.
+
+**FIX for the pure-STA path (verified, committed `07bbdcf`).** Disable STA power save via
+esp-radio's *init-config*, not a post-`set_config` call. `esp_radio::wifi::new()` runs
+`set_power_saving(None)` and then `set_config(initial_config)` as one init with a single
+`esp_wifi_start`, so passing the station config as `ControllerConfig::default()
+.with_initial_config(Config::Station(...))` keeps PS=None from being clobbered:
+
+```rust
+let controller_config = esp_radio::wifi::ControllerConfig::default()
+    .with_initial_config(WifiConfig::Station(station_config(ssid, password)));
+let (mut wifi_controller, interfaces) = esp_radio::wifi::new(wifi, controller_config)?;
+// ...no separate set_config; connect_async() directly.
+```
+
+Verified A/B on one board/identity (bare STA on the home router): before, min RTT jumped to
+170 ms in ~30 s-onset episodes (windows 170–850 ms); after, **min holds ~9 ms across a 5-min
+soak**, only sporadic single-packet jitter to ~180 ms. Applies to `wifi_transport.rs`
+(plain WiFi / hybrid leaf node).
+
+**Do NOT call `set_power_saving(None)` yourself after a separate `set_config` on the pure-STA
+path** — that applies cleanly (logs `Ok`, Noise link handshakes) but the build then answers
+**0 pings** (link `connected`, FSP datagrams stall), reproducible across a hard reset. Use
+the init-config form above instead.
+
+**Do NOT disable STA power save on the relay (AP+STA) path — it REGRESSES latency.** In
+AP+STA the default `WIFI_PS_MIN_MODEM` is the *good* config. Head-to-head, same instant:
+a Router with `set_power_saving(None)` added to `apply_config` ran a **uniform 180–830 ms**
+(every window, no fast samples), while the unmodified committed Router beside it held
+**9–22 ms**. Forcing the station awake breaks the single-radio AP+STA time-sharing. The
+relay's own latency is intermittent spikes on a ~9 ms baseline (a milder, separate
+coexistence effect, related to upstream FIPS #57) and is **not** helped by any PS change;
+leave the relay on the default. If a relay-side fix is ever needed, the lever is softAP
+DTIM/beacon tuning in `AccessPointConfig`, not STA power save.
+
+**Testing caveat (bit me repeatedly).** Reflashing the *same* device identity many times in
+a row leaves stale link/session state on the daemon for that node address, which produces
+flaky ICMP (link `connected` in `fipsctl show links` but 0 % echo) that is easy to mistake
+for a firmware regression. When validating a fix, flash a *fresh* identity, or restart the
+daemon, and confirm against `fipsctl show links` / `show peers` before trusting a ping
+result. Measure with `ping -c10 -i0.2` and read the **min** (baseline health) separately
+from avg/max (episode severity); a single 5-ping burst is too short to catch the ~30 s
+onset.
 
 ## BLE Address Type Pitfall (Issue #81)
 
@@ -1234,3 +1637,124 @@ When the `next` branch ships, microfips will need:
 3. **Version negotiation** — min/max version range, 64-bit feature bitfield, TLV extensions
 4. **Profile negotiation** — new concept, requirements TBD
 5. **Golden vector regeneration** — XX handshake vectors needed for validation
+
+## Lab Bench Test Rig (added 2026-08-29)
+
+Physical bench for hardware-testing PRs (mDNS/ESP-NOW/hybrid/link-death, e.g. PR #156).
+Tooling: `tools/lab_keygen.py`, `tools/fips-lab.yaml`, `scripts/run_lab_daemon.sh`,
+`tools/detect_lab_ports.sh`. Migration target: fips-lab (labgrid) — see bottom.
+
+### Current bench inventory
+
+| Board | Chip | Identity (device-registry.json) | USB | Port |
+|-------|------|----------------------|-----|------|
+| lab workstation | — | `lab-daemon` G·8 | — | runs the FIPS lab daemon |
+| S3 board `F4:12:FA:CF:03:84` | ESP32-S3 16MB | `s3-lab` G·9 | USB-JTAG | ttyACM by-id Espressif serial |
+| CYD | ESP32-D0WD-V3 | `cyd` G·10 | CH340 | ttyUSB by-path (CH340 has no serial) |
+| M5 Atom `81528A13B6` | ESP32-PICO-D4 | `atom-a` G·11 | FTDI | ttyUSB by-id |
+| M5 Atom `9D529068B4` | ESP32-PICO-D4 | `atom-b` G·12 | FTDI | ttyUSB by-id |
+| M5 Stack `Hades2001` | — | — | FTDI | **OFF-LIMITS — other project** |
+
+Identity assignment rule: **one deterministic key per physical board (MAC/serial
+labeled), never per-role**. `tools/lab_keygen.py N` derives nsec/npub/node_addr
+(generator·N, node_addr = SHA256(x)[..16]) with a self-check; write the entry into
+device-registry.json and override at build time (`DEVICE_NSEC_HEX_esp32s3=...` etc. — the
+microfips-build env-override feature). The daemon peers pin via
+`DEVICE_NPUB_HEX_vps=<lab-daemon npub>`.
+
+### Lab daemon security checklist (run before exposing any test daemon)
+
+1. Isolated `--config` with explicit deterministic nsec — NEVER the workstation's
+   persistent `/etc/fips/fips.key`, and never reuse `vps`/`linux` identities.
+2. `bind_addr` scoped to the lab AP interface, not `0.0.0.0` — the workstation has
+   NO host firewall (ufw inactive) and sits on multiple interfaces (LAN,
+   docker bridges; NetBird is NOT running on this machine as of 2026-08-30 —
+   older docs said otherwise. Autodetect: `ip link | grep -E "wt|nb"` and
+   `systemctl is-active netbird` before reasoning about overlay exposure).
+3. Dedicated UDP port (21213 in use; system daemon keeps 2121 — they coexist).
+4. Know the mDNS exposure: `rendezvous.lan` joins multicast on ALL interfaces
+   (mdns-sd has no interface filter). Advert data is public-key-only; fine on the
+   lab LAN, do not enable where untrusted L2 exists.
+5. Audit with `ss -tulnp` after start; expect exactly one v4 UDP bind on the AP IP.
+
+### Lessons learned (2026-08-29 session)
+
+- **nohup is not enough.** A `nohup cmd &` launched from a tool shell dies when the
+  shell times out — the SIGTERM hits the whole process group. Use
+  `setsid cmd > log 2>&1 < /dev/null &` (see `scripts/run_lab_daemon.sh`). Symptom
+  seen: daemon silently dead 2 min after "successful" start; every later probe
+  (mDNS browse, bridge) mysteriously timed out against a corpse.
+- **pkill -f self-match** (hit AGAIN despite the warning above): the pattern
+  `fips --config /tmp/opencode/fips-lab` matched the invoking shell's own command
+  line and killed it. Kill by exact PID resolved via `pgrep -f "<config path>"`.
+- **"mdns broken" was a dead daemon.** Verify the service is alive (fresh log
+  lines, PID check) before debugging the protocol. `zeroconf` (pip) is the fastest
+  independent advert check: browse `_fips._udp.local.` for ~4s.
+- **Binary path sharing:** the systemd `fips.service` runs
+  `/home/ubuntu/src/fips/target/release/fips` — a `cargo build` there silently
+  refreshes the system daemon binary (Restart=on-failure picks it up). Build in a
+  worktree if you don't want that.
+- **espflash flash syntax:** `espflash flash -p PORT --chip CHIP IMAGE` — this
+  version has no `--no-monitor` flag; run monitors separately (pyserial).
+- **Board ports are unstable; CH340 (CYD) exposes no USB serial number** — pin by
+  `/dev/serial/by-path/` for the CYD, by-id for FTDI atoms and the S3 USB-JTAG.
+
+### Orchestration roadmap (fips-lab migration)
+
+Phase 1 — labgrid targets for the bench (S3 via espflash USB-JTAG; CYD/atoms via
+esptool), port pinning from `detect_lab_ports.sh` semantics, and a
+`LabFipsServiceDriver` (isolated config/port/identity + the security checklist).
+Phase 2 — scenario suites `test_mdns_discovery.py`, `test_espnow_gw.py`,
+`test_hybrid_switch.py`, `test_link_death.py` (daemon stop/start via the driver =
+RX-silence test), with keygen→cargo-env wiring automated in fixtures.
+Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
+reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
+
+### More lessons (same session, hybrid-switch testing)
+
+- **`option_env!` env knobs are invisible to cargo's change detection.**
+  `HYBRID_TEST_WIFI_DOWN_SECS` / `HYBRID_WIFI_PROBE_SECS` / `ESP_NOW_CHANNEL` have no
+  `rerun-if-env-changed` — setting OR clearing them silently keeps stale values in the
+  binary. Always `touch crates/microfips-esp-transport/src/config.rs` (or `cargo clean -p`)
+  when changing these, and verify the knob landed via its boot log line before drawing
+  conclusions. Fix tracked in the hybrid return-to-WiFi issue.
+- **Opening `/dev/ttyACM*` (USB-JTAG) resets the board** — pyserial asserts DTR on open.
+  For observation without disturbance use raw `os.open` + `termios` (no TIOCM touches;
+  see /tmp/opencode/raw_logger.py pattern), or keep one persistent owner.
+- **Never let two processes drive the same serial port** (logger + esptool DTR/RTS dance
+  knocked an S3 into download mode). One owner; reboot via the firmware console `reset`
+  command or via esptool while nothing else holds the port.
+- **Verify which path actually carries traffic** before debugging protocol code: node logs
+  look identical across transports. Use `ip neigh` (ARP presence), daemon-side mDNS bursts,
+  and `tcpdump 'udp port 5353 or host <node-ip>'` as ground truth.
+
+### Spec quotes (greatspectations dogfood, 2026-08-29)
+
+We pin verbatim spec quotes in source comments and CI-check them against vendored
+spec documents, using our experimental fork `Amperstrand/greatspectations`
+(default branch `ai-experimental-slop` — clearly labeled as our AI-experiment
+branch; upstream conversations only after the dogfood proves value).
+
+- `specquotes.toml` + `specs/` (vendored at a pinned upstream ref, see
+  `specs/*.pin`) define the sources; the CI job `Spec Quotes` enforces them.
+- Quote syntax: `// BIP #173: <verbatim spec text>`; `// Note:` lines are
+  comment-asides (dropped from the match) used to record accepted deviations
+  with rationale, directly adjacent to the spec line they deviate from.
+- First use: `crates/fips-identity/src/bech32.rs` pins BIP-173's encoder-
+  lowercase MUST (we comply) and the mixed-case MUST NOT (documented deviation
+  from the PR #156 review — harmless because the decoded key is only a routing
+  hint authenticated by Noise IK).
+- Local run:
+  `uvx --from /home/ubuntu/src/greatspectations greatspectate check --config specquotes.toml --comment-start "// " --comment-continue "//" --comment-aside "// Note:" <files>`
+- Drift is caught with file:line precision plus a "closest match (NN%)"
+  hint — tamper-test verified 2026-08-29.
+
+### CYD radio: not dead, just slow (2026-08-29 correction)
+
+The CYD was misdiagnosed as radio-dead from `NoAccessPointFound` (rssi -128) inside
+a ~60s window while an Atom associated from the same desk. Reflash + a longer
+patience window: it associates fine, DHCPs, and completed an mdns-open
+trust-on-first-advert discovery + IK handshake against the lab daemon. Rule: give
+a board's WiFi retry loop at least 2-3 minutes (5 attempts) before concluding
+hardware faults — and prefer cross-checking (another board on the same AP) over
+attributing to the radio early.
