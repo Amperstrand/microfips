@@ -955,7 +955,7 @@ dependencies = [
 [[package]]
 name = "embassy-stm32f469i-disco"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/embassy-stm32f469i-disco?rev=365bdff#365bdffab38164d80cc7408e0603863e97ecf1b2"
+source = "git+https://github.com/Amperstrand/embassy-stm32f469i-disco?rev=1c0dd34#1c0dd34e8cd4d86198eaaf2257afb438624a8d45"
 dependencies = [
  "cortex-m",
  "embassy-stm32",
