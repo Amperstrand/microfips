@@ -25,6 +25,7 @@ import time
 
 PRODUCT_MCU = "c0de/cafe"
 PRODUCT_ESP32 = "10c4/ea60"
+PRODUCT_ESP32_S3 = "303a/1001"  # native USB-JTAG-serial (ESP32-S3/C3)
 EPOCH_MS = 1700000000000
 
 
@@ -32,17 +33,22 @@ def ts():
     return time.strftime("%H:%M:%S") + f".{int(time.time()*1000)%1000:03d}"
 
 
-def find_port(product_match):
+def find_port(product_match, serial_number=None):
+    # serial_number pins one physical board: several ESP32-S3 boards can
+    # share the 303a/1001 VID:PID, and reconnecting to the wrong one would
+    # cross-wire the bridge into another node's console.
     for p in serial.tools.list_ports.comports():
         vid_hex = f"{p.vid:04x}" if p.vid else ""
         pid_hex = f"{p.pid:04x}" if p.pid else ""
         if f"{vid_hex}/{pid_hex}" == product_match:
+            if serial_number and p.serial_number != serial_number:
+                continue
             return p.device
     return None
 
 
 def find_any_mcu():
-    for match in [PRODUCT_MCU, PRODUCT_ESP32]:
+    for match in [PRODUCT_MCU, PRODUCT_ESP32, PRODUCT_ESP32_S3]:
         port = find_port(match)
         if port:
             return port, match
@@ -60,6 +66,7 @@ class SerialUdpBridge:
 
         self._baud = baud
         self._product_match = self._get_product_match(serial_port)
+        self._serial_number = self._get_serial_number(serial_port)
         self.reconnects = 0
 
         self.cdc_rx_bytes = 0
@@ -95,13 +102,21 @@ class SerialUdpBridge:
                 vid_hex = f"{pi.vid:04x}" if pi.vid else ""
                 pid_hex = f"{pi.pid:04x}" if pi.pid else ""
                 vid_pid = f"{vid_hex}/{pid_hex}"
-                if vid_pid in (PRODUCT_MCU, PRODUCT_ESP32):
+                if vid_pid in (PRODUCT_MCU, PRODUCT_ESP32, PRODUCT_ESP32_S3):
                     return vid_pid
         except Exception:
             pass
         if serial_port.startswith("/dev/ttyUSB"):
             return PRODUCT_ESP32
         return PRODUCT_MCU
+
+    def _get_serial_number(self, serial_port):
+        try:
+            for pi in serial.tools.list_ports.grep(serial_port):
+                return pi.serial_number
+        except Exception:
+            pass
+        return None
 
     def _open_serial(self, port, baud):
         for attempt in range(40):
@@ -178,7 +193,7 @@ class SerialUdpBridge:
                 if self.stop_event.is_set():
                     return False
 
-                port = find_port(self._product_match)
+                port = find_port(self._product_match, self._serial_number)
                 if port:
                     try:
                         self.ser = serial.Serial(

@@ -12,6 +12,8 @@ default = []
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
 wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
+mdns-open = ["wifi", "microfips-esp-transport/mdns-open"]
+esp-now = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/esp-now"]
 benchmark = ["microfips-protocol/benchmark"]
 
 [[bin]]
@@ -32,6 +34,16 @@ required-features = ["l2cap"]
 name = "microfips-esp32-wifi"
 path = "src/bin/wifi.rs"
 required-features = ["wifi"]
+
+[[bin]]
+name = "microfips-esp32-espnow"
+path = "src/bin/espnow.rs"
+required-features = ["esp-now"]
+
+[[bin]]
+name = "microfips-esp32-espnow-wifi-gw"
+path = "src/bin/espnow_wifi_gw.rs"
+required-features = ["esp-now", "wifi"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }

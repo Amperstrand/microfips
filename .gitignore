@@ -17,3 +17,6 @@ fips
 .sisyphus/
 .playwright-mcp/
 .omo/
+
+# Runtime FIPS transport-key keylog consumed by fips-decrypt (never commit)
+keys.jsonl
