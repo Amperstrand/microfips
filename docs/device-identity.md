@@ -2,7 +2,7 @@
 
 ## Current State
 
-All device keys are deterministic test keys compiled at build time from `keys.json`. Each device
+All device keys are deterministic test keys compiled at build time from `device-registry.json`. Each device
 gets a secp256k1 keypair derived from the generator point × N (where N is the last byte index).
 
 This works for development but every firmware build of the same board type shares the same

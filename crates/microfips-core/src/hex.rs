@@ -49,10 +49,10 @@ mod tests {
 
     #[test]
     fn parse_32_bytes() {
-        let s = "0000000000000000000000000000000000000000000000000000000000000001";
+        let s = "abababababababababababababababababababababababababababababababcd";
         let arr = hex_bytes_32(s);
-        assert_eq!(arr[31], 0x01);
-        assert_eq!(arr[0], 0x00);
+        assert_eq!(arr[31], 0xcd);
+        assert_eq!(arr[0], 0xab);
     }
 
     #[test]
