@@ -31,14 +31,23 @@ suggestion (MabezDev's own direction from #5376). Relay-ap needed no
 workaround: its uplink task owns the controller &'static mut and the relay
 never touches esp-now — landed 8a6a521+.
 
-## Hybrid: chosen design (scoped sessions)
-Make EspNowTransport lifetime-generic ('static -> 'a). HybridTransport holds
-the controller &'static mut (StaticCell) + persistent fragmenter/reassembler
-state, and constructs the esp-now transport PER esp-now session: the pieces'
-borrow region = the session; dropping the session transport releases the
-shared borrow before the wifi phase takes &mut (connect/scan). No unsafe, no
-task restructure, borrow regions alternate by construction. The esp-now-node
-path keeps 'static ('a == 'static) — zero behavior change there.
+## Hybrid: blocked upstream (decision 2026-08-30, revised after full read)
+Scoped sessions handle mode SWITCHES but not the in-session reality: the
+protocol layer calls recv per frame, so the esp-now pieces must persist
+across recv calls within a session — and the mid-session AP probes
+(scan_async, &mut) fire while pieces are alive. Storing pieces alongside the
+controller's &mut is unexpressible in safe Rust. Three exits:
+(a) WAIT for esp-rs/esp-hal#6243 (EspNow-wraps-controller direction) — then
+    the port is ~1h of mechanical work. RECOMMENDED; the beta window makes
+    a timely upstream answer likely.
+(b) One-site unsafe lifetime extension of EspNow<'_> -> 'static (soundness
+    argument: EspNowRc is a global singleton; pieces never dereference the
+    controller; the borrow exists solely for deinit ordering, and hybrid
+    never deinits). Requires maintainer blessing — flagged, not chosen.
+(c) Protocol-layer rearchitecture (session-owning transport) — invasive,
+    touches microfips-protocol for one transport's sake.
+Until one lands, hybrid stays gated behind the explicit `hybrid` feature on
+this branch; main keeps hybrid on esp-radio 0.18.
 
 ## The hybrid/relay blocker (design gap, not mechanics)
 esp-radio 1.0's esp_now() binds EspNow lifetimes to a controller borrow;
