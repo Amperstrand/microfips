@@ -8,6 +8,7 @@ description = "Minimal FIPS leaf node on ESP32-S3"
 name = "microfips_esp32s3"
 
 [features]
+hybrid = ["microfips-esp-transport/hybrid"]
 default = ["wifi"]
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
@@ -66,7 +67,7 @@ required-features = ["esp-now", "wifi"]
 [[bin]]
 name = "microfips-esp32s3-hybrid"
 path = "src/bin/hybrid.rs"
-required-features = ["esp-now", "wifi"]
+required-features = ["esp-now", "wifi", "hybrid"]
 
 # FIPS relay access point (Router/Extender by uplink config; not a node)
 [[bin]]

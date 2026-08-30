@@ -24,27 +24,12 @@ esp-rtos = "0.3.0"
 esp-bootloader-esp-idf = "0.5"
 esp-radio = { version = "1.0.0-beta.0", default-features = false, features = ["unstable"] }
 esp-alloc = "0.10"
-bt-hci = "0.10"
+bt-hci = "0.9"
 embedded-io = "0.7"
 esp-println = { version = "0.17.0", default-features = false }
 log = "0.4"
 rand_core = { version = "0.6", default-features = false }
 embassy-net = "0.9.0"
 portable-atomic = { version = "1", default-features = false }
-trouble-host = { version = "0.8.0", features = ["default-packet-pool", "scan", "central"] }
+trouble-host = { version = "0.7.0", features = ["default-packet-pool", "scan", "central"] }
 microfips-build = { path = "crates/microfips-build" }
-
-[patch.crates-io]
-esp-alloc = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-backtrace = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-bootloader-esp-idf = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-hal = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-println = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-radio = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-rtos = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-rom-sys = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-phy = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-config = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-hal-procmacros = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-sync = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
-esp-storage = { git = "https://github.com/embassy-rs/esp-hal.git", rev = "7af0919e56e8298a7cb429da7f078757e350d842" }
