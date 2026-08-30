@@ -43,7 +43,7 @@ pub struct EspNowTransport {
     unlocked_sends: u8,
     /// Keeps the WiFi driver alive — dropping it stops the radio.
     /// `None` when someone else (e.g. the hybrid transport) owns it.
-    _wifi_controller: Option<WifiController<'static>>,
+    _wifi_controller: Option<&'static WifiController<'static>>,
 }
 
 impl EspNowTransport {
@@ -51,7 +51,7 @@ impl EspNowTransport {
     /// side (both radios are unassociated, so nothing else pins it).
     pub fn new(
         esp_now: EspNow<'static>,
-        wifi_controller: WifiController<'static>,
+        wifi_controller: &'static WifiController<'static>,
         channel: u8,
     ) -> Self {
         if let Err(_e) = esp_now.set_channel(channel) {

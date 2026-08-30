@@ -41,7 +41,7 @@ enum Mode {
 }
 
 pub struct HybridTransport {
-    controller: WifiController<'static>,
+    controller: &'static mut WifiController<'static>,
     stack: Stack<'static>,
     udp: UdpTransport<'static>,
     espnow: EspNowTransport,
@@ -61,7 +61,7 @@ pub struct HybridTransport {
 impl HybridTransport {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        controller: WifiController<'static>,
+        controller: &'static mut WifiController<'static>,
         stack: Stack<'static>,
         socket: UdpSocket<'static>,
         daemon: IpEndpoint,
@@ -184,7 +184,7 @@ impl HybridTransport {
 
 #[embassy_executor::task]
 async fn hybrid_net_task(
-    mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface<'static>>,
+    mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface>,
 ) {
     runner.run().await;
 }
@@ -216,14 +216,16 @@ pub async fn build_hybrid_transport(
     static HY_TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static HY_TX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
 
-    let (mut controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
-    let esp_now = interfaces.esp_now;
+    static WCTRL: static_cell::StaticCell<esp_radio::wifi::WifiController> =
+        static_cell::StaticCell::new();
+    let mut controller =
+        WCTRL.init(esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("WifiController::new failed"));
+    let esp_now = controller.esp_now();
 
     let resources = HY_RESOURCES.init(StackResources::new());
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
     let (stack, runner) = embassy_net::new(
-        interfaces.station,
+        esp_radio::wifi::Interface::station(),
         Config::dhcpv4(Default::default()),
         resources,
         seed,

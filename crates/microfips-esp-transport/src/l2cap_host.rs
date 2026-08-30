@@ -4,6 +4,9 @@ extern crate alloc;
 
 use portable_atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
+use bt_hci::{
+    ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci,
+};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -50,6 +53,103 @@ static L2CAP_PEER_CAPS: AtomicU8 = AtomicU8::new(0);
 /// (pre-sync branch) peers use `[2B BE len][frame]` prefixed SDUs.
 static L2CAP_RAW_FRAMES: AtomicBool = AtomicBool::new(false);
 static STAT_L2CAP_REKEY_FRAMES: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Debug, Clone, Copy)]
+enum BleHciError {
+    Io,
+    Parse,
+}
+
+impl core::fmt::Display for BleHciError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io => f.write_str("BLE HCI I/O error"),
+            Self::Parse => f.write_str("BLE HCI parse error"),
+        }
+    }
+}
+
+impl core::error::Error for BleHciError {}
+
+impl embedded_io::Error for BleHciError {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        embedded_io::ErrorKind::Other
+    }
+}
+
+impl From<FromHciBytesError> for BleHciError {
+    fn from(_: FromHciBytesError) -> Self {
+        Self::Parse
+    }
+}
+
+struct BleHciTransport<'d> {
+    connector: core::cell::UnsafeCell<BleConnector<'d>>,
+}
+
+// SAFETY: BleHciTransport wraps UnsafeCell<BleConnector> for interior mutability.
+// It is constructed once as a singleton (via StaticCell) and shared between embassy
+// executor read/write paths. Embassy's cooperative scheduling guarantees read() and
+// write() are not called concurrently on the same transport instance.
+unsafe impl Sync for BleHciTransport<'_> {}
+
+// SAFETY: BleHciTransport can be sent between threads because the UnsafeCell
+// is only accessed through &self methods with embassy's cooperative scheduling
+// guaranteeing no concurrent access. See Sync impl above.
+unsafe impl Send for BleHciTransport<'_> {}
+
+impl<'d> BleHciTransport<'d> {
+    fn new(connector: BleConnector<'d>) -> Self {
+        Self {
+            connector: core::cell::UnsafeCell::new(connector),
+        }
+    }
+}
+
+impl embedded_io::ErrorType for BleHciTransport<'_> {
+    type Error = BleHciError;
+}
+
+impl bt_hci::transport::Transport for BleHciTransport<'_> {
+    async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
+        let rx_ptr: *mut [u8] = rx;
+        loop {
+            // SAFETY: Obtaining a mutable reference from the UnsafeCell. This is safe because
+            // embassy's cooperative async model guarantees read() and write() are not called
+            // concurrently — the trouble runner serializes HCI packet processing.
+            let connector = unsafe { &mut *self.connector.get() };
+            // SAFETY: connector.next() is a HAL function that reads HCI data from the BLE
+            // controller. rx_ptr was created from &mut [u8] so it is valid for writes.
+            // Single-threaded access per embassy cooperative scheduling.
+            let len = unsafe { connector.next(&mut *rx_ptr) }.map_err(|_| BleHciError::Io)?;
+            if len == 0 {
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
+                continue;
+            }
+            match ControllerToHostPacket::from_hci_bytes_complete(&rx[..len]) {
+                Ok(pkt) => return Ok(pkt),
+                Err(_) => {
+                    log::warn!("parse error, dropping packet");
+                    continue;
+                }
+            }
+        }
+    }
+
+    async fn write<T: HostToControllerPacket>(&self, val: &T) -> Result<(), Self::Error> {
+        let mut buf = [0u8; 259];
+        let wi = bt_hci::transport::WithIndicator::new(val);
+        let len = wi.size();
+        wi.write_hci(&mut buf[..len]).map_err(|_| BleHciError::Io)?;
+        // SAFETY: Same justification as read() above — UnsafeCell deref is safe because
+        // embassy cooperative scheduling prevents concurrent access.
+        let connector = unsafe { &mut *self.connector.get() };
+        connector
+            .write(&buf[..len])
+            .map(|_| ())
+            .map_err(|_| BleHciError::Io)
+    }
+}
 
 fn drain_l2cap_channels() {
     while L2CAP_TX_CH.try_receive().is_ok() {}
@@ -529,9 +629,10 @@ pub async fn l2cap_host_task() {
     };
     log::info!("connector ready");
 
-    let controller: ExternalController<_, 20> = ExternalController::new(connector);
+    let controller: ExternalController<_, 20> =
+        ExternalController::new(BleHciTransport::new(connector));
     log::info!("controller created");
-    let mut resources: HostResources<DefaultPacketPool, 1, 3> = HostResources::new();
+    let mut resources: HostResources<_, DefaultPacketPool, 1, 3> = HostResources::new();
     log::info!("host resources initialized");
     let stack = trouble_host::new(controller, &mut resources).register_l2cap_spsm(L2CAP_PSM);
     let stack = if USE_PUBLIC_BLE_ADDRESS {
