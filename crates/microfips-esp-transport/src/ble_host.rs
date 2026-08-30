@@ -250,15 +250,15 @@ pub async fn ble_host_task() {
                     Either::First(GattConnectionEvent::Gatt { event }) => match event {
                         GattEvent::Write(e) => {
                             if e.handle() == server.fips_service.rx_data.handle {
-                                if e.data().len() > BLE_MAX_FRAME {
-                                    log::warn!(
-                                        "RX write dropped: {}B > max {}B",
-                                        e.data().len(),
-                                        BLE_MAX_FRAME
-                                    );
+                                let len = e.with_data(|len, _| len);
+                                if len > BLE_MAX_FRAME {
+                                    log::warn!("RX write dropped: {}B > max {}", len, BLE_MAX_FRAME);
                                 } else {
                                     let mut frame = heapless::Vec::<u8, BLE_MAX_FRAME>::new();
-                                    if frame.extend_from_slice(e.data()).is_ok() {
+                                    let ok = e.with_data(|_, bytes| {
+                                        frame.extend_from_slice(bytes).is_ok()
+                                    });
+                                    if ok {
                                         BLE_RX_CH.send(frame).await;
                                         BLE_STATS.rx.fetch_add(1, Ordering::Relaxed);
                                     }
@@ -279,7 +279,7 @@ pub async fn ble_host_task() {
                         if server
                             .fips_service
                             .tx_data
-                            .notify(&conn, &frame)
+                            .notify(&conn, &frame, false)
                             .await
                             .is_err()
                         {
