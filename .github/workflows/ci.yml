@@ -439,9 +439,6 @@ jobs:
         with:
           key: esp32
 
-      - name: Add rust-src component
-        run: rustup component add rust-src
-
       - name: Build ESP32 UART
         run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
 
