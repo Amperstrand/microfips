@@ -174,7 +174,7 @@ mod heapless_label {
 }
 
 #[embassy_executor::task(pool_size = 2)]
-async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
+async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await;
 }
 
@@ -386,7 +386,7 @@ fn apply_config(
 /// the daemon or upstream relay, publish it for the AP-side tasks.
 #[embassy_executor::task]
 async fn uplink_task(
-    mut controller: WifiController<'static>,
+    mut controller: &'static mut WifiController<'static>,
     sta_stack: Stack<'static>,
     own_ap_mac: [u8; 6],
     led: Option<&'static Mutex<CriticalSectionRawMutex, RefCell<crate::led::Led>>>,
@@ -624,9 +624,12 @@ async fn run_relay_ap_opts(
     static PEER_BUF: StaticCell<[u8; 4096]> = StaticCell::new();
     static PEER_SOCKET: StaticCell<UdpSocket<'static>> = StaticCell::new();
 
-    let (mut controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
-    let own_ap_mac = interfaces.access_point.mac_address();
+    static WCTRL: StaticCell<esp_radio::wifi::WifiController> = StaticCell::new();
+    let mut controller =
+        WCTRL.init(esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("WifiController::new failed"));
+    let ap_if = esp_radio::wifi::Interface::access_point();
+    let sta_if = esp_radio::wifi::Interface::station();
+    let own_ap_mac = ap_if.mac_address();
     let labels: &'static Labels = LABELS.init(Labels {
         instance: heapless_label::Label::new("fips-relay-", own_ap_mac),
         host: heapless_label::Label::new("fips-relay-", own_ap_mac),
@@ -634,7 +637,7 @@ async fn run_relay_ap_opts(
 
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
     let (sta_stack, sta_runner) = embassy_net::new(
-        interfaces.station,
+        sta_if,
         Config::dhcpv4(Default::default()),
         STA_RESOURCES.init(StackResources::new()),
         seed,
@@ -645,7 +648,7 @@ async fn run_relay_ap_opts(
         dns_servers: Default::default(),
     });
     let (ap_stack, ap_runner) = embassy_net::new(
-        interfaces.access_point,
+        ap_if,
         ap_config,
         AP_RESOURCES.init(StackResources::new()),
         seed ^ 0x9e37_79b9_7f4a_7c15,

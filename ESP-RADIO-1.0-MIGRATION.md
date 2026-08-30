@@ -22,6 +22,24 @@ our existing verified HCI glue. Two bt-hci majors coexist (esp-radio internal
 - hybrid + relay-ap: still unported; hybrid now gated behind an explicit
   `hybrid` feature (bin requires esp-now+wifi+hybrid).
 
+## Upstream feedback filed
+esp-rs/esp-hal#6243 (addendum to #5376): esp-now + station reconnection
+coexistence — the esp_now() borrow excludes the &mut that connect_async
+needs; pieces' 'static requirement forces the borrow to cover the program.
+Includes our three attempted patterns and the EspNow-wraps-controller
+suggestion (MabezDev's own direction from #5376). Relay-ap needed no
+workaround: its uplink task owns the controller &'static mut and the relay
+never touches esp-now — landed 8a6a521+.
+
+## Hybrid: chosen design (scoped sessions)
+Make EspNowTransport lifetime-generic ('static -> 'a). HybridTransport holds
+the controller &'static mut (StaticCell) + persistent fragmenter/reassembler
+state, and constructs the esp-now transport PER esp-now session: the pieces'
+borrow region = the session; dropping the session transport releases the
+shared borrow before the wifi phase takes &mut (connect/scan). No unsafe, no
+task restructure, borrow regions alternate by construction. The esp-now-node
+path keeps 'static ('a == 'static) — zero behavior change there.
+
 ## The hybrid/relay blocker (design gap, not mechanics)
 esp-radio 1.0's esp_now() binds EspNow lifetimes to a controller borrow;
 pieces escaping into tasks force that borrow 'static, excluding the &mut
