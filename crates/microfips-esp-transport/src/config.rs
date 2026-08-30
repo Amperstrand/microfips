@@ -226,6 +226,12 @@ pub const FIPS_DISCOVERY_SCOPE: &str = match option_env!("FIPS_DISCOVERY_SCOPE")
 #[cfg(feature = "esp-now")]
 pub const ESP_NOW_CHANNEL: u8 = parse_espnow_channel(option_env!("ESP_NOW_CHANNEL"));
 
+/// True when ESP_NOW_CHANNEL was explicitly set at build time (fixed-channel
+/// deployments); the retained-channel shortcut (#167) must not override a
+/// deliberate pin.
+#[cfg(feature = "esp-now")]
+pub const ESP_NOW_CHANNEL_KNOB_SET: bool = option_env!("ESP_NOW_CHANNEL").is_some();
+
 #[cfg(feature = "esp-now")]
 const fn parse_espnow_channel(v: Option<&str>) -> u8 {
     let Some(s) = v else {
