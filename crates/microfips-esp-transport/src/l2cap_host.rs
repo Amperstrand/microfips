@@ -270,7 +270,14 @@ where
                         log::warn!("pubkey exchange bad prefix: 0x{:02X}", rx_buf[2]);
                         continue;
                     }
-                    (3, if recv_payload_len == 34 && n == 36 { rx_buf[35] } else { 0 })
+                    (
+                        3,
+                        if recv_payload_len == 34 && n == 36 {
+                            rx_buf[35]
+                        } else {
+                            0
+                        },
+                    )
                 } else {
                     log::warn!("pubkey exchange recv too short: {}B", n);
                     continue;
@@ -385,7 +392,10 @@ where
     log::info!("relay starting (role context: {})", recv_disconnect_log);
 
     let raw = L2CAP_RAW_FRAMES.load(Ordering::Relaxed);
-    log::info!("relay dialect: {}", if raw { "raw-sdu" } else { "len-prefixed" });
+    log::info!(
+        "relay dialect: {}",
+        if raw { "raw-sdu" } else { "len-prefixed" }
+    );
 
     loop {
         match select(
@@ -425,10 +435,7 @@ where
                 }
                 let payload_len = if raw {
                     if n == 0 || n > L2CAP_FRAME_CAP {
-                        log::warn!(
-                            "RX: SDU size out of range ({}B), disconnecting",
-                            n
-                        );
+                        log::warn!("RX: SDU size out of range ({}B), disconnecting", n);
                         mark_link_down();
                         break DisconnectReason::DataExchanged;
                     }
