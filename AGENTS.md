@@ -1667,7 +1667,10 @@ microfips-build env-override feature). The daemon peers pin via
 1. Isolated `--config` with explicit deterministic nsec — NEVER the workstation's
    persistent `/etc/fips/fips.key`, and never reuse `vps`/`linux` identities.
 2. `bind_addr` scoped to the lab AP interface, not `0.0.0.0` — the workstation has
-   NO host firewall (ufw inactive) and sits on NetBird VPN + docker bridges.
+   NO host firewall (ufw inactive) and sits on multiple interfaces (LAN,
+   docker bridges; NetBird is NOT running on this machine as of 2026-08-30 —
+   older docs said otherwise. Autodetect: `ip link | grep -E "wt|nb"` and
+   `systemctl is-active netbird` before reasoning about overlay exposure).
 3. Dedicated UDP port (21213 in use; system daemon keeps 2121 — they coexist).
 4. Know the mDNS exposure: `rendezvous.lan` joins multicast on ALL interfaces
    (mdns-sd has no interface filter). Advert data is public-key-only; fine on the
