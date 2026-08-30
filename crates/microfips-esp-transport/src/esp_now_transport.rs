@@ -15,6 +15,7 @@ use esp_radio::esp_now::{
 use esp_radio::wifi::WifiController;
 use microfips_esp_common::espnow_frag::{Fragmenter, SrcReassembler, ESP_NOW_MAX_PAYLOAD};
 use microfips_protocol::transport::Transport;
+use portable_atomic::{AtomicU8, Ordering};
 
 /// ESP-NOW transport error.
 #[derive(Debug)]
@@ -26,6 +27,13 @@ pub struct EspNowTransportError;
 const SENDS_PER_CHANNEL: u8 = 2;
 /// Sweep 1..=13 (ETSI); the extra channels are region-gated anyway.
 const SWEEP_MAX_CHANNEL: u8 = 13;
+
+/// Last-known-good esp-now channel, retained in RTC slow memory across soft
+/// resets (zero after power-up = unknown). #167: skipping the discovery
+/// sweep after first lock cuts re-acquisition ~26s -> ~2s and shrinks the
+/// scan-hostile window (see #158's radio-arbitration analysis).
+#[cfg_attr(target_os = "none", link_section = ".rtc_slow.persistent")]
+static RETAINED_CHANNEL: AtomicU8 = AtomicU8::new(0);
 
 pub struct EspNowTransport {
     manager: EspNowManager<'static>,
@@ -83,6 +91,22 @@ impl EspNowTransport {
     /// without touching the channel — for embedding in a transport that
     /// manages the controller (and possibly an association) itself.
     pub(crate) fn new_shared(esp_now: EspNow<'static>, channel: u8) -> Self {
+        // The explicit ESP_NOW_CHANNEL knob means fixed-channel deployments
+        // (USB-bridged gateway); anything else may start from the retained
+        // channel and try hard there before sweeping.
+        let (start_channel, remembered) = if crate::config::ESP_NOW_CHANNEL_KNOB_SET {
+            (channel, false)
+        } else {
+            match RETAINED_CHANNEL.load(Ordering::Relaxed) {
+                c if (1..=13).contains(&c) => (c, true),
+                _ => (channel, false),
+            }
+        };
+        #[cfg(feature = "log")]
+        if remembered {
+            log::info!("ESP-NOW: starting on retained channel {}", start_channel);
+        }
+        let channel = start_channel;
         let (manager, sender, receiver) = esp_now.split();
         Self {
             manager,
@@ -93,7 +117,7 @@ impl EspNowTransport {
             peer_mac: None,
             sessions: 0,
             channel,
-            unlocked_sends: 0,
+            unlocked_sends: if remembered { u8::MAX - SENDS_PER_CHANNEL } else { 0 },
             _wifi_controller: None,
         }
     }
@@ -106,6 +130,7 @@ impl EspNowTransport {
     }
 
     fn lock_peer(&mut self, mac: [u8; 6]) {
+        RETAINED_CHANNEL.store(self.channel, Ordering::Relaxed);
         if !self.manager.peer_exists(&mac) {
             let result = self.manager.add_peer(PeerInfo {
                 interface: EspNowWifiInterface::Station,
