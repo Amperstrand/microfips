@@ -33,9 +33,19 @@ pub mod usb_transport;
 #[cfg(feature = "wifi")]
 pub mod wifi_transport;
 
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 pub mod control;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(
+    feature = "ble",
+    feature = "l2cap",
+    feature = "wifi",
+    feature = "esp-now"
+))]
 pub mod logger;
 
 #[cfg(feature = "ble")]
@@ -56,3 +66,11 @@ pub mod rate_limit;
 
 #[cfg(feature = "esp-now")]
 pub mod esp_now_transport;
+#[cfg(all(feature = "esp-now", any(feature = "esp32s3", feature = "esp32c3")))]
+pub mod espnow_gateway;
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub mod espnow_wifi_gateway;
+#[cfg(all(feature = "esp-now", feature = "wifi"))]
+pub mod hybrid_transport;
+#[cfg(feature = "relay-ap")]
+pub mod relay_ap;

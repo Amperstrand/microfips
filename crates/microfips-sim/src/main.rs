@@ -372,7 +372,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Leaf node identities (from keys.json)
+// Leaf node identities (from device-registry.json vector keys)
 // ---------------------------------------------------------------------------
 
 const SIM_A_SECRET: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_sim-a"));
