@@ -31,6 +31,17 @@ suggestion (MabezDev's own direction from #5376). Relay-ap needed no
 workaround: its uplink task owns the controller &'static mut and the relay
 never touches esp-now — landed 8a6a521+.
 
+## Hybrid: STAYS ON 0.18 (final decision 2026-08-30, third revision)
+
+The strictly-worse analysis: on 0.18 the pieces do NOT borrow the controller —
+wifi reconnect works fully; only mid-esp-now probes are radio-dead (#158, and
+see the esp-idf coexistence docs: channel-locked esp-now vs scanning is
+serialized by the single RF module — "S" stable only when esp-now rides the
+STA channel). On beta.0 every safe formulation makes wifi reconnect
+borrow-dead once pieces exist. Therefore: hybrid remains on 0.18 via main;
+this branch (#166) merges only when it can carry hybrid too — i.e., after
+esp-hal #6220 (singleton EspNow) ships. No unsafe shim; it is not needed.
+
 ## Hybrid: blocked upstream (decision 2026-08-30, revised after full read)
 Scoped sessions handle mode SWITCHES but not the in-session reality: the
 protocol layer calls recv per frame, so the esp-now pieces must persist
