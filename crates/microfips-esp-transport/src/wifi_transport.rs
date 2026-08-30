@@ -136,7 +136,7 @@ impl Transport for WifiTransport {
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
+async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await;
 }
 
@@ -170,9 +170,13 @@ pub async fn build_wifi_transport(
     let controller_config = esp_radio::wifi::ControllerConfig::default().with_initial_config(
         WifiConfig::Station(station_config(wifi_ssid, wifi_password)),
     );
-    let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, controller_config).expect("wifi::new failed");
-    let wifi_device = interfaces.station;
+    // esp-radio 1.0: controller and interfaces are separate; Interface::station()
+    // is a lifetime-free singleton and WifiController::new returns only the
+    // controller. with_initial_config still applies PS=None + config as one
+    // init (the #91 power-save pattern).
+    let mut wifi_controller =
+        esp_radio::wifi::WifiController::new(wifi, controller_config).expect("WifiController::new failed");
+    let wifi_device = esp_radio::wifi::Interface::station();
 
     let resources = RESOURCES.init(StackResources::new());
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
