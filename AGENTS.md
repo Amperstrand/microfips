@@ -2,6 +2,18 @@
 
 ## Project
 
+**RULE: do NOT post issues, comments, PRs, or any other content to external
+projects** (anything outside the Amperstrand org — upstream repos like
+esp-rs/esp-hal, embassy-rs, jmcorgan/fips, rustyrussell/*). Draft the text,
+park it in an Amperstrand issue labeled for the maintainer's review, and let
+a human decide whether and where to post. Learned 2026-08-30: our
+esp-rs/esp-hal#6243 was closed as a duplicate of #6220 — posting it cost an
+upstream maintainer triage time to re-derive what a 2-minute search of their
+open issues would have found. Research and reference external issues freely;
+just never write to them without explicit maintainer approval. (Same policy
+as the greatspectations line below: "upstream conversations only after the
+dogfood proves value" — and then still through a human.)
+
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
 Both MCUs use length-prefixed framing → host bridge → UDP → VPS running stock FIPS.
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
