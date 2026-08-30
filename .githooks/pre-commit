@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# pre-commit: block commits containing secrets.
+# Portable: ERE (grep -En) — macOS BSD grep has no -P, which made the
+# upstream version of this hook silently inert on Macs.
+set -e
+
+PATTERNS_FILE="$(git rev-parse --show-toplevel)/.secret-patterns.txt"
+
+if [ ! -f "$PATTERNS_FILE" ]; then
+    exit 0  # no patterns file = no scanning
+fi
+
+FOUND=0
+# -z + read -d '': spaces/newlines in filenames safe; deletions excluded.
+while IFS= read -r -d '' file; do
+    [ -f "$file" ] || continue
+    while IFS= read -r pattern; do
+        [ -z "$pattern" ] && continue
+        case "$pattern" in \#*) continue ;; esac
+        MATCH=$(git diff --cached -- "$file" | grep -En -- "$pattern" 2>/dev/null | head -3)
+        if [ -n "$MATCH" ]; then
+            echo "SECRET DETECTED in $file (pattern: $pattern):"
+            echo "$MATCH"
+            FOUND=1
+        fi
+    done < "$PATTERNS_FILE"
+done < <(git diff --cached --name-only -z --diff-filter=ACM)
+
+if [ $FOUND -eq 1 ]; then
+    echo ""
+    echo "COMMIT BLOCKED — secret pattern detected."
+    echo "Override (NOT RECOMMENDED): git commit --no-verify"
+    exit 1
+fi
+exit 0
