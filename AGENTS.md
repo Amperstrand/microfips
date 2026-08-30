@@ -688,7 +688,12 @@ association; the node cannot know it in advance, so it **sweeps channels 1–13*
 broadcast discovery (2 broadcasts per channel, stops on peer lock, resumes on session
 death — verified: node started on ch 5, swept to the AP's ch 1, locked, handshaked).
 `ESP_NOW_CHANNEL` (default 1) is only the sweep's starting channel; for the USB-bridged
-gateway (unassociated) it is that gateway's fixed channel.
+gateway (unassociated) it is that gateway's fixed channel. Since #167 (commit 9bdf60c)
+the last-known-good channel is retained in `.rtc_slow.persistent` (survives soft
+resets, cold-boot-zeroed): boot lingers on the retained channel before sweeping, and
+explicit `ESP_NOW_CHANNEL` builds are exempt (deliberate pins win). **Pitfall: use
+`.rtc_slow.persistent`, never `.rtc_slow.data` — the latter is LOAD-typed and startup
+reloads it from flash every boot, silently wiping retention** (verified the hard way).
 
 **Wire format:** ESP-NOW caps payloads at 250 bytes; FMP frames go up to 2048. Each
 frame is chunked with a 2-byte header (msg id, last-flag|fragment index), reassembled
