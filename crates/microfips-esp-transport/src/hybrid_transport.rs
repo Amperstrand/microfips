@@ -19,7 +19,6 @@ use embassy_futures::select::{select, Either};
 use embassy_net::udp::UdpSocket;
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
-use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::WifiController;
 use microfips_esp_common::config::WIFI_DHCP_TIMEOUT_SECS;
 use microfips_esp_common::mdns::{discover_fips, DiscoveryFilter};
@@ -169,17 +168,6 @@ impl HybridTransport {
         }
     }
 
-    /// Cheap AP presence check: SSID-filtered scan, no association.
-    async fn ap_visible(&mut self) -> bool {
-        if Self::test_wifi_forced_down() {
-            return false;
-        }
-        let config = ScanConfig::default().with_ssid(self.wifi_ssid).with_max(1);
-        match with_timeout(Duration::from_secs(10), self.controller.scan_async(&config)).await {
-            Ok(Ok(results)) => !results.is_empty(),
-            _ => false,
-        }
-    }
 }
 
 #[embassy_executor::task]
@@ -404,17 +392,22 @@ impl Transport for HybridTransport {
         match self.mode {
             Mode::Wifi => self.udp.recv(buf).await,
             Mode::EspNow => loop {
+                // Probe windows are SESSION boundaries (#158): scans under
+                // an active esp-now driver return empty regardless of
+                // channel (driver-level RF arbitration, esp-radio 0.18 —
+                // verified on the bench 2026-08-30 with the peer locked on
+                // the AP's own channel). So instead of probing mid-session,
+                // the window ENDS the session and lets wait_ready attempt
+                // the full WiFi phase (scan+associate+mDNS) with the radio
+                // free; failure re-enters esp-now. Superseded cleanly when
+                // esp-rs/esp-hal#6220 ships — see the upstream-watch issue.
                 if Instant::now() >= self.next_wifi_probe {
                     self.next_wifi_probe =
                         Instant::now() + Duration::from_secs(crate::config::HYBRID_WIFI_PROBE_SECS);
-                    if self.ap_visible().await {
-                        #[cfg(feature = "log")]
-                        log::info!("hybrid: AP visible again, ending session to try WiFi");
-                        self.prefer_wifi = true;
-                        // Surfacing an error ends the session; wait_ready
-                        // then attempts the WiFi path.
-                        return Err(UdpTransportError::Recv);
-                    }
+                    #[cfg(feature = "log")]
+                    log::info!("hybrid: probe window, ending ESP-NOW session to attempt WiFi");
+                    self.prefer_wifi = true;
+                    return Err(UdpTransportError::Recv);
                 }
                 match select(self.espnow.recv(buf), Timer::at(self.next_wifi_probe)).await {
                     Either::First(result) => {
