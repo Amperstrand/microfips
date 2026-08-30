@@ -1392,9 +1392,16 @@ echo "=== ESP32-S3 (USB JTAG) ==="
 for p in /dev/ttyACM*; do vid=$(cat /sys/class/tty/$(basename $p)/device/../uevent 2>/dev/null | grep PRODUCT | cut -d= -f2); [ "$vid" = "303a/1001/101" ] && echo "  S3 on $p"; done
 ```
 
-## Nightly Toolchain
+## Toolchain
 
-Uses `nightly` (latest). No pinned date. CI uses `dtolnay/rust-toolchain@v1` with `toolchain: nightly`.
+Host crates and STM32 firmware build on **stable** (verified 2026-08-30: core
+tests, protocol suite 135/135, thumbv7em release build — embassy has needed no
+nightly features since async-fn-in-trait stabilized in Rust 1.75). No
+`rust-toolchain.toml`: repos ride the machine default (stable) per
+hackathon-tooling's rust-toolchain policy. ESP32/xtensa builds explicitly set
+`RUSTUP_TOOLCHAIN=esp` (env override beats any toolchain file — that fork of
+nightly is required for `-Zbuild-std`). CI jobs pin their own toolchains via
+`dtolnay/rust-toolchain@v1` independent of local files.
 
 ## Actual MCU Keys (verified 2026-03-30)
 
