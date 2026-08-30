@@ -47,6 +47,22 @@ pub struct EspNowTransport {
 }
 
 impl EspNowTransport {
+    /// Return the radio to ride-the-current-channel mode (channel 0) so a
+    /// following STA scan is not starved by an explicit esp-now channel
+    /// lock. esp-idf coexistence: Wi-Fi scan under esp-now is stable only
+    /// when esp-now rides the current (STA) channel; an explicit sweep
+    /// channel takes the radio out of that case and scans return empty
+    /// (#158). Only releases while unlocked: when a peer is locked its
+    /// channel must stay pinned for rx/tx to work.
+    pub fn release_channel_lock(&mut self) {
+        if self.peer_mac.is_none() {
+            if self.manager.set_channel(0).is_ok() {
+                #[cfg(feature = "log")]
+                log::info!("ESP-NOW: channel lock released for scan (channel 0)");
+            }
+        }
+    }
+
     /// Wrap an initialized ESP-NOW interface. `channel` must match the far
     /// side (both radios are unassociated, so nothing else pins it).
     pub fn new(
