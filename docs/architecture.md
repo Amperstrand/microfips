@@ -249,21 +249,11 @@ lookup using `receiver_idx`, so the heartbeat must include FIPS's index.
 
 ## MCU Identity
 
-### STM32F469
-
-```
-Seed:    b'microfips-stm32fips-test-seed-001'
-Secret:  ac68af89462e7ed26ff670c186b4eeb53c4e82d72c8ef6cec4e676c7843f832e
-Pubkey:  02633860dc5f7ccb68df79362c9edf35e35e616d7ae86fcee268a2f749452b6842
-npub:    npub1vdtfdhzl0n9k3hmexckfahe4ud0xzmt6aphuacng5tm5j3ftdppqj0ujhf
-```
-
-### ESP32-D0WD
-
-```
-Secret:  123c2c301a7b37339c4232d8290ab47a0a304b522748ba83dbdde39fceda38d8
-npub:    npub1q2vqyxdzkerhtlnakrjxqkjun5juan73q933jt97uu24ftlgt9p8uqqqqqqqqqqq
-```
+Device identities are NOT recorded here. The public-only registry
+(`device-registry.json`, issue #134) holds npubs, node_addrs, and the
+deterministic vector-key parameters; secrets are derived at build time or
+injected per-device via env overrides. The stale identity blocks that used to
+sit in this section were retired by the #134 secrets purge.
 
 VPS peer entry: alias "microfips-esp32", local port 31338.
 

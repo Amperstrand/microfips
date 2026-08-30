@@ -134,6 +134,11 @@ pub async fn resolve_vps_ipv4(
     dns_server: Ipv4Address,
     host: &str,
 ) -> Result<Ipv4Address, DnsResolveError> {
+    // IPv4 literals (e.g. a LAN FIPS daemon) need no DNS round-trip.
+    if let Ok(ip) = host.parse::<Ipv4Address>() {
+        return Ok(ip);
+    }
+
     let mut rx_meta = [PacketMetadata::EMPTY; 2];
     let mut rx_buffer = [0u8; 512];
     let mut tx_meta = [PacketMetadata::EMPTY; 2];

@@ -221,9 +221,27 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 if resp.len() <= app_offset {
                     return HandleResult::None;
                 }
-                let app_result =
-                    self.app
-                        .on_fsp_message(inner_msg_type, inner_payload, &mut resp[app_offset..]);
+                // Mesh IPv6 (shim port 256): answer ICMPv6 echo so `ping <fips-addr>`
+                // reaches a leaf without an IP stack. Everything else goes to the app.
+                let shim_reply = if inner_msg_type == microfips_core::fsp::FSP_MSG_DATA {
+                    microfips_core::ipv6_shim::icmpv6_echo_reply(
+                        inner_payload,
+                        &mut resp[app_offset..],
+                    )
+                } else {
+                    None
+                };
+                let app_result = match shim_reply {
+                    Some(len) => FspAppResult::Reply {
+                        msg_type: microfips_core::fsp::FSP_MSG_DATA,
+                        len,
+                    },
+                    None => self.app.on_fsp_message(
+                        inner_msg_type,
+                        inner_payload,
+                        &mut resp[app_offset..],
+                    ),
+                };
                 match app_result {
                     FspAppResult::None => HandleResult::None,
                     FspAppResult::Disconnect => HandleResult::Disconnect,
@@ -410,10 +428,26 @@ impl<A: FspAppHandler, const APP_BUF: usize> NodeHandler for FspDualHandler<A, A
 
     fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
         let r = self.handle_responder(msg_type, payload, resp);
-        if r != HandleResult::None {
-            return r;
+        let r = if r != HandleResult::None {
+            r
+        } else {
+            self.handle_initiator(msg_type, payload, resp)
+        };
+        #[cfg(feature = "log")]
+        if msg_type == wire::MSG_SESSION_DATAGRAM && payload.len() > SESSION_DATAGRAM_BODY_SIZE {
+            let fsp_type = payload[SESSION_DATAGRAM_BODY_SIZE] & 0x0F;
+            log::info!(
+                "fsp: datagram in len={} fsp_type=0x{:02x} src={:02x}{:02x}..{:02x}{:02x} -> {:?}",
+                payload.len(),
+                fsp_type,
+                payload[3],
+                payload[4],
+                payload[17],
+                payload[18],
+                r
+            );
         }
-        self.handle_initiator(msg_type, payload, resp)
+        r
     }
 
     fn poll_at(&self) -> Option<Instant> {

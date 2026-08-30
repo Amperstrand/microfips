@@ -6,6 +6,20 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      chips:
+        description: "Comma-separated chip filter for extended firmware builds (empty = all)"
+        required: false
+        default: ""
+        type: string
+      wifi-creds:
+        description: "WiFi credentials for the built firmware: 'none' embeds nothing, 'secrets' uses WIFI_SSID/WIFI_PASSWORD repo secrets"
+        required: false
+        default: "none"
+        type: choice
+        options: [none, secrets]
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -22,7 +36,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
 
       - uses: Swatinem/rust-cache@v2
 
@@ -49,7 +63,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
 
       - uses: Swatinem/rust-cache@v2
 
@@ -83,7 +97,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
 
       - uses: Swatinem/rust-cache@v2
 
@@ -154,7 +168,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked || true
@@ -170,7 +184,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
 
       - uses: Swatinem/rust-cache@v2
 
@@ -179,6 +193,19 @@ jobs:
       - run: cargo build -p microfips-http-test --release
       # http-demo build disabled: nightly SocketAddr::ToString regression
       # - run: cargo build -p microfips-http-demo --features http --release
+
+      - name: Clone and build FIPS daemon
+        env:
+          # Pinned to a revision known protocol-compatible with this repo.
+          # Update deliberately when microfips adopts newer FIPS protocol
+          # changes — otherwise a moving upstream master breaks this job
+          # for unrelated PRs.
+          FIPS_REF: cbc3b718216c8bc6aef3faa74f62aebf43eb3470
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-dev pkg-config
+          git clone https://github.com/Amperstrand/fips.git /tmp/fips
+          git -C /tmp/fips checkout "$FIPS_REF"
+          cargo build --release --manifest-path /tmp/fips/Cargo.toml --bin fips
 
       - uses: actions/upload-artifact@v4
         with:
@@ -190,6 +217,12 @@ jobs:
         with:
           name: microfips-sim
           path: target/release/microfips-sim
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fips-daemon
+          path: /tmp/fips/target/release/fips
           retention-days: 7
 
       - uses: actions/upload-artifact@v4
@@ -206,7 +239,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -302,20 +335,22 @@ jobs:
         run: |
           STM32_NSEC=$(python3 - <<'PY'
           import json
-          with open('keys.json') as f:
-              keys = json.load(f)
-          print(keys['devices']['stm32']['nsec_hex'])
+          with open('device-registry.json') as f:
+              reg = json.load(f)
+          # Test identities are derived, not stored (issue #134): nsec = generator_mul
+          # as 32-byte big-endian.
+          print(format(reg['devices']['stm32']['vector_key']['generator_mul'], '064x'))
           PY
           )
           VPS_NPUB=$(python3 - <<'PY'
           import json
-          with open('keys.json') as f:
-              keys = json.load(f)
-          print(keys['devices']['vps']['npub_hex'])
+          with open('device-registry.json') as f:
+              reg = json.load(f)
+          print(reg['devices']['vps']['npub_hex'])
           PY
           )
           echo "=== Leaf → public FIPS node ==="
-          echo "Using explicit STM32 identity and VPS peer pubkey from keys.json"
+          echo "Using derived STM32 identity and VPS peer pubkey from device-registry.json"
           FIPS_NSEC="$STM32_NSEC" FIPS_PEER_NPUB="$VPS_NPUB" ./bin/fips-handshake "$FIPS_ADDR" 2>&1 || true
           echo "=== (continue-on-error: VPS may be unreachable from CI) ==="
 
@@ -327,7 +362,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
           targets: thumbv7em-none-eabi
           components: rust-src
 
@@ -362,6 +397,29 @@ jobs:
           path: target/thumbv7em-none-eabi/release/microfips
           retention-days: 7
 
+  spec-quotes:
+    # Pinned verbatim spec quotes in source comments, validated against
+    # vendored spec documents by our experimental greatspectations fork
+    # (Amperstrand/greatspectations, branch ai-experimental-slop).
+    name: Spec Quotes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install greatspectations (experimental fork)
+        run: pip install "git+https://github.com/Amperstrand/greatspectations@ai-experimental-slop"
+
+      - name: Check pinned spec quotes
+        run: |
+          greatspectate check --config specquotes.toml \
+            --comment-start "// " --comment-continue "//" \
+            --comment-aside "// Note:" \
+            crates/fips-identity/src/bech32.rs
+
   build-esp32:
     name: Build ESP32 Firmware
     runs-on: ubuntu-latest
@@ -381,9 +439,6 @@ jobs:
         with:
           key: esp32
 
-      - name: Add rust-src component
-        run: rustup component add rust-src
-
       - name: Build ESP32 UART
         run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
 
@@ -399,20 +454,107 @@ jobs:
       - name: Build ESP32-S3 WiFi
         run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
 
+      # ESP32-C3 has no compiled-in identity (issue #134: RETRIEVE_FROM_BUILD) —
+      # inject a throwaway scalar so the env! const resolves. Compile-only check.
       - name: Build ESP32-C3 UART
-        run: cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --no-default-features
+        run: DEVICE_NSEC_HEX_esp32c3=$(openssl rand -hex 32) cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --no-default-features
 
       - name: Build ESP32-C3 WiFi
-        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --features wifi
+        run: DEVICE_NSEC_HEX_esp32c3=$(openssl rand -hex 32) WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32c3 --release --target riscv32imc-unknown-none-elf -Zbuild-std=core,alloc --features wifi
+
+  build-firmware-extended:
+    # Full variant matrix (esp-now, hybrid, relay-ap, mdns-open, gateways).
+    # Deliberately NOT run on push/PR — the esp toolchain is slow and these
+    # binaries are only needed for releases and bench flashing. Run manually
+    # (Actions tab → CI → Run workflow) or on every release publish.
+    name: Extended Firmware (${{ matrix.bin }})
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # classic ESP32 (D0WD/PICO/WROVER class — CYD, M5 Atom, LilyGo)
+          - { chip: esp32, target: xtensa-esp32-none-elf, package: microfips-esp32, features: "esp-now", bin: microfips-esp32-espnow }
+          - { chip: esp32, target: xtensa-esp32-none-elf, package: microfips-esp32, features: "esp-now,wifi", bin: microfips-esp32-espnow-wifi-gw }
+          - { chip: esp32, target: xtensa-esp32-none-elf, package: microfips-esp32, features: "mdns-open", bin: microfips-esp32-wifi }
+          # ESP32-S3 (Walter, TiLDAGON, generic S3 boards)
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "esp-now", bin: microfips-esp32s3-espnow }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "esp-now", bin: microfips-esp32s3-espnow-gw }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "esp-now", bin: microfips-esp32s3-espnow-wifi-gw }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "esp-now", bin: microfips-esp32s3-hybrid }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "relay-ap", bin: microfips-esp32s3-relay-ap }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "relay-ap", bin: microfips-esp32s3-relay-ap-peer }
+          - { chip: esp32s3, target: xtensa-esp32s3-none-elf, package: microfips-esp32s3, features: "wifi", bin: microfips-esp32s3-mdns-spike }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Filter chips (manual runs)
+        id: chipfilter
+        run: |
+          if [ -n "${{ inputs.chips }}" ] && [ -n "${{ matrix.chip }}" ]; then
+            case ",${{ inputs.chips }}," in
+              *",${{ matrix.chip }},"*) echo "keep=true" >> "$GITHUB_OUTPUT" ;;
+              *) echo "keep=false" >> "$GITHUB_OUTPUT" ;;
+            esac
+          else
+            echo "keep=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Xtensa toolchain
+        if: steps.chipfilter.outputs.keep == 'true'
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32,esp32s3
+          ldproxy: false
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.chipfilter.outputs.keep == 'true'
+        with:
+          key: esp-extended
+
+      - name: Add rust-src component
+        if: steps.chipfilter.outputs.keep == 'true'
+        run: rustup component add rust-src
+
+      # Credential policy: release/dispatch default embeds NO credentials
+      # (empty SSID/password = open-network auth mode) so published firmware
+      # artifacts can never leak real WiFi passwords. 'secrets' mode (manual
+      # dispatch only) injects WIFI_SSID/WIFI_PASSWORD from repo secrets for
+      # internal bench builds — those artifacts must then be treated as
+      # containing credentials.
+      - name: Build ${{ matrix.bin }}
+        if: steps.chipfilter.outputs.keep == 'true'
+        env:
+          WIFI_SSID: ${{ (github.event_name == 'workflow_dispatch' && inputs.wifi-creds == 'secrets') && secrets.WIFI_SSID || '' }}
+          WIFI_PASSWORD: ${{ (github.event_name == 'workflow_dispatch' && inputs.wifi-creds == 'secrets') && secrets.WIFI_PASSWORD || '' }}
+        run: |
+          cargo +esp build -p ${{ matrix.package }} --release --target ${{ matrix.target }} \
+            -Zbuild-std=core,alloc --features ${{ matrix.features }} --bin ${{ matrix.bin }}
+
+      - uses: actions/upload-artifact@v4
+        if: steps.chipfilter.outputs.keep == 'true'
+        with:
+          name: firmware-${{ matrix.bin }}
+          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          retention-days: ${{ github.event_name == 'release' && 90 || 14 }}
 
   sim-ping:
-    name: Sim-to-Sim Ping via FIPS
+    name: Sim-to-Sim Ping via FIPS (on-demand VM)
+    # Secret-safe gating: this job executes repo scripts with SHC_API_KEY and
+    # provisions paid VMs. pull_request events (especially from forks) must
+    # never reach it — PR-controlled code could otherwise read the key. The
+    # test runs on branch pushes and manual dispatches instead.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: [build-host]
-    continue-on-error: true
-    timeout-minutes: 4
+    timeout-minutes: 15
     env:
-      FIPS_ADDR: orangeclaw.dns4sats.xyz:2121
+      SHC_API_KEY: ${{ secrets.SHC_API_KEY }}
+      SHC_API_IP: ${{ secrets.SHC_API_IP }}
     steps:
       - uses: actions/checkout@v4
 
@@ -421,21 +563,32 @@ jobs:
           name: microfips-sim
           path: ./bin
 
-      - run: chmod +x ./bin/microfips-sim
+      - uses: actions/download-artifact@v4
+        with:
+          name: fips-daemon
+          path: ./bin
 
-      - name: Run sim-to-sim ping test against live FIPS
+      - run: chmod +x ./bin/microfips-sim ./bin/fips
+
+      - name: Provision VM and deploy FIPS
+        id: provision
+        run: |
+          if ! getent hosts blesta.sovereignhybridcompute.com >/dev/null 2>&1 && [ -z "${{ secrets.SHC_API_IP }}" ]; then
+            echo "::notice::SHC API unresolvable (their DNS outage) and no SHC_API_IP pin — skipping sim-ping; not a code failure"
+            exit 0
+          fi
+          python3 scripts/ci_sim_ping.py provision --github-output
+
+      - name: Run sim-to-sim ping test
+        if: steps.provision.outputs.vm_ip != ''
+        env:
+          VM_IP: ${{ steps.provision.outputs.vm_ip }}
+          FIPS_NPUB: ${{ steps.provision.outputs.fips_npub_hex }}
         run: |
           set -e
+          FIPS_ADDR="$VM_IP:2121"
 
-          VPS_NPUB=$(python3 - <<'PY'
-          import json
-          with open('keys.json') as f:
-              keys = json.load(f)
-          print(keys['devices']['vps']['npub_hex'])
-          PY
-          )
-
-          FIPS_PEER_NPUB="$VPS_NPUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
+          FIPS_PEER_NPUB="$FIPS_NPUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
           SIMA_PID=$!
           sleep 8
 
@@ -446,7 +599,7 @@ jobs:
           fi
           echo "SIM-A connected"
 
-          FIPS_PEER_NPUB="$VPS_NPUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
+          FIPS_PEER_NPUB="$FIPS_NPUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
           SIMB_PID=$!
 
           wait $SIMB_PID 2>/dev/null
@@ -467,9 +620,14 @@ jobs:
             exit 1
           fi
 
-      - name: Cleanup
+      - name: Cleanup VM
         if: always()
+        env:
+          SERVICE_ID: ${{ steps.provision.outputs.service_id }}
         run: |
+          if [ -n "$SERVICE_ID" ]; then
+            python3 scripts/ci_sim_ping.py cleanup --service-id "$SERVICE_ID" || true
+          fi
           kill $(pgrep -f microfips-sim) 2>/dev/null || true
 
   publish-evidence:
@@ -483,7 +641,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
 
       - uses: Swatinem/rust-cache@v2
 
