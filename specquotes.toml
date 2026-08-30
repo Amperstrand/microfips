@@ -1,0 +1,9 @@
+# Spec-quote checks (greatspectations) — see AGENTS.md "Spec quotes".
+# Run from the repo root with our experimental fork:
+#   uvx --from /home/ubuntu/src/greatspectations greatspectate check \
+#     --config specquotes.toml --comment-start "// " --comment-continue "//" \
+#     --comment-aside "// Note:" crates/fips-identity/src/bech32.rs
+[sources.bip]
+format = "mediawiki"
+dir = "specs"
+pattern = "bip-{id:04d}.mediawiki"
