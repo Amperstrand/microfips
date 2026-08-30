@@ -23,7 +23,7 @@ our existing verified HCI glue. Two bt-hci majors coexist (esp-radio internal
   `hybrid` feature (bin requires esp-now+wifi+hybrid).
 
 ## Upstream feedback filed
-esp-rs/esp-hal#6243 (addendum to #5376): esp-now + station reconnection
+esp-rs/esp-hal#6220 (tracked; our #6243 was closed as its dupe — see AGENTS.md external-posting rule): esp-now + station reconnection
 coexistence — the esp_now() borrow excludes the &mut that connect_async
 needs; pieces' 'static requirement forces the borrow to cover the program.
 Includes our three attempted patterns and the EspNow-wraps-controller
@@ -37,7 +37,7 @@ protocol layer calls recv per frame, so the esp-now pieces must persist
 across recv calls within a session — and the mid-session AP probes
 (scan_async, &mut) fire while pieces are alive. Storing pieces alongside the
 controller's &mut is unexpressible in safe Rust. Three exits:
-(a) WAIT for esp-rs/esp-hal#6243 (EspNow-wraps-controller direction) — then
+(a) WAIT for esp-rs/esp-hal#6220 (our #6243 was dupe-closed into it) — its two solution directions (split start_sta_connecting(&mut)/wait_for_sta_connected(&shared), or EspNow/Sniffer as Interface-style singletons) both dissolve our wall; then
     the port is ~1h of mechanical work. RECOMMENDED; the beta window makes
     a timely upstream answer likely.
 (b) One-site unsafe lifetime extension of EspNow<'_> -> 'static (soundness
