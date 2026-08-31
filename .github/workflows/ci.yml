@@ -208,7 +208,11 @@ jobs:
           # Update deliberately when microfips adopts newer FIPS protocol
           # changes — otherwise a moving upstream master breaks this job
           # for unrelated PRs.
-          FIPS_REF: cbc3b718216c8bc6aef3faa74f62aebf43eb3470
+          # 2026-08-31: repinned from cbc3b71 (vanished in the fips-side
+          # history cleanup, cf. #180) to fork/main HEAD 0aef8ea2 — same
+          # v0.5.0 wire, builds clean, and is what the local lab daemon
+          # runs.
+          FIPS_REF: 0aef8ea2a2bc8b8ca80f78c23cea956c36c5d535
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-dev pkg-config
           git clone https://github.com/Amperstrand/fips.git /tmp/fips
