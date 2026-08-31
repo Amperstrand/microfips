@@ -26,6 +26,7 @@
 | Layer | What | Evidence |
 |---|---|---|
 | Noise IK | Link handshake | Both ESP32s + STM32: MSG1→MSG2→keys, sustained heartbeats |
+| Noise XX | Forward-compat link handshake (FIPS next wire) | fips-noise 37/37 + full protocol suite green under `--features std,noise-xx` (CI-enforced); test-level only — no live XX daemon to interop against |
 | Noise XK | FSP session | STM32 + SIM: SessionSetup→Ack→Msg3, service request/response |
 | FMP | Framing | Raw SDU (master dialect) + legacy framed (branch dialect) both parse |
 | FSP | Session + data | PING/PONG (SIM→MCU through daemon), HTTP request/response |
@@ -37,8 +38,8 @@
 
 | Component | What | Status |
 |---|---|---|
-| CI (12 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable |
-| Test suite | 234 core + 135 protocol + 68 core-lib + 3 build = 440 tests | All passing |
+| CI (12 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable; protocol + fips-noise suites run under BOTH IK and noise-xx features |
+| Test suite | 234 core + 135 protocol (IK) + 134 protocol (XX) + 68 core-lib + 3 build = 444 test runs, all passing | Both feature sets green (#178 closed) |
 | Bench scripts | test_http_e2e.sh, test_hw_handshake.sh, test_mcu_to_mcu_fsp.sh | Working (updated for v0.5.0) |
 | fips-lab | Scenario infrastructure + regression assertions | Scenarios written; pytest env needs repair |
 | Device registry | Public-only, CI-enforced, build-time overrides | Working |
@@ -58,6 +59,7 @@
 | ESP32-C3 | No board available | #150 (closed; reopen when board arrives) |
 | Hybrid on esp-radio 1.0 | esp-hal#6220 (upstream API gap) | #168, PR #166 |
 | FIPS 0.6.0-dev compatibility | Upstream hasn't shipped breaking changes yet | — |
+| Noise XX live interop | No XX-speaking daemon exists (fips master = IK/v0.5.0); firmware crates don't forward `noise-xx` yet | #178 closed (test-side), #179 |
 | Relay AP + peer (3-hop chain) | Needs third Walter board | — |
 | MCU-initiated FSP (ESP32 as FSP endpoint) | ESP32 firmware is link-level only (by design) | Architecture decision |
 

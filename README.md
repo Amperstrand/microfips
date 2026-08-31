@@ -145,7 +145,8 @@ All keys are deterministic: 31 zero bytes + last byte N (secp256k1 generator * N
 ```sh
 cargo test -p microfips-core                    # core protocol tests
 cargo test -p microfips-core -- --nocapture     # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # protocol tests
+cargo test -p microfips-protocol --features std -- --test-threads=1  # protocol tests (IK wire)
+cargo test -p microfips-protocol --features std,noise-xx -- --test-threads=1  # same suite on the Noise XX wire (FIPS next forward-compat)
 cargo test -p microfips-service                 # service layer tests
 cargo test -p microfips-http-demo --features http  # HTTP demo tests
 ```
