@@ -16,7 +16,11 @@ async fn main(spawner: embassy_executor::Spawner) {
         peripherals.GPIO2,
         peripherals.RNG,
         peripherals.ADC1,
-        true,
+        // fips master has no capability/role negotiation on the L2CAP
+        // exchange: the daemon is always the Noise responder, so the leaf
+        // must send MSG1. `true` deadlocks both sides until recv timeout
+        // (the D0WD bin was fixed in b3518b3; this is the same fix).
+        false,
     )
     .await;
 }
