@@ -2610,7 +2610,7 @@ mod tests {
                             wire::SessionIndex::new(0),
                             "initiator sender_idx should be random non-zero"
                         );
-                        assert_eq!(noise_payload.len(), 106);
+                        assert_eq!(noise_payload.len(), wire::HANDSHAKE_MSG1_SIZE);
                     }
                     _ => panic!("expected Msg1"),
                 }
