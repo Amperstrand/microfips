@@ -902,7 +902,8 @@ done
 ```bash
 cargo test -p microfips-core          # 234 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture  # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # 130 tests: framing, transport, node, ScriptedPeer
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 135 tests: framing, transport, node, ScriptedPeer (IK wire)
+cargo test -p microfips-protocol --features std,noise-xx -- --test-threads=1  # same suite on the XX wire (134 pass; the 1 cfg'd-out IK-only tiebreaker variant has an uncfg'd XX equivalent)
 ```
 
 ### Host-side VPS handshake test (no MCU)
@@ -1440,7 +1441,7 @@ ESP32-S3 pubkey from `device-registry.json` (verified 2026-04-10, NodeAddr `6bef
 ## CI Pipeline
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
-- **test**: `cargo test -p microfips-core` (234 tests) + `cargo test -p microfips-protocol --features std` (130 tests)
+- **test**: `cargo test -p microfips-core` (234 tests) + `cargo test -p microfips-protocol --features std` (135 tests) + `cargo test -p microfips-protocol --features std,noise-xx` (XX wire) + `cargo test -p fips-noise --features noise-xx` (37 XX crypto tests)
 - **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
 - **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
 - **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
@@ -1474,7 +1475,7 @@ Tracking upstream FIPS GitHub issues (Amperstrand/fips) that affect microfips:
 | FIPS # | Title | State | microfips Impact |
 |--------|-------|-------|------------------|
 | #57 | Monotonic packet loss degradation on ESP32-S3 | OPEN | **Monitor** — WiFi/BLE coexistence issue on S3. May affect D0WD. |
-| #58 | microfips compatibility vs 0.4.0-dev | OPEN | **P0 future** — Noise IK→XX, FMP v0→v1, version negotiation. Breaking changes. |
+| #58 | microfips compatibility vs 0.4.0-dev | OPEN | **P0 future** — Noise IK→XX, FMP v0→v1, version negotiation. Breaking changes. microfips prep: `noise-xx` feature complete and CI-enforced on both wires (2026-08-31, #178); FMP v1 negotiation remains (#179). |
 | #73 | Privacy: cleartext pubkeys enable device tracking | OPEN | **Consider** — Ephemeral introduction keys for BLE pubkey exchange. |
 | #79 | PeerBackoff auto-denies legitimate ESP32 peers | CLOSED | **Verified fixed** — FIPS no longer counts tie-breaker yields as failures. |
 | #82 | FilterAnnounce exceeds L2CAP MTU | CLOSED | **Accepted** — Leaf nodes skip bloom filters. FRAME_CAP=768 < 1071B FilterAnnounce. |
@@ -1660,6 +1661,15 @@ When the `next` branch ships, microfips will need:
 Physical bench for hardware-testing PRs (mDNS/ESP-NOW/hybrid/link-death, e.g. PR #156).
 Tooling: `tools/lab_keygen.py`, `tools/fips-lab.yaml`, `scripts/run_lab_daemon.sh`,
 `tools/detect_lab_ports.sh`. Migration target: fips-lab (labgrid) — see bottom.
+
+**Protocol dialect on the bench:** the lab daemon (and every deployed fips we
+interop with) speaks the **IK / v0.5.0 wire** — all bench nodes are built with
+default features. The Noise XX wire (FIPS next forward-compat) is
+**test-suite-verified only**: `cargo test -p microfips-protocol --features
+std,noise-xx` is green and CI-enforced, but no XX-speaking daemon exists to
+interop against, and the firmware crates do not yet forward the `noise-xx`
+feature. Flash XX builds to the bench only once an XX daemon is available
+(see #178/#179).
 
 ### Current bench inventory
 
