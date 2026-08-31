@@ -1,0 +1,128 @@
+# microfips State of the Project (2026-08-31)
+
+> **EXPERIMENTAL SOFTWARE** — microfips is an experimental FIPS leaf node
+> implementation for embedded MCUs. It is not production-ready. The wire
+> protocol tracks jmcorgan/fips and may break on any upstream release.
+> Identities are deterministic test keys, not production credentials.
+
+## What has been tested (all on hardware, all against fips v0.5.0)
+
+### ✅ Fully verified end-to-end
+
+| Transport | Chip | Path | Last verified |
+|---|---|---|---|
+| USB CDC (STM32) | STM32F469I-DISCO | CDC → serial_udp_bridge → UDP → daemon | 2026-08-31 |
+| WiFi + mDNS | ESP32-S3 (Walter) | WiFi STA → DHCP → mDNS pinned → UDP → daemon | 2026-08-31 |
+| BLE L2CAP | ESP32-D0WD (atom) | BLE scan → probe (LeRandom) → exchange (raw-SDU) → IK → heartbeats | 2026-08-31 |
+| BLE L2CAP | ESP32-S3 (Walter) | Same as D0WD (role fix 10c33ad) | 2026-08-31 |
+| ESP-NOW (node) | ESP32-S3 | ESP-NOW → WiFi gateway → UDP → daemon | 2026-08-19 |
+| ESP-NOW (hybrid) | ESP32-S3 | WiFi↔ESP-NOW session-windowed switching | 2026-08-30 |
+| Relay AP | ESP32-S3 (Walter) | !FIPS open AP → DHCP → mDNS → UDP relay → daemon | 2026-08-20 |
+| HTTP over FIPS | STM32F469I-DISCO | HTTP → microfips-service → FSP (XK) → IK link → CDC | 2026-08-30 |
+| Mesh forwarding | All 3 simultaneously | Daemon routes FSP between peers | 2026-08-31 |
+
+### ✅ Protocol stack verified
+
+| Layer | What | Evidence |
+|---|---|---|
+| Noise IK | Link handshake | Both ESP32s + STM32: MSG1→MSG2→keys, sustained heartbeats |
+| Noise XK | FSP session | STM32 + SIM: SessionSetup→Ack→Msg3, service request/response |
+| FMP | Framing | Raw SDU (master dialect) + legacy framed (branch dialect) both parse |
+| FSP | Session + data | PING/PONG (SIM→MCU through daemon), HTTP request/response |
+| mDNS | LAN discovery | Pinned (npub match) + open (trust-on-first-advert) on WiFi |
+| ESP-NOW | Discovery + framing | Channel sweep, fragment reassembly, gateway relay, hybrid switching |
+| MMP | Link metrics | ETX, delivery ratio, loss rate, goodput (fipsctl show peers) |
+
+### ✅ Infrastructure verified
+
+| Component | What | Status |
+|---|---|---|
+| CI (12 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable |
+| Test suite | 234 core + 135 protocol + 68 core-lib + 3 build = 440 tests | All passing |
+| Bench scripts | test_http_e2e.sh, test_hw_handshake.sh, test_mcu_to_mcu_fsp.sh | Working (updated for v0.5.0) |
+| fips-lab | Scenario infrastructure + regression assertions | Scenarios written; pytest env needs repair |
+| Device registry | Public-only, CI-enforced, build-time overrides | Working |
+| Build-time validation | SEC1 check + mismatch warning + knob tracking | Working |
+
+## What works but hasn't been recently tested
+
+- **F746G-DISCO** (STM32F746): builds green, hardware-verified 2026-05-04 (pre-v0.5.0)
+- **BLE GATT** (ESP32): builds green, bridge-verified in earlier era, not re-tested on v0.5.0
+- **UART** (ESP32): builds green, bridge-verified in earlier era, not re-tested on v0.5.0
+- **VPS path** (all chips → orangeclaw.dns4sats.xyz): verified in earlier era, DNS-dependent
+
+## What remains untested or blocked
+
+| Item | Blocker | Issue |
+|---|---|---|
+| ESP32-C3 | No board available | #150 (closed; reopen when board arrives) |
+| Hybrid on esp-radio 1.0 | esp-hal#6220 (upstream API gap) | #168, PR #166 |
+| FIPS 0.6.0-dev compatibility | Upstream hasn't shipped breaking changes yet | — |
+| Relay AP + peer (3-hop chain) | Needs third Walter board | — |
+| MCU-initiated FSP (ESP32 as FSP endpoint) | ESP32 firmware is link-level only (by design) | Architecture decision |
+
+## Upstream alignment status
+
+### What we track
+- **jmcorgan/fips**: master = pure v0.5.0 mirror (protected). Work on fork/main (v0.5.0 + BLE dial fix + CI).
+- **esp-rs/esp-hal**: on 1.1.0 stable. esp-radio 1.0.0-beta.0 on staging branch (PR #166). Waiting on #6220 for hybrid.
+- **embassy-rs/embassy**: fork archived. BSP on embassy-stm32 0.6.0 (latest published). USB rewrite verified on main (harness in BSP repo).
+- **embassy-rs/trouble**: on 0.7.0 published (bt-hci 0.9). Will bump to 0.8.x with esp-radio 1.0.
+
+### Where we can better align
+
+1. **The BLE dial fix (fips#151)**: ready to upstream. Cherry-picks cleanly onto v0.5.0. Release-target A/B evidence captured. Held by maintainer decision.
+
+2. **mDNS interface filter (fips#150)**: the lab daemon's mDNS advert leaks to all interfaces (docker bridges, multiple NICs). The fix is an interface filter in LanRendezvousConfig. Still valid, upstreamable.
+
+3. **greatspectations spec-quote CI**: we already dogfood this on microfips (BIP-173 in bech32.rs, CI-enforced). Extending to cover the FIPS wire protocol against both:
+   - jmcorgan/fips source code (as the reference implementation)
+   - The FIPS architecture/design docs (if/when they exist as canonical text)
+   would catch drift between our implementation and upstream on every CI run.
+
+4. **Noise protocol spec compliance**: our golden vectors test cross-implementation compatibility with fips, but we don't pin the spec text itself. The three documented deviations (D1-D3: empty AAD, IK se ordering, x-only ECDH) are confirmed deliberate by the fips maintainer — pinning these as spec quotes would prevent accidental "fixes" that break compatibility.
+
+5. **FSP session protocol**: no formal spec exists upstream. Our implementation is the reference for the embedded side. The FspDualHandler on STM32 is the only complete FSP endpoint implementation in the ecosystem.
+
+## Open issues (all repos, after 2026-08-31 cleanup)
+
+### Amperstrand/fips (10 open — all actionable)
+
+| # | Title | Priority |
+|---|---|---|
+| 151 | BLE dial fix — READY TO UPSTREAM | Held by decision |
+| 150 | mDNS interface filter | Upstreamable |
+| 152 | RSSI ordering (optimization) | Low |
+| 107 | sk_rcvbuf tuning | Low |
+| 86 | CSR8811 BLE bringup | Hardware-dependent |
+| 74 | BLE L2CAP encryption | Explore |
+| 73 | Privacy: cleartext pubkeys | Design |
+| 70 | BLE-as-discovery-bus | Design |
+| 18 | HTTP control API | Feature |
+| 1 | Golden vectors | Ongoing |
+
+### Amperstrand/microfips (8 open — all actionable)
+
+| # | Title | Priority |
+|---|---|---|
+| 168 | Upstream watch: esp-hal#6220 | Blocked (external) |
+| 165 | Platform migration tracker | Blocked (external) |
+| 164 | SHC recovery checklist | Blocked (DNS) |
+| 113 | Debug LCD display | Feature |
+| 108 | rand_core 0.6→0.10 | Maintenance |
+| 77 | Firmware DoS hardening | Security |
+| 76 | esphome integration | Design |
+| 54 | Micronuts RPC | Feature |
+
+### Suggested greatspectations additions
+
+Pin these as spec quotes with CI enforcement:
+1. **Noise IK deviation D1** (empty AAD): pin the fips maintainer's confirmation comment
+2. **Noise IK deviation D3** (x-only ECDH): pin the BIP-340-style x-coordinate DH
+3. **FMP MSG1 wire format**: pin the first 4 bytes of the Noise IK initiator payload
+4. **BLE L2CAP pre-handshake**: pin the raw 33-byte `[0x00][x-only 32]` master dialect
+5. **FSP SessionSetup format**: pin the 2-byte port + format byte + IPv6 shim header layout
+6. **mDNS TXT record keys**: pin `npub=`, `scope=`, `v=` as the canonical set
+
+Each of these is a wire-format invariant where accidental drift would break
+interop with no compiler error — exactly what spec-quote CI catches.
