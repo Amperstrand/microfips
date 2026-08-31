@@ -459,7 +459,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             noise_payload,
                             ..
                         } => {
-                            let mut st = noise_st.clone();
+                            let mut st = noise_st;
                             let (_resp_pub, _resp_epoch) = st
                                 .read_message2(noise_payload)
                                 .map_err(|_| ProtocolError::DecryptFailed)?;
@@ -2426,6 +2426,7 @@ mod tests {
         transport.send(frame).await.unwrap();
     }
 
+    #[cfg(not(feature = "noise-xx"))]
     fn build_msg1_frame(
         initiator_secret: &[u8; 32],
         responder_pub: &[u8; 33],
@@ -2446,6 +2447,33 @@ mod tests {
         let msg1_noise_len = initiator
             .write_message1(&initiator_pub, &epoch_bytes, &mut msg1_noise)
             .unwrap();
+
+        let mut msg1_buf = [0u8; 256];
+        let msg1_len = wire::build_msg1(
+            wire::SessionIndex::new(sender_idx),
+            &msg1_noise[..msg1_noise_len],
+            &mut msg1_buf,
+        )
+        .unwrap();
+        (msg1_buf[..msg1_len].to_vec(), initiator)
+    }
+
+    /// XX msg1 carries the ephemeral only — no responder key or epoch.
+    #[cfg(feature = "noise-xx")]
+    fn build_msg1_frame(
+        initiator_secret: &[u8; 32],
+        _responder_pub: &[u8; 33],
+        eph: &[u8; 32],
+        sender_idx: u32,
+        _epoch: u64,
+    ) -> (std::vec::Vec<u8>, microfips_core::noise::NoiseXxInitiator) {
+        use microfips_core::noise::NoiseXxInitiator;
+        use microfips_core::wire;
+
+        let (mut initiator, _e_pub) = NoiseXxInitiator::new(eph, initiator_secret).unwrap();
+
+        let mut msg1_noise = [0u8; 256];
+        let msg1_noise_len = initiator.write_message1(&mut msg1_noise).unwrap();
 
         let mut msg1_buf = [0u8; 256];
         let msg1_len = wire::build_msg1(
@@ -2485,7 +2513,7 @@ mod tests {
     fn test_handshake_with_responder() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
+        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         // Use fresh random keys to prove the handshake works with any valid keypair.
@@ -2515,31 +2543,86 @@ mod tests {
                     _ => panic!("expected Msg1"),
                 };
 
-                let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
-                let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub)
-                    .expect("IK responder init failed");
-                let (_init_pub, epoch) = resp
-                    .read_message1(&noise_payload[PUBKEY_SIZE..])
-                    .expect("read_message1 failed");
+                #[cfg(not(feature = "noise-xx"))]
+                {
+                    use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE};
 
-                let resp_eph = random_secret();
-                let mut msg2_noise = [0u8; 128];
-                let msg2_noise_len = resp
-                    .write_message2(&resp_eph, &epoch, &mut msg2_noise)
-                    .expect("write_message2 failed");
+                    let ei_pub: [u8; PUBKEY_SIZE] =
+                        noise_payload[..PUBKEY_SIZE].try_into().unwrap();
+                    let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub)
+                        .expect("IK responder init failed");
+                    let (_init_pub, epoch) = resp
+                        .read_message1(&noise_payload[PUBKEY_SIZE..])
+                        .expect("read_message1 failed");
 
-                let mut msg2_buf = [0u8; 256];
-                let msg2_len = wire::build_msg2(
-                    wire::SessionIndex::new(1),
-                    wire::SessionIndex::new(0),
-                    &msg2_noise[..msg2_noise_len],
-                    &mut msg2_buf,
-                )
-                .unwrap();
+                    let resp_eph = random_secret();
+                    let mut msg2_noise = [0u8; 128];
+                    let msg2_noise_len = resp
+                        .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                        .expect("write_message2 failed");
 
-                let frame_hdr = (msg2_len as u16).to_le_bytes();
-                resp_transport.send(&frame_hdr).await.unwrap();
-                resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
+                    let mut msg2_buf = [0u8; 256];
+                    let msg2_len = wire::build_msg2(
+                        wire::SessionIndex::new(1),
+                        wire::SessionIndex::new(0),
+                        &msg2_noise[..msg2_noise_len],
+                        &mut msg2_buf,
+                    )
+                    .unwrap();
+
+                    let frame_hdr = (msg2_len as u16).to_le_bytes();
+                    resp_transport.send(&frame_hdr).await.unwrap();
+                    resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
+                }
+
+                #[cfg(feature = "noise-xx")]
+                {
+                    use microfips_core::noise::NoiseXxResponder;
+
+                    let mut resp =
+                        NoiseXxResponder::new(&responder_secret).expect("XX responder init failed");
+                    resp.read_message1(noise_payload)
+                        .expect("read_message1 failed");
+
+                    let resp_eph = random_secret();
+                    let mut msg2_noise = [0u8; 128];
+                    let msg2_noise_len = resp
+                        .write_message2(&resp_eph, &1u64.to_le_bytes(), &mut msg2_noise)
+                        .expect("write_message2 failed");
+
+                    let mut msg2_buf = [0u8; 256];
+                    let msg2_len = wire::build_msg2(
+                        wire::SessionIndex::new(1),
+                        wire::SessionIndex::new(0),
+                        &msg2_noise[..msg2_noise_len],
+                        &mut msg2_buf,
+                    )
+                    .unwrap();
+
+                    let frame_hdr = (msg2_len as u16).to_le_bytes();
+                    resp_transport.send(&frame_hdr).await.unwrap();
+                    resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
+
+                    let mut hdr3 = [0u8; 2];
+                    let mut total3 = 0;
+                    while total3 < 2 {
+                        total3 += resp_transport.recv(&mut hdr3[total3..]).await.unwrap();
+                    }
+                    let msg3_len = u16::from_le_bytes(hdr3) as usize;
+                    let mut buf3 = [0u8; 256];
+                    total3 = 0;
+                    while total3 < msg3_len {
+                        total3 += resp_transport.recv(&mut buf3[total3..]).await.unwrap();
+                    }
+                    let msg3 = wire::parse_message(&buf3[..msg3_len]).unwrap();
+                    match msg3 {
+                        wire::FmpMessage::Msg3 { noise_payload, .. } => {
+                            resp.read_message3(noise_payload)
+                                .expect("read_message3 failed");
+                        }
+                        _ => panic!("expected Msg3"),
+                    }
+                }
             };
 
             let initiator = async move {
@@ -2671,7 +2754,7 @@ mod tests {
     fn test_session_emits_disconnected_after_transport_close() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
+        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         let initiator_secret = random_secret();
@@ -2700,31 +2783,88 @@ mod tests {
                     _ => panic!("expected Msg1"),
                 };
 
-                let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
-                let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub).unwrap();
-                let (_init_pub, epoch) = resp.read_message1(&noise_payload[PUBKEY_SIZE..]).unwrap();
-                assert_eq!(epoch, 1u64.to_le_bytes());
+                #[cfg(not(feature = "noise-xx"))]
+                {
+                    use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE};
 
-                let resp_eph = random_secret();
-                let mut msg2_noise = [0u8; 128];
-                let msg2_noise_len = resp
-                    .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                    let ei_pub: [u8; PUBKEY_SIZE] =
+                        noise_payload[..PUBKEY_SIZE].try_into().unwrap();
+                    let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub).unwrap();
+                    let (_init_pub, epoch) =
+                        resp.read_message1(&noise_payload[PUBKEY_SIZE..]).unwrap();
+                    assert_eq!(epoch, 1u64.to_le_bytes());
+
+                    let resp_eph = random_secret();
+                    let mut msg2_noise = [0u8; 128];
+                    let msg2_noise_len = resp
+                        .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                        .unwrap();
+
+                    let mut msg2_buf = [0u8; 256];
+                    let msg2_len = wire::build_msg2(
+                        wire::SessionIndex::new(1),
+                        wire::SessionIndex::new(0),
+                        &msg2_noise[..msg2_noise_len],
+                        &mut msg2_buf,
+                    )
                     .unwrap();
+                    let frame_hdr = (msg2_len as u16).to_le_bytes();
+                    resp_transport.send(&frame_hdr).await.unwrap();
+                    resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
 
-                let mut msg2_buf = [0u8; 256];
-                let msg2_len = wire::build_msg2(
-                    wire::SessionIndex::new(1),
-                    wire::SessionIndex::new(0),
-                    &msg2_noise[..msg2_noise_len],
-                    &mut msg2_buf,
-                )
-                .unwrap();
-                let frame_hdr = (msg2_len as u16).to_le_bytes();
-                resp_transport.send(&frame_hdr).await.unwrap();
-                resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
+                    let _ = resp.finalize();
+                    resp_transport.close();
+                }
 
-                let _ = resp.finalize();
-                resp_transport.close();
+                #[cfg(feature = "noise-xx")]
+                {
+                    use microfips_core::noise::NoiseXxResponder;
+
+                    let mut resp = NoiseXxResponder::new(&responder_secret).unwrap();
+                    resp.read_message1(noise_payload).unwrap();
+
+                    let resp_eph = random_secret();
+                    let mut msg2_noise = [0u8; 128];
+                    let msg2_noise_len = resp
+                        .write_message2(&resp_eph, &1u64.to_le_bytes(), &mut msg2_noise)
+                        .unwrap();
+
+                    let mut msg2_buf = [0u8; 256];
+                    let msg2_len = wire::build_msg2(
+                        wire::SessionIndex::new(1),
+                        wire::SessionIndex::new(0),
+                        &msg2_noise[..msg2_noise_len],
+                        &mut msg2_buf,
+                    )
+                    .unwrap();
+                    let frame_hdr = (msg2_len as u16).to_le_bytes();
+                    resp_transport.send(&frame_hdr).await.unwrap();
+                    resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
+
+                    let mut hdr3 = [0u8; 2];
+                    let mut total3 = 0;
+                    while total3 < 2 {
+                        total3 += resp_transport.recv(&mut hdr3[total3..]).await.unwrap();
+                    }
+                    let msg3_len = u16::from_le_bytes(hdr3) as usize;
+                    let mut buf3 = [0u8; 256];
+                    total3 = 0;
+                    while total3 < msg3_len {
+                        total3 += resp_transport.recv(&mut buf3[total3..]).await.unwrap();
+                    }
+                    let msg3 = wire::parse_message(&buf3[..msg3_len]).unwrap();
+                    match msg3 {
+                        wire::FmpMessage::Msg3 { noise_payload, .. } => {
+                            let (init_pub, init_epoch) = resp.read_message3(noise_payload).unwrap();
+                            assert_eq!(init_pub, ecdh_pubkey(&initiator_secret).unwrap());
+                            assert_eq!(init_epoch, 1u64.to_le_bytes());
+                        }
+                        _ => panic!("expected Msg3"),
+                    }
+
+                    let _ = resp.finalize();
+                    resp_transport.close();
+                }
             };
 
             let initiator = async move {
@@ -2967,7 +3107,7 @@ mod tests {
     fn test_tiebreaker_winner_ignores_msg1() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::{ecdh_pubkey, NoiseIkResponder, PUBKEY_SIZE};
+        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         let (a, b) = distinct_secret_pair();
@@ -2999,26 +3139,55 @@ mod tests {
                     _ => panic!("expected Msg1"),
                 };
 
-                let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
-                let mut responder = NoiseIkResponder::new(&remote_secret, &ei_pub).unwrap();
-                let (_initiator_pub, epoch) = responder
-                    .read_message1(&noise_payload[PUBKEY_SIZE..])
-                    .unwrap();
+                #[cfg(not(feature = "noise-xx"))]
+                {
+                    use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE};
 
-                let mut msg2_noise = [0u8; 128];
-                let msg2_noise_len = responder
-                    .write_message2(&random_secret(), &epoch, &mut msg2_noise)
-                    .unwrap();
+                    let ei_pub: [u8; PUBKEY_SIZE] =
+                        noise_payload[..PUBKEY_SIZE].try_into().unwrap();
+                    let mut responder = NoiseIkResponder::new(&remote_secret, &ei_pub).unwrap();
+                    let (_initiator_pub, epoch) = responder
+                        .read_message1(&noise_payload[PUBKEY_SIZE..])
+                        .unwrap();
 
-                let mut msg2_buf = [0u8; 256];
-                let msg2_len = wire::build_msg2(
-                    wire::SessionIndex::new(11),
-                    local_sender_idx,
-                    &msg2_noise[..msg2_noise_len],
-                    &mut msg2_buf,
-                )
-                .unwrap();
-                send_test_frame(&mut remote_transport, &msg2_buf[..msg2_len]).await;
+                    let mut msg2_noise = [0u8; 128];
+                    let msg2_noise_len = responder
+                        .write_message2(&random_secret(), &epoch, &mut msg2_noise)
+                        .unwrap();
+
+                    let mut msg2_buf = [0u8; 256];
+                    let msg2_len = wire::build_msg2(
+                        wire::SessionIndex::new(11),
+                        local_sender_idx,
+                        &msg2_noise[..msg2_noise_len],
+                        &mut msg2_buf,
+                    )
+                    .unwrap();
+                    send_test_frame(&mut remote_transport, &msg2_buf[..msg2_len]).await;
+                }
+
+                #[cfg(feature = "noise-xx")]
+                {
+                    use microfips_core::noise::NoiseXxResponder;
+
+                    let mut responder = NoiseXxResponder::new(&remote_secret).unwrap();
+                    responder.read_message1(noise_payload).unwrap();
+
+                    let mut msg2_noise = [0u8; 128];
+                    let msg2_noise_len = responder
+                        .write_message2(&random_secret(), &1u64.to_le_bytes(), &mut msg2_noise)
+                        .unwrap();
+
+                    let mut msg2_buf = [0u8; 256];
+                    let msg2_len = wire::build_msg2(
+                        wire::SessionIndex::new(11),
+                        local_sender_idx,
+                        &msg2_noise[..msg2_noise_len],
+                        &mut msg2_buf,
+                    )
+                    .unwrap();
+                    send_test_frame(&mut remote_transport, &msg2_buf[..msg2_len]).await;
+                }
             };
 
             let local = async move {
@@ -3083,6 +3252,26 @@ mod tests {
                             assert!(sender_idx.as_u32() != 0, "sender_idx should be non-zero");
                             assert_eq!(receiver_idx, wire::SessionIndex::new(remote_sender_idx));
                             initiator.read_message2(noise_payload).unwrap();
+                            #[cfg(feature = "noise-xx")]
+                            {
+                                let mut msg3_noise = [0u8; 128];
+                                let msg3_noise_len = initiator
+                                    .write_message3(
+                                        &remote_pub,
+                                        &1u64.to_le_bytes(),
+                                        &mut msg3_noise,
+                                    )
+                                    .unwrap();
+                                let mut msg3_buf = [0u8; 256];
+                                let msg3_len = wire::build_msg3(
+                                    wire::SessionIndex::new(remote_sender_idx),
+                                    sender_idx,
+                                    &msg3_noise[..msg3_noise_len],
+                                    &mut msg3_buf,
+                                )
+                                .unwrap();
+                                send_test_frame(&mut remote_transport, &msg3_buf[..msg3_len]).await;
+                            }
                             return initiator.finalize();
                         }
                         _ => panic!("expected Msg2"),
@@ -3319,14 +3508,17 @@ mod tests {
     #[test]
     fn test_extract_raw_frame_msg2_mid_buffer() {
         use microfips_core::wire;
-        let prefix = wire::build_prefix(wire::PHASE_MSG2, 0x00, 65);
+        // MSG2 payload = 2 session indices + noise payload (IK: 65, XX: 114).
+        let payload_len = (wire::MSG2_WIRE_SIZE - wire::COMMON_PREFIX_SIZE) as u16;
+        let prefix = wire::build_prefix(wire::PHASE_MSG2, 0x00, payload_len);
         let mut buf = [0u8; 128];
         buf[10..14].copy_from_slice(&prefix);
-        buf[14..14 + 65].fill(0xCC);
-        let (frame, pos) = extract_raw_frame(&buf, 10, 79).unwrap();
-        assert_eq!(frame.len(), 69);
+        buf[14..14 + payload_len as usize].fill(0xCC);
+        let end = 14 + payload_len as usize;
+        let (frame, pos) = extract_raw_frame(&buf, 10, end).unwrap();
+        assert_eq!(frame.len(), wire::MSG2_WIRE_SIZE);
         assert_eq!(frame[..4], prefix);
-        assert_eq!(pos, 79);
+        assert_eq!(pos, end);
     }
 
     #[test]
@@ -3398,6 +3590,18 @@ mod tests {
         }
 
         async fn complete_handshake(&mut self) -> wire::SessionIndex {
+            #[cfg(feature = "noise-xx")]
+            {
+                self.complete_handshake_xx().await
+            }
+            #[cfg(not(feature = "noise-xx"))]
+            {
+                self.complete_handshake_ik().await
+            }
+        }
+
+        #[cfg(not(feature = "noise-xx"))]
+        async fn complete_handshake_ik(&mut self) -> wire::SessionIndex {
             use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE};
 
             let frame = self.recv_raw_frame().await;
@@ -3439,6 +3643,70 @@ mod tests {
             .unwrap();
 
             self.send_raw_frame(&msg2_buf[..msg2_len]).await;
+
+            let (k1, k2) = responder.finalize();
+            self.ks = Some(k2);
+            self.kr = Some(k1);
+            self.peer_sender_idx = Some(peer_sender_idx);
+            self.epoch = Some(epoch);
+
+            peer_sender_idx
+        }
+
+        #[cfg(feature = "noise-xx")]
+        async fn complete_handshake_xx(&mut self) -> wire::SessionIndex {
+            use microfips_core::noise::{NoiseXxResponder, XX_HANDSHAKE_MSG1_SIZE};
+
+            let frame = self.recv_raw_frame().await;
+            let msg = wire::parse_message(&frame).expect("expected valid FMP message");
+            let (peer_sender_idx, noise_payload) = match msg {
+                wire::FmpMessage::Msg1 {
+                    sender_idx,
+                    noise_payload,
+                } => (sender_idx, noise_payload),
+                _ => panic!("expected Msg1, got {:?}", msg),
+            };
+
+            assert_eq!(
+                noise_payload.len(),
+                XX_HANDSHAKE_MSG1_SIZE,
+                "XX MSG1 noise payload must be 33B"
+            );
+
+            let mut responder = NoiseXxResponder::new(&self.secret).expect("responder init failed");
+            responder
+                .read_message1(noise_payload)
+                .expect("read_message1 failed");
+
+            let resp_eph = random_secret();
+            let epoch = 1u64.to_le_bytes();
+            let mut msg2_noise = [0u8; 128];
+            let msg2_noise_len = responder
+                .write_message2(&resp_eph, &epoch, &mut msg2_noise)
+                .expect("write_message2 failed");
+
+            let our_index = wire::SessionIndex::new(0xCAFE_0001);
+            let mut msg2_buf = [0u8; 256];
+            let msg2_len = wire::build_msg2(
+                our_index,
+                peer_sender_idx,
+                &msg2_noise[..msg2_noise_len],
+                &mut msg2_buf,
+            )
+            .unwrap();
+
+            self.send_raw_frame(&msg2_buf[..msg2_len]).await;
+
+            let frame3 = self.recv_raw_frame().await;
+            let msg3 = wire::parse_message(&frame3).expect("expected valid FMP MSG3");
+            match msg3 {
+                wire::FmpMessage::Msg3 { noise_payload, .. } => {
+                    responder
+                        .read_message3(noise_payload)
+                        .expect("read_message3 failed");
+                }
+                _ => panic!("expected Msg3, got {:?}", msg3),
+            }
 
             let (k1, k2) = responder.finalize();
             self.ks = Some(k2);

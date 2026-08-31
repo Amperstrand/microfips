@@ -177,7 +177,7 @@ mod tests {
     use crate::transport::{CryptoRng, RngCore, Transport};
     use embassy_futures::select::{select, Either};
     use embassy_time::{Duration, Timer};
-    use microfips_core::noise::{ecdh_pubkey, NoiseIkInitiator, NoiseIkResponder, PUBKEY_SIZE};
+    use microfips_core::noise::ecdh_pubkey;
     use microfips_core::wire;
     use rand::RngCore as _;
     use rand::SeedableRng;
@@ -250,6 +250,8 @@ mod tests {
     struct HandshakeFixture {
         msg1: Vec<u8>,
         msg2: Vec<u8>,
+        #[cfg(feature = "noise-xx")]
+        msg3: Vec<u8>,
         initiator_ks: [u8; 32],
         initiator_kr: [u8; 32],
         responder_sender_idx: wire::SessionIndex,
@@ -280,12 +282,15 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "noise-xx"))]
     fn build_handshake_fixture(
         seed: [u8; 32],
         initiator_secret: [u8; 32],
         responder_secret: [u8; 32],
         epoch: [u8; 8],
     ) -> HandshakeFixture {
+        use microfips_core::noise::{NoiseIkInitiator, NoiseIkResponder, PUBKEY_SIZE};
+
         let initiator_pub = ecdh_pubkey(&initiator_secret).unwrap();
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
         let mut rng = TestRng::new(seed);
@@ -349,6 +354,102 @@ mod tests {
         HandshakeFixture {
             msg1: msg1[..msg1_len].to_vec(),
             msg2: msg2[..msg2_len].to_vec(),
+            initiator_ks,
+            initiator_kr,
+            responder_sender_idx,
+        }
+    }
+
+    /// XX variant: mirrors the Node's `handshake_xx` RNG draw order (ephemeral,
+    /// then sender index) so `msg1` matches the Node byte-for-byte, and derives
+    /// the `msg3` the Node sends after `msg2`.
+    #[cfg(feature = "noise-xx")]
+    fn build_handshake_fixture(
+        seed: [u8; 32],
+        initiator_secret: [u8; 32],
+        responder_secret: [u8; 32],
+        epoch: [u8; 8],
+    ) -> HandshakeFixture {
+        use microfips_core::noise::{NoiseXxInitiator, NoiseXxResponder};
+
+        let initiator_pub = ecdh_pubkey(&initiator_secret).unwrap();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let mut rng = TestRng::new(seed);
+
+        let initiator_eph = generate_valid_eph(&mut rng);
+        let (mut initiator, _) = NoiseXxInitiator::new(&initiator_eph, &initiator_secret).unwrap();
+
+        let mut msg1_noise = [0u8; 256];
+        let msg1_noise_len = initiator.write_message1(&mut msg1_noise).unwrap();
+
+        let initiator_sender_idx = allocate_session_index(&mut rng);
+        let mut msg1 = [0u8; 256];
+        let msg1_len = wire::build_msg1(
+            initiator_sender_idx,
+            &msg1_noise[..msg1_noise_len],
+            &mut msg1,
+        )
+        .unwrap();
+
+        let wire::FmpMessage::Msg1 { noise_payload, .. } =
+            wire::parse_message(&msg1[..msg1_len]).unwrap()
+        else {
+            unreachable!();
+        };
+
+        let mut responder = NoiseXxResponder::new(&responder_secret).unwrap();
+        responder.read_message1(noise_payload).unwrap();
+
+        let responder_eph = generate_valid_eph(&mut rng);
+        let mut msg2_noise = [0u8; 128];
+        let msg2_noise_len = responder
+            .write_message2(&responder_eph, &epoch, &mut msg2_noise)
+            .unwrap();
+
+        let responder_sender_idx = wire::SessionIndex::new(0xCAFE_0001);
+        let mut msg2 = [0u8; 256];
+        let msg2_len = wire::build_msg2(
+            responder_sender_idx,
+            initiator_sender_idx,
+            &msg2_noise[..msg2_noise_len],
+            &mut msg2,
+        )
+        .unwrap();
+
+        // Same handshake state + static pub + epoch ⇒ byte-identical msg3.
+        let mut verify_initiator = initiator;
+        let (resp_pub, parsed_epoch) = verify_initiator
+            .read_message2(&msg2_noise[..msg2_noise_len])
+            .unwrap();
+        assert_eq!(parsed_epoch, epoch);
+        assert_eq!(resp_pub, responder_pub);
+
+        let mut msg3_noise = [0u8; 128];
+        let msg3_noise_len = verify_initiator
+            .write_message3(&initiator_pub, &epoch, &mut msg3_noise)
+            .unwrap();
+        let mut msg3 = [0u8; 256];
+        let msg3_len = wire::build_msg3(
+            initiator_sender_idx,
+            responder_sender_idx,
+            &msg3_noise[..msg3_noise_len],
+            &mut msg3,
+        )
+        .unwrap();
+
+        responder
+            .read_message3(&msg3_noise[..msg3_noise_len])
+            .unwrap();
+
+        let (initiator_ks, initiator_kr) = verify_initiator.finalize();
+        let (responder_kr, responder_ks) = responder.finalize();
+        assert_eq!(initiator_ks, responder_kr);
+        assert_eq!(initiator_kr, responder_ks);
+
+        HandshakeFixture {
+            msg1: msg1[..msg1_len].to_vec(),
+            msg2: msg2[..msg2_len].to_vec(),
+            msg3: msg3[..msg3_len].to_vec(),
             initiator_ks,
             initiator_kr,
             responder_sender_idx,
@@ -498,11 +599,12 @@ mod tests {
         let fixture =
             build_handshake_fixture(seed, initiator_secret, responder_secret, 1u64.to_le_bytes());
 
-        let transport = ScriptedPeer::new()
+        let peer = ScriptedPeer::new()
             .expect_frame_send(&fixture.msg1)
-            .recv_frame(&fixture.msg2)
-            .close()
-            .build();
+            .recv_frame(&fixture.msg2);
+        #[cfg(feature = "noise-xx")]
+        let peer = peer.expect_frame_send(&fixture.msg3);
+        let transport = peer.close().build();
 
         let mut node = Node::with_timing(
             transport,
@@ -556,9 +658,12 @@ mod tests {
             &fixture.initiator_ks,
         );
 
-        let transport = ScriptedPeer::new()
+        let peer = ScriptedPeer::new()
             .expect_frame_send(&fixture.msg1)
-            .recv_frame(&fixture.msg2)
+            .recv_frame(&fixture.msg2);
+        #[cfg(feature = "noise-xx")]
+        let peer = peer.expect_frame_send(&fixture.msg3);
+        let transport = peer
             .recv_frame(&peer_heartbeat)
             .expect_frame_send(&node_heartbeat)
             .close()
