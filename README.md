@@ -1,5 +1,10 @@
 # microfips
 
+> **EXPERIMENTAL SOFTWARE** — not production-ready. Wire protocol tracks
+> jmcorgan/fips and may break on any upstream release. Identities are
+> deterministic test keys. See [docs/STATE-OF-PROJECT.md](docs/STATE-OF-PROJECT.md)
+> for the current verified-state matrix.
+
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32-D0WD.
 
 A Rust embedded firmware that implements leaf FIPS nodes using Embassy for async HAL,
