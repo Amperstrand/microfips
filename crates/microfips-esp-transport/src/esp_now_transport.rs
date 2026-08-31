@@ -117,7 +117,11 @@ impl EspNowTransport {
             peer_mac: None,
             sessions: 0,
             channel,
-            unlocked_sends: if remembered { u8::MAX - SENDS_PER_CHANNEL } else { 0 },
+            unlocked_sends: if remembered {
+                u8::MAX - SENDS_PER_CHANNEL
+            } else {
+                0
+            },
             _wifi_controller: None,
         }
     }

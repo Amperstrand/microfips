@@ -252,7 +252,11 @@ pub async fn ble_host_task() {
                             if e.handle() == server.fips_service.rx_data.handle {
                                 let len = e.with_data(|len, _| len);
                                 if len > BLE_MAX_FRAME {
-                                    log::warn!("RX write dropped: {}B > max {}", len, BLE_MAX_FRAME);
+                                    log::warn!(
+                                        "RX write dropped: {}B > max {}",
+                                        len,
+                                        BLE_MAX_FRAME
+                                    );
                                 } else {
                                     let mut frame = heapless::Vec::<u8, BLE_MAX_FRAME>::new();
                                     let ok = e.with_data(|_, bytes| {

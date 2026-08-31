@@ -167,7 +167,6 @@ impl HybridTransport {
             log::info!("hybrid: switched to ESP-NOW path");
         }
     }
-
 }
 
 #[embassy_executor::task]
