@@ -61,7 +61,7 @@
 //! | F5 | SP 800-56A §5.6.2.1 | No pair-wise consistency test after keygen | Verify `DH(sk, G) == pk` after key generation |
 //! | F6 | SP 800-90B §4.1.1 | No continuous RNG test (stuck-at) | Check RNG output blocks for all-zeros |
 //! | F7 | §9.10 Power-on self-tests | No firmware integrity test | Hash code section at boot |
-//! | F8 | §8.3.2 Key zeroization | Ephemeral/session keys not zeroized on drop | Use `zeroize` crate or volatile writes |
+//! | F8 | §8.3.2 Key zeroization | **Closed 2026-08-31 (#182)**: secret fields (ck, e_priv, s_priv, k) wiped on drop via `zeroize`; session keys wiped at steady exit; `Copy` removed from state machines | — |
 //! | F9 | §9.9 Error state | Self-test failure returns `Err` but no SSP halt | Implement critical error state per ISO 19790 §9.9 |
 //! | F10 | SP 800-56A Rev 3 | secp256k1 not FIPS-approved curve | Migrate to P-256 or P-384 for FIPS validation |
 //! | F11 | SP 800-38D | ChaCha20-Poly1305 not FIPS-approved AEAD | Migrate to AES-256-GCM for FIPS validation |
@@ -96,6 +96,157 @@
 pub mod replay;
 
 pub use replay::{ReplayWindow, REPLAY_WINDOW_SIZE};
+
+pub use zeroize::Zeroize;
+
+// ---- Key zeroization (deviation F8, closed #182) ----
+//
+// Secret material (ck, e_priv, s_priv, k) is wiped when a state machine
+// drops. Public transcript data (h, pubkeys, nonce counter) is skipped:
+// wiping it proves nothing and wastes cycles. These types deliberately do
+// NOT implement Copy — a copied machine would resurrect the wiped keys.
+
+impl NoiseIkInitiator {
+    fn zeroize_keys(&mut self) {
+        self.ck.zeroize();
+        self.e_priv.zeroize();
+        self.s_priv.zeroize();
+        self.k.zeroize();
+    }
+}
+
+impl Drop for NoiseIkInitiator {
+    fn drop(&mut self) {
+        self.zeroize_keys();
+    }
+}
+
+impl NoiseXkInitiator {
+    fn zeroize_keys(&mut self) {
+        self.ck.zeroize();
+        self.e_priv.zeroize();
+        self.s_priv.zeroize();
+        self.k.zeroize();
+    }
+}
+
+impl Drop for NoiseXkInitiator {
+    fn drop(&mut self) {
+        self.zeroize_keys();
+    }
+}
+
+impl NoiseXkResponder {
+    fn zeroize_keys(&mut self) {
+        self.ck.zeroize();
+        self.e_priv.zeroize();
+        self.k.zeroize();
+    }
+}
+
+impl Drop for NoiseXkResponder {
+    fn drop(&mut self) {
+        self.zeroize_keys();
+    }
+}
+
+impl NoiseXxInitiator {
+    fn zeroize_keys(&mut self) {
+        self.ck.zeroize();
+        self.e_priv.zeroize();
+        self.s_priv.zeroize();
+        self.k.zeroize();
+    }
+}
+
+impl Drop for NoiseXxInitiator {
+    fn drop(&mut self) {
+        self.zeroize_keys();
+    }
+}
+
+impl NoiseXxResponder {
+    fn zeroize_keys(&mut self) {
+        self.ck.zeroize();
+        self.s_priv.zeroize();
+        self.e_priv.zeroize();
+        self.k.zeroize();
+    }
+}
+
+impl Drop for NoiseXxResponder {
+    fn drop(&mut self) {
+        self.zeroize_keys();
+    }
+}
+
+#[cfg(test)]
+mod zeroize_tests {
+    use super::*;
+
+    fn secret(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    #[test]
+    fn ik_initiator_secrets_wiped_public_kept() {
+        let (mut m, _) =
+            NoiseIkInitiator::new(&secret(7), &secret(1), &ecdh_pubkey(&secret(2)).unwrap())
+                .unwrap();
+        assert_ne!(m.h, [0u8; 32]);
+        m.zeroize_keys();
+        assert_eq!(m.ck, [0u8; 32]);
+        assert_eq!(m.e_priv, [0u8; 32]);
+        assert_eq!(m.s_priv, [0u8; 32]);
+        assert!(m.k.is_none());
+        assert_ne!(m.h, [0u8; 32], "public transcript hash must not be wiped");
+    }
+
+    #[test]
+    fn xk_initiator_secrets_wiped() {
+        let (mut m, _) =
+            NoiseXkInitiator::new(&secret(7), &secret(1), &ecdh_pubkey(&secret(2)).unwrap())
+                .unwrap();
+        m.zeroize_keys();
+        assert_eq!(m.ck, [0u8; 32]);
+        assert_eq!(m.e_priv, [0u8; 32]);
+        assert_eq!(m.s_priv, [0u8; 32]);
+        assert!(m.k.is_none());
+        assert_ne!(m.h, [0u8; 32]);
+    }
+
+    #[test]
+    fn xk_responder_secrets_wiped() {
+        let mut m = NoiseXkResponder::new(&secret(2), &ecdh_pubkey(&secret(7)).unwrap()).unwrap();
+        m.zeroize_keys();
+        assert_eq!(m.ck, [0u8; 32]);
+        assert!(m.e_priv.is_none());
+        assert!(m.k.is_none());
+        assert_ne!(m.h, [0u8; 32]);
+    }
+
+    #[test]
+    fn xx_initiator_secrets_wiped() {
+        let (mut m, _) = NoiseXxInitiator::new(&secret(7), &secret(1)).unwrap();
+        m.zeroize_keys();
+        assert_eq!(m.ck, [0u8; 32]);
+        assert_eq!(m.e_priv, [0u8; 32]);
+        assert_eq!(m.s_priv, [0u8; 32]);
+        assert!(m.k.is_none());
+        assert_ne!(m.h, [0u8; 32]);
+    }
+
+    #[test]
+    fn xx_responder_secrets_wiped() {
+        let mut m = NoiseXxResponder::new(&secret(2)).unwrap();
+        m.zeroize_keys();
+        assert_eq!(m.ck, [0u8; 32]);
+        assert_eq!(m.s_priv, [0u8; 32]);
+        assert!(m.e_priv.is_none());
+        assert!(m.k.is_none());
+        assert_ne!(m.h, [0u8; 32]);
+    }
+}
 
 #[allow(deprecated)]
 use chacha20poly1305::aead::generic_array::GenericArray;
@@ -985,7 +1136,7 @@ impl NoiseXkResponder {
 //   msg3: initiator reveals static to responder
 
 /// Noise XX Initiator for both link-layer (FMP) and session-layer (FSP).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct NoiseXxInitiator {
     h: [u8; 32],
     ck: [u8; 32],
@@ -1167,7 +1318,7 @@ impl NoiseXxInitiator {
 }
 
 /// Noise XX Responder for both link-layer (FMP) and session-layer (FSP).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct NoiseXxResponder {
     h: [u8; 32],
     ck: [u8; 32],
@@ -1749,6 +1900,36 @@ mod responder_pub {
             k1.copy_from_slice(&okm[..32]);
             k2.copy_from_slice(&okm[32..]);
             (k1, k2)
+        }
+    }
+
+    impl Drop for NoiseIkResponder {
+        fn drop(&mut self) {
+            self.zeroize_keys();
+        }
+    }
+
+    impl NoiseIkResponder {
+        fn zeroize_keys(&mut self) {
+            self.ck.zeroize();
+            self.s_priv.zeroize();
+            self.k.zeroize();
+        }
+    }
+
+    #[cfg(test)]
+    mod zeroize_tests {
+        use super::*;
+
+        #[test]
+        fn ik_responder_secrets_wiped() {
+            let mut m =
+                NoiseIkResponder::new(&[2u8; 32], &ecdh_pubkey(&[7u8; 32]).unwrap()).unwrap();
+            m.zeroize_keys();
+            assert_eq!(m.ck, [0u8; 32]);
+            assert_eq!(m.s_priv, [0u8; 32]);
+            assert!(m.k.is_none());
+            assert_ne!(m.h, [0u8; 32], "public transcript hash must not be wiped");
         }
     }
 }

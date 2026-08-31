@@ -373,13 +373,17 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
 
         match self.handshake(epoch, handler).await {
-            Ok((ks, kr, them)) => {
+            Ok((mut ks, mut kr, them)) => {
                 self.rpos = 0;
                 self.rlen = 0;
                 self.policy.record_handshake_ok(Instant::now());
                 log_steady!("session: handshake ok, entering steady");
                 handler.on_event(NodeEvent::HandshakeOk).await;
                 let result = self.steady(&ks, &kr, them, handler).await;
+                // Wipe the session keys at steady exit (deviation F8, #182).
+                use microfips_core::noise::Zeroize;
+                ks.zeroize();
+                kr.zeroize();
                 self.policy.reset_session();
                 log_steady!("session: steady exited, result={:?}", result.is_ok());
                 handler.on_event(NodeEvent::Disconnected).await;
