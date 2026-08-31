@@ -743,6 +743,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         #[allow(unused_mut, unused_variables)]
         let mut sr_start_ts: u32 = embassy_time::Instant::now().as_millis() as u32;
         let mut dec_buf = [0u8; MAX_FRAME_SIZE];
+        // One window per session: created at steady entry, so a re-handshake
+        // (or future rekey epoch) starts with a fresh counter space.
+        let mut replay_window = microfips_core::noise::ReplayWindow::new();
         // Refreshed on every authenticated frame. On transports where sends
         // keep succeeding after the peer is gone (e.g. ESP-NOW MAC-level
         // ACKs from a relay), RX silence is the only death signal.
@@ -799,7 +802,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             continue;
                         }
 
-                        let frame = decrypt_established_frame(kr, frame_data, &mut dec_buf);
+                        let frame = decrypt_established_frame(
+                            kr,
+                            frame_data,
+                            &mut dec_buf,
+                            &mut replay_window,
+                        );
                         if frame.is_some() {
                             self.policy.record_good_frame();
                             last_rx = embassy_time::Instant::now();
@@ -1313,10 +1321,15 @@ struct DecryptedFrame<'a> {
 /// Decrypt a single FMP established frame.
 /// FIPS: handlers/encrypted.rs:23-171 handle_encrypted_frame() → AEAD decrypt with
 /// 16-byte header as AAD → strip_inner_header → dispatch_link_message.
+///
+/// Replay protection (fips `noise/replay.rs` semantics): the counter is
+/// checked against the window BEFORE the expensive AEAD decrypt and only
+/// accepted AFTER it succeeds, so garbage cannot exhaust the window.
 fn decrypt_established_frame<'a>(
     kr: &[u8; 32],
     data: &[u8],
     dec_buf: &'a mut [u8; MAX_FRAME_SIZE],
+    replay: &mut microfips_core::noise::ReplayWindow,
 ) -> Option<DecryptedFrame<'a>> {
     use microfips_core::wire;
 
@@ -1349,6 +1362,11 @@ fn decrypt_established_frame<'a>(
         enc.counter,
         data.len() - wire::ESTABLISHED_HEADER_SIZE
     );
+    if !replay.check(enc.counter) {
+        #[cfg(feature = "log")]
+        log::warn!("FMP replay rejected: counter={}", enc.counter);
+        return None;
+    }
     let dl = match microfips_core::noise::aead_decrypt(
         kr,
         enc.counter,
@@ -1368,6 +1386,7 @@ fn decrypt_established_frame<'a>(
             return None;
         }
     };
+    replay.accept(enc.counter);
 
     let (sender_timestamp, inner_rest) = wire::strip_inner_header(&dec_buf[..dl])?;
     let (&msg_type, payload) = inner_rest.split_first()?;
@@ -1913,7 +1932,12 @@ mod tests {
         resp: &mut [u8],
     ) -> FrameAction {
         let mut dec_buf = [0u8; MAX_FRAME_SIZE];
-        let Some(frame) = decrypt_established_frame(key, frame, &mut dec_buf) else {
+        let Some(frame) = decrypt_established_frame(
+            key,
+            frame,
+            &mut dec_buf,
+            &mut microfips_core::noise::ReplayWindow::new(),
+        ) else {
             return FrameAction::Continue;
         };
         dispatch_link_message(&frame, throughput, handler, resp)
@@ -1928,7 +1952,12 @@ mod tests {
         resp: &mut [u8],
     ) -> FrameAction {
         let mut dec_buf = [0u8; MAX_FRAME_SIZE];
-        let Some(frame) = decrypt_established_frame(key, frame, &mut dec_buf) else {
+        let Some(frame) = decrypt_established_frame(
+            key,
+            frame,
+            &mut dec_buf,
+            &mut microfips_core::noise::ReplayWindow::new(),
+        ) else {
             return FrameAction::Continue;
         };
         dispatch_link_message(&frame, _throughput, handler, resp)
@@ -2053,15 +2082,39 @@ mod tests {
         );
 
         let mut dec_buf = [0u8; MAX_FRAME_SIZE];
-        assert!(decrypt_established_frame(&key_b, &frame, &mut dec_buf).is_none());
+        assert!(decrypt_established_frame(
+            &key_b,
+            &frame,
+            &mut dec_buf,
+            &mut microfips_core::noise::ReplayWindow::new()
+        )
+        .is_none());
     }
 
     #[test]
     fn test_handle_frame_garbage_skipped() {
         let key: [u8; 32] = [0x42; 32];
-        assert!(decrypt_established_frame(&key, &[], &mut [0u8; MAX_FRAME_SIZE]).is_none());
-        assert!(decrypt_established_frame(&key, &[0x00], &mut [0u8; MAX_FRAME_SIZE]).is_none());
-        assert!(decrypt_established_frame(&key, &[0xFF; 4], &mut [0u8; MAX_FRAME_SIZE]).is_none());
+        assert!(decrypt_established_frame(
+            &key,
+            &[],
+            &mut [0u8; MAX_FRAME_SIZE],
+            &mut microfips_core::noise::ReplayWindow::new()
+        )
+        .is_none());
+        assert!(decrypt_established_frame(
+            &key,
+            &[0x00],
+            &mut [0u8; MAX_FRAME_SIZE],
+            &mut microfips_core::noise::ReplayWindow::new()
+        )
+        .is_none());
+        assert!(decrypt_established_frame(
+            &key,
+            &[0xFF; 4],
+            &mut [0u8; MAX_FRAME_SIZE],
+            &mut microfips_core::noise::ReplayWindow::new()
+        )
+        .is_none());
     }
 
     #[test]
@@ -2268,7 +2321,13 @@ mod tests {
         );
 
         let mut dec_buf = [0u8; MAX_FRAME_SIZE];
-        let decrypted = decrypt_established_frame(&key, &frame, &mut dec_buf).unwrap();
+        let decrypted = decrypt_established_frame(
+            &key,
+            &frame,
+            &mut dec_buf,
+            &mut microfips_core::noise::ReplayWindow::new(),
+        )
+        .unwrap();
 
         assert_eq!(decrypted.counter, counter);
         assert_eq!(decrypted.sender_timestamp, timestamp);
@@ -4159,6 +4218,70 @@ mod tests {
                     hb_recv_count >= 5,
                     "expected at least 5 HeartbeatRecv, got {}",
                     hb_recv_count
+                );
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_replayed_established_frame_is_dropped() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                let them = peer.complete_handshake().await;
+                Timer::after(Duration::from_millis(50)).await;
+
+                // One heartbeat frame, delivered twice byte-for-byte: the
+                // second copy is a replay and must be dropped (#181).
+                let ks = peer.ks.unwrap();
+                let frame = build_test_frame(
+                    them,
+                    0,
+                    wire::MSG_HEARTBEAT,
+                    embassy_time::Instant::now().as_millis() as u32,
+                    &[],
+                    &ks,
+                );
+                peer.send_raw_frame(&frame).await;
+                peer.send_raw_frame(&frame).await;
+
+                // The disconnect must use a fresh counter, or it would be a
+                // replay of counter 0 itself.
+                peer.send_ctr = 1;
+                peer.send_disconnect(wire::DISC_REASON_SHUTDOWN).await;
+            };
+
+            let node_task = async {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.session(&mut handler).await;
+                assert_eq!(result, Ok(()), "session must end via disconnect, not error");
+
+                let hb_recv_count = handler
+                    .events
+                    .iter()
+                    .filter(|e| **e == NodeEvent::HeartbeatRecv)
+                    .count();
+                assert_eq!(
+                    hb_recv_count, 1,
+                    "replayed heartbeat must be dropped exactly once received"
                 );
             };
 

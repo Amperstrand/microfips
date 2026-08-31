@@ -93,6 +93,10 @@
 //! - `ee`: DH(e_initiator_priv, re_responder_pub) → mix_key
 //! - `se`: DH(e_initiator_priv, rs_responder_pub) → mix_key [D2: FIPS design choice]
 
+pub mod replay;
+
+pub use replay::{ReplayWindow, REPLAY_WINDOW_SIZE};
+
 #[allow(deprecated)]
 use chacha20poly1305::aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
