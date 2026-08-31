@@ -72,7 +72,13 @@ jobs:
       - name: Check FIPS golden vectors drift
         run: |
           echo "Fetching latest golden_vectors.json from FIPS golden-vectors branch..."
-          curl -sL "https://raw.githubusercontent.com/Amperstrand/fips/golden-vectors/golden_vectors.json" -o /tmp/fips_vectors.json
+          # -f: a 404/5xx must not masquerade as drift. A missing reference
+          # skips the check (with a warning) instead of failing unrelated
+          # PRs — same policy as the pinned FIPS_REF in build-host.
+          if ! curl -sfL "https://raw.githubusercontent.com/Amperstrand/fips/golden-vectors/golden_vectors.json" -o /tmp/fips_vectors.json; then
+            echo "::warning::Golden-vectors reference unavailable (Amperstrand/fips@golden-vectors deleted or unreachable) — sync check skipped, local vector tests still run. See Amperstrand/microfips#180."
+            exit 0
+          fi
           
           echo "Comparing local vectors with FIPS reference..."
           LOCAL_HASH=$(sha256sum crates/microfips-core/tests/golden_vectors.json | cut -d' ' -f1)
