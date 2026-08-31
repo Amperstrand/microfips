@@ -43,8 +43,7 @@ Capabilities:
 - **CI pipeline** with unit tests, lint, firmware cross-build, sim-to-sim ping E2E, FIPS integration, and ESP32 builds
 
 ### Known Issues
-- ESP32-D0WD L2CAP scan does not find Linux FIPS daemon (connects via peripheral path instead — FIPS scans and connects to D0WD)
-- ESP32-S3 WiFi steady state: connects but heartbeat cycle fails (link-dead after 30s)
+- WiFi variant has no UART control interface — `show_status` etc. currently work on BLE/L2CAP variants only (logger and control share UART0 TX; the WiFi RX path needs separate initialization)
 
 ## Architecture
 
@@ -367,8 +366,8 @@ Host tools do not fall back to hardcoded identities anymore. Set both variables 
 
 | Issue | Description | Status |
 |-------|-------------|--------|
-| ESP32-S3 steady state | WiFi connects and DNS resolves, but `HandshakeOk` → `Disconnected` cycle. S3 never sends heartbeats back to FIPS. FIPS drops link after 30s. Under investigation — likely a timing or transport issue in the steady-state loop. | Open |
-| WiFi control interface | Control interface (`show_status` etc.) not responding on WiFi variant. Logger and control share UART0 TX — RX path may need separate initialization. | Open |
+| WiFi control interface | Control interface (`show_status` etc.) not responding on WiFi variant — currently a BLE/L2CAP-variant feature; logger and control share UART0 TX, the RX path may need separate initialization. | Open |
+| Noise XX live interop | XX wire is test-suite + CI verified only; no XX-speaking fips daemon exists to interop with, and firmware crates don't forward the `noise-xx` feature yet (#178 closed, #179 tracks the rest). | Tracked (#179) |
 
 ## Milestones
 

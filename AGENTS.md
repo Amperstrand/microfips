@@ -904,7 +904,13 @@ cargo test -p microfips-core          # 234 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture  # verbose output
 cargo test -p microfips-protocol --features std -- --test-threads=1  # 135 tests: framing, transport, node, ScriptedPeer (IK wire)
 cargo test -p microfips-protocol --features std,noise-xx -- --test-threads=1  # same suite on the XX wire (134 pass; the 1 cfg'd-out IK-only tiebreaker variant has an uncfg'd XX equivalent)
+cargo nextest run -p microfips-protocol --features std --test-threads=1  # same, but a hung test FAILS instead of hanging the suite (see .config/nextest.toml)
 ```
+
+**Hang rule:** `cargo test --test-threads=1` never prints a summary if a test
+wedges — two noise-xx hangs were invisible in a "11 failures" scorecard until
+the 2026-08-31 session. When quoting test counts, run under `cargo nextest`
+(slow-timeout terminates wedged tests) or wrap in `timeout(1)` first.
 
 ### Host-side VPS handshake test (no MCU)
 ```bash
@@ -1641,10 +1647,12 @@ microfips matches all three for interoperability. Golden vectors (FIPS issue #1)
 
 ### ESPHome Integration
 
-FIPS has a `leaf_proxies` config feature that supports ESPHome devices via identity derivation:
-`SHA256("esphome:fips_ble:" + identity_seed)` → secp256k1 keypair. This is a FIPS-side TCP
-proxy pattern, not a standalone ESPHome component. microfips takes a different approach: direct
-BLE L2CAP from ESP32 to FIPS, implementing the FIPS protocol stack natively. Both can coexist.
+NOTE (2026-08-31): `leaf_proxies` no longer exists in the fips we track — a full
+source scan of fork/main (v0.5.0) finds no `leaf_proxies`/ESPHome code. It existed
+in an older daemon generation (documented then as `SHA256("esphome:fips_ble:" +
+identity_seed)` → secp256k1 keypair, a FIPS-side TCP-proxy pattern). microfips's
+approach is unchanged and unaffected: direct BLE L2CAP from ESP32 to FIPS,
+implementing the FIPS protocol stack natively. See issue #76 for integration paths.
 
 ### Upcoming Breaking Changes (0.4.0-dev)
 
@@ -1754,6 +1762,35 @@ reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
 - **Verify which path actually carries traffic** before debugging protocol code: node logs
   look identical across transports. Use `ip neigh` (ARP presence), daemon-side mDNS bursts,
   and `tcpdump 'udp port 5353 or host <node-ip>'` as ground truth.
+
+### Lessons (2026-08-31: noise-xx dual-wire + CI unblock)
+
+- **Hangs are invisible to failure counts.** The #178 scorecard said 11 failing
+  tests; reality was 11 failures + 2 HANGS — and under `--test-threads=1` a hang
+  means the suite never prints any summary. Quote counts only from a run with
+  per-test termination (`cargo nextest`, now wired into CI + `.config/nextest.toml`).
+- **`curl -sL` without `-f` turns upstream 404s into false "drift".** The
+  golden-vectors job compared our vectors against a "404: Not Found" body for 25
+  minutes before anyone read the log. Fetch failures must be distinguishable from
+  content mismatches (fixed: skip-with-warning + #180).
+- **Pins die when upstream rewrites history.** Two CI contracts broke in one day
+  (golden-vectors branch deleted; pinned FIPS_REF commit vanished from the clone).
+  Vendor references you depend on (the specquotes `.pin` pattern), don't fetch
+  them from refs you don't control at CI time.
+- **Red main hides new breakage.** Five distinct failures (secret literal in a
+  script, fmt drift, a new clippy lint, two dead upstream refs) had accumulated
+  since morning unnoticed. Before diagnosing YOUR change, check the last green
+  run on main — and read the *first failing step* of a failed job, not the job name.
+- **Test harnesses must not hardcode wire sizes.** The IK-era tests hardcoded
+  106/57/69-byte messages; under `noise-xx` the fips-fmp constants switch to
+  33/106/118 and the tests broke in ways unrelated to the feature. Always use
+  `wire::HANDSHAKE_MSG*_SIZE` / `wire::MSG*_WIRE_SIZE` (they are feature-gated
+  correctly).
+- **Fixtures coupled to RNG draw order are brittle by design.** The XX
+  ScriptedPeer fixture only matches the Node's msg1 byte-for-byte because both
+  draw (ephemeral, then sender-index) in the same order — reordering draws in
+  `handshake_xx` breaks the fixture silently-in-intent (tests fail loudly, at
+  least). Documented in the fixture; do not "clean up" the draw order casually.
 
 ### Spec quotes (greatspectations dogfood, 2026-08-29)
 
