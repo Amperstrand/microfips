@@ -11,7 +11,9 @@ cd "$(dirname "$0")/.."
 REG=crates  # unused; registry path below
 SIM_B=$(python3 -c "import json; print(json.load(open('device-registry.json'))['devices']['sim-b']['npub_hex'])")
 STM32=$(python3 -c "import json; print(json.load(open('device-registry.json'))['devices']['stm32']['npub_hex'])")
-SIM_B_NSEC=0000000000000000000000000000000000000000000000000000000000000004
+# The registry is public-only (issue #134): derive the scalar as BE32 of the
+# generator multiplier — never commit the hex literal.
+SIM_B_NSEC=$(python3 -c "import json,sys; print(format(json.load(open('device-registry.json'))['devices']['sim-b']['vector_key']['generator_mul'],'064x'))")
 
 PORT=""
 for p in /dev/ttyACM*; do
