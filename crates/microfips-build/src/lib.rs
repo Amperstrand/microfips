@@ -123,7 +123,9 @@ pub fn emit_key_checked(env_name: &str, registry_value: &str, device_name: &str)
 }
 
 fn sec1_valid(v: &str) -> bool {
-    v.len() == 66 && v.chars().all(|c| c.is_ascii_hexdigit()) && (v.starts_with("02") || v.starts_with("03"))
+    v.len() == 66
+        && v.chars().all(|c| c.is_ascii_hexdigit())
+        && (v.starts_with("02") || v.starts_with("03"))
 }
 
 fn on_curve(v: &str) -> bool {
@@ -211,15 +213,21 @@ mod tests {
     #[test]
     fn sec1_rejects_garbage() {
         assert!(!sec1_valid("02zz"));
-        assert!(!sec1_valid("0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")); // uncompressed prefix
-        assert!(!sec1_valid("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179"));   // 65 chars
-        // An invented tail is usually still a valid curve point (about half
-        // of all x-values are on secp256k1) — on_curve cannot catch it; the
-        // registry-mismatch WARNING with the expected key is the real guard.
+        assert!(!sec1_valid(
+            "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        )); // uncompressed prefix
+        assert!(!sec1_valid(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179"
+        )); // 65 chars
+            // An invented tail is usually still a valid curve point (about half
+            // of all x-values are on secp256k1) — on_curve cannot catch it; the
+            // registry-mismatch WARNING with the expected key is the real guard.
         let invented = "02e493dbf1c10d80f3581e4904e1ee2b47542c3778101b6c58c5b1c6eab5b78db7";
         assert!(sec1_valid(invented));
         assert!(on_curve(invented));
         // But a garbage tail is caught by from_sec1_bytes:
-        assert!(!on_curve("02fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe"));
+        assert!(!on_curve(
+            "02fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe"
+        ));
     }
 }
