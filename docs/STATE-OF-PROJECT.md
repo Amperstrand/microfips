@@ -38,7 +38,7 @@
 
 | Component | What | Status |
 |---|---|---|
-| CI (12 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable; protocol + fips-noise suites run under BOTH IK and noise-xx features |
+| CI (15 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable (2026-08-31, 924d184); protocol + fips-noise suites run under BOTH IK and noise-xx features |
 | Test suite | 234 core + 135 protocol (IK) + 134 protocol (XX) + 68 core-lib + 3 build = 444 test runs, all passing | Both feature sets green (#178 closed) |
 | Bench scripts | test_http_e2e.sh, test_hw_handshake.sh, test_mcu_to_mcu_fsp.sh | Working (updated for v0.5.0) |
 | fips-lab | Scenario infrastructure + regression assertions | Scenarios written; pytest env needs repair |
