@@ -2204,6 +2204,7 @@ dependencies = [
 name = "microfips-build"
 version = "0.1.0"
 dependencies = [
+ "k256",
  "serde_json",
 ]
 
