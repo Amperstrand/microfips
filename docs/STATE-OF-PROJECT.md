@@ -26,6 +26,8 @@
 | Layer | What | Evidence |
 |---|---|---|
 | Noise IK | Link handshake | Both ESP32s + STM32: MSG1→MSG2→keys, sustained heartbeats |
+| Replay protection | Established-frame anti-replay | WireGuard-style 2048-counter window ported from fips (#181, 2026-08-31): dup/below-window frames dropped before AEAD, scripted-peer E2E test |
+| Key zeroization | Secret material wiped on drop | All 6 Noise state machines + session keys at steady exit (#182, 2026-08-31); deviation F8 closed; +2.6KB flash |
 | Noise XX | Forward-compat link handshake (FIPS next wire) | fips-noise 37/37 + full protocol suite green under `--features std,noise-xx` (CI-enforced); test-level only — no live XX daemon to interop against |
 | Noise XK | FSP session | STM32 + SIM: SessionSetup→Ack→Msg3, service request/response |
 | FMP | Framing | Raw SDU (master dialect) + legacy framed (branch dialect) both parse |
@@ -39,7 +41,7 @@
 | Component | What | Status |
 |---|---|---|
 | CI (15 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable (2026-08-31, 924d184); protocol + fips-noise suites run under BOTH IK and noise-xx features |
-| Test suite | 234 core + 135 protocol (IK) + 134 protocol (XX) + 68 core-lib + 3 build = 444 test runs, all passing | Both feature sets green (#178 closed) |
+| Test suite | 234 core + 136 protocol (IK) + 135 protocol (XX) + 53×2 fips-noise + 68 core-lib + 3 build = ~460 test runs, all passing | Both feature sets green (#178/#181/#182 closed) |
 | Bench scripts | test_http_e2e.sh, test_hw_handshake.sh, test_mcu_to_mcu_fsp.sh | Working (updated for v0.5.0) |
 | fips-lab | Scenario infrastructure + regression assertions | Scenarios written; pytest env needs repair |
 | Device registry | Public-only, CI-enforced, build-time overrides | Working |
