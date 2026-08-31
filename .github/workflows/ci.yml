@@ -40,14 +40,21 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # nextest for the protocol suites: per-test processes + slow-timeout
+      # termination turn a hung test into a failure instead of a suite that
+      # never reports (.config/nextest.toml sets the budgets).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - run: cargo test -p microfips-core
 
       # Run with --features std to include load_secret/load_peer_pub tests;
       # --test-threads=1 because env var tests modify process-global state.
       - run: cargo test -p microfips-core --features std -- --test-threads=1
 
-      - run: cargo test -p microfips-protocol --features std -- --test-threads=1
-      - run: cargo test -p microfips-protocol --features std,noise-xx -- --test-threads=1
+      - run: cargo nextest run -p microfips-protocol --features std --test-threads=1
+      - run: cargo nextest run -p microfips-protocol --features std,noise-xx --test-threads=1
       - run: cargo test -p microfips-service
       - run: cargo test -p microfips-l2cap-test
       - run: cargo test -p fips-noise

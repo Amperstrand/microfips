@@ -1,0 +1,13 @@
+# Hang canary for the protocol suites.
+#
+# A wedged test (an async select that never resolves, a transport that never
+# delivers) must fail, not hang: under `cargo test --test-threads=1` a hung
+# test means the suite never prints a summary at all — two noise-xx hangs
+# shipped invisibly that way until the 2026-08-31 session. nextest runs each
+# test in its own process and terminates tests exceeding the budget below.
+#
+# No legitimate microfips-protocol test exceeds ~10s; 120s marks slow, 2
+# periods (240s) terminates.
+[profile.default.slow-timeout]
+period = "120s"
+terminate-after = 2
