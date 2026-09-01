@@ -307,9 +307,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: microfips-http-test
-          path: ./bin
+        path: ./bin
 
-      - run: chmod +x ./bin/fips-handshake ./bin/microfips-http-test
+      - uses: actions/download-artifact@v4
+        with:
+          name: fips-daemon
+        path: ./bin
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: microfips-sim
+        path: ./bin
+
+      - run: chmod +x ./bin/fips-handshake ./bin/microfips-http-test ./bin/fips ./bin/microfips-sim
 
       - name: Generate fresh key pairs
         run: |
@@ -372,6 +382,70 @@ jobs:
           echo "Using derived STM32 identity and VPS peer pubkey from device-registry.json"
           FIPS_NSEC="$STM32_NSEC" FIPS_PEER_NPUB="$VPS_NPUB" ./bin/fips-handshake "$FIPS_ADDR" 2>&1 || true
           echo "=== (continue-on-error: VPS may be unreachable from CI) ==="
+
+      - name: "Test 3: sim↔daemon rekey soak (steady state survives rekey)"
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          echo "=== Rekey soak: sim leaf vs local daemon (rekey.after_secs=20) ==="
+          # Fresh identity for the soak daemon (never reuse test identities).
+          SOAK_KEYS=$(./bin/fips-handshake --keygen)
+          SOAK_DAEMON_NSEC=$(echo "$SOAK_KEYS" | sed -n 's/^FIPS_NSEC=//p')
+          SOAK_DAEMON_NPUB=$(echo "$SOAK_KEYS" | sed -n 's/^FIPS_PUB=//p')
+          SOAK_LEAF_KEYS=$(./bin/fips-handshake --keygen)
+          SOAK_LEAF_NSEC=$(echo "$SOAK_LEAF_KEYS" | sed -n 's/^FIPS_NSEC=//p')
+
+          cat > /tmp/rekey-soak-daemon.yaml <<YAML
+          node:
+            identity:
+              nsec: ${SOAK_DAEMON_NSEC}
+              persistent: false
+            log_level: debug
+            rekey:
+              after_secs: 20
+          transports:
+            udp:
+              bind_addr: "127.0.0.1:21214"
+          control:
+            socket_path: "/tmp/rekey-soak-control.sock"
+          tun:
+            enabled: false
+          dns:
+            enabled: false
+          YAML
+
+          ./bin/fips --config /tmp/rekey-soak-daemon.yaml > /tmp/rekey-soak-daemon.log 2>&1 &
+          echo $! > /tmp/rekey-soak-daemon.pid
+          for i in $(seq 1 20); do
+            grep -q "UDP transport started" /tmp/rekey-soak-daemon.log && break
+            sleep 1
+          done
+          grep -q "UDP transport started" /tmp/rekey-soak-daemon.log || {
+            echo "::error::soak daemon did not start"; tail -20 /tmp/rekey-soak-daemon.log; exit 1; }
+
+          FIPS_NSEC="$SOAK_LEAF_NSEC" FIPS_PEER_NPUB="$SOAK_DAEMON_NPUB" \
+            timeout 80 ./bin/microfips-sim --udp 127.0.0.1:21214 > /tmp/rekey-soak-sim.log 2>&1 &
+          echo $! > /tmp/rekey-soak-sim.pid
+
+          # Rekey fires at ~20s ± 15s jitter; 75s covers >= 1-2 full cycles.
+          sleep 75
+
+          DISCONNECTS=$(grep -c "disconnect notification" /tmp/rekey-soak-daemon.log || true)
+          PROMOTED=$(grep -c "Connection promoted to active peer" /tmp/rekey-soak-daemon.log || true)
+          REKEY_CUTOVERS=$(grep -c "Rekey cutover complete" /tmp/rekey-soak-daemon.log || true)
+          SIM_PID=$(cat /tmp/rekey-soak-sim.pid)
+          SIM_ALIVE=$(kill -0 "$SIM_PID" 2>/dev/null && echo yes || echo no)
+
+          echo "soak verdict: promoted=$PROMOTED cutovers=$REKEY_CUTOVERS disconnects=$DISCONNECTS sim_alive=$SIM_ALIVE"
+          tail -5 /tmp/rekey-soak-sim.log || true
+
+          kill "$SIM_PID" "$(cat /tmp/rekey-soak-daemon.pid)" 2>/dev/null || true
+
+          [ "$PROMOTED" -ge 1 ] || { echo "::error::sim never handshook the daemon"; exit 1; }
+          [ "$REKEY_CUTOVERS" -ge 1 ] || { echo "::error::daemon rekeyed but no cutover completed — leaf did not follow"; cat /tmp/rekey-soak-daemon.log | grep -i rekey | tail -10; exit 1; }
+          [ "$DISCONNECTS" -eq 0 ] || { echo "::error::disconnects during rekey window — the pre-#183 failure signature"; exit 1; }
+          [ "$SIM_ALIVE" = "yes" ] || { echo "::error::sim died during the soak"; exit 1; }
+          echo "=== REKEY SOAK PASSED ==="
 
   build-firmware:
     name: Build Firmware
