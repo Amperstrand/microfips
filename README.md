@@ -146,9 +146,15 @@ cargo test -p microfips-core                    # core protocol tests
 cargo test -p microfips-core -- --nocapture     # verbose output
 cargo test -p microfips-protocol --features std -- --test-threads=1  # protocol tests (IK wire)
 cargo test -p microfips-protocol --features std,noise-xx -- --test-threads=1  # same suite on the Noise XX wire (FIPS next forward-compat)
+cargo nextest run -p microfips-protocol --features std --test-threads=1     # same, but hung tests FAIL instead of hanging the suite
 cargo test -p microfips-service                 # service layer tests
 cargo test -p microfips-http-demo --features http  # HTTP demo tests
 ```
+
+Hardware regressions (rekey soaks, link death, mDNS, ESP-NOW) run as pytest
+scenarios in [fips-lab](https://github.com/Amperstrand/fips-lab) — see its
+`docs/bench-testing-playbook.md` for the graduation policy: every interactive
+hardware finding becomes a scenario in the session that found it.
 
 ### Key generation and VPS handshake (no hardware)
 

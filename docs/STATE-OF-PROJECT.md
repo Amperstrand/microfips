@@ -42,9 +42,9 @@
 | Component | What | Status |
 |---|---|---|
 | CI (15 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable (2026-08-31, 924d184); protocol + fips-noise suites run under BOTH IK and noise-xx features |
-| Test suite | 234 core + 136 protocol (IK) + 135 protocol (XX) + 53×2 fips-noise + 68 core-lib + 3 build = ~460 test runs, all passing | Both feature sets green (#178/#181/#182 closed) |
+| Test suite | 234 core + 138 protocol (IK) + 137 protocol (XX) + 53×2 fips-noise + 68 core-lib + 3 build = ~465 test runs, all passing | Both feature sets green (#178/#181/#182/#183-P1-3 closed); hang canary via nextest |
 | Bench scripts | test_http_e2e.sh, test_hw_handshake.sh, test_mcu_to_mcu_fsp.sh | Working (updated for v0.5.0) |
-| fips-lab | Scenario infrastructure + regression assertions | Scenarios written; pytest env needs repair |
+| fips-lab | Scenario infrastructure + regression assertions | Pytest env REPAIRED (91 tests collect, #4 closed); cross-project Bench Testing Playbook in its docs/; `test_rekey_soak` specced (fips-lab #5) |
 | Device registry | Public-only, CI-enforced, build-time overrides | Working |
 | Build-time validation | SEC1 check + mismatch warning + knob tracking | Working |
 

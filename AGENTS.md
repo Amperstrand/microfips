@@ -898,6 +898,31 @@ done
 
 ## Testing
 
+### Test graduation & token discipline (POLICY — read before any test work)
+
+**Every interactive test eventually becomes a unit or e2e test.** Interactive
+verification is for NEW hypotheses only; once a behavior is understood, the
+finding graduates into `cargo test` / `cargo nextest` (software) or a fips-lab
+pytest scenario (hardware, see the Bench Testing Playbook) in the SAME session
+that found it. Re-verifying known behavior interactively is a bug in process.
+Template: fips-lab #5 (`test_rekey_soak`, from the 2026-09-01 session).
+
+**Token discipline DURING interactive tests** (the loop is sometimes
+unavoidable — make it cheap):
+1. Plan the assertions BEFORE touching hardware (what string, which log,
+   how many occurrences). Absence-signatures count (e.g. rekey is silent at
+   INFO on the daemon — assert on the SecurityViolation cycle instead).
+2. Verify compiled-in env by scanning the binary BEFORE flashing (SSID
+   string, pinned npub bytes, nsec tail) — never debug a stale pin on hardware.
+3. Batch the waiting: one long sleep + one evidence sweep beats N short
+   sleep-and-check round-trips. Each round-trip costs a full context reload.
+4. Capture artifacts once (console tap + daemon log slice) and analyze from
+   the files, not from live tails.
+5. Timebox: if the hypothesis hasn't resolved in 2-3 cycles, stop and write
+   the failing case as a test instead — the test outlives the session.
+6. Close the loop: file the scenario issue (or the test) before ending the
+   session. An undocumented interactive test will be repeated by hand.
+
 ### Unit tests (no hardware)
 ```bash
 cargo test -p microfips-core          # 234 tests: Noise, FMP, FSP, identity
