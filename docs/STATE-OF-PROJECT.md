@@ -64,7 +64,7 @@
 | Hybrid on esp-radio 1.0 | esp-hal#6220 (upstream API gap) | #168, PR #166 |
 | FIPS 0.6.0-dev compatibility | Upstream hasn't shipped breaking changes yet | — |
 | Noise XX live interop | No XX-speaking daemon exists (fips master = IK/v0.5.0); firmware crates don't forward `noise-xx` yet | #179 |
-| Node-initiated rekey on hardware | Knobs exist (b3c3c8c), default off; bench variant pending | fips-lab backlog |
+| Node-initiated rekey on hardware | **Verified 2026-09-01** (fips-lab `test_rekey_self_initiated`): 2 rotations/2 min, `REKEY_AFTER_SECS` build knob, default off | — |
 | Relay AP + peer (3-hop chain) | Needs third Walter board | — |
 | MCU-initiated FSP (ESP32 as FSP endpoint) | ESP32 firmware is link-level only (by design) | Architecture decision |
 
