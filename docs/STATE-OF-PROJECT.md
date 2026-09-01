@@ -27,13 +27,14 @@
 |---|---|---|
 | Noise IK | Link handshake | Both ESP32s + STM32: MSG1→MSG2→keys, sustained heartbeats |
 | Replay protection | Established-frame anti-replay | WireGuard-style 2048-counter window ported from fips (#181, 2026-08-31): dup/below-window frames dropped before AEAD, scripted-peer E2E test |
-| Rekey (responder) | Answer daemon rekeys + follow cutover | Hardware-verified 2026-09-01 (#183 Phases 1–3): epoch cascade (cur/pend/prev), promote-on-pending-decrypt, drain+zeroize, idempotent msg1 re-answer; 3 clean rotations on the bench S3, daemon's SecurityViolation cycle gone. Self-initiation = Phase 4 |
+| Rekey (full) | Follow AND initiate rekeys | Hardware-verified 2026-09-01 (#183 Phases 1–3): epoch cascade (cur/pend/prev), promote-on-pending-decrypt, drain+zeroize, idempotent msg1 re-answer; 3 clean rotations on the bench S3, daemon's SecurityViolation cycle gone. Self-initiation = Phase 4 |
 | Key zeroization | Secret material wiped on drop | All 6 Noise state machines + session keys at steady exit (#182, 2026-08-31); deviation F8 closed; +2.6KB flash |
 | Noise XX | Forward-compat link handshake (FIPS next wire) | fips-noise 37/37 + full protocol suite green under `--features std,noise-xx` (CI-enforced); test-level only — no live XX daemon to interop against |
 | Noise XK | FSP session | STM32 + SIM: SessionSetup→Ack→Msg3, service request/response |
 | FMP | Framing | Raw SDU (master dialect) + legacy framed (branch dialect) both parse |
 | FSP | Session + data | PING/PONG (SIM→MCU through daemon), HTTP request/response |
-| mDNS | LAN discovery | Pinned (npub match) + open (trust-on-first-advert) on WiFi |
+| mDNS | LAN discovery | Pinned (npub match) + open (trust-on-first-advert) on WiFi; rogue-advert rejection scenario-hardened (#188 c2) |
+| DNS fallback | VPS hostname resolution | embassy-net smoltcp DNS socket (#184, 2026-09-01): hardware-verified fallback + recovery; manual resolver retired |
 | ESP-NOW | Discovery + framing | Channel sweep, fragment reassembly, gateway relay, hybrid switching |
 | MMP | Link metrics | ETX, delivery ratio, loss rate, goodput (fipsctl show peers) |
 
@@ -42,7 +43,7 @@
 | Component | What | Status |
 |---|---|---|
 | CI (15 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable (2026-08-31, 924d184); protocol + fips-noise suites run under BOTH IK and noise-xx features |
-| Test suite | 234 core + 138 protocol (IK) + 137 protocol (XX) + 53×2 fips-noise + 68 core-lib + 3 build = ~465 test runs, all passing | Both feature sets green (#178/#181/#182/#183-P1-3 closed); hang canary via nextest |
+| Test suite | 234 core + 140 protocol (IK) + 139 protocol (XX) + 53×2 fips-noise + 68 core-lib + 3 build = ~470 test runs, all passing | Both feature sets green (#178/#181/#182/#183 all phases/#184 closed); hang canary via nextest |
 | Bench scripts | test_http_e2e.sh, test_hw_handshake.sh, test_mcu_to_mcu_fsp.sh | Working (updated for v0.5.0) |
 | fips-lab | Scenario infrastructure + regression assertions | Pytest env REPAIRED (91 tests collect, #4 closed); cross-project Bench Testing Playbook in its docs/; `test_rekey_soak` specced (fips-lab #5) |
 | Device registry | Public-only, CI-enforced, build-time overrides | Working |
@@ -62,7 +63,8 @@
 | ESP32-C3 | No board available | #150 (closed; reopen when board arrives) |
 | Hybrid on esp-radio 1.0 | esp-hal#6220 (upstream API gap) | #168, PR #166 |
 | FIPS 0.6.0-dev compatibility | Upstream hasn't shipped breaking changes yet | — |
-| Noise XX live interop | No XX-speaking daemon exists (fips master = IK/v0.5.0); firmware crates don't forward `noise-xx` yet | #178 closed (test-side), #179 |
+| Noise XX live interop | No XX-speaking daemon exists (fips master = IK/v0.5.0); firmware crates don't forward `noise-xx` yet | #179 |
+| Node-initiated rekey on hardware | Knobs exist (b3c3c8c), default off; bench variant pending | fips-lab backlog |
 | Relay AP + peer (3-hop chain) | Needs third Walter board | — |
 | MCU-initiated FSP (ESP32 as FSP endpoint) | ESP32 firmware is link-level only (by design) | Architecture decision |
 
