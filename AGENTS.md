@@ -1765,13 +1765,14 @@ microfips-build env-override feature). The daemon peers pin via
 `148e269`, issue #4 closed — 91 tests collect cleanly). The cross-project
 **Bench Testing Playbook** now lives at fips-lab `docs/bench-testing-playbook.md`
 (graduation principle, bench patterns, scenario backlog) — read it before
-running interactive hardware tests. First scenario specced: `test_rekey_soak`
-(fips-lab #5, from the 2026-09-01 rekey session).
+running interactive hardware tests. First scenario LIVE: `test_rekey_soak`
+(fips-lab #5, closed done — green in 96s, RED proven against pre-rekey firmware).
 
 Phase 1 — labgrid targets for the bench (S3 via espflash USB-JTAG; CYD/atoms via
 esptool), port pinning from `detect_lab_ports.sh` semantics, and a
 `LabFipsServiceDriver` (isolated config/port/identity + the security checklist).
-Phase 2 — scenario suites `test_rekey_soak.py` (#5, specced), `test_mdns_discovery.py`,
+Phase 2 — scenario suites `test_rekey_soak.py` (#5, LIVE and green — 94fc881,
+the reusable bench fixtures live in fips_lab/bench.py), `test_mdns_discovery.py`,
 `test_espnow_gw.py`, `test_hybrid_switch.py`, `test_link_death.py` (daemon stop/start
 via the driver = RX-silence test), with keygen→cargo-env wiring automated in fixtures
 (the build matrix + binary verification from the playbook).
