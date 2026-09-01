@@ -31,7 +31,7 @@ use static_cell::StaticCell;
 static PEER_MAC: AtomicU64 = AtomicU64::new(0);
 
 #[embassy_executor::task]
-async fn gw_net_task(mut runner: Runner<'static, Interface<'static>>) {
+async fn gw_net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await;
 }
 
@@ -74,33 +74,18 @@ async fn udp_to_espnow_task(
 /// Re-associates and waits for DHCP whenever the AP drops the station;
 /// esp-radio does not auto-reconnect.
 #[embassy_executor::task]
-async fn wifi_supervisor_task(mut controller: WifiController<'static>, stack: Stack<'static>) {
+async fn wifi_supervisor_task(controller: &'static WifiController<'static>, stack: Stack<'static>) {
     loop {
         Timer::after(Duration::from_secs(5)).await;
         if controller.is_connected() {
             continue;
         }
-        log::info!("gateway: WiFi association lost, reconnecting");
-        match with_timeout(Duration::from_secs(30), controller.connect_async()).await {
-            Ok(Ok(_)) => {
-                let dhcp = with_timeout(Duration::from_secs(WIFI_DHCP_TIMEOUT_SECS), async {
-                    loop {
-                        if let Some(c) = stack.config_v4() {
-                            break c;
-                        }
-                        Timer::after(Duration::from_millis(500)).await;
-                    }
-                })
-                .await;
-                match dhcp {
-                    Ok(config_v4) => {
-                        log::info!("gateway: WiFi reconnected, IP: {}", config_v4.address)
-                    }
-                    Err(_) => log::error!("gateway: WiFi reconnected but DHCP timed out"),
-                }
-            }
-            _ => log::error!("gateway: WiFi reconnect failed, retrying"),
-        }
+        // esp-radio 1.0 limitation: reconnect needs &mut controller, which the
+        // indefinite esp-now borrow excludes (see ESP-RADIO-1.0-MIGRATION.md).
+        // The gateway's association retry happens at boot; a mid-run AP loss
+        // is reported and requires a reboot until the single-task restructure
+        // lands upstream-side or in hybrid.
+        log::error!("gateway: WiFi association lost (auto-reconnect pending 1.0 restructure), stack={:?}", stack.is_link_up());
     }
 }
 
@@ -126,14 +111,14 @@ pub async fn run_espnow_wifi_gateway(
     static GW_TX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
     static GW_SOCKET: StaticCell<UdpSocket<'static>> = StaticCell::new();
 
-    let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
-    let esp_now = interfaces.esp_now;
-
+    static WCTRL: static_cell::StaticCell<esp_radio::wifi::WifiController> =
+        static_cell::StaticCell::new();
+    let mut wifi_controller =
+        WCTRL.init(esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("WifiController::new failed"));
     let resources = GW_RESOURCES.init(StackResources::new());
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
     let (stack, runner) = embassy_net::new(
-        interfaces.station,
+        esp_radio::wifi::Interface::station(),
         Config::dhcpv4(Default::default()),
         resources,
         seed,
@@ -221,9 +206,11 @@ pub async fn run_espnow_wifi_gateway(
     socket.bind(0).expect("udp bind");
     let socket: &'static UdpSocket<'static> = GW_SOCKET.init(socket);
 
+    // esp-radio 1.0: esp-now borrows the controller; associate FIRST so the
+    // mutable connect phase completes before the (indefinite) esp-now borrow.
     // Do NOT set an ESP-NOW channel: the station association pins the
     // radio to the AP's channel and ESP-NOW rides on it.
-    let (manager, sender, receiver) = esp_now.split();
+    let (manager, sender, receiver) = wifi_controller.esp_now().split();
 
     spawner.spawn(udp_to_espnow_task(socket, sender, daemon).expect("spawn udp task failed"));
     spawner

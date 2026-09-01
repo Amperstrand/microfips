@@ -147,12 +147,13 @@ pub async fn run_espnow_gateway(
     // TrngSource must outlive the WiFi driver; this function never returns.
     let (_trng_source, _trng) = crate::runner::init_trng(rng_periph, adc1);
 
-    let (wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
-    // Dropping the controller stops the radio; the gateway runs forever.
-    core::mem::forget(wifi_controller);
+    static WCTRL: static_cell::StaticCell<esp_radio::wifi::WifiController> =
+        static_cell::StaticCell::new();
+    // Leaked on purpose: esp_now borrows the controller and the gateway runs forever.
+    let wifi_controller =
+        WCTRL.init(esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("WifiController::new failed"));
 
-    let esp_now = interfaces.esp_now;
+    let esp_now = wifi_controller.esp_now();
     let _ = esp_now.set_channel(crate::config::ESP_NOW_CHANNEL);
     let (manager, sender, receiver) = esp_now.split();
 
