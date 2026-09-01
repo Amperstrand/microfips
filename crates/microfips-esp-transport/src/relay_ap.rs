@@ -466,21 +466,15 @@ async fn uplink_task(
                             scope_len,
                         ))
                     }
-                    None => {
-                        let dns = sta_stack.config_v4().map(|c| c.dns_servers[0]);
-                        match dns {
-                            Some(dns) => match resolve_vps_ipv4(sta_stack, dns, VPS_HOST).await {
-                                Ok(ip) => Some((
-                                    IpEndpoint::new(IpAddress::Ipv4(ip), VPS_PORT),
-                                    pinned,
-                                    [0u8; MAX_SCOPE_LEN],
-                                    0,
-                                )),
-                                Err(_) => None,
-                            },
-                            None => None,
-                        }
-                    }
+                    None => match resolve_vps_ipv4(sta_stack, VPS_HOST).await {
+                        Ok(ip) => Some((
+                            IpEndpoint::new(IpAddress::Ipv4(ip), VPS_PORT),
+                            pinned,
+                            [0u8; MAX_SCOPE_LEN],
+                            0,
+                        )),
+                        Err(_) => None,
+                    },
                 };
             match found {
                 Some((endpoint, key, scope, scope_len)) => {
@@ -609,7 +603,7 @@ async fn run_relay_ap_opts(
         if peer { "yes" } else { "no" }
     );
 
-    static STA_RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
+    static STA_RESOURCES: StaticCell<StackResources<9>> = StaticCell::new();
     static AP_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
     static AP_RX_META: StaticCell<[PacketMetadata; 8]> = StaticCell::new();
     static AP_RX_BUF: StaticCell<[u8; 4096]> = StaticCell::new();

@@ -155,7 +155,7 @@ pub async fn build_wifi_transport(
     const MAX_WIFI_RETRIES: u32 = 5;
     const WIFI_RETRY_BASE_SECS: u64 = 5;
 
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
     static RX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static RX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
     static TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
@@ -267,8 +267,7 @@ pub async fn build_wifi_transport(
                     } else {
                         #[cfg(feature = "log")]
                         log::info!("mDNS: no matching advert, resolving {}", VPS_HOST);
-                        let dns_server = config_v4.dns_servers[0];
-                        match resolve_vps_ipv4(stack, dns_server, VPS_HOST).await {
+                        match resolve_vps_ipv4(stack, VPS_HOST).await {
                             Ok(vps_ip) => Ok((
                                 config_v4,
                                 vps_ip,

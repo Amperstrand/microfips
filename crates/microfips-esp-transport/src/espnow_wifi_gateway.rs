@@ -119,7 +119,7 @@ pub async fn run_espnow_wifi_gateway(
 
     log::info!("ESP-NOW WiFi gateway starting");
 
-    static GW_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    static GW_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
     static GW_RX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static GW_RX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
     static GW_TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
@@ -194,10 +194,9 @@ pub async fn run_espnow_wifi_gateway(
         }
         None => {
             log::info!("gateway: no mDNS advert, resolving {}", VPS_HOST);
-            let dns_server = stack.config_v4().map(|c| c.dns_servers[0]);
             let ip = loop {
                 if let Some(dns) = dns_server {
-                    if let Ok(ip) = resolve_vps_ipv4(stack, dns, VPS_HOST).await {
+                    if let Ok(ip) = resolve_vps_ipv4(stack, VPS_HOST).await {
                         break ip;
                     }
                 }

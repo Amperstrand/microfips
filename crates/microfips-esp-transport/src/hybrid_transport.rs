@@ -197,7 +197,7 @@ pub async fn build_hybrid_transport(
 
     crate::heap::init();
 
-    static HY_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    static HY_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
     static HY_RX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static HY_RX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
     static HY_TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
@@ -276,8 +276,7 @@ pub async fn build_hybrid_transport(
             #[cfg(feature = "log")]
             log::info!("hybrid: mDNS pinned daemon at {}", daemon);
         } else {
-            let dns_server = config_v4.dns_servers[0];
-            match resolve_vps_ipv4(stack, dns_server, VPS_HOST).await {
+            match resolve_vps_ipv4(stack, VPS_HOST).await {
                 Ok(ip) => {
                     daemon = IpEndpoint::new(IpAddress::Ipv4(ip), VPS_PORT);
                     start_on_wifi = true;
