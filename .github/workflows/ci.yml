@@ -307,17 +307,17 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: microfips-http-test
-        path: ./bin
+          path: ./bin
 
       - uses: actions/download-artifact@v4
         with:
           name: fips-daemon
-        path: ./bin
+          path: ./bin
 
       - uses: actions/download-artifact@v4
         with:
           name: microfips-sim
-        path: ./bin
+          path: ./bin
 
       - run: chmod +x ./bin/fips-handshake ./bin/microfips-http-test ./bin/fips ./bin/microfips-sim
 
@@ -395,24 +395,24 @@ jobs:
           SOAK_LEAF_KEYS=$(./bin/fips-handshake --keygen)
           SOAK_LEAF_NSEC=$(echo "$SOAK_LEAF_KEYS" | sed -n 's/^FIPS_NSEC=//p')
 
-          cat > /tmp/rekey-soak-daemon.yaml <<YAML
-          node:
-            identity:
-              nsec: ${SOAK_DAEMON_NSEC}
-              persistent: false
-            log_level: debug
-            rekey:
-              after_secs: 20
-          transports:
-            udp:
-              bind_addr: "127.0.0.1:21214"
-          control:
-            socket_path: "/tmp/rekey-soak-control.sock"
-          tun:
-            enabled: false
-          dns:
-            enabled: false
-          YAML
+          printf '%s\n' \
+            'node:' \
+            '  identity:' \
+            "    nsec: ${SOAK_DAEMON_NSEC}" \
+            '    persistent: false' \
+            '  log_level: debug' \
+            '  rekey:' \
+            '    after_secs: 20' \
+            'transports:' \
+            '  udp:' \
+            '    bind_addr: "127.0.0.1:21214"' \
+            'control:' \
+            '  socket_path: "/tmp/rekey-soak-control.sock"' \
+            'tun:' \
+            '  enabled: false' \
+            'dns:' \
+            '  enabled: false' \
+            > /tmp/rekey-soak-daemon.yaml
 
           ./bin/fips --config /tmp/rekey-soak-daemon.yaml > /tmp/rekey-soak-daemon.log 2>&1 &
           echo $! > /tmp/rekey-soak-daemon.pid
