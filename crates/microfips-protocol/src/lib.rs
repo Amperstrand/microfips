@@ -18,6 +18,9 @@ pub mod transport;
 pub mod mmp;
 
 #[cfg(test)]
+pub(crate) mod test_harness;
+
+#[cfg(test)]
 pub mod test_helpers {
     use embassy_executor::Executor;
     use std::sync::atomic::{AtomicBool, Ordering};
