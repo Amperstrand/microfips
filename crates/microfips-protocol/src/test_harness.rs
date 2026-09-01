@@ -365,6 +365,20 @@ pub fn build_test_frame(
     payload: &[u8],
     key: &[u8; 32],
 ) -> std::vec::Vec<u8> {
+    build_test_frame_flags(receiver, counter, msg_type, timestamp, payload, key, 0x00)
+}
+
+/// Like [`build_test_frame`] with an explicit established-header flags byte
+/// (e.g. `wire::FLAG_KEY_EPOCH` for post-rekey cutover frames).
+pub fn build_test_frame_flags(
+    receiver: wire::SessionIndex,
+    counter: u64,
+    msg_type: u8,
+    timestamp: u32,
+    payload: &[u8],
+    key: &[u8; 32],
+    flags: u8,
+) -> std::vec::Vec<u8> {
     let msg_end = 1 + payload.len();
     let mut msg_buf = [0u8; 512];
     msg_buf[0] = msg_type;
@@ -376,7 +390,7 @@ pub fn build_test_frame(
     let fl = wire::encrypt_and_assemble(
         receiver,
         counter,
-        0x00,
+        flags,
         &inner_buf[..inner_len],
         key,
         &mut out,
