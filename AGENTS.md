@@ -851,6 +851,7 @@ DEVICE_NPUB_HEX_vps=02...   # repoint the firmware's peer key (e.g. at the local
 DEVICE_NSEC_HEX_esp32s3=... # override a device secret
 FIPS_TARGET_HOST=host-or-ip # override the static target (IPv4 literals skip DNS)
 FIPS_DISCOVERY_SCOPE=name   # open-mode mDNS scope filter
+REKEY_AFTER_SECS=<secs>     # self-initiated rekey cadence (0 = off, default; scenario-verified fips-lab test_rekey_self_initiated)
 ```
 
 The registry is public-only (issue #134): vector devices carry `vector_key.generator_mul`
@@ -1771,8 +1772,11 @@ running interactive hardware tests. First scenario LIVE: `test_rekey_soak`
 Phase 1 — labgrid targets for the bench (S3 via espflash USB-JTAG; CYD/atoms via
 esptool), port pinning from `detect_lab_ports.sh` semantics, and a
 `LabFipsServiceDriver` (isolated config/port/identity + the security checklist).
-Phase 2 — scenario suites `test_rekey_soak.py` (#5, LIVE and green — 94fc881,
-the reusable bench fixtures live in fips_lab/bench.py), `test_mdns_discovery.py`,
+Phase 2 — scenario suites: `test_rekey_soak.py` (#5), `test_link_death.py`,
+`test_mdns_pinned.py` (rogue-advert), `test_rekey_self_initiated.py` (node-driven,
+validates the REKEY_AFTER_SECS knob) — all LIVE and green; the reusable bench
+fixtures live in fips_lab/bench.py (build matrix + binary verification + daemon
+lifecycle + tap + artifacts). Remaining:
 `test_espnow_gw.py`, `test_hybrid_switch.py`, `test_link_death.py` (daemon stop/start
 via the driver = RX-silence test), with keygen→cargo-env wiring automated in fixtures
 (the build matrix + binary verification from the playbook).
