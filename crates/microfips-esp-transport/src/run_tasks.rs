@@ -100,6 +100,7 @@ pub async fn run_l2cap_node(
         &mut led,
         peer_pub,
         crate::runner::NodeOpts {
+            rekey_after_secs: crate::config::REKEY_AFTER_SECS,
             raw_framing: true,
             peer_sent_first,
         },
@@ -241,6 +242,7 @@ pub async fn run_hybrid_node(
         &mut led,
         peer_npub,
         crate::runner::NodeOpts {
+            rekey_after_secs: crate::config::REKEY_AFTER_SECS,
             raw_framing: true,
             peer_sent_first: false,
         },
@@ -299,6 +301,7 @@ pub async fn run_esp_now_node(
         &mut led,
         VPS_NPUB,
         crate::runner::NodeOpts {
+            rekey_after_secs: crate::config::REKEY_AFTER_SECS,
             raw_framing: true,
             peer_sent_first: false,
         },

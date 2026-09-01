@@ -10,10 +10,21 @@ use crate::handler::build_demo_fsp;
 use crate::led::Led;
 use crate::rng::EspRng;
 
-#[derive(Default)]
 pub struct NodeOpts {
     pub raw_framing: bool,
     pub peer_sent_first: bool,
+    /// Self-initiated rekey cadence (secs, 0 = off) — from config::REKEY_AFTER_SECS.
+    pub rekey_after_secs: u64,
+}
+
+impl Default for NodeOpts {
+    fn default() -> Self {
+        Self {
+            raw_framing: false,
+            peer_sent_first: false,
+            rekey_after_secs: crate::config::REKEY_AFTER_SECS,
+        }
+    }
 }
 
 pub fn make_led(gpio2: esp_hal::peripherals::GPIO2<'static>) -> Led {
@@ -43,7 +54,15 @@ pub async fn run_node<T: microfips_protocol::transport::Transport>(
     trng.fill_bytes(&mut init_eph);
 
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, DEVICE_NSEC, peer_pub);
+    let mut node = if opts.rekey_after_secs > 0 {
+        let timing = microfips_protocol::node::NodeTiming {
+            rekey_after_secs: opts.rekey_after_secs,
+            ..microfips_protocol::node::NodeTiming::default()
+        };
+        Node::with_timing(transport, rng, DEVICE_NSEC, peer_pub, timing)
+    } else {
+        Node::new(transport, rng, DEVICE_NSEC, peer_pub)
+    };
 
     if opts.raw_framing {
         node.set_raw_framing(true);

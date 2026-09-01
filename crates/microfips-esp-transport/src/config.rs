@@ -272,6 +272,7 @@ const fn parse_secs(v: Option<&str>, default: u64) -> u64 {
     let Some(s) = v else {
         return default;
     };
+
     let bytes = s.as_bytes();
     let mut value = 0u64;
     let mut i = 0;
@@ -315,4 +316,24 @@ pub const RELAY_UPLINK_SSID: &str = match option_env!("RELAY_UPLINK_SSID") {
 pub const RELAY_UPLINK_PASSWORD: &str = match option_env!("RELAY_UPLINK_PASSWORD") {
     Some(v) => v,
     None => WIFI_PASSWORD,
+};
+
+/// Self-initiated rekey cadence in seconds (0 = off, the default — the
+/// daemon drives; we follow). Build-time knob: `REKEY_AFTER_SECS=<n>`.
+pub const REKEY_AFTER_SECS: u64 = match option_env!("REKEY_AFTER_SECS") {
+    Some(v) => {
+        let bytes = v.as_bytes();
+        let mut value = 0u64;
+        let mut i = 0;
+        while i < bytes.len() {
+            assert!(
+                bytes[i] >= b'0' && bytes[i] <= b'9',
+                "REKEY_AFTER_SECS must be numeric"
+            );
+            value = value * 10 + (bytes[i] - b'0') as u64;
+            i += 1;
+        }
+        value
+    }
+    None => 0,
 };
