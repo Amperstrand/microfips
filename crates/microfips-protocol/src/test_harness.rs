@@ -332,6 +332,8 @@ pub fn success_timing() -> NodeTiming {
         handshake_resend_backoff: 1,
         handshake_max_resends: 1,
         connect_delay_ms: 0,
+        rekey_after_secs: 0,
+        rekey_after_messages: 0,
     }
 }
 

@@ -38,6 +38,24 @@ pub const MAX_FRAME_SIZE: usize = 2048;
 /// (fips `node/handlers/rekey.rs:26`, peer-progress-aware).
 const DRAIN_WINDOW_SECS: u64 = 10;
 
+/// Suppress self-initiated rekey for this long after the peer initiated
+/// one (dual-init protection; fips `rekey.rs:30`).
+const REKEY_DAMPENING_SECS: u64 = 30;
+
+/// In-flight self-initiated rekey: the initiator handshake state plus the
+/// cached msg1 for the resend ladder (fips `set_rekey_state` analog).
+struct RekeyInit {
+    #[cfg(not(feature = "noise-xx"))]
+    hs: microfips_core::noise::NoiseIkInitiator,
+    #[cfg(feature = "noise-xx")]
+    hs: microfips_core::noise::NoiseXxInitiator,
+    our_index: wire::SessionIndex,
+    msg1: [u8; 256],
+    msg1_len: usize,
+    resends: u32,
+    next_resend_at: embassy_time::Instant,
+}
+
 /// One link-layer key epoch (fips `node/session/mod.rs` slots): `cur` is
 /// active, `pend` holds a completed rekey handshake awaiting the peer's
 /// cutover proof, `prev` retains the retired epoch for drain stragglers.
@@ -56,6 +74,12 @@ struct EpochSlot {
 pub struct NodeTiming {
     pub heartbeat_interval_secs: u64,
     pub link_dead_timeout_secs: u64,
+    /// Self-initiated rekey trigger: seconds in a session before rotating
+    /// keys (0 = never — the default; the daemon drives, we follow).
+    pub rekey_after_secs: u64,
+    /// Self-initiated rekey trigger: outbound messages before rotating
+    /// (0 = never).
+    pub rekey_after_messages: u64,
     pub retry_base_interval_secs: u64,
     pub retry_max_backoff_secs: u64,
     pub handshake_resend_interval_ms: u64,
@@ -69,6 +93,8 @@ impl Default for NodeTiming {
         Self {
             heartbeat_interval_secs: DEFAULT_HEARTBEAT_INTERVAL_SECS,
             link_dead_timeout_secs: DEFAULT_LINK_DEAD_TIMEOUT_SECS,
+            rekey_after_secs: 0,
+            rekey_after_messages: 0,
             retry_base_interval_secs: DEFAULT_RETRY_BASE_INTERVAL_SECS,
             retry_max_backoff_secs: DEFAULT_RETRY_MAX_BACKOFF_SECS,
             handshake_resend_interval_ms: DEFAULT_HANDSHAKE_RESEND_INTERVAL_MS,
@@ -776,6 +802,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut pend: Option<EpochSlot> = None;
         let mut prev: Option<EpochSlot> = None;
         let mut prev_drain_base = embassy_time::Instant::now();
+        let mut session_started = embassy_time::Instant::now();
+        let mut rekey_init: Option<RekeyInit> = None;
+        // True while `pend` was armed by OUR initiation (timer-cutover is
+        // the initiator's trigger; responder-armed pend waits for proof).
+        let mut pend_self = false;
+        let mut last_peer_rekey_at: Option<embassy_time::Instant> = None;
         // Idempotent rekey answering: the initiator resends the SAME msg1
         // bytes while its msg2 is in flight; a duplicate must draw a resend
         // of the SAME msg2 (a fresh ephemeral would derive different keys —
@@ -897,6 +929,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                         last_rekey_msg2 = Some((msg2, msg2_len));
                                     }
                                 }
+                                // Peer-initiated rekey observed: dampen our
+                                // own initiation window (dual-init guard).
+                                last_peer_rekey_at = Some(embassy_time::Instant::now());
                                 self.policy.record_good_frame();
                                 last_rx = embassy_time::Instant::now();
                                 continue;
@@ -929,6 +964,89 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     }
                                 } else {
                                     log_steady!("steady: rekey msg3 parse failed, discarded");
+                                }
+                                self.policy.record_good_frame();
+                                last_rx = embassy_time::Instant::now();
+                                continue;
+                            }
+                            Some(wire::FmpMessage::Msg2 {
+                                sender_idx,
+                                receiver_idx,
+                                noise_payload,
+                            }) if rekey_init.is_some() => {
+                                let mut ri = rekey_init.take().expect("guarded");
+                                if receiver_idx != ri.our_index {
+                                    // Not ours (stale/foreign msg2): keep waiting.
+                                    rekey_init = Some(ri);
+                                    self.policy.record_good_frame();
+                                    last_rx = embassy_time::Instant::now();
+                                    continue;
+                                }
+                                let mut np2 = [0u8; 128];
+                                let np2_len = noise_payload.len().min(np2.len());
+                                np2[..np2_len].copy_from_slice(&noise_payload[..np2_len]);
+
+                                #[cfg(not(feature = "noise-xx"))]
+                                let completed = match ri.hs.read_message2(&np2[..np2_len]) {
+                                    Ok(_) => {
+                                        let (c1, c2) = ri.hs.finalize();
+                                        Some((c1, c2))
+                                    }
+                                    Err(_) => None,
+                                };
+                                #[cfg(feature = "noise-xx")]
+                                let completed = if ri.hs.read_message2(&np2[..np2_len]).is_err() {
+                                    None
+                                } else {
+                                    match microfips_core::noise::ecdh_pubkey(&self.nsec) {
+                                        Ok(my_pub) => {
+                                            let mut n3 = [0u8; 128];
+                                            match ri.hs.write_message3(&my_pub, &epoch, &mut n3) {
+                                                Ok(n3len) => {
+                                                    let mut msg3 = [0u8; 256];
+                                                    match wire::build_msg3(
+                                                        ri.our_index,
+                                                        sender_idx,
+                                                        &n3[..n3len],
+                                                        &mut msg3,
+                                                    ) {
+                                                        Some(msg3_len) => {
+                                                            if self
+                                                                .send_frame(&msg3[..msg3_len])
+                                                                .await
+                                                                .is_err()
+                                                            {
+                                                                None
+                                                            } else {
+                                                                let (c1, c2) = ri.hs.finalize();
+                                                                Some((c1, c2))
+                                                            }
+                                                        }
+                                                        None => None,
+                                                    }
+                                                }
+                                                Err(_) => None,
+                                            }
+                                        }
+                                        Err(_) => None,
+                                    }
+                                };
+
+                                if let Some((c1, c2)) = completed {
+                                    pend = Some(EpochSlot {
+                                        ks: c1,
+                                        kr: c2,
+                                        them: sender_idx,
+                                        send_ctr: 0,
+                                        k_bit: !cur.k_bit,
+                                        replay: microfips_core::noise::ReplayWindow::new(),
+                                    });
+                                    pend_self = true;
+                                    log_steady!(
+                                        "steady: rekey complete (self-initiated), pending armed"
+                                    );
+                                } else {
+                                    log_steady!("steady: rekey msg2 failed to parse, abandoning");
                                 }
                                 self.policy.record_good_frame();
                                 last_rx = embassy_time::Instant::now();
@@ -1014,6 +1132,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             let new_cur = pend.take().expect("from_pend implies pend");
                             prev = Some(core::mem::replace(&mut cur, new_cur));
                             prev_drain_base = embassy_time::Instant::now();
+                            session_started = embassy_time::Instant::now();
                             #[cfg(feature = "mmp")]
                             self.mmp.reset_for_rekey(Instant::now());
                             log_steady!("steady: rekey cutover complete, K-bit flipped");
@@ -1127,6 +1246,57 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 }
                 Either::Second(()) => {
                     let now = embassy_time::Instant::now();
+                    // Initiator cutover: pend armed by OUR rekey promotes on
+                    // the next tick-send (fips "first send after completion");
+                    // responder-armed pend still waits for the decrypt proof.
+                    if pend_self && pend.is_some() {
+                        let new_cur = pend.take().expect("checked");
+                        prev = Some(core::mem::replace(&mut cur, new_cur));
+                        prev_drain_base = now;
+                        // Each epoch ages independently (fips resets
+                        // session_start at promote — otherwise the trigger
+                        // stays armed and re-initiates every tick).
+                        session_started = now;
+                        #[cfg(feature = "mmp")]
+                        self.mmp.reset_for_rekey(Instant::now());
+                        pend_self = false;
+                        log_steady!(
+                            "steady: rekey cutover complete (self-initiated), K-bit flipped"
+                        );
+                    }
+                    // Self-initiated rekey trigger (0 = off). Dampened for
+                    // REKEY_DAMPENING_SECS after the peer initiated one.
+                    if rekey_init.is_none()
+                        && pend.is_none()
+                        && !matches!(last_peer_rekey_at, Some(t) if now
+                            .saturating_duration_since(t)
+                            .as_secs()
+                            < REKEY_DAMPENING_SECS)
+                        && ((self.timing.rekey_after_secs > 0
+                            && now.saturating_duration_since(session_started).as_secs()
+                                >= self.timing.rekey_after_secs)
+                            || (self.timing.rekey_after_messages > 0
+                                && cur.send_ctr >= self.timing.rekey_after_messages))
+                    {
+                        if let Some(ri) = self.initiate_rekey(epoch).await {
+                            rekey_init = Some(ri);
+                        }
+                    }
+                    // Resend ladder / abandon (same cadence as the initial
+                    // handshake, fips `resend_pending_rekeys`).
+                    if let Some(ri) = rekey_init.as_mut() {
+                        if now >= ri.next_resend_at {
+                            if ri.resends >= self.timing.handshake_max_resends {
+                                log_steady!("steady: rekey msg1 unconfirmed, abandoning cycle");
+                                rekey_init = None;
+                            } else {
+                                let _ = self.send_frame(&ri.msg1[..ri.msg1_len]).await;
+                                ri.resends += 1;
+                                let delay = self.current_handshake_resend_timeout_ms(ri.resends);
+                                ri.next_resend_at = now + Duration::from_millis(delay as u64);
+                            }
+                        }
+                    }
                     // Drain sweeper: retire the previous epoch once the peer
                     // has been silent on it for a full window (fips peer-
                     // progress-aware drain).
@@ -1390,6 +1560,47 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
         }
+    }
+
+    /// Initiate a rekey over the established link: fresh initiator
+    /// handshake with the long-term key and the session epoch, msg1 with a
+    /// fresh session index (fips `initiate_rekey`). The caller owns the
+    /// resend ladder via the returned cached msg1.
+    async fn initiate_rekey(
+        &mut self,
+        _epoch: [u8; microfips_core::noise::EPOCH_SIZE],
+    ) -> Option<RekeyInit> {
+        use microfips_core::noise;
+
+        #[cfg(not(feature = "noise-xx"))]
+        let my_pub = noise::ecdh_pubkey(&self.nsec).ok()?;
+        let eph = self.generate_valid_eph();
+        #[cfg(not(feature = "noise-xx"))]
+        let (mut hs, _) = noise::NoiseIkInitiator::new(&eph, &self.nsec, &self.peer_npub).ok()?;
+        #[cfg(feature = "noise-xx")]
+        let (mut hs, _) = noise::NoiseXxInitiator::new(&eph, &self.nsec).ok()?;
+
+        let mut n1 = [0u8; 256];
+        #[cfg(not(feature = "noise-xx"))]
+        let n1len = hs.write_message1(&my_pub, &_epoch, &mut n1).ok()?;
+        #[cfg(feature = "noise-xx")]
+        let n1len = hs.write_message1(&mut n1).ok()?;
+
+        let our_index = self.allocate_session_index();
+        let mut msg1 = [0u8; 256];
+        let msg1_len = wire::build_msg1(our_index, &n1[..n1len], &mut msg1)?;
+        self.send_frame(&msg1[..msg1_len]).await.ok()?;
+        log_steady!("steady: rekey initiated, msg1 sent");
+
+        Some(RekeyInit {
+            hs,
+            our_index,
+            msg1,
+            msg1_len,
+            resends: 0,
+            next_resend_at: embassy_time::Instant::now()
+                + Duration::from_millis(self.timing.handshake_resend_interval_ms),
+        })
     }
 
     /// Build the answer to an inbound rekey msg1 (IK) on the established
@@ -2072,6 +2283,8 @@ mod tests {
             handshake_resend_backoff: 3,
             handshake_max_resends: 4,
             connect_delay_ms: 42,
+            rekey_after_secs: 0,
+            rekey_after_messages: 0,
         };
 
         let node = Node::with_timing(
@@ -4308,6 +4521,321 @@ mod tests {
                     TestRng::from_os_rng(),
                     initiator_secret,
                     responder_pub,
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.session(&mut handler).await;
+                assert_eq!(result, Ok(()));
+                assert!(handler.events.contains(&NodeEvent::HeartbeatRecv));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_node_initiates_rekey_and_peer_follows_cutover() {
+        use crate::test_harness::{build_test_frame_flags, success_timing};
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let node_pub = ecdh_pubkey(&initiator_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+
+                // The node's rekey timer fires: its next outbound frame must
+                // be a rekey Msg1, not an old-epoch heartbeat.
+                let frame =
+                    embassy_time::with_timeout(Duration::from_millis(5000), peer.recv_raw_frame())
+                        .await
+                        .expect("node never initiated rekey");
+                let msg = wire::parse_message(&frame).unwrap();
+                let (node_new_idx, np1) = match msg {
+                    wire::FmpMessage::Msg1 {
+                        sender_idx,
+                        noise_payload,
+                    } => (sender_idx, noise_payload),
+                    _ => panic!("expected rekey Msg1 from node, got {:?}", msg),
+                };
+
+                // Peer answers as the rekey responder.
+                let resp_idx = wire::SessionIndex::new(0xBEEF_0001);
+                #[cfg(not(feature = "noise-xx"))]
+                let (peer_ks, peer_kr) = {
+                    use microfips_core::noise::{NoiseIkResponder, PUBKEY_SIZE};
+                    let ei_pub: [u8; PUBKEY_SIZE] = np1[..PUBKEY_SIZE].try_into().unwrap();
+                    let mut resp = NoiseIkResponder::new(&responder_secret, &ei_pub).unwrap();
+                    let (init_pub, _e) = resp.read_message1(&np1[PUBKEY_SIZE..]).unwrap();
+                    assert_eq!(
+                        init_pub[1..33],
+                        node_pub[1..33],
+                        "rekey initiator must be the pinned peer"
+                    );
+                    let mut n2 = [0u8; 128];
+                    let l = resp
+                        .write_message2(&random_secret(), &1u64.to_le_bytes(), &mut n2)
+                        .unwrap();
+                    let mut buf = [0u8; 256];
+                    let bl = wire::build_msg2(resp_idx, node_new_idx, &n2[..l], &mut buf).unwrap();
+                    peer.send_raw_frame(&buf[..bl]).await;
+                    let (c1, c2) = resp.finalize();
+                    (c2, c1)
+                };
+                #[cfg(feature = "noise-xx")]
+                let (peer_ks, peer_kr) = {
+                    use microfips_core::noise::NoiseXxResponder;
+                    let mut resp = NoiseXxResponder::new(&responder_secret).unwrap();
+                    resp.read_message1(np1).unwrap();
+                    let mut n2 = [0u8; 128];
+                    let l = resp
+                        .write_message2(&random_secret(), &1u64.to_le_bytes(), &mut n2)
+                        .unwrap();
+                    let mut buf = [0u8; 256];
+                    let bl = wire::build_msg2(resp_idx, node_new_idx, &n2[..l], &mut buf).unwrap();
+                    peer.send_raw_frame(&buf[..bl]).await;
+
+                    // Old-epoch stragglers may interleave before msg3.
+                    let mut np3 = None;
+                    for _ in 0..6 {
+                        let f = embassy_time::with_timeout(
+                            Duration::from_millis(5000),
+                            peer.recv_raw_frame(),
+                        )
+                        .await
+                        .expect("node went silent before msg3");
+                        if let Some(wire::FmpMessage::Msg3 { noise_payload, .. }) =
+                            wire::parse_message(&f)
+                        {
+                            np3 = Some(noise_payload.to_vec());
+                            break;
+                        }
+                    }
+                    let np3 = np3.expect("node never sent msg3");
+                    let (init_pub, _e) = resp.read_message3(np3.as_slice()).unwrap();
+                    assert_eq!(init_pub[1..33], node_pub[1..33]);
+                    let (c1, c2) = resp.finalize();
+                    (c2, c1)
+                };
+
+                // Initiator cutover: the node's first send after msg2 may be
+                // an old-epoch straggler (heartbeat in the same tick as the
+                // initiation — the drain window exists for exactly this);
+                // skip those until a NEW-epoch K-bit frame arrives.
+                fn try_decrypt(key: &[u8; 32], frame: &[u8]) -> Option<(u8, std::vec::Vec<u8>)> {
+                    let enc = wire::EncryptedHeader::parse(frame)?;
+                    let mut dec = [0u8; MAX_FRAME_SIZE];
+                    let dl = microfips_core::noise::aead_decrypt(
+                        key,
+                        enc.counter,
+                        &enc.header_bytes,
+                        &frame[wire::ESTABLISHED_HEADER_SIZE..],
+                        &mut dec,
+                    )
+                    .ok()?;
+                    let (_, inner) = wire::strip_inner_header(&dec[..dl])?;
+                    Some((inner[0], inner[1..].to_vec()))
+                }
+
+                let old_kr = peer.kr.expect("initial epoch keys");
+                let mut got_new_epoch = false;
+                for _ in 0..6 {
+                    let hb_frame = embassy_time::with_timeout(
+                        Duration::from_millis(5000),
+                        peer.recv_raw_frame(),
+                    )
+                    .await
+                    .expect("node went silent after rekey");
+                    if let Some((_msg_type, _)) = try_decrypt(&peer_kr, &hb_frame) {
+                        // Any authenticated new-epoch frame proves the cutover
+                        // (heartbeat or MMP report — both seal post-promote).
+                        let enc = wire::EncryptedHeader::parse(&hb_frame).unwrap();
+                        assert_ne!(
+                            enc.header_bytes[1] & wire::FLAG_KEY_EPOCH,
+                            0,
+                            "post-cutover frames must carry the K-bit"
+                        );
+                        got_new_epoch = true;
+                        break;
+                    }
+                    // Straggler: must still authenticate in the old epoch.
+                    assert!(
+                        try_decrypt(&old_kr, &hb_frame).is_some(),
+                        "frame authenticated in neither epoch"
+                    );
+                }
+                assert!(got_new_epoch, "node never cut over to the new epoch");
+
+                // Peer follows the cutover and ends the session on the new epoch.
+                let ts = embassy_time::Instant::now().as_millis() as u32;
+                let hb = build_test_frame_flags(
+                    node_new_idx,
+                    0,
+                    wire::MSG_HEARTBEAT,
+                    ts,
+                    &[],
+                    &peer_ks,
+                    wire::FLAG_KEY_EPOCH,
+                );
+                peer.send_raw_frame(&hb).await;
+                Timer::after(Duration::from_millis(100)).await;
+                peer.ks = Some(peer_ks);
+                peer.kr = Some(peer_kr);
+                peer.peer_sender_idx = Some(node_new_idx);
+                peer.send_ctr = 1;
+                peer.send_disconnect(wire::DISC_REASON_SHUTDOWN).await;
+            };
+
+            let node_task = async {
+                let mut node = Node::with_timing(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                    NodeTiming {
+                        rekey_after_secs: 1,
+                        heartbeat_interval_secs: 1,
+                        link_dead_timeout_secs: 8,
+                        ..success_timing()
+                    },
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.session(&mut handler).await;
+                assert_eq!(result, Ok(()));
+                assert!(handler.events.contains(&NodeEvent::HeartbeatRecv));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    #[test]
+    fn test_rekey_dampening_suppresses_dual_init() {
+        use crate::test_harness::build_test_frame_flags;
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let node_pub = ecdh_pubkey(&initiator_secret).unwrap();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+                Timer::after(Duration::from_millis(300)).await;
+
+                // Peer initiates first; the node's own timer fires inside the
+                // 30s dampening window and must stay silent (no Msg1 of its own).
+                let rekey_eph = random_secret();
+                let rekey_idx: u32 = 0x7E57_0003;
+                let (msg1_frame, mut rekey_init) =
+                    build_msg1_frame(&responder_secret, &node_pub, &rekey_eph, rekey_idx, 1);
+                peer.send_raw_frame(&msg1_frame).await;
+
+                let msg2 =
+                    embassy_time::with_timeout(Duration::from_millis(3000), peer.recv_raw_frame())
+                        .await
+                        .expect("node did not answer the rekey msg1");
+                let msg = wire::parse_message(&msg2).unwrap();
+                let (node_new_idx, np2) = match msg {
+                    wire::FmpMessage::Msg2 {
+                        sender_idx,
+                        noise_payload,
+                        ..
+                    } => (sender_idx, noise_payload),
+                    _ => panic!("expected Msg2"),
+                };
+                rekey_init.read_message2(np2).unwrap();
+
+                #[cfg(feature = "noise-xx")]
+                {
+                    let n3 = {
+                        let mut buf = [0u8; 128];
+                        let len = rekey_init
+                            .write_message3(&responder_pub, &1u64.to_le_bytes(), &mut buf)
+                            .unwrap();
+                        buf[..len].to_vec()
+                    };
+                    let mut f = [0u8; 256];
+                    let fl = wire::build_msg3(
+                        wire::SessionIndex::new(rekey_idx),
+                        node_new_idx,
+                        &n3,
+                        &mut f,
+                    )
+                    .unwrap();
+                    peer.send_raw_frame(&f[..fl]).await;
+                }
+
+                let (c1, c2) = rekey_init.finalize();
+                let peer_ks = c1;
+                let peer_kr = c2;
+
+                // Dampening window: collect the node's frames for ~3s. The
+                // node's own rekey timer (1s) fires inside this window —
+                // none of these frames may be a Msg1.
+                let mut saw_msg1 = 0;
+                for _ in 0..3 {
+                    if let Ok(f) = embassy_time::with_timeout(
+                        Duration::from_millis(1000),
+                        peer.recv_raw_frame(),
+                    )
+                    .await
+                    {
+                        if let Some(wire::FmpMessage::Msg1 { .. }) = wire::parse_message(&f) {
+                            saw_msg1 += 1;
+                        }
+                    }
+                }
+                assert_eq!(
+                    saw_msg1, 0,
+                    "node must not dual-initiate inside the dampening window"
+                );
+
+                // Cutover proof ends the window behavior; clean shutdown after.
+                let ts = embassy_time::Instant::now().as_millis() as u32;
+                let hb = build_test_frame_flags(
+                    node_new_idx,
+                    0,
+                    wire::MSG_HEARTBEAT,
+                    ts,
+                    &[],
+                    &peer_ks,
+                    wire::FLAG_KEY_EPOCH,
+                );
+                peer.send_raw_frame(&hb).await;
+                Timer::after(Duration::from_millis(200)).await;
+                peer.ks = Some(peer_ks);
+                peer.kr = Some(peer_kr);
+                peer.peer_sender_idx = Some(node_new_idx);
+                peer.send_ctr = 1;
+                peer.send_disconnect(wire::DISC_REASON_SHUTDOWN).await;
+            };
+
+            let node_task = async {
+                let mut node = Node::with_timing(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                    NodeTiming {
+                        rekey_after_secs: 1,
+                        heartbeat_interval_secs: 1,
+                        link_dead_timeout_secs: 8,
+                        ..crate::test_harness::success_timing()
+                    },
                 );
                 let mut handler = RecordingHandler::default();
                 let result = node.session(&mut handler).await;
