@@ -1736,12 +1736,20 @@ microfips-build env-override feature). The daemon peers pin via
 
 ### Orchestration roadmap (fips-lab migration)
 
+**Status 2026-09-01:** the fips-lab pytest environment is REPAIRED (fips-lab
+`148e269`, issue #4 closed — 91 tests collect cleanly). The cross-project
+**Bench Testing Playbook** now lives at fips-lab `docs/bench-testing-playbook.md`
+(graduation principle, bench patterns, scenario backlog) — read it before
+running interactive hardware tests. First scenario specced: `test_rekey_soak`
+(fips-lab #5, from the 2026-09-01 rekey session).
+
 Phase 1 — labgrid targets for the bench (S3 via espflash USB-JTAG; CYD/atoms via
 esptool), port pinning from `detect_lab_ports.sh` semantics, and a
 `LabFipsServiceDriver` (isolated config/port/identity + the security checklist).
-Phase 2 — scenario suites `test_mdns_discovery.py`, `test_espnow_gw.py`,
-`test_hybrid_switch.py`, `test_link_death.py` (daemon stop/start via the driver =
-RX-silence test), with keygen→cargo-env wiring automated in fixtures.
+Phase 2 — scenario suites `test_rekey_soak.py` (#5, specced), `test_mdns_discovery.py`,
+`test_espnow_gw.py`, `test_hybrid_switch.py`, `test_link_death.py` (daemon stop/start
+via the driver = RX-silence test), with keygen→cargo-env wiring automated in fixtures
+(the build matrix + binary verification from the playbook).
 Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
 reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
 
@@ -1791,6 +1799,33 @@ reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
   draw (ephemeral, then sender-index) in the same order — reordering draws in
   `handshake_xx` breaks the fixture silently-in-intent (tests fail loudly, at
   least). Documented in the fixture; do not "clean up" the draw order casually.
+
+### Lessons (2026-09-01: rekey soak — interactive hardware session)
+
+Full write-up: **fips-lab `docs/bench-testing-playbook.md`** (the cross-project
+playbook; PRta/tollgate-lab/fips-lab contributions and the scenario backlog
+live there). The short version of that session:
+
+- **Every interactive finding is a scenario not yet written.** The rekey soak
+  cost ~25 agent tool-calls + ~20 min of sleeps to prove once; as
+  `test_rekey_soak` (fips-lab #5) it costs one pytest command forever. The
+  interactive loop finds new knowledge; scenarios guard it. If you grep the
+  same log for the same string in two different sessions, that grep belongs
+  in `tests/`.
+- **Verify compiled-in env by scanning the binary.** `option_env!` is
+  invisible to cargo change detection — after an env-pinned build, grep the
+  binary for the SSID (ASCII), the pinned npub (`bytes.fromhex`), and the
+  G·N nsec tail. Catches the stale-pin trap in seconds.
+- **Port kill order: reader first, then fuser, then flash.** A stuck
+  espflash timeout is a stale console reader; check `pgrep` before retrying.
+- **The daemon is silent about rekey at INFO** — assert on the *absence
+  signature* (the SecurityViolation disconnect cycle) plus the node console,
+  not on daemon rekey lines.
+- **The soak found a real bug the suite couldn't**: duplicate msg1 resends
+  drew two different msg2s (fresh ephemeral each answer) → key divergence →
+  SecurityViolation blip. Fixed in bbfa864 with a TDD idempotence test. Bench
+  time is the only place this class of timing/loss bug shows up — which is
+  exactly why scenarios must be cheap to rerun.
 
 ### Spec quotes (greatspectations dogfood, 2026-08-29)
 
