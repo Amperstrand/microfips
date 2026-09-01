@@ -172,349 +172,20 @@ impl ScriptedPeer {
 mod tests {
     use super::{ScriptedPeer, ScriptedTransport, Step};
     use crate::error::ProtocolError;
-    use crate::node::{HandleResult, Node, NodeEvent, NodeHandler, NodeTiming};
+    use crate::node::{Node, NodeEvent};
+    use crate::test_harness::{
+        build_established_frame, build_handshake_fixture, deterministic_secret, success_timing,
+        timeout_timing, wait_for_events, RecordingHandler, TestRng,
+    };
     use crate::test_helpers::block_on;
-    use crate::transport::{CryptoRng, RngCore, Transport};
+    use crate::transport::Transport;
     use embassy_futures::select::{select, Either};
-    use embassy_time::{Duration, Timer};
     use microfips_core::noise::ecdh_pubkey;
     use microfips_core::wire;
-    use rand::RngCore as _;
-    use rand::SeedableRng;
 
     use std::boxed::Box;
-    use std::sync::{Arc, Mutex};
     use std::time::Instant as StdInstant;
     use std::vec;
-    use std::vec::Vec;
-
-    struct TestRng {
-        inner: rand::rngs::StdRng,
-    }
-
-    impl TestRng {
-        fn new(seed: [u8; 32]) -> Self {
-            Self {
-                inner: rand::rngs::StdRng::from_seed(seed),
-            }
-        }
-    }
-
-    impl RngCore for TestRng {
-        fn next_u32(&mut self) -> u32 {
-            self.inner.next_u32()
-        }
-
-        fn next_u64(&mut self) -> u64 {
-            self.inner.next_u64()
-        }
-
-        fn fill_bytes(&mut self, dest: &mut [u8]) {
-            self.inner.fill_bytes(dest)
-        }
-
-        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-            self.fill_bytes(dest);
-            Ok(())
-        }
-    }
-
-    impl CryptoRng for TestRng {}
-
-    #[derive(Clone, Default)]
-    struct RecordingHandler {
-        events: Arc<Mutex<Vec<NodeEvent>>>,
-    }
-
-    impl RecordingHandler {
-        fn new() -> Self {
-            Self::default()
-        }
-
-        #[allow(dead_code)]
-        fn events(&self) -> Vec<NodeEvent> {
-            self.events.lock().unwrap().clone()
-        }
-    }
-
-    impl NodeHandler for RecordingHandler {
-        async fn on_event(&mut self, event: NodeEvent) {
-            self.events.lock().unwrap().push(event);
-        }
-
-        fn on_message(&mut self, _msg_type: u8, _payload: &[u8], _resp: &mut [u8]) -> HandleResult {
-            HandleResult::None
-        }
-    }
-
-    struct HandshakeFixture {
-        msg1: Vec<u8>,
-        msg2: Vec<u8>,
-        #[cfg(feature = "noise-xx")]
-        msg3: Vec<u8>,
-        initiator_ks: [u8; 32],
-        initiator_kr: [u8; 32],
-        responder_sender_idx: wire::SessionIndex,
-    }
-
-    fn deterministic_secret(last: u8) -> [u8; 32] {
-        let mut secret = [0u8; 32];
-        secret[31] = last;
-        secret
-    }
-
-    fn generate_valid_eph<R: RngCore + CryptoRng>(rng: &mut R) -> [u8; 32] {
-        loop {
-            let mut eph = [0u8; 32];
-            rng.fill_bytes(&mut eph);
-            if ecdh_pubkey(&eph).is_ok() {
-                return eph;
-            }
-        }
-    }
-
-    fn allocate_session_index<R: RngCore>(rng: &mut R) -> wire::SessionIndex {
-        loop {
-            let idx = rng.next_u32();
-            if idx != 0 {
-                return wire::SessionIndex::new(idx);
-            }
-        }
-    }
-
-    #[cfg(not(feature = "noise-xx"))]
-    fn build_handshake_fixture(
-        seed: [u8; 32],
-        initiator_secret: [u8; 32],
-        responder_secret: [u8; 32],
-        epoch: [u8; 8],
-    ) -> HandshakeFixture {
-        use microfips_core::noise::{NoiseIkInitiator, NoiseIkResponder, PUBKEY_SIZE};
-
-        let initiator_pub = ecdh_pubkey(&initiator_secret).unwrap();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
-        let mut rng = TestRng::new(seed);
-
-        let initiator_eph = generate_valid_eph(&mut rng);
-        let (mut initiator, _) =
-            NoiseIkInitiator::new(&initiator_eph, &initiator_secret, &responder_pub).unwrap();
-
-        let mut msg1_noise = [0u8; 256];
-        let msg1_noise_len = initiator
-            .write_message1(&initiator_pub, &epoch, &mut msg1_noise)
-            .unwrap();
-
-        let initiator_sender_idx = allocate_session_index(&mut rng);
-        let mut msg1 = [0u8; 256];
-        let msg1_len = wire::build_msg1(
-            initiator_sender_idx,
-            &msg1_noise[..msg1_noise_len],
-            &mut msg1,
-        )
-        .unwrap();
-
-        let wire::FmpMessage::Msg1 { noise_payload, .. } =
-            wire::parse_message(&msg1[..msg1_len]).unwrap()
-        else {
-            unreachable!();
-        };
-
-        let ei_pub: [u8; PUBKEY_SIZE] = noise_payload[..PUBKEY_SIZE].try_into().unwrap();
-        let mut responder = NoiseIkResponder::new(&responder_secret, &ei_pub).unwrap();
-        let (_init_pub, parsed_epoch) = responder
-            .read_message1(&noise_payload[PUBKEY_SIZE..])
-            .unwrap();
-        assert_eq!(parsed_epoch, epoch);
-
-        let responder_eph = generate_valid_eph(&mut rng);
-        let mut msg2_noise = [0u8; 128];
-        let msg2_noise_len = responder
-            .write_message2(&responder_eph, &epoch, &mut msg2_noise)
-            .unwrap();
-
-        let responder_sender_idx = wire::SessionIndex::new(0xCAFE_0001);
-        let mut msg2 = [0u8; 256];
-        let msg2_len = wire::build_msg2(
-            responder_sender_idx,
-            initiator_sender_idx,
-            &msg2_noise[..msg2_noise_len],
-            &mut msg2,
-        )
-        .unwrap();
-
-        let mut verify_initiator = initiator.clone();
-        verify_initiator
-            .read_message2(&msg2_noise[..msg2_noise_len])
-            .unwrap();
-        let (initiator_ks, initiator_kr) = verify_initiator.finalize();
-        let (responder_kr, responder_ks) = responder.finalize();
-        assert_eq!(initiator_ks, responder_kr);
-        assert_eq!(initiator_kr, responder_ks);
-
-        HandshakeFixture {
-            msg1: msg1[..msg1_len].to_vec(),
-            msg2: msg2[..msg2_len].to_vec(),
-            initiator_ks,
-            initiator_kr,
-            responder_sender_idx,
-        }
-    }
-
-    /// XX variant: mirrors the Node's `handshake_xx` RNG draw order (ephemeral,
-    /// then sender index) so `msg1` matches the Node byte-for-byte, and derives
-    /// the `msg3` the Node sends after `msg2`.
-    #[cfg(feature = "noise-xx")]
-    fn build_handshake_fixture(
-        seed: [u8; 32],
-        initiator_secret: [u8; 32],
-        responder_secret: [u8; 32],
-        epoch: [u8; 8],
-    ) -> HandshakeFixture {
-        use microfips_core::noise::{NoiseXxInitiator, NoiseXxResponder};
-
-        let initiator_pub = ecdh_pubkey(&initiator_secret).unwrap();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
-        let mut rng = TestRng::new(seed);
-
-        let initiator_eph = generate_valid_eph(&mut rng);
-        let (mut initiator, _) = NoiseXxInitiator::new(&initiator_eph, &initiator_secret).unwrap();
-
-        let mut msg1_noise = [0u8; 256];
-        let msg1_noise_len = initiator.write_message1(&mut msg1_noise).unwrap();
-
-        let initiator_sender_idx = allocate_session_index(&mut rng);
-        let mut msg1 = [0u8; 256];
-        let msg1_len = wire::build_msg1(
-            initiator_sender_idx,
-            &msg1_noise[..msg1_noise_len],
-            &mut msg1,
-        )
-        .unwrap();
-
-        let wire::FmpMessage::Msg1 { noise_payload, .. } =
-            wire::parse_message(&msg1[..msg1_len]).unwrap()
-        else {
-            unreachable!();
-        };
-
-        let mut responder = NoiseXxResponder::new(&responder_secret).unwrap();
-        responder.read_message1(noise_payload).unwrap();
-
-        let responder_eph = generate_valid_eph(&mut rng);
-        let mut msg2_noise = [0u8; 128];
-        let msg2_noise_len = responder
-            .write_message2(&responder_eph, &epoch, &mut msg2_noise)
-            .unwrap();
-
-        let responder_sender_idx = wire::SessionIndex::new(0xCAFE_0001);
-        let mut msg2 = [0u8; 256];
-        let msg2_len = wire::build_msg2(
-            responder_sender_idx,
-            initiator_sender_idx,
-            &msg2_noise[..msg2_noise_len],
-            &mut msg2,
-        )
-        .unwrap();
-
-        // Same handshake state + static pub + epoch ⇒ byte-identical msg3.
-        let mut verify_initiator = initiator;
-        let (resp_pub, parsed_epoch) = verify_initiator
-            .read_message2(&msg2_noise[..msg2_noise_len])
-            .unwrap();
-        assert_eq!(parsed_epoch, epoch);
-        assert_eq!(resp_pub, responder_pub);
-
-        let mut msg3_noise = [0u8; 128];
-        let msg3_noise_len = verify_initiator
-            .write_message3(&initiator_pub, &epoch, &mut msg3_noise)
-            .unwrap();
-        let mut msg3 = [0u8; 256];
-        let msg3_len = wire::build_msg3(
-            initiator_sender_idx,
-            responder_sender_idx,
-            &msg3_noise[..msg3_noise_len],
-            &mut msg3,
-        )
-        .unwrap();
-
-        responder
-            .read_message3(&msg3_noise[..msg3_noise_len])
-            .unwrap();
-
-        let (initiator_ks, initiator_kr) = verify_initiator.finalize();
-        let (responder_kr, responder_ks) = responder.finalize();
-        assert_eq!(initiator_ks, responder_kr);
-        assert_eq!(initiator_kr, responder_ks);
-
-        HandshakeFixture {
-            msg1: msg1[..msg1_len].to_vec(),
-            msg2: msg2[..msg2_len].to_vec(),
-            msg3: msg3[..msg3_len].to_vec(),
-            initiator_ks,
-            initiator_kr,
-            responder_sender_idx,
-        }
-    }
-
-    fn build_established_frame(
-        sender_idx: wire::SessionIndex,
-        counter: u64,
-        msg_type: u8,
-        payload: &[u8],
-        key: &[u8; 32],
-    ) -> Vec<u8> {
-        let timestamp = embassy_time::Instant::now().as_millis() as u32;
-        let mut inner = [0u8; 256];
-        let mut out = [0u8; 256];
-        let mut msg = vec![msg_type];
-        msg.extend_from_slice(payload);
-        let inner_len = wire::prepend_inner_header(timestamp, &msg, &mut inner).unwrap();
-        let out_len = wire::encrypt_and_assemble(
-            sender_idx,
-            counter,
-            0x00,
-            &inner[..inner_len],
-            key,
-            &mut out,
-        )
-        .unwrap();
-        out[..out_len].to_vec()
-    }
-
-    fn success_timing() -> NodeTiming {
-        NodeTiming {
-            heartbeat_interval_secs: 1,
-            link_dead_timeout_secs: 5,
-            retry_base_interval_secs: 60,
-            retry_max_backoff_secs: 60,
-            handshake_resend_interval_ms: 10,
-            handshake_resend_backoff: 1,
-            handshake_max_resends: 1,
-            connect_delay_ms: 0,
-        }
-    }
-
-    fn timeout_timing() -> NodeTiming {
-        NodeTiming {
-            handshake_resend_interval_ms: 5,
-            handshake_resend_backoff: 1,
-            handshake_max_resends: 1,
-            connect_delay_ms: 0,
-            ..success_timing()
-        }
-    }
-
-    async fn wait_for_events<F>(events: Arc<Mutex<Vec<NodeEvent>>>, predicate: F)
-    where
-        F: Fn(&[NodeEvent]) -> bool,
-    {
-        loop {
-            if predicate(&events.lock().unwrap()) {
-                return;
-            }
-            Timer::after(Duration::from_millis(1)).await;
-        }
-    }
 
     #[test]
     fn test_scripted_recv_returns_data() {
@@ -608,7 +279,7 @@ mod tests {
 
         let mut node = Node::with_timing(
             transport,
-            TestRng::new(seed),
+            TestRng::new(&seed),
             initiator_secret,
             responder_pub,
             success_timing(),
@@ -671,7 +342,7 @@ mod tests {
 
         let mut node = Node::with_timing(
             transport,
-            TestRng::new(seed),
+            TestRng::new(&seed),
             initiator_secret,
             responder_pub,
             success_timing(),
@@ -713,7 +384,7 @@ mod tests {
 
         let mut node = Node::with_timing(
             transport,
-            TestRng::new(seed),
+            TestRng::new(&seed),
             initiator_secret,
             responder_pub,
             timeout_timing(),
