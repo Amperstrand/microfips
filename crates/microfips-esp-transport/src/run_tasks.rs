@@ -169,7 +169,17 @@ pub async fn run_wifi_node(
     };
 
     let rng = EspRng(trng);
-    let mut node = Node::new(transport, rng, config::DEVICE_NSEC, peer_npub);
+    // The WiFi path builds its Node directly (not via runner::run_node):
+    // the self-rekey knob must be applied here too.
+    let mut node = if crate::config::REKEY_AFTER_SECS > 0 {
+        let timing = microfips_protocol::node::NodeTiming {
+            rekey_after_secs: crate::config::REKEY_AFTER_SECS,
+            ..microfips_protocol::node::NodeTiming::default()
+        };
+        Node::with_timing(transport, rng, config::DEVICE_NSEC, peer_npub, timing)
+    } else {
+        Node::new(transport, rng, config::DEVICE_NSEC, peer_npub)
+    };
     node.set_raw_framing(true);
 
     let fsp = build_demo_fsp(
