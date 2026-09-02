@@ -266,6 +266,12 @@ Host crates and STM32 firmware build on **stable** Rust (no
 set `RUSTUP_TOOLCHAIN=esp` explicitly — see AGENTS.md for full toolchain
 setup.
 
+Wire selection is a build-time flag: default speaks Noise IK + FMP v0 (every
+deployed daemon today); `--features noise-xx` selects Noise XX + FMP v1 with
+protocol negotiation (FIPS `next`/1.0.0-dev). The same flag works on the
+firmware crates (`microfips`, `microfips-esp32`, `microfips-esp32s3`) and
+host tools (`microfips-sim`, `microfips-link`).
+
 ### STM32F469
 
 ```sh
@@ -376,7 +382,7 @@ Host tools do not fall back to hardcoded identities anymore. Set both variables 
 | Issue | Description | Status |
 |-------|-------------|--------|
 | WiFi control interface | Control interface (`show_status` etc.) not responding on WiFi variant — currently a BLE/L2CAP-variant feature; logger and control share UART0 TX, the RX path may need separate initialization. | Open |
-| Noise XX live interop | XX wire is test-suite + CI verified only; no XX-speaking fips daemon exists to interop with, and firmware crates don't forward the `noise-xx` feature yet (#178 closed, #179 tracks the rest). | Tracked (#179) |
+| Noise XX live interop | **Sim↔daemon verified 2026-09-02 (#179)** against FIPS next (0.6.0-dev): FMP v1 negotiation agreed, heartbeats sustained. Firmware crates forward `noise-xx` (STM32/ESP32/ESP32-S3, CI-enforced); bench flash waits on an XX daemon there | Done (#179) |
 
 ## Milestones
 
