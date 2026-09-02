@@ -1745,11 +1745,15 @@ Tooling: `tools/lab_keygen.py`, `tools/fips-lab.yaml`, `scripts/run_lab_daemon.s
 **Protocol dialect on the bench:** the lab daemon (and every deployed fips we
 interop with) speaks the **IK / v0.5.0 wire** — all bench nodes are built with
 default features. The Noise XX wire (FIPS next forward-compat) is
-**test-suite-verified only**: `cargo test -p microfips-protocol --features
-std,noise-xx` is green and CI-enforced, but no XX-speaking daemon exists to
-interop against, and the firmware crates do not yet forward the `noise-xx`
-feature. Flash XX builds to the bench only once an XX daemon is available
-(see #178/#179).
+**suite- AND host-interop-verified** (2026-09-02, #179): the protocol suite
+runs green under `--features std,noise-xx` (CI-enforced), the firmware crates
+forward `noise-xx`, and `microfips-sim --features noise-xx` completed a full
+FMP v1 negotiation + heartbeat session against a next-branch daemon
+(0.6.0-dev `f1ff410f`, built in a WORKTREE — never in `/home/ubuntu/src/fips`,
+whose target/ refreshes the system daemon). Reproduce: config + identities in
+the #179 close-out notes; opt-in cross test via `FIPS_NEXT_CROSS_BIN=<upstream
+xx_cross example> cargo test -p fips-noise --features std`. Flash XX builds to
+the bench only once an XX daemon runs there (bench stays IK — see #178/#179).
 
 ### Current bench inventory
 
@@ -1967,6 +1971,29 @@ live there). The short version of that session:
   SecurityViolation blip. Fixed in bbfa864 with a TDD idempotence test. Bench
   time is the only place this class of timing/loss bug shows up — which is
   exactly why scenarios must be cheap to rerun.
+
+### Lessons (2026-09-02: #179 XX interop — raw-framing truncation)
+
+- **The test transport can mask wire bugs the real surface exposes.** The XX
+  negotiation extra was silently truncated by `fmp_raw_frame_size` (fixed
+  `MSG2_WIRE_SIZE`) in raw-UDP mode; every ScriptedPeer test passed because
+  the test harness uses length-prefixed framing, which never consults that
+  code. The bug only surfaced as a daemon-side "msg3 decryption failed" in a
+  live sim↔next-daemon run — with matching keys, matching counters on paper,
+  and identical ciphertext bytes. When a framing change lands, drive the real
+  transport mode (raw UDP for FIPS), not just the scripted harness.
+- **Bisect cross-implementation crypto failures with key/nonce dumps, not
+  code-reading.** Reading both state machines top-down three times "proved"
+  they matched; one `mix_key` trace on each side + the attempted-nonce log
+  pinpointed the divergence (our n=1 vs their n=2) in a single round-trip.
+  The upstream worktree is disposable — instrument it with eprintln probes
+  freely, never commit it.
+- **A self-consistent implementation pair proves nothing about interop.** Our
+  XX stack was green on both self-tests AND upstream's own self-tests before
+  the live run failed. The only decisive artifacts are cross-implementation:
+  the `xx_cross` example (their responder driven over stdio by our initiator)
+  and the live daemon run. Keep the cross test env-gated
+  (`FIPS_NEXT_CROSS_BIN`) so it runs wherever an upstream checkout exists.
 
 ### Lessons (2026-09-02: FSP observability + rekey interleave)
 
