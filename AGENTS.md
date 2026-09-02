@@ -58,6 +58,33 @@ vscp() { sshpass -p "$VPS_PASS" scp -o StrictHostKeyChecking=no "$1" "$VPS_USER@
 VPS FIPS binds `0.0.0.0:2121`, MCU peers configured at `127.0.0.1:31337` (STM32) and `127.0.0.1:31338` (ESP32).
 FIPS logs: `vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 30 --since '5 min ago'"`
 
+**orangeclaw status (2026-09-02, #190):** host is alive (DNS + ICMP green) but the
+daemon is silent — a pinned-key MSG1 gets zero reply (daemon down or key rotated;
+indistinguishable without creds, so the registry `vps` entry is left untouched).
+For VPS-path testing until creds return, use a throwaway SHC VPS:
+
+```bash
+# Build the daemon in a WORKTREE — building in /home/ubuntu/src/fips refreshes
+# the system daemon binary (Restart=on-failure picks it up):
+git -C /home/ubuntu/src/fips worktree add --detach /tmp/opencode/fips-build fork/main
+cd /tmp/opencode/fips-build && cargo build --release
+
+# JIT VPS (shc toolkit; ~$0.24/day, cancel when done — --reap is the safety net).
+# FACILITY GOTCHA: Cherryvale (all ssd-*/dev-* lines) is unreachable from EU —
+# order hdd-*/nvme-* (Katy, TX) instead:
+shc order --hostname fips-e2e --size hdd-1c-4gb --template debian13-cloud \
+  --ssh-key ~/.ssh/id_ed25519.pub --reap 6h --tag <work> --pay
+
+# Deploy (config: lab template with bind 0.0.0.0:2121, lan-mdns off, fresh
+# lab_keygen N identity), then verify from the workstation:
+scp target/release/fips target/release/fipsctl <vm>:/home/debian/
+FIPS_NSEC=<sim nsec> FIPS_PEER_NPUB=<daemon npub> \
+  ./target/release/fips-handshake <vm-ip>:2121   # expect SUCCESS
+# Daemon-side: ~/fipsctl -s /run/user/1000/fips/control.sock show peers
+# (IK sessions do NOT appear in the daemon's INFO log — use fipsctl).
+```
+Verified green 2026-09-02 (handshake ×2 + peer `connected` via fipsctl); see #190.
+
 ## Build
 
 ### STM32F469
