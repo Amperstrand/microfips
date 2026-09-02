@@ -1352,6 +1352,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     #[cfg(feature = "mmp")]
                     if now >= next_sr {
                         if let Some(sr) = self.mmp.sender.build_report(now) {
+                            log_steady!("steady: sending sender report (recv branch)");
                             next_sr = now + self.mmp.sender.report_interval();
                             let encoded = sr.encode();
                             let body_len = encoded.len();
@@ -1487,6 +1488,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     #[cfg(feature = "mmp")]
                     if now >= next_sr {
                         if let Some(sr) = self.mmp.sender.build_report(now) {
+                            log_steady!("steady: sending sender report (timer branch)");
                             next_sr = now + self.mmp.sender.report_interval();
                             let encoded = sr.encode();
                             let body_len = encoded.len();
@@ -1581,6 +1583,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
+            // App-level send on the direct (non-FrameAction) path — feed
+            // the silent-peer policy here, or a heartbeat-only-looking but
+            // healthy link gets torn down at link_dead_timeout (bench-found
+            // vs the next-line XX daemon, #193).
+            self.policy.record_data_frame();
         }
     }
 
@@ -1623,6 +1630,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             }
             #[cfg(feature = "mmp")]
             self.mmp.sender.record_sent(c, ts, fl);
+            self.policy.record_data_frame();
         }
     }
 
@@ -3669,6 +3677,118 @@ mod tests {
             };
 
             join(peer_task, node_task).await;
+        });
+    }
+
+    /// Bench-found (#193, 2026-09-02): against a next-line XX daemon the
+    /// hardware session churned every ~link_dead_timeout with `policy:
+    /// rejected: silent peer` although heartbeats flowed BOTH ways. Root
+    /// cause: the policy's data-frame counter is only fed through
+    /// FrameAction dispatch, while the steady loop's timer-branch MMP
+    /// SenderReports (and direct session-datagram sends) bypass it — a
+    /// peer that heartbeats but exchanges no FSP/replies starves the
+    /// counter and we tear down a healthy link. A listening leaf against
+    /// an idle daemon is exactly that shape. Fix under test: app-level
+    /// sends must count at the send functions, not at the dispatcher.
+    #[test]
+    fn test_steady_survives_silent_peer_timeout_when_reports_flow() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+
+        let (transport, mut peer) = channel_pair();
+        let key = [0x24; 32];
+        let them = wire::SessionIndex::new(9);
+
+        // Fast clock: link_dead 2s, heartbeat 1s, MMP reports at the 200ms
+        // cold-start cadence (never tuned — the peer sends no ReceiverReports,
+        // mirroring the next-daemon interop gap).
+        let timing = NodeTiming {
+            heartbeat_interval_secs: 1,
+            link_dead_timeout_secs: 2,
+            ..NodeTiming::default()
+        };
+
+        block_on(async move {
+            let peer_task = async move {
+                let started = Instant::now();
+                let mut last_hb: Option<Instant> = None;
+                let mut reports_seen = 0u32;
+                let mut node_disconnects = 0u32;
+                let mut peer_hb_ctr: u64 = 5000;
+                loop {
+                    // The node emits ~5 frames/s (heartbeat + SenderReports),
+                    // so this blocking recv returns promptly; each arrival is
+                    // our chance to answer with a peer heartbeat.
+                    let frame = recv_test_frame(&mut peer).await;
+                    let (msg_type, _payload) = decrypt_test_frame(&key, &frame);
+                    match msg_type {
+                        wire::MSG_SENDER_REPORT => reports_seen += 1,
+                        // The node tore the link down itself (the bug under
+                        // test): nothing more will arrive — fail fast.
+                        wire::MSG_DISCONNECT => {
+                            node_disconnects += 1;
+                            return (reports_seen, node_disconnects);
+                        }
+                        _ => {}
+                    }
+                    let send_hb_due = last_hb
+                        .map(|t| t.elapsed() >= Duration::from_millis(300))
+                        .unwrap_or(true);
+                    if send_hb_due {
+                        let hb = build_test_frame(
+                            them,
+                            peer_hb_ctr,
+                            wire::MSG_HEARTBEAT,
+                            1000,
+                            &[],
+                            &key,
+                        );
+                        send_test_frame(&mut peer, &hb).await;
+                        peer_hb_ctr += 1;
+                        last_hb = Some(Instant::now());
+                    }
+                    // Survive 2x the link_dead timeout + margin, then the
+                    // peer ends the session cleanly.
+                    if started.elapsed() >= Duration::from_secs(6) {
+                        let disc = build_test_frame(
+                            them,
+                            peer_hb_ctr,
+                            wire::MSG_DISCONNECT,
+                            2000,
+                            &[wire::DISC_REASON_SHUTDOWN],
+                            &key,
+                        );
+                        send_test_frame(&mut peer, &disc).await;
+                        return (reports_seen, node_disconnects);
+                    }
+                }
+            };
+
+            let node_task = async move {
+                let mut node = Node::with_timing(
+                    transport,
+                    TestRng::from_os_rng(),
+                    random_secret(),
+                    microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
+                    timing,
+                );
+                node.policy.record_handshake_ok(Instant::now());
+                let mut handler = RecordingHandler::default();
+                let result = node
+                    .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
+                    .await;
+                (result, handler.events)
+            };
+
+            let ((reports_seen, node_disconnects), (result, _events)) =
+                join(peer_task, node_task).await;
+
+            // The link survived past 2x link_dead: steady exited only via the
+            // peer's clean disconnect, with zero self-initiated disconnects.
+            assert_eq!(result, Ok(()));
+            assert_eq!(node_disconnects, 0, "node tore down a live link");
+            // And the channel that should have kept it alive was active.
+            assert!(reports_seen >= 1, "no MMP SenderReports observed");
         });
     }
 
