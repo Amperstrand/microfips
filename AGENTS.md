@@ -820,7 +820,9 @@ sum-invariant), so no address reconstruction is needed. The handler also logs ev
 session datagram (`fsp: datagram in len=… fsp_type=… src=… -> …`) at INFO.
 
 **Host tooling:** `fipsctl show {peers,links,sessions,routing,tree,bloom,…}` talks to
-`/run/fips/control.sock` (JSON) — use it to confirm a Walter's link from the daemon side
+`/tmp/fips-control.sock` (JSON; root-owned — `sudo -n fipsctl -s /tmp/fips-control.sock show
+peers`. fipsctl's default `/run/user/1000/fips/control.sock` does not exist on this machine,
+corrected 2026-09-02) — use it to confirm a Walter's link from the daemon side
 (IK sessions are not in the daemon's INFO log). `fipstop` is the live monitor.
 
 **Silent-console pitfall (CP210x atoms/D0WD):** a "dead" UART logger is usually an
@@ -1815,6 +1817,33 @@ PING/PONG content promotion, with keygen→cargo-env wiring automated in fixture
 (the build matrix + binary verification from the playbook).
 Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
 reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
+
+Cross-project — micronuts FIPS integration (ADRed 2026-09-02, micronuts
+`docs/FIPS-INTEGRATION-ADR.md`): ESP32-sidecar topology (wallet UART →
+microfips-esp32 leaf → daemon → responder → mint). The service envelopes already
+match — spike verdict in micronuts `docs/FIPS-SERVICE-INTERFACE-SPIKE.md` (gate 3 ✅,
+~50-line mechanical adapter; one open sizing item: Cashu RPC payloads vs the 2048 B
+FMP frame cap). Gates before wiring: (1) our #179 (FMP v1 + noise-xx firmware
+forwarding), (2) micronuts security review. #113 display output closed 2026-09-02
+(hardware + visual verified; see the Build section).
+
+### Lessons (2026-09-02: #113 display close-out)
+
+- **Registry entries carrying the same key in ≥2 encodings drift silently.** The
+  `linux` entry's `npub_hex` had drifted from its own bech32 `npub` field after a
+  daemon key rotation — every MSG1 dropped with zero daemon logs (bad-key rejections
+  live below INFO). Guard: layer 4 in
+  `crates/microfips-core/tests/device_registry.rs` (cross-encoding recompute,
+  RED-proven against the stale entry); generalized in hackathon-tooling
+  `checklists/key-registry-consistency.md`.
+- **embassy-executor 0.10: task constructors return `Result<SpawnToken, SpawnError>`;
+  `Spawner::spawn` takes the token and returns `()`.** The `.expect()` belongs on the
+  constructor call, not around `spawn` — the #113 research brief had this inverted
+  (verified in embassy-executor-macros 0.8.0 `task.rs`).
+- **Concurrent sessions on one worktree can commit each other's dirty files.** A
+  parallel session's 16:04 commit (6652549) swept this session's dirty AGENTS.md into
+  its own docs commit — content benign, history interleaved. When a second session is
+  live on the same repo, check `git show --stat` after committing.
 
 ### More lessons (same session, hybrid-switch testing)
 
