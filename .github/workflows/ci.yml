@@ -466,6 +466,9 @@ jobs:
 
       - run: cargo build -p microfips --release --target thumbv7em-none-eabi
 
+      # Display build (#113): guards against BSP API drift invisible to the other two builds.
+      - run: cargo build -p microfips --release --target thumbv7em-none-eabi --features display
+
       - run: cargo build -p microfips --release --target thumbv7em-none-eabi --no-default-features --features board-f746
 
       - name: Validate firmware binary

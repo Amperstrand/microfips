@@ -79,9 +79,6 @@ static EP_OUT_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    #[cfg(all(feature = "board-f469", feature = "display"))]
-    let mut p = embassy_stm32::init(board::clock_config());
-    #[cfg(not(all(feature = "board-f469", feature = "display")))]
     let p = embassy_stm32::init(board::clock_config());
 
     // After a soft reset (SYSRESETREQ from st-flash), the USB OTG FS peripheral
@@ -130,11 +127,23 @@ async fn main(_spawner: Spawner) {
     }
 
     // Display init must happen before USB claims peripherals (SDRAM claims FMC pins).
+    // ForceNt35510, not auto-detect: DSI ID-register reads are flaky on this panel.
+    // The smoke-test result is deliberately ignored — a failing SDRAM makes the
+    // display unreliable, but USB transport must keep booting.
     #[cfg(all(feature = "board-f469", feature = "display"))]
     {
-        let sdram = embassy_stm32f469i_disco::sdram_init!(p);
-        let ctrl = crate::display::create_display(&sdram, p.LTDC, p.DSIHOST, p.PJ2, p.PH7);
-        _spawner.spawn(crate::display::display_task(ctrl).expect("display task"));
+        let mut sdram = embassy_stm32f469i_disco::sdram_init!(p);
+        let _sdram_ok = sdram.test_quick();
+        let framebuffer = sdram.into_bytes();
+        let ctrl = embassy_stm32f469i_disco::DisplayCtrl::new(
+            framebuffer,
+            p.LTDC,
+            p.DSIHOST,
+            p.PJ2, // DSI tearing-effect input
+            p.PH7, // LCD reset
+            embassy_stm32f469i_disco::BoardHint::ForceNt35510,
+        );
+        _spawner.spawn(crate::display::display_task(ctrl).expect("display task spawn"));
     }
 
     // F746G-DISCO: PK3 = LCD_BL_CTRL. Drive LOW to turn off the LCD backlight.
