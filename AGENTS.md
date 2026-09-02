@@ -1816,10 +1816,19 @@ the hci0 advert slot so the lab daemon never advertises (link forms via its scan
 probing the atom's peripheral advert); the atom's FTDI port asserts DTR on open and
 resets the board (deterministic fresh boot); raw-termios taps stop receiving live
 bytes on FTDI after draining the backlog — `fips_lab/ftdi_tap.py` (pyserial) is the
-FTDI tap, `raw_tap.py` stays USB-JTAG-only. Remaining:
+FTDI tap, `raw_tap.py` stays USB-JTAG-only. Also LIVE:
+`test_rekey_soak_long.py` (known unknown 1 closed 2026-09-02 — the hour-scale
+interleave soak at the bidirectional working point; first full 1800s run green
+in 30:31: 49 node + 21 daemon rotations, 56 cutovers/drains, 319 heartbeats,
+ONE session throughout — zero rebuilds across 70 rotations — zero disconnects/
+SecurityViolations. Floors scale with the window via REKEY_SOAK_SECS so the
+same file smoke-runs at 120s; the daemon's FIRST rotation is a tail event at
+short windows — only asserted at ≥360s, modeled from the V ∈ [17,47]s
+per-rotation redraw). Remaining:
 `test_espnow_gw.py`, `test_hybrid_switch.py` (daemon stop/start
-via the driver = RX-silence test; both blocked on a second S3), the long-run
-rekey interleave soak (hour-scale `test_rekey_bidirectional` sibling, mark slow),
+via the driver = RX-silence test; both blocked on a second S3), and the soak
+cron/nightly wiring (hackathon-tooling bench-nightly job — the scenario exists
+and is marked slow; scheduling is tooling work),
 with keygen→cargo-env wiring automated in fixtures
 (the build matrix + binary verification from the playbook).
 Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
