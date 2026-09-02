@@ -20,6 +20,7 @@
 | Relay AP | ESP32-S3 (Walter) | !FIPS open AP → DHCP → mDNS → UDP relay → daemon | 2026-08-20 |
 | HTTP over FIPS | STM32F469I-DISCO | HTTP → microfips-service → FSP (XK) → IK link → CDC | 2026-08-30 |
 | Mesh forwarding | All 3 simultaneously | Daemon routes FSP between peers | 2026-08-31 |
+| MCU-to-MCU mesh FSP | STM32 (CDC) + S3 (WiFi) | S3 auto-initiates FSP at STM32 target: Setup→Ack→Msg3→PING/PONG, both directions (fips-lab `test_mcu_to_mcu_mesh`) | 2026-09-02 |
 
 ### ✅ Protocol stack verified
 
@@ -27,7 +28,7 @@
 |---|---|---|
 | Noise IK | Link handshake | Both ESP32s + STM32: MSG1→MSG2→keys, sustained heartbeats |
 | Replay protection | Established-frame anti-replay | WireGuard-style 2048-counter window ported from fips (#181, 2026-08-31): dup/below-window frames dropped before AEAD, scripted-peer E2E test |
-| Rekey (full) | Follow AND initiate rekeys | Hardware-verified 2026-09-01 (#183 Phases 1–3): epoch cascade (cur/pend/prev), promote-on-pending-decrypt, drain+zeroize, idempotent msg1 re-answer; 3 clean rotations on the bench S3, daemon's SecurityViolation cycle gone. Self-initiation = Phase 4 |
+| Rekey (full) | Follow AND initiate rekeys | Hardware-verified 2026-09-01 (#183 Phases 1–3): epoch cascade (cur/pend/prev), promote-on-pending-decrypt, drain+zeroize, idempotent msg1 re-answer; 3 clean rotations on the bench S3, daemon's SecurityViolation cycle gone. Self-initiation = Phase 4. Bidirectional interleave (node AND daemon rotating in one session) verified 2026-09-02 (`test_rekey_bidirectional`: working point daemon=32s; zero rebuilds, zero SecurityViolations) |
 | Key zeroization | Secret material wiped on drop | All 6 Noise state machines + session keys at steady exit (#182, 2026-08-31); deviation F8 closed; +2.6KB flash |
 | Noise XX | Forward-compat link handshake (FIPS next wire) | fips-noise 37/37 + full protocol suite green under `--features std,noise-xx` (CI-enforced); test-level only — no live XX daemon to interop against |
 | Noise XK | FSP session | STM32 + SIM: SessionSetup→Ack→Msg3, service request/response |
@@ -66,7 +67,7 @@
 | Noise XX live interop | No XX-speaking daemon exists (fips master = IK/v0.5.0); firmware crates don't forward `noise-xx` yet | #179 |
 | Node-initiated rekey on hardware | **Verified 2026-09-01** (fips-lab `test_rekey_self_initiated`): 2 rotations/2 min, `REKEY_AFTER_SECS` build knob, default off | — |
 | Relay AP + peer (3-hop chain) | Needs third Walter board | — |
-| MCU-initiated FSP (ESP32 as FSP endpoint) | ESP32 firmware is link-level only (by design) | Architecture decision |
+| FSP initiation on BLE/L2CAP/ESP-NOW transports | Initiator is armed on every transport (same `Node::run` + dual handler; WiFi mesh verified 2026-09-02) but no bench scenario exercises those paths yet | Backlog (needs D0WD bench tier / 2nd S3) |
 
 ## Upstream alignment status
 

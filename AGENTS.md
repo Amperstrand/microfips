@@ -1862,6 +1862,41 @@ live there). The short version of that session:
   time is the only place this class of timing/loss bug shows up — which is
   exactly why scenarios must be cheap to rerun.
 
+### Lessons (2026-09-02: FSP observability + rekey interleave)
+
+- **Validate the probe before trusting a zero.** The mesh scenario counted
+  `"type=0x00"` on the S3 console — a string that can only appear in *inbound*
+  datagram log lines, impossible in that topology. Its zero was guaranteed and
+  proved nothing; a whole session nearly concluded "the WiFi path never
+  initiates FSP" from it. A soft metric that has never observed a positive is
+  not evidence of absence: derive probe strings from the emitting code (grep
+  the exact format string in the firmware source), and never hardcode a
+  guessed frame size (the `149B` probe; the real SessionSetup frame is 148B —
+  record a size histogram instead).
+- **Presence signatures: every send path needs its log line.** The absence-
+  signature doctrine has a counterpart: a scenario asserting that something
+  DID happen needs firmware evidence that the thing emits. `Node::
+  send_session_datagram` logged nothing on success while link-message sends
+  logged — so FSP initiator activity was invisible on every transport, and
+  the console silence was misread as a dead initiator. Fixed in b2094de
+  (`steady: sending session datagram type=… len=… frame=…B`). New send paths
+  follow this convention, symmetric with `send_link_message`.
+- **Model BOTH sides' timers from source before bench-tuning cadences.** The
+  bidirectional rekey working point cost 3 bench runs (2 failures) because
+  the fips daemon's jitter mechanism — per-session uniform ±15s draw,
+  `fips/src/node/mod.rs` REKEY_JITTER_SECS — was one grep away and predicts
+  every outcome. What matters: BOTH sides reset their rekey timer on every
+  rotation (node: `session_started` resets on own cutover AND peer-follow
+  promote; daemon: per-session `after_secs` restarts when the node's rotation
+  replaces the session), plus the node's 30s self-init dampening. Hardware-
+  verified starvation bounds: daemon=120 starves (V never under the ~33s node
+  cycle); daemon=20 mostly suppresses the node (most V draws under 30s).
+  Working point daemon=32. Bench runs then only confirm — they don't explore.
+- **Rekey interleave is safe on hardware**: node AND daemon rotating in one
+  session — 2 consecutive greens (`test_rekey_bidirectional`), one session
+  throughout (zero rebuilds), zero SecurityViolations. The dampening +
+  idempotent-msg1 machinery held under real interleaving.
+
 ### Spec quotes (greatspectations dogfood, 2026-08-29)
 
 We pin verbatim spec quotes in source comments and CI-check them against vendored
