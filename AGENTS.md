@@ -1774,10 +1774,15 @@ esptool), port pinning from `detect_lab_ports.sh` semantics, and a
 `LabFipsServiceDriver` (isolated config/port/identity + the security checklist).
 Phase 2 — scenario suites: `test_rekey_soak.py` (#5), `test_link_death.py`,
 `test_mdns_pinned.py` (rogue-advert), `test_rekey_self_initiated.py` (node-driven,
-validates the REKEY_AFTER_SECS knob) — all LIVE and green; the reusable bench
+validates the REKEY_AFTER_SECS knob), `test_mcu_to_mcu_mesh.py` (STM32 CDC + S3 WiFi
+dual-peer; asserts S3 FSP auto-initiation both directions — the initiator was always
+armed; the old zero-count was a missing send-log line, fixed 2026-09-02 #188), and
+`test_rekey_bidirectional.py` (node AND daemon rotate in one session — cadences must
+overlap: daemon=120 starves under ~33s node rotations, daemon=20 sits under the 30s
+dampening; daemon=32 is the working point) — all LIVE and green; the reusable bench
 fixtures live in fips_lab/bench.py (build matrix + binary verification + daemon
 lifecycle + tap + artifacts). Remaining:
-`test_espnow_gw.py`, `test_hybrid_switch.py`, `test_link_death.py` (daemon stop/start
+`test_espnow_gw.py`, `test_hybrid_switch.py` (daemon stop/start
 via the driver = RX-silence test), with keygen→cargo-env wiring automated in fixtures
 (the build matrix + binary verification from the playbook).
 Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
