@@ -1,6 +1,6 @@
 //! Issue #134 Tier 1 guard: device-registry.json stays public-only.
 //!
-//! Three layers, all CI-enforced via `cargo test -p microfips-core`:
+//! Four layers, all CI-enforced via `cargo test -p microfips-core`:
 //! 1. semantic — every device identity is either a fenced vector key
 //!    (generator·N, N in [1, 255]) or a `RETRIEVE_FROM_*` marker. A raw hex
 //!    secret pasted next to the test entries fails the build — the slip class
@@ -11,7 +11,13 @@
 //!    keys.json values.
 //! 3. literal-absence — the retired secret literals stay retired. Git history
 //!    is deliberately not scanned (issue #134 Tier 0: rotation, not rewrite).
+//! 4. cross-encoding — every entry's key representations agree: node_addr
+//!    matches sha256(pubkey_x)[..16], and any bech32 `npub` field decodes to
+//!    the same key as `npub_hex`. Added 2026-09-02 after the `linux` entry's
+//!    `npub_hex` drifted from its own bech32 `npub` (stale vs rotated daemon
+//!    key) — every MSG1 was silently dropped with no daemon log at INFO.
 
+use microfips_core::identity::bech32;
 use microfips_core::identity::NodeAddr;
 use microfips_core::noise;
 use serde_json::Value;
@@ -141,6 +147,51 @@ fn registry_vector_keys_derive_recorded_npubs() {
             addr_hex.to_lowercase(),
             "{name}: node_addr does not match sha256(pubkey_x)[..16]"
         );
+    }
+}
+
+/// Layer 4: the same key, in every encoding the registry records, must agree —
+/// for ALL entries, not just vector devices (host entries with
+/// `RETRIEVE_FROM_*` secrets are the ones no derivation check can reach, and
+/// they are exactly the ones that rotate out from under the registry).
+#[test]
+fn registry_entries_are_cross_encoding_consistent() {
+    let registry = load_registry();
+    let devices = registry["devices"].as_object().expect("devices object");
+
+    for (name, entry) in devices {
+        let Some(npub_hex) = entry["npub_hex"].as_str() else {
+            continue; // esp32c3-style entries record no identity by design
+        };
+        if npub_hex.starts_with(RETRIEVE_PREFIX) {
+            continue; // mac-style entries carry markers until the host key is recorded
+        }
+        assert_hex(npub_hex, 66, "{name} npub_hex");
+        let addr_hex = entry["node_addr"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name}: npub_hex present but node_addr missing"));
+        assert_hex(addr_hex, 32, "{name} node_addr");
+
+        let bytes = hex::decode(npub_hex.to_lowercase())
+            .unwrap_or_else(|e| panic!("{name}: npub_hex is not hex: {e}"));
+        let x_only: [u8; 32] = bytes[1..]
+            .try_into()
+            .unwrap_or_else(|_| panic!("{name}: npub_hex payload is not 32 bytes"));
+
+        assert_eq!(
+            hex::encode(NodeAddr::from_pubkey_x(&x_only).as_bytes()),
+            addr_hex.to_lowercase(),
+            "{name}: node_addr does not match sha256(pubkey_x)[..16]"
+        );
+
+        if let Some(npub_bech32) = entry["npub"].as_str() {
+            let decoded = bech32::npub_to_x_only(npub_bech32)
+                .unwrap_or_else(|| panic!("{name}: bech32 npub field does not decode"));
+            assert_eq!(
+                decoded, x_only,
+                "{name}: npub (bech32) and npub_hex encode different keys — registry drift"
+            );
+        }
     }
 }
 
