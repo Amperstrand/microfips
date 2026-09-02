@@ -2,8 +2,7 @@
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 
-const char* WIFI_SSID = "2";
-const char* WIFI_PASS = "<REDACTED-WIFI-PASS>";
+#include "wifi_secrets.h"  // local-only credentials (gitignored)
 const char* FIPS_HOST = "192.168.13.221";
 const int FIPS_PORT = 2121;
 const int LOCAL_PORT = 31338; // ESP8266 listen port (matches microfips AGENTS convention)
