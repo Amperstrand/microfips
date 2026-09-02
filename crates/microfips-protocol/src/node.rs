@@ -1412,6 +1412,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             &mut out,
         );
         if let Some(fl) = fl {
+            log_steady!(
+                "steady: sending session datagram type=0x{:02x} len={} frame={}B",
+                wire::MSG_SESSION_DATAGRAM,
+                len,
+                fl
+            );
             if let Err(_e) = self.send_frame(&out[..fl]).await {
                 #[cfg(feature = "log")]
                 log::warn!("send failed: {:?}", _e);
