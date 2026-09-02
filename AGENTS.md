@@ -1800,7 +1800,13 @@ armed; the old zero-count was a missing send-log line, fixed 2026-09-02 #188), a
 overlap: daemon=120 starves under ~33s node rotations, daemon=20 sits under the 30s
 dampening; daemon=32 is the working point) — all LIVE and green; the reusable bench
 fixtures live in fips_lab/bench.py (build matrix + binary verification + daemon
-lifecycle + tap + artifacts). Also LIVE: `test_l2cap_bringup.py` (#188 candidate 4,
+lifecycle + tap + artifacts). The mesh scenario was promoted 2026-09-02 (queue
+item 2) to FULL FSP session-content assertions: SessionSetup→ACK, msg3, then
+PING/PONG round-trips — PINGs identified by size (len=73/frame=110B, a 4-byte
+payload: 35B body + AEAD), PONGs by the inbound log's src prefix (STM32 registry
+NodeAddr `132f39a9…f295` → `src=132f..f295`, fsp_type 0x00; the SessionAck is
+len=135 fsp_type=0x02), 3/3/1 across two consecutive greens. Also LIVE:
+`test_l2cap_bringup.py` (#188 candidate 4,
 graduated 2026-09-02 — atom-a D0WD ↔ lab daemon over BLE L2CAP via the bench D0WD
 tier; two consecutive greens with identical verdicts; the bench-era
 `test_esp32_l2cap.py` retired). D0WD bench facts it encoded: L2CAP firmware pins the
@@ -1812,8 +1818,9 @@ resets the board (deterministic fresh boot); raw-termios taps stop receiving liv
 bytes on FTDI after draining the backlog — `fips_lab/ftdi_tap.py` (pyserial) is the
 FTDI tap, `raw_tap.py` stays USB-JTAG-only. Remaining:
 `test_espnow_gw.py`, `test_hybrid_switch.py` (daemon stop/start
-via the driver = RX-silence test; both blocked on a second S3), mesh FSP
-PING/PONG content promotion, with keygen→cargo-env wiring automated in fixtures
+via the driver = RX-silence test; both blocked on a second S3), the long-run
+rekey interleave soak (hour-scale `test_rekey_bidirectional` sibling, mark slow),
+with keygen→cargo-env wiring automated in fixtures
 (the build matrix + binary verification from the playbook).
 Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
 reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
