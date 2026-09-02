@@ -65,7 +65,15 @@ FIPS logs: `vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 30 -
 ```bash
 cargo build -p microfips --release --target thumbv7em-none-eabi
 # Output: target/thumbv7em-none-eabi/release/microfips
+
+# Display build (LCD debug output, #113 — adds BSP + embedded-graphics, ~186 KB .text):
+cargo build -p microfips --release --target thumbv7em-none-eabi --features display
 ```
+
+Display output hardware-verified 2026-09-02 (#113): IK handshake + sustained
+heartbeats vs the local daemon with the display task running (ETX 1.0, 0% loss),
+soft-reset re-enumeration intact; LCD rendering (title, npub, state, counters,
+per-line redraw without flicker) visually confirmed on the physical screen.
 
 ### STM32F746
 
@@ -943,22 +951,30 @@ the 2026-08-31 session. When quoting test counts, run under `cargo nextest`
 cargo run -p microfips-link            # sends MSG1 to VPS via UDP, expects MSG2
 ```
 
-### USB CDC echo test (hardware, no FIPS)
+### USB CDC frame check (hardware, no FIPS)
+
+The M1/M2-era echo mode no longer exists in firmware. Current firmware, once the
+port opens with DTR asserted (`wait_connection()` resolves), sends a FIPS MSG1
+(114 B, FMP prefix `0x0100`) within ~0.5 s (retried every ~3 s, full cycle ~33.5 s):
+
 ```bash
 python3 -c "
 import serial, struct, time
-s = serial.Serial('/dev/ttyACM1', 115200, timeout=1)
-for n in [1, 16, 63, 64, 100]:
-    payload = bytes(range(n))
-    s.write(struct.pack('<H', len(payload)) + payload)
-    time.sleep(0.05)
+s = serial.Serial('/dev/ttyACM<N>', 115200, timeout=2)  # detect by VID:PID c0de:cafe
+deadline = time.time() + 40
+while time.time() < deadline:
     hdr = s.read(2)
-    resp = s.read(struct.unpack('<H', hdr)[0])
-    assert resp == payload, f'echo failed for {n}B'
-    print(f'echo {n}B OK')
-print('all pass')
+    if len(hdr) == 2:
+        n = struct.unpack('<H', hdr)[0]
+        payload = s.read(n)
+        if n == 114 and payload[:2] == b'\x01\x00':
+            print('MSG1 received — USB CDC OK'); break
+s.close()
 "
 ```
+
+For a full handshake, run `tools/serial_udp_bridge.py` against a daemon instead
+(see the bridge test sections).
 
 ### Bridge + MCU + VPS handshake test (hardware — simplified single-hop)
 
@@ -1358,11 +1374,12 @@ HSI (16 MHz) → PLL → 168 MHz sysclk
                    → 84 MHz APB2
 ```
 
-With `--features display` (uses BSP `config_168()` preset):
+With `--features display` (uses BSP `config_180()` preset):
 ```
-HSE (8 MHz oscillator) → PLL → 168 MHz sysclk
-                               → 48 MHz USB (PLL_Q, Clk48sel)
+HSE (8 MHz oscillator) → PLL1 → 180 MHz sysclk
+                             → 48 MHz USB/RNG (PLLSAI1_Q, Clk48sel — NOT PLL1_Q)
                         → PLLSAI → 54.86 MHz LTDC pixel clock (PLLSAI_R)
+                   → 45 MHz APB1, 90 MHz APB2
 ```
 
 The "HSE bypass hangs" warning applies to `HseMode::Bypass`, NOT `HseMode::Oscillator`.
@@ -1781,9 +1798,20 @@ armed; the old zero-count was a missing send-log line, fixed 2026-09-02 #188), a
 overlap: daemon=120 starves under ~33s node rotations, daemon=20 sits under the 30s
 dampening; daemon=32 is the working point) — all LIVE and green; the reusable bench
 fixtures live in fips_lab/bench.py (build matrix + binary verification + daemon
-lifecycle + tap + artifacts). Remaining:
+lifecycle + tap + artifacts). Also LIVE: `test_l2cap_bringup.py` (#188 candidate 4,
+graduated 2026-09-02 — atom-a D0WD ↔ lab daemon over BLE L2CAP via the bench D0WD
+tier; two consecutive greens with identical verdicts; the bench-era
+`test_esp32_l2cap.py` retired). D0WD bench facts it encoded: L2CAP firmware pins the
+peer ONLY via `FIPS_EXTRA_ALLOWED_XONLY_HEX` (embedded as ASCII hex, not bytes —
+`DEVICE_NPUB_HEX_vps` is not compiled into this transport); the system daemon holds
+the hci0 advert slot so the lab daemon never advertises (link forms via its scanner
+probing the atom's peripheral advert); the atom's FTDI port asserts DTR on open and
+resets the board (deterministic fresh boot); raw-termios taps stop receiving live
+bytes on FTDI after draining the backlog — `fips_lab/ftdi_tap.py` (pyserial) is the
+FTDI tap, `raw_tap.py` stays USB-JTAG-only. Remaining:
 `test_espnow_gw.py`, `test_hybrid_switch.py` (daemon stop/start
-via the driver = RX-silence test), with keygen→cargo-env wiring automated in fixtures
+via the driver = RX-silence test; both blocked on a second S3), mesh FSP
+PING/PONG content promotion, with keygen→cargo-env wiring automated in fixtures
 (the build matrix + binary verification from the playbook).
 Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
 reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
@@ -1796,6 +1824,12 @@ reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
   binary. Always `touch crates/microfips-esp-transport/src/config.rs` (or `cargo clean -p`)
   when changing these, and verify the knob landed via its boot log line before drawing
   conclusions. Fix tracked in the hybrid return-to-WiFi issue.
+- **Build-equivalence claims need `cmp`, not reasoning (bit 2026-09-02, #113).** After
+  a build sequence with env overrides, a source edit in between makes cargo recompile —
+  with whatever env is (not) exported at that moment. A flashed local-pinned binary and
+  a later "final" rebuild silently differed (registry vps key vs local daemon key), and
+  "the edit is codegen-neutral" was the wrong proof. `cmp` the two artifacts, or
+  re-verify the pinned constant in the binary, before calling builds equivalent.
 - **Opening `/dev/ttyACM*` (USB-JTAG) resets the board** — pyserial asserts DTR on open.
   For observation without disturbance use raw `os.open` + `termios` (no TIOCM touches;
   see /tmp/opencode/raw_logger.py pattern), or keep one persistent owner.
