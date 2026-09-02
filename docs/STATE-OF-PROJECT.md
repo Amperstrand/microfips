@@ -13,14 +13,14 @@
 |---|---|---|---|
 | USB CDC (STM32) | STM32F469I-DISCO | CDC → serial_udp_bridge → UDP → daemon | 2026-08-31 |
 | WiFi + mDNS | ESP32-S3 (Walter) | WiFi STA → DHCP → mDNS pinned → UDP → daemon | 2026-08-31 |
-| BLE L2CAP | ESP32-D0WD (atom) | BLE scan → probe (LeRandom) → exchange (raw-SDU) → IK → heartbeats | 2026-08-31 |
+| BLE L2CAP | ESP32-D0WD (atom) | BLE scan → probe (LeRandom) → exchange (raw-SDU) → IK → heartbeats; regression-guarded (fips-lab `test_l2cap_bringup`: peripheral path, allowlist pin, FSP send+ACK — two consecutive greens) | 2026-09-02 |
 | BLE L2CAP | ESP32-S3 (Walter) | Same as D0WD (role fix 10c33ad) | 2026-08-31 |
 | ESP-NOW (node) | ESP32-S3 | ESP-NOW → WiFi gateway → UDP → daemon | 2026-08-19 |
 | ESP-NOW (hybrid) | ESP32-S3 | WiFi↔ESP-NOW session-windowed switching | 2026-08-30 |
 | Relay AP | ESP32-S3 (Walter) | !FIPS open AP → DHCP → mDNS → UDP relay → daemon | 2026-08-20 |
 | HTTP over FIPS | STM32F469I-DISCO | HTTP → microfips-service → FSP (XK) → IK link → CDC | 2026-08-30 |
 | Mesh forwarding | All 3 simultaneously | Daemon routes FSP between peers | 2026-08-31 |
-| MCU-to-MCU mesh FSP | STM32 (CDC) + S3 (WiFi) | S3 auto-initiates FSP at STM32 target: Setup→Ack→Msg3→PING/PONG, both directions (fips-lab `test_mcu_to_mcu_mesh`) | 2026-09-02 |
+| MCU-to-MCU mesh FSP | STM32 (CDC) + S3 (WiFi) | S3 auto-initiates FSP at STM32 target: Setup→Ack→Msg3→PING/PONG, both directions (fips-lab `test_mcu_to_mcu_mesh`; PING/PONG content hard-asserted since the 2026-09-02 promotion: 3 PINGs/3 PONGs/1 ACK per run) | 2026-09-02 |
 
 ### ✅ Protocol stack verified
 
@@ -28,7 +28,7 @@
 |---|---|---|
 | Noise IK | Link handshake | Both ESP32s + STM32: MSG1→MSG2→keys, sustained heartbeats |
 | Replay protection | Established-frame anti-replay | WireGuard-style 2048-counter window ported from fips (#181, 2026-08-31): dup/below-window frames dropped before AEAD, scripted-peer E2E test |
-| Rekey (full) | Follow AND initiate rekeys | Hardware-verified 2026-09-01 (#183 Phases 1–3): epoch cascade (cur/pend/prev), promote-on-pending-decrypt, drain+zeroize, idempotent msg1 re-answer; 3 clean rotations on the bench S3, daemon's SecurityViolation cycle gone. Self-initiation = Phase 4. Bidirectional interleave (node AND daemon rotating in one session) verified 2026-09-02 (`test_rekey_bidirectional`: working point daemon=32s; zero rebuilds, zero SecurityViolations) |
+| Rekey (full) | Follow AND initiate rekeys | Hardware-verified 2026-09-01 (#183 Phases 1–3): epoch cascade (cur/pend/prev), promote-on-pending-decrypt, drain+zeroize, idempotent msg1 re-answer; 3 clean rotations on the bench S3, daemon's SecurityViolation cycle gone. Self-initiation = Phase 4. Bidirectional interleave (node AND daemon rotating in one session) verified 2026-09-02 (`test_rekey_bidirectional`: working point daemon=32s; zero rebuilds, zero SecurityViolations). Hour-scale interleave verified 2026-09-02 (`test_rekey_soak_long`, 1800s green in 30:31: 49 node + 21 daemon rotations, 56 cutovers/drains, ONE session throughout — zero rebuilds across 70 rotations — zero violations) |
 | Key zeroization | Secret material wiped on drop | All 6 Noise state machines + session keys at steady exit (#182, 2026-08-31); deviation F8 closed; +2.6KB flash |
 | Noise XX | Forward-compat link handshake (FIPS next wire) | fips-noise 37/37 + full protocol suite green under `--features std,noise-xx` (CI-enforced); test-level only — no live XX daemon to interop against |
 | Noise XK | FSP session | STM32 + SIM: SessionSetup→Ack→Msg3, service request/response |
@@ -46,7 +46,7 @@
 | CI (15 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable (2026-08-31, 924d184); protocol + fips-noise suites run under BOTH IK and noise-xx features |
 | Test suite | 234 core + 140 protocol (IK) + 139 protocol (XX) + 53×2 fips-noise + 68 core-lib + 3 build = ~470 test runs, all passing | Both feature sets green (#178/#181/#182/#183 all phases/#184 closed); hang canary via nextest |
 | Bench scripts | test_http_e2e.sh, test_hw_handshake.sh, test_mcu_to_mcu_fsp.sh | Working (updated for v0.5.0) |
-| fips-lab | Scenario infrastructure + regression assertions | Pytest env REPAIRED (91 tests collect, #4 closed); cross-project Bench Testing Playbook in its docs/; `test_rekey_soak` specced (fips-lab #5) |
+| fips-lab | Scenario infrastructure + regression assertions | 94 tests collect; 8 live scenarios (rekey soak fast/stock, link death, mdns pinned, rekey self-init, mesh full-session, rekey bidirectional, L2CAP bring-up, rekey soak long); cross-project Bench Testing Playbook in its docs/ (11 patterns + 2026-09-02 amendments); D0WD bench tier (build_d0wd_l2cap + ftdi_tap + boards.toml atoms) |
 | Device registry | Public-only, CI-enforced, build-time overrides | Working |
 | Build-time validation | SEC1 check + mismatch warning + knob tracking | Working |
 
@@ -67,7 +67,7 @@
 | Noise XX live interop | No XX-speaking daemon exists (fips master = IK/v0.5.0); firmware crates don't forward `noise-xx` yet | #179 |
 | Node-initiated rekey on hardware | **Verified 2026-09-01** (fips-lab `test_rekey_self_initiated`): 2 rotations/2 min, `REKEY_AFTER_SECS` build knob, default off | — |
 | Relay AP + peer (3-hop chain) | Needs third Walter board | — |
-| FSP initiation on BLE/L2CAP/ESP-NOW transports | Initiator is armed on every transport (same `Node::run` + dual handler; WiFi mesh verified 2026-09-02) but no bench scenario exercises those paths yet | Backlog (needs D0WD bench tier / 2nd S3) |
+| FSP initiation on BLE/L2CAP/ESP-NOW transports | Initiator is armed on every transport (same `Node::run` + dual handler). WiFi mesh verified + full-session asserted (2026-09-02); L2CAP asserted (fips-lab `test_l2cap_bringup`: FSP send + ACK received, 2026-09-02). BLE-GATT and ESP-NOW paths remain unexercised by scenarios | Backlog (BLE-GATT needs a bridge scenario; ESP-NOW needs 2nd S3) |
 
 ## Upstream alignment status
 
