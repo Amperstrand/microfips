@@ -1745,15 +1745,28 @@ Tooling: `tools/lab_keygen.py`, `tools/fips-lab.yaml`, `scripts/run_lab_daemon.s
 **Protocol dialect on the bench:** the lab daemon (and every deployed fips we
 interop with) speaks the **IK / v0.5.0 wire** — all bench nodes are built with
 default features. The Noise XX wire (FIPS next forward-compat) is
-**suite- AND host-interop-verified** (2026-09-02, #179): the protocol suite
-runs green under `--features std,noise-xx` (CI-enforced), the firmware crates
-forward `noise-xx`, and `microfips-sim --features noise-xx` completed a full
-FMP v1 negotiation + heartbeat session against a next-branch daemon
-(0.6.0-dev `f1ff410f`, built in a WORKTREE — never in `/home/ubuntu/src/fips`,
-whose target/ refreshes the system daemon). Reproduce: config + identities in
-the #179 close-out notes; opt-in cross test via `FIPS_NEXT_CROSS_BIN=<upstream
-xx_cross example> cargo test -p fips-noise --features std`. Flash XX builds to
-the bench only once an XX daemon runs there (bench stays IK — see #178/#179).
+**suite-, host-interop-, AND bench-hardware-verified** (2026-09-02, #179/#193):
+the protocol suite runs green under `--features std,noise-xx` (CI-enforced),
+the firmware crates forward `noise-xx`, `microfips-sim --features noise-xx`
+completed a full FMP v1 negotiation + heartbeat session against a next-branch
+daemon (0.6.0-dev `f1ff410f`, built in a WORKTREE — never in
+`/home/ubuntu/src/fips`, whose target/ refreshes the system daemon), and the
+bench S3 ran the same wire against a next daemon end-to-end (pinned mDNS
+discovery, FMP v1 agreed, one sustained session, daemon-initiated rekey
+followed over XX). Bench XX recipe: `BenchXxDaemon` in fips-lab (G·22 identity
+on :21214, `node.rendezvous.lan.enabled: true` — LAN mDNS is OPT-IN on next,
+unlike 0.5.0), binary from a `/tmp/opencode/fips-next` worktree via
+`FIPS_NEXT_BIN` (disposable — rebuild per the `tools/fips-xx-cross-example.rs`
+header recipe when gone); scenario `test_bench_xx` guards it (two greens
+2026-09-02). Known interop quirks: next parses our empty heartbeat replies as
+"Malformed SenderReport" (DEBUG noise, link unaffected), and our MMP report
+interval stays at the 200ms cold start (next sends no ReceiverReports to tune
+it — report-rate tuning is a future compatibility item). The bench XX session
+also found the silent-peer policy bug (healthy link torn down every
+~link_dead_timeout when no FSP flows; fixed by feeding the policy from the
+direct send paths — regression-guarded in `test_bench_xx`). Opt-in cross test
+via `FIPS_NEXT_CROSS_BIN=<upstream xx_cross example> cargo test -p fips-noise
+--features std`.
 
 ### Current bench inventory
 
@@ -1890,7 +1903,13 @@ forwarding), (2) micronuts security review. #113 display output closed 2026-09-0
 - **Concurrent sessions on one worktree can commit each other's dirty files.** A
   parallel session's 16:04 commit (6652549) swept this session's dirty AGENTS.md into
   its own docs commit — content benign, history interleaved. When a second session is
-  live on the same repo, check `git show --stat` after committing.
+  live on the same repo, check `git show --stat` after committing. Worse variant
+  (2026-09-02 evening): the parallel session REBASED main mid-session, orphaning this
+  session's just-made commit; their follow-up `add -A` then landed the (still-present
+  worktree) content inside their own commits. A local commit hash is NOT durable while
+  another session is live — after any surprise history change, re-verify by CONTENT
+  (`git log -S "<marker>"`, grep the tree), not by hash, and keep the durable record
+  in the issue close-out + regression tests, not the commit id.
 
 ### More lessons (same session, hybrid-switch testing)
 

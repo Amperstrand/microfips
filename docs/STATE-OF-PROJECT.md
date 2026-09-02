@@ -30,7 +30,7 @@
 | Replay protection | Established-frame anti-replay | WireGuard-style 2048-counter window ported from fips (#181, 2026-08-31): dup/below-window frames dropped before AEAD, scripted-peer E2E test |
 | Rekey (full) | Follow AND initiate rekeys | Hardware-verified 2026-09-01 (#183 Phases 1–3): epoch cascade (cur/pend/prev), promote-on-pending-decrypt, drain+zeroize, idempotent msg1 re-answer; 3 clean rotations on the bench S3, daemon's SecurityViolation cycle gone. Self-initiation = Phase 4. Bidirectional interleave (node AND daemon rotating in one session) verified 2026-09-02 (`test_rekey_bidirectional`: working point daemon=32s; zero rebuilds, zero SecurityViolations). Hour-scale interleave verified 2026-09-02 (`test_rekey_soak_long`, 1800s green in 30:31: 49 node + 21 daemon rotations, 56 cutovers/drains, ONE session throughout — zero rebuilds across 70 rotations — zero violations) |
 | Key zeroization | Secret material wiped on drop | All 6 Noise state machines + session keys at steady exit (#182, 2026-08-31); deviation F8 closed; +2.6KB flash |
-| Noise XX | Forward-compat link handshake (FIPS next wire) | fips-noise 53/53 + full protocol suite green under `--features std,noise-xx` (CI-enforced); **live interop 2026-09-02 (#179): sim ↔ next-branch daemon (0.6.0-dev f1ff410f)** — FMP v1 negotiation agreed (version 1, peer profile full), connection promoted, sustained heartbeats both directions |
+| Noise XX | Forward-compat link handshake (FIPS next wire) | fips-noise 53/53 + full protocol suite green under `--features std,noise-xx` (CI-enforced); **live interop 2026-09-02 (#179): sim ↔ next-branch daemon (0.6.0-dev f1ff410f)** — FMP v1 negotiation agreed (version 1, peer profile full), connection promoted, sustained heartbeats both directions; **bench hardware 2026-09-02 (#193): S3 ↔ next daemon end-to-end** (pinned mDNS discovery, FMP v1 agreed, one sustained 90s+ session, daemon-initiated rekey followed over XX; regression-guarded by fips-lab `test_bench_xx`). The bench session also found+fixed a silent-peer policy bug (direct-path sends now feed the policy) |
 | Noise XK | FSP session | STM32 + SIM: SessionSetup→Ack→Msg3, service request/response |
 | FMP | Framing | Raw SDU (master dialect) + legacy framed (branch dialect) both parse |
 | FSP | Session + data | PING/PONG (SIM→MCU through daemon), HTTP request/response |
@@ -46,7 +46,7 @@
 | CI (15 jobs) | Unit tests, golden vectors, noise compliance, firmware builds, sim | All green on stable (2026-08-31, 924d184); protocol + fips-noise suites run under BOTH IK and noise-xx features |
 | Test suite | 234 core + 140 protocol (IK) + 139 protocol (XX) + 53×2 fips-noise + 68 core-lib + 3 build = ~470 test runs, all passing | Both feature sets green (#178/#181/#182/#183 all phases/#184 closed); hang canary via nextest |
 | Bench scripts | test_http_e2e.sh, test_hw_handshake.sh, test_mcu_to_mcu_fsp.sh | Working (updated for v0.5.0) |
-| fips-lab | Scenario infrastructure + regression assertions | 94 tests collect; 8 live scenarios (rekey soak fast/stock, link death, mdns pinned, rekey self-init, mesh full-session, rekey bidirectional, L2CAP bring-up, rekey soak long); cross-project Bench Testing Playbook in its docs/ (11 patterns + 2026-09-02 amendments); D0WD bench tier (build_d0wd_l2cap + ftdi_tap + boards.toml atoms) |
+| fips-lab | Scenario infrastructure + regression assertions | 95 tests collect; 9 live scenarios (rekey soak fast/stock, link death, mdns pinned, rekey self-init, mesh full-session, rekey bidirectional, L2CAP bring-up, rekey soak long, bench XX); cross-project Bench Testing Playbook in its docs/ (11 patterns + 2026-09-02 amendments); D0WD bench tier (build_d0wd_l2cap + ftdi_tap + boards.toml atoms); XX tier (BenchXxDaemon + noise-xx build features + FIPS_NEXT_BIN gate) |
 | Device registry | Public-only, CI-enforced, build-time overrides | Working |
 | Build-time validation | SEC1 check + mismatch warning + knob tracking | Working |
 
@@ -64,7 +64,7 @@
 | ESP32-C3 | No board available | #150 (closed; reopen when board arrives) |
 | Hybrid on esp-radio 1.0 | esp-hal#6220 (upstream API gap) | #168, PR #166 |
 | FIPS 0.6.0-dev compatibility | Upstream hasn't shipped breaking changes yet | — |
-| Noise XX live interop | **Sim↔daemon verified 2026-09-02 (#179)** against FIPS next (0.6.0-dev). MCU XX builds compile (STM32/ESP32/ESP32-S3, CI-enforced) but no XX daemon runs on the bench yet — flash XX firmware once one does | #179 |
+| Noise XX live interop | **Sim↔daemon verified 2026-09-02 (#179)** against FIPS next (0.6.0-dev); **bench hardware verified 2026-09-02 (#193)** — S3 ran XX/FMP-v1 end-to-end vs a next-branch bench daemon (G·22, `test_bench_xx` scenario, two greens) | #193 |
 | Node-initiated rekey on hardware | **Verified 2026-09-01** (fips-lab `test_rekey_self_initiated`): 2 rotations/2 min, `REKEY_AFTER_SECS` build knob, default off | — |
 | Relay AP + peer (3-hop chain) | Needs third Walter board | — |
 | FSP initiation on BLE/L2CAP/ESP-NOW transports | Initiator is armed on every transport (same `Node::run` + dual handler). WiFi mesh verified + full-session asserted (2026-09-02); L2CAP asserted (fips-lab `test_l2cap_bringup`: FSP send + ACK received, 2026-09-02). BLE-GATT and ESP-NOW paths remain unexercised by scenarios | Backlog (BLE-GATT needs a bridge scenario; ESP-NOW needs 2nd S3) |

@@ -382,7 +382,7 @@ Host tools do not fall back to hardcoded identities anymore. Set both variables 
 | Issue | Description | Status |
 |-------|-------------|--------|
 | WiFi control interface | Control interface (`show_status` etc.) not responding on WiFi variant — currently a BLE/L2CAP-variant feature; logger and control share UART0 TX, the RX path may need separate initialization. | Open |
-| Noise XX live interop | **Sim↔daemon verified 2026-09-02 (#179)** against FIPS next (0.6.0-dev): FMP v1 negotiation agreed, heartbeats sustained. Firmware crates forward `noise-xx` (STM32/ESP32/ESP32-S3, CI-enforced); bench flash waits on an XX daemon there | Done (#179) |
+| Noise XX live interop | **Sim↔daemon verified 2026-09-02 (#179)** against FIPS next (0.6.0-dev): FMP v1 negotiation agreed, heartbeats sustained. **Bench hardware verified 2026-09-02 (#193)** — S3 ran XX/FMP-v1 end-to-end vs a next-branch bench daemon (fips-lab `test_bench_xx`). Firmware crates forward `noise-xx` (STM32/ESP32/ESP32-S3, CI-enforced) | Done (#179, #193) |
 
 ## Milestones
 
