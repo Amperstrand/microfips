@@ -85,7 +85,7 @@ def _api(method: str, path: str, *, api_key: str, body: dict | None = None,
         headers.update(extra_headers)
 
     url = f"{BASE_URL}{path}"
-    for attempt in range(3):
+    for attempt in range(6):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -104,6 +104,13 @@ def _api(method: str, path: str, *, api_key: str, body: dict | None = None,
                     eh = dict(extra_headers) if extra_headers else {}
                     eh["X-User-Api-Confirm"] = cid
                     return _api(method, path, api_key=api_key, body=body, extra_headers=eh, timeout=timeout)
+            if e.code == 409 and "out of stock" in text.lower() and attempt < 4:
+                # Provider capacity fluctuates on minute scale (seen live
+                # 2026-09-02): wait and re-order rather than failing the job.
+                wait_s = 45
+                print(f"out of stock (attempt {attempt + 1}); retrying in {wait_s}s", file=sys.stderr)
+                time.sleep(wait_s)
+                continue
             if e.code in (429, 502, 503) and attempt < 2:
                 time.sleep(2 ** attempt)
                 continue
