@@ -15,6 +15,8 @@ wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/
 mdns-open = ["wifi", "microfips-esp-transport/mdns-open"]
 esp-now = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/esp-now"]
 benchmark = ["microfips-protocol/benchmark"]
+# Noise XX link handshake + FMP v1 wire (FIPS next / 1.0.0-dev, #179).
+noise-xx = ["microfips-core/noise-xx", "microfips-protocol/noise-xx"]
 
 [[bin]]
 name = "microfips-esp32"

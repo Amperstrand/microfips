@@ -470,6 +470,7 @@ jobs:
       - run: cargo build -p microfips --release --target thumbv7em-none-eabi --features display
 
       - run: cargo build -p microfips --release --target thumbv7em-none-eabi --no-default-features --features board-f746
+      - run: cargo build -p microfips --release --target thumbv7em-none-eabi --features noise-xx
 
       - name: Validate firmware binary
         run: |
@@ -547,8 +548,14 @@ jobs:
       - name: Build ESP32 WiFi
         run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
 
+      - name: Build ESP32 L2CAP + Noise XX (FMP v1)
+        run: cargo +esp build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap,noise-xx
+
       - name: Build ESP32-S3 WiFi
         run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+
+      - name: Build ESP32-S3 WiFi + Noise XX (FMP v1)
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --features noise-xx
 
       # ESP32-C3 has no compiled-in identity (issue #134: RETRIEVE_FROM_BUILD) —
       # inject a throwaway scalar so the env! const resolves. Compile-only check.

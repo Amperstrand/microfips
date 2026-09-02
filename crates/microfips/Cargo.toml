@@ -11,6 +11,8 @@ board-f469 = [
     "dep:embassy-stm32f469i-disco",
 ]
 board-f746 = ["embassy-stm32/stm32f746ng"]
+# Noise XX link handshake + FMP v1 wire (FIPS next / 1.0.0-dev, #179).
+noise-xx = ["microfips-core/noise-xx", "microfips-protocol/noise-xx"]
 display = [
     "embassy-stm32f469i-disco/display",
     "dep:embedded-graphics",
