@@ -13,6 +13,9 @@
 //! | ~~N2~~ | `path_mtu` default | ~~hardcoded 1400~~ → now `u16::MAX` | `u16::MAX` | **Fixed**: matches FIPS default. FIPS caps during forwarding. |
 //! | ~~N3~~ | `session_flags` | ~~initiator sends 0x03~~ → now 0x00 | defaults to 0x00 | **Fixed**: matches FIPS default. FIPS doesn't validate flags. |
 
+#[cfg(feature = "noise-xx")]
+pub mod negotiation;
+
 use fips_noise as noise;
 use fips_proto_defs as fips_compat;
 

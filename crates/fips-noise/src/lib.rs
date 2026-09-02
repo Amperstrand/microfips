@@ -95,6 +95,9 @@
 
 pub mod replay;
 
+#[cfg(all(test, feature = "std"))]
+extern crate std;
+
 pub use replay::{ReplayWindow, REPLAY_WINDOW_SIZE};
 
 pub use zeroize::Zeroize;
@@ -2812,5 +2815,105 @@ mod responder_tests {
         let dec_len = resp.decrypt_payload(&enc[..enc_len], &mut dec).unwrap();
 
         assert_eq!(&dec[..dec_len], &payload);
+    }
+
+    /// Cross-implementation probe against the upstream FIPS `next` branch
+    /// Noise XX responder (examples/xx_cross.rs in a fips checkout).
+    ///
+    /// Opt-in via `FIPS_NEXT_CROSS_BIN=<path-to-example-binary>`; skips
+    /// silently when unset (no upstream checkout required for CI).
+    #[cfg(feature = "std")]
+    #[test]
+    fn xx_cross_interop_with_upstream_next() {
+        let Ok(bin) = std::env::var("FIPS_NEXT_CROSS_BIN") else {
+            std::eprintln!("FIPS_NEXT_CROSS_BIN not set — skipping upstream cross test");
+            return;
+        };
+
+        let g = |n: u8| {
+            let mut s = [0u8; 32];
+            s[31] = n;
+            s
+        };
+        let our_static = g(21);
+        let our_eph = g(31);
+        let epoch_i = 7u64.to_le_bytes();
+
+        let i_pub = ecdh_pubkey(&our_static).unwrap();
+        let (mut init, _) = NoiseXxInitiator::new(&our_eph, &our_static).unwrap();
+        let mut m1 = [0u8; 64];
+        let l1 = init.write_message1(&mut m1).unwrap();
+        assert_eq!(l1, XX_HANDSHAKE_MSG1_SIZE);
+
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::{Command, Stdio};
+        use std::string::String;
+        // format!/eprintln! live in the std prelude, not core:
+        #[allow(unused_imports)]
+        use std::format;
+
+        let mut child = Command::new(&bin)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn xx_cross");
+        let mut child_in = child.stdin.take().unwrap();
+        let mut child_out = BufReader::new(child.stdout.take().unwrap());
+
+        writeln!(child_in, "{}", hex_str(&m1[..l1])).unwrap();
+        child_in.flush().unwrap();
+
+        let mut line = String::new();
+        child_out.read_line(&mut line).unwrap();
+        let msg2 = unhex(&line.trim());
+        assert!(
+            msg2.len() > XX_HANDSHAKE_MSG2_SIZE,
+            "upstream msg2 should carry negotiation extra"
+        );
+        let (base2, extra2) = msg2.split_at(XX_HANDSHAKE_MSG2_SIZE);
+        init.read_message2(base2).unwrap();
+        let mut plain2 = [0u8; 64];
+        let n2 = init.decrypt_payload(extra2, &mut plain2).unwrap();
+        assert_eq!(&plain2[..n2], b"NEG2-PROBE");
+
+        let mut m3 = [0u8; 128];
+        let l3 = init.write_message3(&i_pub, &epoch_i, &mut m3).unwrap();
+        assert_eq!(l3, XX_HANDSHAKE_MSG3_SIZE);
+        let neg3 = b"NEG3-PROBE";
+        let l3e = init.encrypt_payload(neg3, &mut m3[l3..]).unwrap();
+
+        writeln!(child_in, "{}", hex_str(&m3[..l3 + l3e])).unwrap();
+        child_in.flush().unwrap();
+        drop(child_in);
+
+        let mut verdict = String::new();
+        child_out.read_line(&mut verdict).unwrap();
+        child.wait().unwrap();
+        assert!(
+            verdict.starts_with("OK"),
+            "upstream responder rejected our msg3: {verdict}"
+        );
+        assert!(
+            verdict.contains(&hex_str(neg3)),
+            "negotiation plaintext mismatch: {verdict}"
+        );
+    }
+
+    #[cfg(feature = "std")]
+    use std::string::String;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    #[cfg(feature = "std")]
+    fn hex_str(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| std::format!("{b:02x}")).collect()
+    }
+
+    #[cfg(feature = "std")]
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 }

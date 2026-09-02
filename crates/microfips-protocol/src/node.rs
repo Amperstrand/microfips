@@ -193,6 +193,18 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     raw_framing: bool,
     epoch: u64,
     peer_sent_first: bool,
+    /// Peer's FMP node profile from the XX negotiation payload
+    /// (`None` until an XX handshake completes; always `None` on IK).
+    #[cfg(feature = "noise-xx")]
+    peer_profile: Option<wire::negotiation::NodeProfile>,
+    /// FMP version agreed during the XX negotiation exchange.
+    #[cfg(feature = "noise-xx")]
+    fmp_version: Option<u8>,
+    /// FMP node profile we advertise in negotiation. microfips is a leaf
+    /// (single upstream peer, no tree/bloom/transit); tests and non-leaf
+    /// deployments override via [`Node::set_node_profile`].
+    #[cfg(feature = "noise-xx")]
+    our_profile: wire::negotiation::NodeProfile,
     #[cfg(feature = "benchmark")]
     throughput: ThroughputState,
     #[cfg(feature = "mmp")]
@@ -317,6 +329,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             raw_framing: false,
             epoch: 0,
             peer_sent_first: false,
+            #[cfg(feature = "noise-xx")]
+            peer_profile: None,
+            #[cfg(feature = "noise-xx")]
+            fmp_version: None,
+            #[cfg(feature = "noise-xx")]
+            our_profile: microfips_core::wire::negotiation::NodeProfile::Leaf,
             #[cfg(feature = "benchmark")]
             throughput: ThroughputState::default(),
             #[cfg(feature = "mmp")]
@@ -345,6 +363,27 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
     pub fn transport_mut(&mut self) -> &mut T {
         &mut self.transport
+    }
+
+    /// Peer's FMP node profile learned from the XX negotiation payload
+    /// (`None` until an XX handshake completes; always `None` on IK).
+    #[cfg(feature = "noise-xx")]
+    pub fn peer_node_profile(&self) -> Option<wire::negotiation::NodeProfile> {
+        self.peer_profile
+    }
+
+    /// FMP version agreed during the XX negotiation exchange.
+    #[cfg(feature = "noise-xx")]
+    pub fn fmp_agreed_version(&self) -> Option<u8> {
+        self.fmp_version
+    }
+
+    /// Override the FMP node profile advertised in XX negotiation
+    /// (default `Leaf`). Leaf+leaf links are rejected by the pairing rule —
+    /// tests that peer two `Node`s must declare `Full` on one side.
+    #[cfg(feature = "noise-xx")]
+    pub fn set_node_profile(&mut self, profile: wire::negotiation::NodeProfile) {
+        self.our_profile = profile;
     }
 
     fn generate_valid_eph(&mut self) -> [u8; 32] {
@@ -454,6 +493,65 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
     }
 
+    /// Validate the peer's decrypted FMP negotiation payload against our
+    /// advertised profile and version range, recording the agreed version
+    /// and peer profile (FIPS next `decide_fmp_negotiation` + `agree_version`).
+    #[cfg(feature = "noise-xx")]
+    fn apply_fmp_negotiation(&mut self, neg_bytes: &[u8]) -> Result<(), ProtocolError> {
+        use microfips_core::wire::negotiation::{self, NegotiationHeader, NodeProfile};
+
+        let ours = NegotiationHeader {
+            version_min: microfips_core::wire::FMP_VERSION,
+            version_max: microfips_core::wire::FMP_VERSION,
+            features: negotiation::fmp_features(self.our_profile),
+        };
+        let theirs = NegotiationHeader::parse(neg_bytes).map_err(|_e| {
+            #[cfg(feature = "log")]
+            log::warn!("fmp negotiation: bad payload: {}", _e);
+            ProtocolError::InvalidMessage
+        })?;
+        let version = ours.agree_version(&theirs).map_err(|_| {
+            #[cfg(feature = "log")]
+            log::warn!(
+                "fmp negotiation: no version overlap (our {}..{}, their {}..{})",
+                ours.version_min,
+                ours.version_max,
+                theirs.version_min,
+                theirs.version_max
+            );
+            ProtocolError::InvalidMessage
+        })?;
+        let their_profile = match theirs.node_profile() {
+            Some(p) => p,
+            None => {
+                #[cfg(feature = "log")]
+                log::warn!(
+                    "fmp negotiation: unknown profile bits {:b}",
+                    theirs.features & negotiation::FMP_FEAT_PROFILE_MASK
+                );
+                return Err(ProtocolError::InvalidMessage);
+            }
+        };
+        if !NodeProfile::valid_pairing(self.our_profile, their_profile) {
+            #[cfg(feature = "log")]
+            log::warn!(
+                "fmp negotiation: invalid pairing {}+{}",
+                self.our_profile,
+                their_profile
+            );
+            return Err(ProtocolError::InvalidMessage);
+        }
+        self.fmp_version = Some(version);
+        self.peer_profile = Some(their_profile);
+        #[cfg(feature = "log")]
+        log::info!(
+            "fmp negotiation: agreed version {}, peer profile {}",
+            version,
+            their_profile
+        );
+        Ok(())
+    }
+
     #[cfg(feature = "noise-xx")]
     async fn handshake_xx<H: NodeHandler>(
         &mut self,
@@ -504,18 +602,50 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             ..
                         } => {
                             let mut st = noise_st;
+                            let (base2, neg2) = wire::negotiation::split_msg2_noise(noise_payload);
+                            #[cfg(feature = "log")]
+                            log::debug!(
+                                "xx init: msg2 noise={}B negotiation-extra={}B",
+                                noise_payload.len(),
+                                neg2.map(|e| e.len()).unwrap_or(0)
+                            );
                             let (_resp_pub, _resp_epoch) = st
-                                .read_message2(noise_payload)
+                                .read_message2(base2)
                                 .map_err(|_| ProtocolError::DecryptFailed)?;
+                            if let Some(encrypted) = neg2 {
+                                let mut plain = [0u8; wire::negotiation::NEGOTIATION_MAX_SIZE];
+                                let n = st
+                                    .decrypt_payload(encrypted, &mut plain)
+                                    .map_err(|_| ProtocolError::DecryptFailed)?;
+                                self.apply_fmp_negotiation(&plain[..n])?;
+                            }
 
-                            let mut n3 = [0u8; 128];
+                            let mut n3 = [0u8; noise::XX_HANDSHAKE_MSG3_SIZE
+                                + wire::negotiation::NEGOTIATION_MAX_SIZE
+                                + noise::TAG_SIZE];
                             let n3len = st
                                 .write_message3(&my_pub, &epoch, &mut n3)
                                 .map_err(|_| ProtocolError::DecryptFailed)?;
-                            let mut f3 = [0u8; 256];
-                            let f3len =
-                                wire::build_msg3(our_index, sender_idx, &n3[..n3len], &mut f3)
-                                    .ok_or(ProtocolError::InvalidFrame)?;
+                            let mut neg = [0u8; wire::negotiation::NEGOTIATION_MAX_SIZE];
+                            let neglen = wire::negotiation::encode_payload(
+                                &mut neg,
+                                wire::FMP_VERSION,
+                                wire::FMP_VERSION,
+                                wire::negotiation::fmp_features(self.our_profile),
+                                None,
+                            )
+                            .ok_or(ProtocolError::InvalidFrame)?;
+                            let neg_enc_len = st
+                                .encrypt_payload(&neg[..neglen], &mut n3[n3len..])
+                                .map_err(|_| ProtocolError::DecryptFailed)?;
+                            let mut f3 = [0u8; 512];
+                            let f3len = wire::build_msg3(
+                                our_index,
+                                sender_idx,
+                                &n3[..n3len + neg_enc_len],
+                                &mut f3,
+                            )
+                            .ok_or(ProtocolError::InvalidFrame)?;
                             self.send_frame(&f3[..f3len]).await?;
 
                             // finalize() returns (c1, c2) = (init→resp, resp→init)
@@ -551,17 +681,32 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 resp_eph = self.generate_valid_eph();
                             }
 
-                            let mut msg2_noise = [0u8; 128];
+                            let mut msg2_noise = [0u8; noise::XX_HANDSHAKE_MSG2_SIZE
+                                + wire::negotiation::NEGOTIATION_MAX_SIZE
+                                + noise::TAG_SIZE];
                             let msg2_noise_len = responder
                                 .write_message2(&resp_eph, &epoch, &mut msg2_noise)
                                 .map_err(|_| ProtocolError::DecryptFailed)?;
+                            let mut neg = [0u8; wire::negotiation::NEGOTIATION_MAX_SIZE];
+                            let neglen = wire::negotiation::encode_payload(
+                                &mut neg,
+                                wire::FMP_VERSION,
+                                wire::FMP_VERSION,
+                                wire::negotiation::fmp_features(self.our_profile),
+                                None,
+                            )
+                            .ok_or(ProtocolError::InvalidMessage)?;
+                            let neg_enc_len = responder
+                                .encrypt_payload(&neg[..neglen], &mut msg2_noise[msg2_noise_len..])
+                                .map_err(|_| ProtocolError::DecryptFailed)?;
+                            let msg2_total_len = msg2_noise_len + neg_enc_len;
 
                             let resp_index = self.allocate_session_index();
-                            let mut msg2_buf = [0u8; 256];
+                            let mut msg2_buf = [0u8; 512];
                             let msg2_len = wire::build_msg2(
                                 resp_index,
                                 peer_sender_idx,
-                                &msg2_noise[..msg2_noise_len],
+                                &msg2_noise[..msg2_total_len],
                                 &mut msg2_buf,
                             )
                             .ok_or(ProtocolError::InvalidMessage)?;
@@ -579,9 +724,21 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                             wire::FmpMessage::Msg3 {
                                                 noise_payload: np3, ..
                                             } => {
+                                                let (base3, neg3) =
+                                                    wire::negotiation::split_msg3_noise(np3);
                                                 let (init_pub, _init_epoch) = responder
-                                                    .read_message3(np3)
+                                                    .read_message3(base3)
                                                     .map_err(|_| ProtocolError::InvalidMessage)?;
+                                                if let Some(encrypted) = neg3 {
+                                                    let mut plain = [0u8;
+                                                        wire::negotiation::NEGOTIATION_MAX_SIZE];
+                                                    let n = responder
+                                                        .decrypt_payload(encrypted, &mut plain)
+                                                        .map_err(|_| {
+                                                            ProtocolError::InvalidMessage
+                                                        })?;
+                                                    self.apply_fmp_negotiation(&plain[..n])?;
+                                                }
 
                                                 // Verify identity NOW — XX reveals
                                                 // initiator's static key in MSG3.
@@ -2129,7 +2286,13 @@ enum FrameAction {
 
 /// Determine the total wire size of a raw FMP frame from its 4-byte common prefix.
 ///
-/// For MSG1/MSG2, uses the fixed wire sizes (114/69 bytes).
+/// For MSG1, uses the fixed wire size (41B on XX / 122B on IK — never
+/// carries a negotiation extra). For MSG2/MSG3, derives the total from the
+/// prefix `payload_len` field, which both microfips and FIPS write as the
+/// true post-prefix size including any appended negotiation payload — the
+/// fixed `MSGx_WIRE_SIZE` constants cover only the base Noise message and
+/// would silently truncate the negotiation extra (raw-UDP desync of the
+/// AEAD counter → the peer's msg3 decrypt fails).
 /// For established frames, returns `None` — the caller must use the full
 /// available buffer as one frame (UDP datagram boundary).
 ///
@@ -2154,16 +2317,27 @@ fn fmp_raw_frame_size(data: &[u8]) -> Option<usize> {
                 Some(total)
             }
         }
-        wire::PHASE_MSG2 => {
-            let total = wire::MSG2_WIRE_SIZE;
-            if data.len() < total {
-                None
-            } else {
-                Some(total)
-            }
-        }
+        wire::PHASE_MSG2 => handshake_frame_size(data, &prefix, wire::MSG2_WIRE_SIZE),
+        wire::PHASE_MSG3 => handshake_frame_size(data, &prefix, wire::MSG3_WIRE_SIZE),
         _ => None,
     }
+}
+
+/// Total wire size of a negotiation-capable handshake frame (msg2/msg3):
+/// `COMMON_PREFIX_SIZE + payload_len`, validated against the base size and
+/// the transport frame cap.
+fn handshake_frame_size(
+    data: &[u8],
+    prefix: &wire::CommonPrefix,
+    base_wire_size: usize,
+) -> Option<usize> {
+    use microfips_core::wire;
+
+    let total = wire::COMMON_PREFIX_SIZE + prefix.payload_len as usize;
+    if total < base_wire_size || total > data.len() || total > framing::MAX_FRAME {
+        return None;
+    }
+    Some(total)
 }
 
 /// Extract one complete length-prefixed frame from `buf[pos..len]`.
@@ -3008,6 +3182,7 @@ mod tests {
                 #[cfg(feature = "noise-xx")]
                 {
                     use microfips_core::noise::NoiseXxResponder;
+                    use microfips_core::wire::negotiation;
 
                     let mut resp =
                         NoiseXxResponder::new(&responder_secret).expect("XX responder init failed");
@@ -3015,16 +3190,31 @@ mod tests {
                         .expect("read_message1 failed");
 
                     let resp_eph = random_secret();
-                    let mut msg2_noise = [0u8; 128];
+                    let mut msg2_noise = [0u8; microfips_core::noise::XX_HANDSHAKE_MSG2_SIZE
+                        + negotiation::NEGOTIATION_MAX_SIZE
+                        + microfips_core::noise::TAG_SIZE];
                     let msg2_noise_len = resp
                         .write_message2(&resp_eph, &1u64.to_le_bytes(), &mut msg2_noise)
                         .expect("write_message2 failed");
+                    // Daemon stand-in: Full-profile negotiation block.
+                    let mut neg = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+                    let neglen = negotiation::encode_payload(
+                        &mut neg,
+                        wire::FMP_VERSION,
+                        wire::FMP_VERSION,
+                        negotiation::fmp_features(negotiation::NodeProfile::Full),
+                        None,
+                    )
+                    .unwrap();
+                    let neg_enc_len = resp
+                        .encrypt_payload(&neg[..neglen], &mut msg2_noise[msg2_noise_len..])
+                        .expect("encrypt_payload failed");
 
-                    let mut msg2_buf = [0u8; 256];
+                    let mut msg2_buf = [0u8; 512];
                     let msg2_len = wire::build_msg2(
                         wire::SessionIndex::new(1),
                         wire::SessionIndex::new(0),
-                        &msg2_noise[..msg2_noise_len],
+                        &msg2_noise[..msg2_noise_len + neg_enc_len],
                         &mut msg2_buf,
                     )
                     .unwrap();
@@ -3047,8 +3237,17 @@ mod tests {
                     let msg3 = wire::parse_message(&buf3[..msg3_len]).unwrap();
                     match msg3 {
                         wire::FmpMessage::Msg3 { noise_payload, .. } => {
-                            resp.read_message3(noise_payload)
-                                .expect("read_message3 failed");
+                            let (base3, neg3) = negotiation::split_msg3_noise(noise_payload);
+                            resp.read_message3(base3).expect("read_message3 failed");
+                            let encrypted = neg3.expect("node msg3 carries negotiation");
+                            let mut plain = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+                            let n = resp
+                                .decrypt_payload(encrypted, &mut plain)
+                                .expect("decrypt_payload failed");
+                            let header =
+                                negotiation::NegotiationHeader::parse(&plain[..n]).unwrap();
+                            assert_eq!(header.node_profile(), Some(negotiation::NodeProfile::Leaf));
+                            assert_eq!(negotiation::rekey_of(&plain[..n]), Ok(None));
                         }
                         _ => panic!("expected Msg3"),
                     }
@@ -3066,6 +3265,12 @@ mod tests {
                 let epoch = node.advance_epoch();
                 let result = node.handshake(epoch, &mut handler).await;
                 assert!(result.is_ok(), "handshake should succeed");
+                #[cfg(feature = "noise-xx")]
+                {
+                    use microfips_core::wire::negotiation::NodeProfile;
+                    assert_eq!(node.peer_node_profile(), Some(NodeProfile::Full));
+                    assert_eq!(node.fmp_agreed_version(), Some(1));
+                }
                 let (ks, kr, them) = result.unwrap();
                 assert_eq!(
                     them,
@@ -3249,21 +3454,37 @@ mod tests {
                 #[cfg(feature = "noise-xx")]
                 {
                     use microfips_core::noise::NoiseXxResponder;
+                    use microfips_core::wire::negotiation;
 
                     let mut resp = NoiseXxResponder::new(&responder_secret).unwrap();
                     resp.read_message1(noise_payload).unwrap();
 
                     let resp_eph = random_secret();
-                    let mut msg2_noise = [0u8; 128];
+                    let mut msg2_noise = [0u8; microfips_core::noise::XX_HANDSHAKE_MSG2_SIZE
+                        + negotiation::NEGOTIATION_MAX_SIZE
+                        + microfips_core::noise::TAG_SIZE];
                     let msg2_noise_len = resp
                         .write_message2(&resp_eph, &1u64.to_le_bytes(), &mut msg2_noise)
                         .unwrap();
+                    // Daemon stand-in: Full-profile negotiation block.
+                    let mut neg = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+                    let neglen = negotiation::encode_payload(
+                        &mut neg,
+                        wire::FMP_VERSION,
+                        wire::FMP_VERSION,
+                        negotiation::fmp_features(negotiation::NodeProfile::Full),
+                        None,
+                    )
+                    .unwrap();
+                    let neg_enc_len = resp
+                        .encrypt_payload(&neg[..neglen], &mut msg2_noise[msg2_noise_len..])
+                        .unwrap();
 
-                    let mut msg2_buf = [0u8; 256];
+                    let mut msg2_buf = [0u8; 512];
                     let msg2_len = wire::build_msg2(
                         wire::SessionIndex::new(1),
                         wire::SessionIndex::new(0),
-                        &msg2_noise[..msg2_noise_len],
+                        &msg2_noise[..msg2_noise_len + neg_enc_len],
                         &mut msg2_buf,
                     )
                     .unwrap();
@@ -3285,7 +3506,8 @@ mod tests {
                     let msg3 = wire::parse_message(&buf3[..msg3_len]).unwrap();
                     match msg3 {
                         wire::FmpMessage::Msg3 { noise_payload, .. } => {
-                            let (init_pub, init_epoch) = resp.read_message3(noise_payload).unwrap();
+                            let (base3, _) = negotiation::split_msg3_noise(noise_payload);
+                            let (init_pub, init_epoch) = resp.read_message3(base3).unwrap();
                             assert_eq!(init_pub, ecdh_pubkey(&initiator_secret).unwrap());
                             assert_eq!(init_epoch, 1u64.to_le_bytes());
                         }
@@ -3518,6 +3740,9 @@ mod tests {
 
             let node_b = async move {
                 let mut node = Node::new(transport_b, TestRng::from_os_rng(), secret_b, pub_a);
+                // Two leaves cannot pair — stand one side up as Full.
+                #[cfg(feature = "noise-xx")]
+                node.set_node_profile(microfips_core::wire::negotiation::NodeProfile::Full);
                 let mut handler = NoopTestHandler;
                 let epoch = node.advance_epoch();
                 node.handshake(epoch, &mut handler).await.unwrap()
@@ -3685,7 +3910,27 @@ mod tests {
                         } => {
                             assert!(sender_idx.as_u32() != 0, "sender_idx should be non-zero");
                             assert_eq!(receiver_idx, wire::SessionIndex::new(remote_sender_idx));
+                            #[cfg(not(feature = "noise-xx"))]
                             initiator.read_message2(noise_payload).unwrap();
+                            #[cfg(feature = "noise-xx")]
+                            {
+                                use microfips_core::wire::negotiation;
+                                let (base2, neg2) = negotiation::split_msg2_noise(noise_payload);
+                                initiator.read_message2(base2).unwrap();
+                                let mut plain = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+                                let n = initiator
+                                    .decrypt_payload(
+                                        neg2.expect("node msg2 carries negotiation"),
+                                        &mut plain,
+                                    )
+                                    .unwrap();
+                                assert_eq!(
+                                    negotiation::NegotiationHeader::parse(&plain[..n])
+                                        .unwrap()
+                                        .node_profile(),
+                                    Some(negotiation::NodeProfile::Leaf)
+                                );
+                            }
                             #[cfg(feature = "noise-xx")]
                             {
                                 let mut msg3_noise = [0u8; 128];
@@ -3798,7 +4043,8 @@ mod tests {
     fn test_fmp_raw_frame_size_valid_msg2() {
         use microfips_core::wire;
         let mut data = [0u8; wire::MSG2_WIRE_SIZE];
-        data[..4].copy_from_slice(&wire::build_prefix(wire::PHASE_MSG2, 0x00, 65));
+        let payload_len = (wire::IDX_SIZE * 2 + wire::HANDSHAKE_MSG2_SIZE) as u16;
+        data[..4].copy_from_slice(&wire::build_prefix(wire::PHASE_MSG2, 0x00, payload_len));
         assert_eq!(fmp_raw_frame_size(&data), Some(wire::MSG2_WIRE_SIZE));
     }
 
@@ -3807,6 +4053,69 @@ mod tests {
         use microfips_core::wire;
         let prefix = wire::build_prefix(wire::PHASE_ESTABLISHED, 0x00, 84);
         assert_eq!(fmp_raw_frame_size(&prefix), None);
+    }
+
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn test_fmp_raw_frame_size_msg2_with_negotiation_extra() {
+        use microfips_core::wire;
+        // Regression (raw-UDP truncation, found against FIPS next): a msg2
+        // carrying a 26B negotiation extra must extract in full — the fixed
+        // MSG2_WIRE_SIZE constant silently dropped the extra, desyncing the
+        // AEAD counter so the peer's msg3 decrypt failed.
+        let base_noise = [0u8; wire::HANDSHAKE_MSG2_SIZE];
+        let extra = [0xA5u8; 26];
+        let total_noise_len = base_noise.len() + extra.len();
+        let mut data = [0u8; 256];
+        let prefix = wire::build_prefix(
+            wire::PHASE_MSG2,
+            0x00,
+            (wire::IDX_SIZE * 2 + total_noise_len) as u16,
+        );
+        data[..4].copy_from_slice(&prefix);
+        data[12..12 + base_noise.len()].copy_from_slice(&base_noise);
+        data[12 + base_noise.len()..12 + total_noise_len].copy_from_slice(&extra);
+
+        let expected = wire::COMMON_PREFIX_SIZE + wire::IDX_SIZE * 2 + total_noise_len;
+        assert_eq!(fmp_raw_frame_size(&data[..expected]), Some(expected));
+    }
+
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn test_fmp_raw_frame_size_msg3_with_negotiation_extra() {
+        use microfips_core::wire;
+        let base_noise = [0u8; wire::HANDSHAKE_MSG3_SIZE];
+        let extra = [0x5Au8; 26];
+        let total_noise_len = base_noise.len() + extra.len();
+        let mut data = [0u8; 256];
+        let prefix = wire::build_prefix(
+            wire::PHASE_MSG3,
+            0x00,
+            (wire::IDX_SIZE * 2 + total_noise_len) as u16,
+        );
+        data[..4].copy_from_slice(&prefix);
+        data[12..12 + base_noise.len()].copy_from_slice(&base_noise);
+        data[12 + base_noise.len()..12 + total_noise_len].copy_from_slice(&extra);
+
+        let expected = wire::COMMON_PREFIX_SIZE + wire::IDX_SIZE * 2 + total_noise_len;
+        assert_eq!(fmp_raw_frame_size(&data[..expected]), Some(expected));
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_msg2_short_payload_len_rejected() {
+        use microfips_core::wire;
+        // payload_len smaller than the base msg2 (8 idx + base noise) is bogus.
+        let mut data = [0u8; wire::MSG2_WIRE_SIZE];
+        data[..4].copy_from_slice(&wire::build_prefix(wire::PHASE_MSG2, 0x00, 4));
+        assert_eq!(fmp_raw_frame_size(&data), None);
+    }
+
+    #[test]
+    fn test_fmp_raw_frame_size_msg2_payload_len_beyond_buffer_rejected() {
+        use microfips_core::wire;
+        let mut data = [0u8; wire::MSG2_WIRE_SIZE];
+        data[..4].copy_from_slice(&wire::build_prefix(wire::PHASE_MSG2, 0x00, 4096));
+        assert_eq!(fmp_raw_frame_size(&data), None);
     }
 
     #[test]

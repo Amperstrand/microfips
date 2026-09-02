@@ -212,6 +212,7 @@ pub fn build_handshake_fixture(
     epoch: [u8; 8],
 ) -> HandshakeFixture {
     use microfips_core::noise::{NoiseXxInitiator, NoiseXxResponder};
+    use microfips_core::wire::negotiation;
 
     let initiator_pub = ecdh_pubkey(&initiator_secret).unwrap();
     let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
@@ -242,45 +243,86 @@ pub fn build_handshake_fixture(
     responder.read_message1(noise_payload).unwrap();
 
     let responder_eph = generate_valid_eph(&mut rng);
-    let mut msg2_noise = [0u8; 128];
+    let mut msg2_noise = [0u8; microfips_core::noise::XX_HANDSHAKE_MSG2_SIZE
+        + negotiation::NEGOTIATION_MAX_SIZE
+        + microfips_core::noise::TAG_SIZE];
     let msg2_noise_len = responder
         .write_message2(&responder_eph, &epoch, &mut msg2_noise)
         .unwrap();
+    // Daemon stand-in: Full-profile negotiation block.
+    let mut neg2 = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+    let neg2_len = negotiation::encode_payload(
+        &mut neg2,
+        wire::FMP_VERSION,
+        wire::FMP_VERSION,
+        negotiation::fmp_features(negotiation::NodeProfile::Full),
+        None,
+    )
+    .unwrap();
+    let neg2_enc_len = responder
+        .encrypt_payload(&neg2[..neg2_len], &mut msg2_noise[msg2_noise_len..])
+        .unwrap();
+    let msg2_total = msg2_noise_len + neg2_enc_len;
 
     let responder_sender_idx = wire::SessionIndex::new(0xCAFE_0001);
     let mut msg2 = [0u8; 256];
     let msg2_len = wire::build_msg2(
         responder_sender_idx,
         initiator_sender_idx,
-        &msg2_noise[..msg2_noise_len],
+        &msg2_noise[..msg2_total],
         &mut msg2,
     )
     .unwrap();
 
     // Same handshake state + static pub + epoch ⇒ byte-identical msg3.
     let mut verify_initiator = initiator;
-    let (resp_pub, parsed_epoch) = verify_initiator
-        .read_message2(&msg2_noise[..msg2_noise_len])
-        .unwrap();
+    let (base2, neg2_extra) = negotiation::split_msg2_noise(&msg2_noise[..msg2_total]);
+    let (resp_pub, parsed_epoch) = verify_initiator.read_message2(base2).unwrap();
     assert_eq!(parsed_epoch, epoch);
     assert_eq!(resp_pub, responder_pub);
+    let mut neg2_plain = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+    let n2 = verify_initiator
+        .decrypt_payload(neg2_extra.unwrap(), &mut neg2_plain)
+        .unwrap();
+    assert_eq!(
+        negotiation::NegotiationHeader::parse(&neg2_plain[..n2])
+            .unwrap()
+            .node_profile(),
+        Some(negotiation::NodeProfile::Full)
+    );
 
-    let mut msg3_noise = [0u8; 128];
+    let mut msg3_noise = [0u8; microfips_core::noise::XX_HANDSHAKE_MSG3_SIZE
+        + negotiation::NEGOTIATION_MAX_SIZE
+        + microfips_core::noise::TAG_SIZE];
     let msg3_noise_len = verify_initiator
         .write_message3(&initiator_pub, &epoch, &mut msg3_noise)
         .unwrap();
+    // Node stand-in: Leaf-profile negotiation block.
+    let mut neg3 = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+    let neg3_len = negotiation::encode_payload(
+        &mut neg3,
+        wire::FMP_VERSION,
+        wire::FMP_VERSION,
+        negotiation::fmp_features(negotiation::NodeProfile::Leaf),
+        None,
+    )
+    .unwrap();
+    let neg3_enc_len = verify_initiator
+        .encrypt_payload(&neg3[..neg3_len], &mut msg3_noise[msg3_noise_len..])
+        .unwrap();
+    let msg3_total = msg3_noise_len + neg3_enc_len;
+
     let mut msg3 = [0u8; 256];
     let msg3_len = wire::build_msg3(
         initiator_sender_idx,
         responder_sender_idx,
-        &msg3_noise[..msg3_noise_len],
+        &msg3_noise[..msg3_total],
         &mut msg3,
     )
     .unwrap();
 
-    responder
-        .read_message3(&msg3_noise[..msg3_noise_len])
-        .unwrap();
+    let (base3, _) = negotiation::split_msg3_noise(&msg3_noise[..msg3_total]);
+    responder.read_message3(base3).unwrap();
 
     let (initiator_ks, initiator_kr) = verify_initiator.finalize();
     let (responder_kr, responder_ks) = responder.finalize();
@@ -577,6 +619,7 @@ impl ScriptedPeer {
     #[cfg(feature = "noise-xx")]
     async fn complete_handshake_xx(&mut self) -> wire::SessionIndex {
         use microfips_core::noise::{NoiseXxResponder, XX_HANDSHAKE_MSG1_SIZE};
+        use microfips_core::wire::negotiation;
 
         let frame = self.recv_raw_frame().await;
         let msg = wire::parse_message(&frame).expect("expected valid FMP message");
@@ -601,17 +644,32 @@ impl ScriptedPeer {
 
         let resp_eph = random_secret();
         let epoch = 1u64.to_le_bytes();
-        let mut msg2_noise = [0u8; 128];
+        let mut msg2_noise = [0u8; microfips_core::noise::XX_HANDSHAKE_MSG2_SIZE
+            + negotiation::NEGOTIATION_MAX_SIZE
+            + microfips_core::noise::TAG_SIZE];
         let msg2_noise_len = responder
             .write_message2(&resp_eph, &epoch, &mut msg2_noise)
             .expect("write_message2 failed");
+        // Daemon stand-in: Full-profile negotiation block.
+        let mut neg2 = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+        let neg2_len = negotiation::encode_payload(
+            &mut neg2,
+            wire::FMP_VERSION,
+            wire::FMP_VERSION,
+            negotiation::fmp_features(negotiation::NodeProfile::Full),
+            None,
+        )
+        .unwrap();
+        let neg2_enc_len = responder
+            .encrypt_payload(&neg2[..neg2_len], &mut msg2_noise[msg2_noise_len..])
+            .expect("encrypt_payload failed");
 
         let our_index = wire::SessionIndex::new(0xCAFE_0001);
-        let mut msg2_buf = [0u8; 256];
+        let mut msg2_buf = [0u8; 512];
         let msg2_len = wire::build_msg2(
             our_index,
             peer_sender_idx,
-            &msg2_noise[..msg2_noise_len],
+            &msg2_noise[..msg2_noise_len + neg2_enc_len],
             &mut msg2_buf,
         )
         .unwrap();
@@ -622,9 +680,17 @@ impl ScriptedPeer {
         let msg3 = wire::parse_message(&frame3).expect("expected valid FMP MSG3");
         match msg3 {
             wire::FmpMessage::Msg3 { noise_payload, .. } => {
+                let (base3, neg3) = negotiation::split_msg3_noise(noise_payload);
                 responder
-                    .read_message3(noise_payload)
+                    .read_message3(base3)
                     .expect("read_message3 failed");
+                let encrypted = neg3.expect("node msg3 carries negotiation");
+                let mut plain = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+                let n = responder
+                    .decrypt_payload(encrypted, &mut plain)
+                    .expect("decrypt_payload failed");
+                let header = negotiation::NegotiationHeader::parse(&plain[..n]).unwrap();
+                assert_eq!(header.node_profile(), Some(negotiation::NodeProfile::Leaf));
             }
             _ => panic!("expected Msg3, got {:?}", msg3),
         }

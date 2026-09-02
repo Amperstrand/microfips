@@ -21,3 +21,6 @@ log = "0.4"
 
 [build-dependencies]
 microfips-build = { path = "../microfips-build" }
+
+[features]
+noise-xx = ["microfips-protocol/noise-xx", "microfips-protocol/log", "microfips-core/noise-xx"]
