@@ -261,7 +261,10 @@ BLE and L2CAP firmware variants use the `log` crate with FIPS-compatible format 
 
 ## Build
 
-Requires nightly Rust. See AGENTS.md for full toolchain setup.
+Host crates and STM32 firmware build on **stable** Rust (no
+`rust-toolchain.toml`; repos ride the machine default). ESP32/Xtensa builds
+set `RUSTUP_TOOLCHAIN=esp` explicitly — see AGENTS.md for full toolchain
+setup.
 
 ### STM32F469
 
@@ -398,7 +401,6 @@ Host tools do not fall back to hardcoded identities anymore. Set both variables 
 microfips/
   Cargo.toml                    # Workspace: core, protocol, service, link, sim, esp32, etc.
   AGENTS.md                     # Build/flash/test/debug reference (authoritative)
-  rust-toolchain.toml           # Nightly Rust (no pinned date)
   crates/
     microfips/                  # STM32 firmware (package name: microfips)
       build.rs                  # Linker flags: --nmagic, -Tlink.x
