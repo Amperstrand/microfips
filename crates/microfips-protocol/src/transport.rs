@@ -87,8 +87,12 @@ impl<T: Transport> FrameReader<T> {
                     let ml = u16::from_le_bytes([self.rbuf[self.rpos], self.rbuf[self.rpos + 1]])
                         as usize;
                     if ml == 0 || ml > framing::MAX_FRAME {
-                        self.rpos = self.rlen;
-                        true
+                        // Skip just the bad 2-byte header and keep scanning
+                        // this chunk — chunking is transport-arbitrary, so
+                        // valid frames after a bad header must still decode
+                        // (extract_length_prefixed_frame does the same).
+                        self.rpos = (self.rpos + 2).min(self.rlen);
+                        continue;
                     } else if self.rlen - self.rpos - 2 < ml {
                         true
                     } else {
@@ -383,6 +387,7 @@ mod tests {
 
     use super::Transport;
     use super::{FrameReader, FrameWriter, ProtocolError};
+    use crate::framing;
     use crate::test_helpers::block_on;
     use crate::transport::channel::{pair as channel_pair, ChannelTransport};
     use crate::transport::mock::{MockTransport, MockTransportInner};
@@ -598,6 +603,37 @@ mod tests {
             assert_eq!(n2, 3);
             assert_eq!(&buf[..3], b"def");
         });
+    }
+
+    #[test]
+    fn test_invalid_length_header_resyncs_within_chunk() {
+        // An invalid length prefix must not swallow the remainder of the
+        // same recv chunk — chunking is arbitrary on every transport, so a
+        // valid frame after a bad header must decode (same property the
+        // micronuts FrameDecoder gained; node.rs's
+        // extract_length_prefixed_frame already skips just the header).
+        let bad_headers: [[u8; 2]; 2] = [
+            [0x00, 0x00],
+            u16::to_le_bytes(framing::MAX_FRAME as u16 + 1),
+        ];
+        for bad_header in bad_headers {
+            let i = fresh_inner();
+            let writer = MockTransport::new(i);
+            let reader = MockTransport::new(i);
+
+            block_on(async move {
+                let mut fw = FrameWriter::new(writer);
+                let mut fr = FrameReader::new(reader);
+
+                i.rx.lock().unwrap().extend_from_slice(&bad_header);
+                fw.send_frame(b"survivor").await.unwrap();
+
+                let mut out = [0u8; 256];
+                let n = fr.recv_frame(&mut out, 1000).await.unwrap();
+                assert_eq!(n, 8);
+                assert_eq!(&out[..n], b"survivor");
+            });
+        }
     }
 
     #[test]
