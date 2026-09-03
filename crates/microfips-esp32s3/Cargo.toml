@@ -17,6 +17,8 @@ esp-now = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transpo
 relay-ap = ["wifi", "microfips-esp-transport/relay-ap"]
 # Noise XX link handshake + FMP v1 wire (FIPS next / 1.0.0-dev, #179).
 noise-xx = ["microfips-core/noise-xx", "microfips-protocol/noise-xx"]
+# FIPS_LINK console wiretap — LEAKS link transport keys; bench builds only (#175).
+noise-keylog = ["microfips-protocol/noise-keylog"]
 
 [[bin]]
 name = "microfips-esp32s3-uart"

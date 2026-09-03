@@ -25,3 +25,6 @@ log = ["dep:log"]
 mmp = []
 benchmark = []
 noise-xx = ["microfips-core/noise-xx"]
+# FIPS_LINK console wiretap for post-hoc btsnoop decryption (#175).
+# Bench/debug only: emits link transport keys at handshake + rekey cutover.
+noise-keylog = []

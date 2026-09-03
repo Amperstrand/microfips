@@ -21,6 +21,36 @@ macro_rules! log_steady {
     };
 }
 
+// #175 noise-keylog wiretap: `FIPS_LINK <local-x-only> <peer-x-only>
+// <send-key> <recv-key>`, all lowercase hex — the exact grammar fips-lab's
+// lab/capture/keylog.py parses and btsnoop_decrypt.py consumes. Emitted
+// while keys are live (they are zeroized at steady exit, deviation F8):
+// once at steady entry, again at every rekey cutover.
+#[cfg(all(feature = "noise-keylog", feature = "log"))]
+fn keylog_line(local_xonly: &[u8], peer_xonly: &[u8], ks: &[u8; 32], kr: &[u8; 32]) -> [u8; 269] {
+    const PREFIX: &[u8] = b"FIPS_LINK ";
+    let mut line = [0u8; 269];
+    line[..PREFIX.len()].copy_from_slice(PREFIX);
+    let mut o = PREFIX.len();
+    for (i, field) in [local_xonly, peer_xonly, &ks[..], &kr[..]]
+        .iter()
+        .enumerate()
+    {
+        if i > 0 {
+            line[o] = b' ';
+            o += 1;
+        }
+        // NOT `debug_assert!(hex_encode(..))`: in release the macro compiles
+        // the whole call into `if false {}` and the fields stay zeroed —
+        // caught on hardware (scenario RED), guarded by the release-profile
+        // run of link_line_matches_keylog_contract.
+        let encoded = microfips_core::hex::hex_encode(field, &mut line[o..o + field.len() * 2]);
+        debug_assert!(encoded);
+        o += field.len() * 2;
+    }
+    line
+}
+
 pub const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 pub const DEFAULT_LINK_DEAD_TIMEOUT_SECS: u64 = 30;
 pub const DEFAULT_RETRY_BASE_INTERVAL_SECS: u64 = 5;
@@ -956,6 +986,18 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
     }
 
+    #[cfg(all(feature = "noise-keylog", feature = "log"))]
+    fn log_keylog(&self, ks: &[u8; 32], kr: &[u8; 32]) {
+        #[cfg(feature = "log")]
+        {
+            let Ok(local) = microfips_core::noise::ecdh_pubkey(&self.nsec) else {
+                return;
+            };
+            let line = keylog_line(&local[1..33], &self.peer_npub[1..33], ks, kr);
+            log_steady!("{}", core::str::from_utf8(&line).unwrap_or("?"));
+        }
+    }
+
     async fn steady<H: NodeHandler>(
         &mut self,
         epoch: [u8; microfips_core::noise::EPOCH_SIZE],
@@ -998,6 +1040,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut pend: Option<EpochSlot> = None;
         let mut prev: Option<EpochSlot> = None;
         let mut prev_drain_base = embassy_time::Instant::now();
+        #[cfg(all(feature = "noise-keylog", feature = "log"))]
+        self.log_keylog(&cur.ks, &cur.kr);
         let mut session_started = embassy_time::Instant::now();
         let mut rekey_init: Option<RekeyInit> = None;
         // True while `pend` was armed by OUR initiation (timer-cutover is
@@ -1335,6 +1379,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             #[cfg(feature = "mmp")]
                             self.mmp.reset_for_rekey(Instant::now());
                             log_steady!("steady: rekey cutover complete, K-bit flipped");
+                            #[cfg(all(feature = "noise-keylog", feature = "log"))]
+                            self.log_keylog(&cur.ks, &cur.kr);
                         } else if from_prev {
                             // Peer still sealing in the old epoch: hold it.
                             prev_drain_base = embassy_time::Instant::now();
@@ -1502,6 +1548,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         log_steady!(
                             "steady: rekey cutover complete (self-initiated), K-bit flipped"
                         );
+                        #[cfg(all(feature = "noise-keylog", feature = "log"))]
+                        self.log_keylog(&cur.ks, &cur.kr);
                     }
                     // Self-initiated rekey trigger (0 = off). Dampened for
                     // REKEY_DAMPENING_SECS after the peer initiated one.
@@ -5606,5 +5654,36 @@ mod tests {
 
             join(peer_task, node_task).await;
         });
+    }
+}
+
+#[cfg(all(test, feature = "noise-keylog", feature = "log"))]
+mod keylog_tests {
+    use super::keylog_line;
+
+    #[test]
+    fn link_line_matches_keylog_contract() {
+        let x = [0xabu8; 32];
+        let line = keylog_line(&x, &x, &[0x11u8; 32], &[0x22u8; 32]);
+        let s = core::str::from_utf8(&line).unwrap();
+        let mut fields = s.split(' ');
+        assert_eq!(fields.next(), Some("FIPS_LINK"), "line: {s}");
+        let hex_fields: [&str; 4] = [
+            fields.next().expect("local x-only field"),
+            fields.next().expect("peer x-only field"),
+            fields.next().expect("send key field"),
+            fields.next().expect("recv key field"),
+        ];
+        assert_eq!(fields.next(), None, "exactly 4 fields: {s}");
+        for p in hex_fields {
+            assert_eq!(p.len(), 64, "field must be 64 hex chars: {p}");
+            assert!(
+                p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "lowercase-only hex (keylog consumers match [0-9a-f]): {p}"
+            );
+        }
+        assert!(hex_fields[0].bytes().all(|b| b == b'a' || b == b'b'));
+        assert!(hex_fields[2].bytes().all(|b| b == b'1'));
+        assert!(hex_fields[3].bytes().all(|b| b == b'2'));
     }
 }

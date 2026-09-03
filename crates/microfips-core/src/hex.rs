@@ -43,9 +43,46 @@ pub const fn hex_bytes_33(s: &str) -> [u8; 33] {
     hex_bytes_impl(s)
 }
 
+/// Runtime lowercase hex encoder (no alloc; dst must hold `2 * src.len()`
+/// bytes). Lowercase is contractual: the #175 keylog consumers match
+/// `[0-9a-f]{64}`.
+pub fn hex_encode(src: &[u8], dst: &mut [u8]) -> bool {
+    if dst.len() < src.len() * 2 {
+        return false;
+    }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (i, b) in src.iter().enumerate() {
+        dst[i * 2] = HEX[usize::from(b >> 4)];
+        dst[i * 2 + 1] = HEX[usize::from(b & 0x0f)];
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encode_roundtrip_lowercase() {
+        let mut dst = [0u8; 8];
+        assert!(hex_encode(&[0x00, 0x01, 0xab, 0xff], &mut dst));
+        assert_eq!(&dst, b"0001abff");
+    }
+
+    #[test]
+    fn encode_rejects_short_dst() {
+        let mut dst = [0u8; 3];
+        assert!(!hex_encode(&[0x01, 0x02], &mut dst));
+    }
+
+    #[test]
+    fn encode_matches_const_parser() {
+        let src = [0x5au8; 32];
+        let mut dst = [0u8; 64];
+        assert!(hex_encode(&src, &mut dst));
+        let s = core::str::from_utf8(&dst).unwrap();
+        assert_eq!(hex_bytes_32(s), src);
+    }
 
     #[test]
     fn parse_32_bytes() {
