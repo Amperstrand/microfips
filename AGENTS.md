@@ -1805,10 +1805,21 @@ longer expected on this bench, still refused by boards.toml if it reappears).
 running L2CAP firmware central-scans at boot and connects to ANY FIPS advert
 in range — including the target atom's peripheral advert; the target's single
 BLE connection is then held by the peer and the lab daemon's probes time out.
-All L2CAP legs (hil smoke, test_l2cap_bringup, test_key_capture) now call
-`bench.quiesce_peer_radios(repo, target_serial)` to flash every OTHER attached
-atom with the radio-silent UART variant first. Any new L2CAP scenario must do
-the same.
+
+**CYD WiFi intrusion (2026-09-03, rekey_soak_long full-window failure):** the
+CYD's old mdns-open WiFi firmware associates on boot and trust-on-first-advert
+peers with ANY LAN daemon advertising `_fips._udp` (open LAN ACL) — including
+scenario daemons — then runs its pre-bbfa864 rekey machinery against them
+(SecurityViolation teardowns) and perturbs the target session's rekey windows
+into replay-rejection cascades.
+
+**Every scenario now calls `bench.quiesce_peer_radios(repo, target_serial)`**
+(fips-lab bench.py): flashes all OTHER attached radio boards (atoms + CYD,
+per-identity cached UART images) with the radio-silent variant first — one
+quiet-bench rule for both interference classes. Any new scenario must do the
+same. Related: #199 (hil rig-lock vs fips-lab HardwareLock don't serialize
+each other — dual-session days race on the 21213 port and the shared cargo
+target/).
 
 Identity assignment rule: **one deterministic key per physical board (MAC/serial
 labeled), never per-role**. `tools/lab_keygen.py N` derives nsec/npub/node_addr
