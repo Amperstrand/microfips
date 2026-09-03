@@ -1769,10 +1769,14 @@ on :21214, `node.rendezvous.lan.enabled: true` — LAN mDNS is OPT-IN on next,
 unlike 0.5.0), binary from a `/tmp/opencode/fips-next` worktree via
 `FIPS_NEXT_BIN` (disposable — rebuild per the `tools/fips-xx-cross-example.rs`
 header recipe when gone); scenario `test_bench_xx` guards it (two greens
-2026-09-02). Known interop quirks: next parses our empty heartbeat replies as
-"Malformed SenderReport" (DEBUG noise, link unaffected), and our MMP report
-interval stays at the 200ms cold start (next sends no ReceiverReports to tune
-it — report-rate tuning is a future compatibility item). The bench XX session
+2026-09-02). MMP report interop fixed 2026-09-03 (#196, sim-verified): the
+"Malformed SenderReport" noise was our 0.5.0-era report bodies (double
+type byte) hitting next's `[format_version][total_length]` decoder, and the
+forever-200ms report interval was us sending SenderReports a Leaf was never
+supposed to send. On the XX wire report sends are now gated on the
+negotiated provides/wants bits (Leaf: ReceiverReports only, data-gated to
+the heartbeat cadence) and use next's slim layouts — the daemon parses
+every report and measures real RTT/loss/jitter. The bench XX session
 also found the silent-peer policy bug (healthy link torn down every
 ~link_dead_timeout when no FSP flows; fixed by feeding the policy from the
 direct send paths — regression-guarded in `test_bench_xx`). Opt-in cross test

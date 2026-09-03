@@ -205,6 +205,14 @@ pub struct Node<T: Transport, R: RngCore + CryptoRng> {
     /// deployments override via [`Node::set_node_profile`].
     #[cfg(feature = "noise-xx")]
     our_profile: wire::negotiation::NodeProfile,
+    /// Peer's negotiated MMP wants bits (FMP_FEAT_WANTS_*), retained from
+    /// the XX negotiation block. Gate MMP report sends exactly like FIPS
+    /// next `ActivePeer` (`our provides AND their wants`): a Leaf sends
+    /// ReceiverReports only — never SenderReports (#196).
+    #[cfg(feature = "noise-xx")]
+    peer_wants_sr: bool,
+    #[cfg(feature = "noise-xx")]
+    peer_wants_rr: bool,
     #[cfg(feature = "benchmark")]
     throughput: ThroughputState,
     #[cfg(feature = "mmp")]
@@ -335,6 +343,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             fmp_version: None,
             #[cfg(feature = "noise-xx")]
             our_profile: microfips_core::wire::negotiation::NodeProfile::Leaf,
+            #[cfg(feature = "noise-xx")]
+            peer_wants_sr: false,
+            #[cfg(feature = "noise-xx")]
+            peer_wants_rr: false,
             #[cfg(feature = "benchmark")]
             throughput: ThroughputState::default(),
             #[cfg(feature = "mmp")]
@@ -384,6 +396,24 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     #[cfg(feature = "noise-xx")]
     pub fn set_node_profile(&mut self, profile: wire::negotiation::NodeProfile) {
         self.our_profile = profile;
+    }
+
+    /// Whether to send SenderReports to this peer on the XX wire:
+    /// `our provides_sr AND peer wants_sr` (FIPS next `ActivePeer` rule).
+    #[cfg(feature = "noise-xx")]
+    fn mmp_send_sr(&self) -> bool {
+        use microfips_core::wire::negotiation;
+        negotiation::fmp_features(self.our_profile) & negotiation::FMP_FEAT_PROVIDES_SR != 0
+            && self.peer_wants_sr
+    }
+
+    /// Whether to send ReceiverReports to this peer on the XX wire:
+    /// `our provides_rr AND peer wants_rr`.
+    #[cfg(feature = "noise-xx")]
+    fn mmp_send_rr(&self) -> bool {
+        use microfips_core::wire::negotiation;
+        negotiation::fmp_features(self.our_profile) & negotiation::FMP_FEAT_PROVIDES_RR != 0
+            && self.peer_wants_rr
     }
 
     fn generate_valid_eph(&mut self) -> [u8; 32] {
@@ -543,6 +573,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         }
         self.fmp_version = Some(version);
         self.peer_profile = Some(their_profile);
+        self.peer_wants_sr = theirs.features & negotiation::FMP_FEAT_WANTS_SR != 0;
+        self.peer_wants_rr = theirs.features & negotiation::FMP_FEAT_WANTS_RR != 0;
         #[cfg(feature = "log")]
         log::info!(
             "fmp negotiation: agreed version {}, peer profile {}",
@@ -939,6 +971,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(1);
         let mut next_sr = embassy_time::Instant::now()
             + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
+        #[cfg(all(feature = "noise-xx", not(feature = "mmp")))]
+        #[allow(unused_mut, unused_variables)]
+        let mut next_rr = embassy_time::Instant::now()
+            + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
+        #[cfg(all(feature = "noise-xx", feature = "mmp"))]
+        let mut next_rr = embassy_time::Instant::now()
+            + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
         #[allow(unused_mut, unused_variables)]
         let mut sr_start_ctr: u64 = 0;
         #[allow(unused_mut, unused_variables)]
@@ -997,7 +1036,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             let mut rx = [0u8; RECV_BUF_SIZE];
             let rx_fut = self.transport.recv(&mut rx);
             let tick = handler.poll_at();
+            #[cfg(not(feature = "noise-xx"))]
             let base_deadline = next_hb.min(next_sr);
+            #[cfg(feature = "noise-xx")]
+            let base_deadline = next_hb.min(next_sr).min(next_rr);
             let deadline = tick.unwrap_or(base_deadline).min(base_deadline);
             let hb_fut = Timer::at(deadline);
 
@@ -1351,6 +1393,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     }
                     #[cfg(feature = "mmp")]
                     if now >= next_sr {
+                        #[cfg(not(feature = "noise-xx"))]
                         if let Some(sr) = self.mmp.sender.build_report(now) {
                             log_steady!("steady: sending sender report (recv branch)");
                             next_sr = now + self.mmp.sender.report_interval();
@@ -1362,8 +1405,46 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         } else {
                             next_sr = now + self.mmp.sender.report_interval();
                         }
+                        // XX wire: the negotiated gate decides (#196) — a
+                        // Leaf never provides SRs, so this is usually just
+                        // the timer advancing.
+                        #[cfg(feature = "noise-xx")]
+                        {
+                            if self.mmp_send_sr() {
+                                if let Some(sr) = self.mmp.sender.build_report(now) {
+                                    log_steady!("steady: sending sender report (recv branch)");
+                                    let encoded = sr.encode();
+                                    let body_len = encoded.len();
+                                    self.resp_buf[..body_len].copy_from_slice(&encoded);
+                                    self.send_link_message(
+                                        &mut cur,
+                                        wire::MSG_SENDER_REPORT,
+                                        body_len,
+                                    )
+                                    .await;
+                                }
+                            }
+                            next_sr = now + self.mmp.sender.report_interval();
+                        }
+                    }
+                    #[cfg(all(feature = "noise-xx", feature = "mmp"))]
+                    if now >= next_rr && self.mmp_send_rr() {
+                        if let Some(rr) = self.mmp.receiver.build_report(now) {
+                            log_steady!("steady: sending receiver report (recv branch)");
+                            let encoded = rr.encode();
+                            let body_len = encoded.len();
+                            self.resp_buf[..body_len].copy_from_slice(&encoded);
+                            self.send_link_message(&mut cur, wire::MSG_RECEIVER_REPORT, body_len)
+                                .await;
+                        }
+                        next_rr = now + self.mmp.receiver.report_interval();
+                    }
+                    #[cfg(all(not(feature = "mmp"), feature = "noise-xx"))]
+                    if now >= next_sr {
+                        next_sr = now + Duration::from_secs(self.timing.heartbeat_interval_secs);
                     }
                     #[cfg(not(feature = "mmp"))]
+                    #[cfg(not(feature = "noise-xx"))]
                     if now >= next_sr {
                         log_steady!("steady: sending sender report (recv branch)");
                         next_sr = now + Duration::from_secs(self.timing.heartbeat_interval_secs);
@@ -1487,6 +1568,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     }
                     #[cfg(feature = "mmp")]
                     if now >= next_sr {
+                        #[cfg(not(feature = "noise-xx"))]
                         if let Some(sr) = self.mmp.sender.build_report(now) {
                             log_steady!("steady: sending sender report (timer branch)");
                             next_sr = now + self.mmp.sender.report_interval();
@@ -1498,8 +1580,46 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         } else {
                             next_sr = now + self.mmp.sender.report_interval();
                         }
+                        // XX wire: the negotiated gate decides (#196) — a
+                        // Leaf never provides SRs, so this is usually just
+                        // the timer advancing.
+                        #[cfg(feature = "noise-xx")]
+                        {
+                            if self.mmp_send_sr() {
+                                if let Some(sr) = self.mmp.sender.build_report(now) {
+                                    log_steady!("steady: sending sender report (timer branch)");
+                                    let encoded = sr.encode();
+                                    let body_len = encoded.len();
+                                    self.resp_buf[..body_len].copy_from_slice(&encoded);
+                                    self.send_link_message(
+                                        &mut cur,
+                                        wire::MSG_SENDER_REPORT,
+                                        body_len,
+                                    )
+                                    .await;
+                                }
+                            }
+                            next_sr = now + self.mmp.sender.report_interval();
+                        }
+                    }
+                    #[cfg(all(feature = "noise-xx", feature = "mmp"))]
+                    if now >= next_rr && self.mmp_send_rr() {
+                        if let Some(rr) = self.mmp.receiver.build_report(now) {
+                            log_steady!("steady: sending receiver report (timer branch)");
+                            let encoded = rr.encode();
+                            let body_len = encoded.len();
+                            self.resp_buf[..body_len].copy_from_slice(&encoded);
+                            self.send_link_message(&mut cur, wire::MSG_RECEIVER_REPORT, body_len)
+                                .await;
+                        }
+                        next_rr = now + self.mmp.receiver.report_interval();
+                    }
+                    #[cfg(all(not(feature = "mmp"), feature = "noise-xx"))]
+                    if now >= next_sr {
+                        next_sr = now + Duration::from_secs(self.timing.heartbeat_interval_secs);
                     }
                     #[cfg(not(feature = "mmp"))]
+                    #[cfg(not(feature = "noise-xx"))]
                     if now >= next_sr {
                         next_sr = now + Duration::from_secs(self.timing.heartbeat_interval_secs);
                         let sr_end_ts = now.as_millis() as u32;
@@ -2487,6 +2607,42 @@ mod tests {
         assert_eq!(node.current_handshake_resend_timeout_ms(0), 250);
         assert_eq!(node.current_handshake_resend_timeout_ms(1), 750);
         assert_eq!(node.current_handshake_resend_timeout_ms(2), 2_250);
+    }
+
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn xx_mmp_report_gates_follow_negotiated_profile() {
+        use microfips_core::wire::negotiation::{self, NodeProfile};
+
+        let inner = fresh_inner();
+        let transport = crate::transport::mock::MockTransport::new(inner);
+        let mut node = Node::new(transport, TestRng::new(&[0u8; 32]), [0u8; 32], [2u8; 33]);
+
+        // Un-negotiated link: no report sends until the peer's wants
+        // bits are learned from msg2.
+        assert!(!node.mmp_send_sr());
+        assert!(!node.mmp_send_rr());
+
+        let mut neg = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+        let n = negotiation::encode_payload(
+            &mut neg,
+            microfips_core::wire::FMP_VERSION,
+            microfips_core::wire::FMP_VERSION,
+            negotiation::fmp_features(NodeProfile::Full),
+            None,
+        )
+        .unwrap();
+        node.apply_fmp_negotiation(&neg[..n]).unwrap();
+
+        // #196: against a Full daemon a Leaf sends ReceiverReports only —
+        // never SenderReports (FIPS next ActivePeer gate).
+        assert!(!node.mmp_send_sr(), "Leaf provides no SRs");
+        assert!(node.mmp_send_rr(), "Leaf provides RRs, Full wants them");
+
+        // A Full node against the same peer sends both.
+        node.set_node_profile(NodeProfile::Full);
+        assert!(node.mmp_send_sr());
+        assert!(node.mmp_send_rr());
     }
 
     #[test]
@@ -3685,11 +3841,12 @@ mod tests {
     /// rejected: silent peer` although heartbeats flowed BOTH ways. Root
     /// cause: the policy's data-frame counter is only fed through
     /// FrameAction dispatch, while the steady loop's timer-branch MMP
-    /// SenderReports (and direct session-datagram sends) bypass it — a
-    /// peer that heartbeats but exchanges no FSP/replies starves the
-    /// counter and we tear down a healthy link. A listening leaf against
-    /// an idle daemon is exactly that shape. Fix under test: app-level
-    /// sends must count at the send functions, not at the dispatcher.
+    /// reports (ReceiverReports on the XX wire, #196) and direct
+    /// session-datagram sends bypass it — a peer that heartbeats but
+    /// exchanges no FSP/replies starves the counter and we tear down a
+    /// healthy link. A listening leaf against an idle daemon is exactly
+    /// that shape. Fix under test: app-level sends must count at the send
+    /// functions, not at the dispatcher.
     #[test]
     fn test_steady_survives_silent_peer_timeout_when_reports_flow() {
         use crate::transport::channel::pair as channel_pair;
@@ -3716,12 +3873,16 @@ mod tests {
                 let mut node_disconnects = 0u32;
                 let mut peer_hb_ctr: u64 = 5000;
                 loop {
-                    // The node emits ~5 frames/s (heartbeat + SenderReports),
-                    // so this blocking recv returns promptly; each arrival is
-                    // our chance to answer with a peer heartbeat.
+                    // The node emits ~5 frames/s (heartbeat + ReceiverReports
+                    // on the XX wire), so this blocking recv returns
+                    // promptly; each arrival is our chance to answer with a
+                    // peer heartbeat.
                     let frame = recv_test_frame(&mut peer).await;
                     let (msg_type, _payload) = decrypt_test_frame(&key, &frame);
                     match msg_type {
+                        #[cfg(feature = "noise-xx")]
+                        wire::MSG_RECEIVER_REPORT => reports_seen += 1,
+                        #[cfg(not(feature = "noise-xx"))]
                         wire::MSG_SENDER_REPORT => reports_seen += 1,
                         // The node tore the link down itself (the bug under
                         // test): nothing more will arrive — fail fast.
@@ -3772,6 +3933,25 @@ mod tests {
                     microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
                     timing,
                 );
+                // On the XX wire, model the completed handshake: against a
+                // Full-profile peer a Leaf sends ReceiverReports only
+                // (#196) — the gate needs the negotiated wants bits, which
+                // steady() itself never sets. IK sends ungated SRs.
+                #[cfg(feature = "noise-xx")]
+                {
+                    let mut neg = [0u8; microfips_core::wire::negotiation::NEGOTIATION_MAX_SIZE];
+                    let neg_len = microfips_core::wire::negotiation::encode_payload(
+                        &mut neg,
+                        wire::FMP_VERSION,
+                        wire::FMP_VERSION,
+                        microfips_core::wire::negotiation::fmp_features(
+                            microfips_core::wire::negotiation::NodeProfile::Full,
+                        ),
+                        None,
+                    )
+                    .unwrap();
+                    node.apply_fmp_negotiation(&neg[..neg_len]).unwrap();
+                }
                 node.policy.record_handshake_ok(Instant::now());
                 let mut handler = RecordingHandler::default();
                 let result = node
@@ -3788,7 +3968,7 @@ mod tests {
             assert_eq!(result, Ok(()));
             assert_eq!(node_disconnects, 0, "node tore down a live link");
             // And the channel that should have kept it alive was active.
-            assert!(reports_seen >= 1, "no MMP SenderReports observed");
+            assert!(reports_seen >= 1, "no MMP ReceiverReports observed");
         });
     }
 
