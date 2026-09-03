@@ -1,0 +1,6 @@
+fips-golden-gen v0.1.0 (2026-04-01), from the Amperstrand/fips
+golden-vectors branch — deleted upstream 2026-08-31 (#180). This vendored
+copy IS the reference now: CI compares it against
+crates/microfips-core/tests/golden_vectors.json (hard gate, no external
+fetch). Regeneration requires re-deriving the generator against the
+pinned fips source when the wire-relevant crypto next changes.
