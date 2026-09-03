@@ -226,6 +226,8 @@ where
         // fips master dialect (post-sync): raw 33B SDU [0x00][x-only pubkey:32].
         // The pre-sync/branch dialect [len:2BE][0x00][pubkey:32][flags:1] is
         // still parsed on receive for older daemons.
+        // FIPS-BLE: After L2CAP connection, both sides exchange `[0x00][pubkey:32]`
+        // so the node layer can initiate the IK handshake.
         let mut tx = [0u8; 33];
         tx[0] = 0x00;
         tx[1..33].copy_from_slice(&local_pub[1..33]);

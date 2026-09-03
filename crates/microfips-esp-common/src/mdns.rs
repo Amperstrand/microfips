@@ -36,6 +36,8 @@ pub(crate) const TYPE_ANY: u16 = 255;
 ///
 /// Borrows the TXT strings from the packet buffer. Identity is unverified
 /// at this point — treat `npub` as a hint until the handshake proves it.
+// FIPS-MDNS: mDNS adverts are unauthenticated: anyone on the LAN can multicast a
+// TXT carrying `npub=...`. Identity is still proven end-to-end by the
 #[derive(Debug, PartialEq, Eq)]
 pub struct FipsAdvert<'a> {
     pub addr: [u8; 4],

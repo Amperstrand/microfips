@@ -515,7 +515,12 @@ jobs:
           greatspectate check --config specquotes.toml \
             --comment-start "// " --comment-continue "//" \
             --comment-aside "// Note:" \
-            crates/fips-identity/src/bech32.rs
+            crates/fips-identity/src/bech32.rs \
+            crates/fips-noise/src/lib.rs \
+            crates/fips-fmp/src/lib.rs \
+            crates/microfips-core/src/fsp.rs \
+            crates/microfips-esp-transport/src/l2cap_host.rs \
+            crates/microfips-esp-common/src/mdns.rs
 
   build-esp32:
     name: Build ESP32 Firmware

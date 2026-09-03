@@ -224,6 +224,7 @@ pub enum FmpMessage<'a> {
 }
 
 // FIPS: bd08505 node/wire.rs:ver_phase_byte()
+// FIPS-FMP: [ver+phase:1][flags:1][payload_len:2 LE]
 pub fn build_prefix(phase: u8, flags: u8, payload_len: u16) -> [u8; COMMON_PREFIX_SIZE] {
     let byte0 = (FMP_VERSION << 4) | (phase & 0x0F);
     [byte0, flags, payload_len as u8, (payload_len >> 8) as u8]

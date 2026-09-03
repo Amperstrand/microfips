@@ -7,7 +7,7 @@ probe-rs/
 .env
 __pycache__/
 *.pyc
-fips
+/fips
 .opencode/
 .sisyphus/
 *.log

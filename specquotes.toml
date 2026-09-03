@@ -7,3 +7,33 @@
 format = "mediawiki"
 dir = "specs"
 pattern = "bip-{id:04d}.mediawiki"
+
+# FIPS wire-format invariants (#176): verbatim quotes from the daemon
+# implementation we interop with, vendored under specs/fips/ at the pinned
+# Amperstrand/fips commit (recorded per file in specs/fips/*.pin — the same
+# ref the CI daemon builds use, fork/main 0aef8ea2). mediawiki format =
+# single section per file (rust has no '==' header lines), so any verbatim
+# line matches.
+[sources.fips-aead]
+format = "mediawiki"
+file = "specs/fips/noise-mod.rs"
+
+[sources.fips-ecdh]
+format = "mediawiki"
+file = "specs/fips/noise-handshake.rs"
+
+[sources.fips-fmp]
+format = "mediawiki"
+file = "specs/fips/fmp-wire.rs"
+
+[sources.fips-ble]
+format = "mediawiki"
+file = "specs/fips/ble-mod.rs"
+
+[sources.fips-fsp]
+format = "mediawiki"
+file = "specs/fips/fsp-wire.rs"
+
+[sources.fips-mdns]
+format = "mediawiki"
+file = "specs/fips/mdns-mod.rs"

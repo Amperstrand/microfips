@@ -34,6 +34,8 @@ pub use crate::generated::fips_compat::{
 // FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const PHASE_ESTABLISHED: u8 = 0x00;
 // FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
+// FIPS-FSP: Handshake messages (SessionSetup, SessionAck, SessionMsg3) are **not**
+// identified by a message-type byte; they are dispatched by the FSP phase
 pub const PHASE_SESSION_SETUP: u8 = 0x01;
 // FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const PHASE_SESSION_ACK: u8 = 0x02;

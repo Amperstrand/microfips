@@ -2076,6 +2076,17 @@ branch; upstream conversations only after the dogfood proves value).
 - Quote syntax: `// BIP #173: <verbatim spec text>`; `// Note:` lines are
   comment-asides (dropped from the match) used to record accepted deviations
   with rationale, directly adjacent to the spec line they deviate from.
+- FIPS wire invariants (#176, 2026-09-03): six quotes pin our wire format to
+  the daemon implementation we interop with — sources `FIPS-AEAD`/`FIPS-ECDH`
+  (D1 empty-AAD, D3 x-only ECDH), `FIPS-FMP` (4-byte common prefix),
+  `FIPS-BLE` (L2CAP `[0x00][pubkey:32]` pre-handshake exchange), `FIPS-FSP`
+  (SessionSetup dispatched by the phase nibble), `FIPS-MDNS` (TXT `npub=`
+  routing-hint trust model). Vendored under `specs/fips/` from Amperstrand/fips
+  fork/main `0aef8ea2` (the same ref the CI daemon builds use) with leading
+  rust comment markers stripped (`//!`, `///`, `//`) so multi-line quotes
+  match across lines. Placement rule learned the hard way: a quote block
+  continues through ANY following `//`-family comment — always place quotes
+  LAST in a comment run, directly above the code they pin.
 - First use: `crates/fips-identity/src/bech32.rs` pins BIP-173's encoder-
   lowercase MUST (we comply) and the mixed-case MUST NOT (documented deviation
   from the PR #156 review — harmless because the decoded key is only a routing

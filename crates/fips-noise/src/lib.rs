@@ -338,6 +338,8 @@ pub fn parity_normalize(pubkey: &[u8; PUBKEY_SIZE]) -> [u8; PUBKEY_SIZE] {
 /// `/root/src/fips/src/noise/handshake.rs` — uses `shared_secret_point()`
 /// then `SHA256(point[..32])`.
 // FIPS: bd08505 noise/handshake.rs:ecdh()
+// FIPS-ECDH: Uses x-only hashing (SHA-256 of just the x-coordinate) to produce
+// a parity-independent shared secret.
 pub fn x_only_ecdh(
     my_secret: &[u8; 32],
     their_pub: &[u8; PUBKEY_SIZE],
@@ -1283,6 +1285,8 @@ impl NoiseXxInitiator {
         plaintext: &[u8],
         out: &mut [u8],
     ) -> Result<usize, NoiseError> {
+        // FIPS-AEAD: seal(self.cipher.as_ref(), counter, &[], plaintext)
+        // Note: empty AAD on their transport-phase encrypt — the D1 deviation (payloads bind via ck, not h-as-AAD).
         let enc_len = aead_encrypt(self.k.as_ref().unwrap(), self.n, &[], plaintext, out)?;
         self.n += 1;
         self.h = mix_hash(&self.h, &out[..enc_len]);
