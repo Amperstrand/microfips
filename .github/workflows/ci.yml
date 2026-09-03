@@ -619,9 +619,9 @@ jobs:
         with:
           key: esp-extended
 
-      - name: Add rust-src component
-        if: steps.chipfilter.outputs.keep == 'true'
-        run: rustup component add rust-src
+      # rust-src ships preinstalled in the espup/xtensa toolchain dist;
+      # `rustup component add` against the custom 'esp' toolchain fails on
+      # current rustup ("does not support components") and is unnecessary.
 
       # Credential policy: release/dispatch default embeds NO credentials
       # (empty SSID/password = open-network auth mode) so published firmware
