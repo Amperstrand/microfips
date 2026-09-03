@@ -1,6 +1,13 @@
 # labgrid board inventory — all known hardware targets
 # Used by: labgrid exporter, pytest --lg-env
 #
+# SUPERSEDED 2026-09-03 (#191): the safety contract is now
+# fips-lab/fips_lab/boards.toml (flash/observe ops). Note the correction:
+# USB serial 81528A13B6 is atom-a (flash permitted) — the "M5 Stack, do not
+# flash" note below was wrong; the off-limits board is the Hades2001
+# (FTDI 0403:6001 shares the VID:PID — always match the serial).
+# Kept for historical reference and the metadata tables.
+#
 # Board matching: labgrid uses udev properties to find devices.
 # VID:PID matching is primary; USB serial number disambiguates boards
 # with the same chip (e.g. two CP210x ESP32s).

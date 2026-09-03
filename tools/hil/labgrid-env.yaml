@@ -1,0 +1,12 @@
+# Labgrid environment for the microfips bench (#191). Use with the plugin:
+#   pytest --lg-env tools/hil/labgrid-env.yaml --lg-coordinator 192.168.13.221:20408
+# The coordinator binds ONLY 192.168.13.221:20408 (not 127.0.0.1); this
+# host has no mDNS resolver — use the explicit address (bolty-rs AGENTS).
+imports:
+  - labgrid_resources.py
+targets:
+  main:
+    role: microfips-bench
+    resources:
+      RemotePlace:
+        name: microfips-bench

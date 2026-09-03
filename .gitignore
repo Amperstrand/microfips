@@ -20,3 +20,5 @@ __pycache__/
 
 # Runtime FIPS transport-key keylog consumed by fips-decrypt (never commit)
 keys.jsonl
+tools/hil/results/allure*
+tools/hil/results/.bench-lock

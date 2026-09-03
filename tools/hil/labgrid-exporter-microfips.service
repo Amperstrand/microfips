@@ -1,0 +1,13 @@
+[Unit]
+Description=Labgrid exporter for the microfips bench (acquisition tokens only)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/ubuntu/.local/bin/labgrid-exporter -n ai-legion-small-microfips -c 192.168.13.221:20408 /home/ubuntu/src/microfips/tools/hil/labgrid-exporter.yaml
+Restart=on-failure
+RestartSec=5
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target

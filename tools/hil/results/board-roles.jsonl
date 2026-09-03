@@ -1,0 +1,4 @@
+{"ts": "2026-09-03T14:59:49+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": null, "lock": "flock", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-125949-hil-smoke-F412FACF0384"}
+{"ts": "2026-09-03T15:00:32+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": true}
+{"ts": "2026-09-03T15:00:34+0200", "serial": "81528A13B6", "event": "flash-begin", "variant": "l2cap", "previous_variant": null, "lock": "flock", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-130034-hil-smoke-81528A13B6"}
+{"ts": "2026-09-03T15:03:10+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": true}

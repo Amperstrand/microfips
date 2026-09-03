@@ -1,0 +1,23 @@
+## "#" lines are Jinja statements in this file (labgrid line_statement_prefix) — comment with "##" only.
+## microfips bench devices as coordinator-visible acquisition TOKENS
+## (bolty-rs ACR1252 pattern): the exporter->coordinator wire only carries
+## flat scalar params, so these deliberately ride the plain ResourceEntry
+## fallback — no ser2net, no port grabbing while unacquired. Direct
+## espflash/tap access stays the working path; presence detection is HIL
+## preflight's job (sysfs/udev). The client-side classes live in
+## labgrid_resources.py (imported via labgrid-env.yaml).
+s3-lab-serial:
+  BenchSerialToken:
+    usb_serial: 'F4:12:FA:CF:03:84'
+    vidpid: '303a/1001'
+    id_path: 'pci-0000:02:00.0-usb-0:2'
+
+atom-a-serial:
+  BenchSerialToken:
+    usb_serial: '81528A13B6'
+    vidpid: '0403/6001'
+
+stm32-stlink:
+  BenchSerialToken:
+    usb_serial: '066FFF515786534867184152'
+    vidpid: '0483/374b'
