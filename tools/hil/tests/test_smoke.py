@@ -28,7 +28,16 @@ from fips_lab import bench  # noqa: E402
 
 from hil import board_role  # noqa: E402
 
-GENERATOR_MUL = {"F4:12:FA:CF:03:84": 9, "81528A13B6": 11}
+# G*N per boards.toml notes / AGENTS.md bench inventory. Every VARIANTS
+# entry MUST have a mul here — an attached board without one KeyErrors
+# the smoke (latent until atom-b was reattached 2026-09-03).
+GENERATOR_MUL = {
+    "F4:12:FA:CF:03:84": 9,
+    "81528A13B6": 11,
+    "9D529068B4": 12,
+    "cc:8d:a2:2c:91:98": 5,
+    "cc:8d:a2:2c:94:08": 7,
+}
 LAB_DAEMON_MUL = 8
 VARIANTS = {
     "F4:12:FA:CF:03:84": "wifi",
@@ -71,6 +80,12 @@ def test_smoke_flash_boot_handshake(attached_board, registry, rig_lock):
                 repo, 3600, run_dir / "daemon", ble=(variant == "l2cap"),
             )
             daemon.start()
+
+            # L2CAP legs need a one-advert bench: quiesce the OTHER atom's
+            # radio before the target flashes (two-atom interference,
+            # 2026-09-03 — see bench.quiesce_peer_radios).
+            if variant == "l2cap":
+                bench.quiesce_peer_radios(repo, attached_board)
 
             if variant == "wifi":
                 binary = bench.build_firmware(

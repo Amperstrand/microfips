@@ -1785,14 +1785,30 @@ via `FIPS_NEXT_CROSS_BIN=<upstream xx_cross example> cargo test -p fips-noise
 
 ### Current bench inventory
 
+Topology re-shuffled 2026-09-03 (cross-device testing): atom-b reattached and
+wired to the bench ACR1252 NFC reader; the M5 Stack moved to the maintainer's
+laptop (relay controller for the evmap charger project — configured there, no
+longer expected on this bench, still refused by boards.toml if it reappears).
+
 | Board | Chip | Identity (device-registry.json) | USB | Port |
 |-------|------|----------------------|-----|------|
 | lab workstation | — | `lab-daemon` G·8 | — | runs the FIPS lab daemon |
 | S3 board `F4:12:FA:CF:03:84` | ESP32-S3 16MB | `s3-lab` G·9 | USB-JTAG | ttyACM by-id Espressif serial |
-| CYD | ESP32-D0WD-V3 | `cyd` G·10 | CH340 | ttyUSB by-path (CH340 has no serial) |
+| CYD | ESP32-D0WD-V3 | `cyd` G·10 | CH340 | ttyUSB by-path (CH340 has no serial; boards.toml key `cyd-ch340`, registered 2026-09-03, no smoke variant yet) |
 | M5 Atom `81528A13B6` | ESP32-PICO-D4 | `atom-a` G·11 | FTDI | ttyUSB by-id |
-| M5 Atom `9D529068B4` | ESP32-PICO-D4 | `atom-b` G·12 | FTDI | ttyUSB by-id |
-| M5 Stack `Hades2001` | — | — | FTDI | **OFF-LIMITS — other project** |
+| M5 Atom `9D529068B4` | ESP32-PICO-D4 | `atom-b` G·12 | FTDI | ttyUSB by-id; wired to ACR1252 NFC reader |
+| Micronuts Cashu wallet | STM32F469 | — | CDC-ACM | ttyACM2 — other project, refused |
+| ACR1252 NFC reader | — | — | USB CCID | bench shared device, not a board |
+| M5 Stack `Hades2001` | — | — | FTDI | **on maintainer laptop — evmap charger project** |
+
+**Two-atom BLE interference (2026-09-03, hil-smoke atom-a leg):** an atom
+running L2CAP firmware central-scans at boot and connects to ANY FIPS advert
+in range — including the target atom's peripheral advert; the target's single
+BLE connection is then held by the peer and the lab daemon's probes time out.
+All L2CAP legs (hil smoke, test_l2cap_bringup, test_key_capture) now call
+`bench.quiesce_peer_radios(repo, target_serial)` to flash every OTHER attached
+atom with the radio-silent UART variant first. Any new L2CAP scenario must do
+the same.
 
 Identity assignment rule: **one deterministic key per physical board (MAC/serial
 labeled), never per-role**. `tools/lab_keygen.py N` derives nsec/npub/node_addr

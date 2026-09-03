@@ -19,5 +19,7 @@ fi
 
 lg add-match "${EXPORTER_NAME}/s3-lab-serial/BenchSerialToken"
 lg add-match "${EXPORTER_NAME}/atom-a-serial/BenchSerialToken"
+lg add-match "${EXPORTER_NAME}/atom-b-serial/BenchSerialToken"
+lg add-match "${EXPORTER_NAME}/cyd-serial/BenchSerialToken"
 lg add-match "${EXPORTER_NAME}/stm32-stlink/BenchSerialToken"
 lg show | sed -n '1,5p'

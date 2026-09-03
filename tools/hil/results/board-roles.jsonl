@@ -2,3 +2,15 @@
 {"ts": "2026-09-03T15:00:32+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": true}
 {"ts": "2026-09-03T15:00:34+0200", "serial": "81528A13B6", "event": "flash-begin", "variant": "l2cap", "previous_variant": null, "lock": "flock", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-130034-hil-smoke-81528A13B6"}
 {"ts": "2026-09-03T15:03:10+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": true}
+{"ts": "2026-09-03T20:40:59+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": "wifi", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-184059-hil-smoke-F412FACF0384"}
+{"ts": "2026-09-03T20:41:45+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": true}
+{"ts": "2026-09-03T20:41:47+0200", "serial": "81528A13B6", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-184147-hil-smoke-81528A13B6"}
+{"ts": "2026-09-03T20:45:07+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": false}
+{"ts": "2026-09-03T20:45:09+0200", "serial": "9D529068B4", "event": "flash-begin", "variant": "l2cap", "previous_variant": null, "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-184509-hil-smoke-9D529068B4"}
+{"ts": "2026-09-03T20:46:19+0200", "serial": "9D529068B4", "event": "flash-end", "variant": "l2cap", "ok": true}
+{"ts": "2026-09-03T20:50:11+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": "wifi", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-185011-hil-smoke-F412FACF0384"}
+{"ts": "2026-09-03T20:50:51+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": true}
+{"ts": "2026-09-03T20:50:53+0200", "serial": "81528A13B6", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-185053-hil-smoke-81528A13B6"}
+{"ts": "2026-09-03T20:52:14+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": true}
+{"ts": "2026-09-03T20:52:16+0200", "serial": "9D529068B4", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-185216-hil-smoke-9D529068B4"}
+{"ts": "2026-09-03T20:53:52+0200", "serial": "9D529068B4", "event": "flash-end", "variant": "l2cap", "ok": true}

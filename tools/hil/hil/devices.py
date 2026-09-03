@@ -54,6 +54,14 @@ USB_IDENTITIES: dict[str, dict[str, str]] = {
         "note": "FTDI VID:PID shared with the OFF-LIMITS M5 Stack — "
         "always match the serial, never the VID:PID alone",
     },
+    # CH340 exposes NO USB serial — the CYD is pinned by physical port.
+    # id_path is the /dev/serial/by-path entry; it changes if the board
+    # moves to another USB socket (then boards.toml notes apply too).
+    "cyd-ch340": {
+        "vidpid": "1a86/7523",
+        "serial_source": "ch340",
+        "id_path": "pci-0000:02:00.0-usb-0:1:1.0-port0",
+    },
     "stm32f469i-disco": {
         "vidpid": "c0de/cafe",
         "serial_source": "cdc",

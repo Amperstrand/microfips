@@ -17,6 +17,17 @@ atom-a-serial:
     usb_serial: '81528A13B6'
     vidpid: '0403/6001'
 
+atom-b-serial:
+  BenchSerialToken:
+    usb_serial: '9D529068B4'
+    vidpid: '0403/6001'
+
+## CH340 (CYD) has no USB serial — token keyed on the physical port.
+cyd-serial:
+  BenchSerialToken:
+    vidpid: '1a86/7523'
+    id_path: 'pci-0000:02:00.0-usb-0:1:1.0-port0'
+
 stm32-stlink:
   BenchSerialToken:
     usb_serial: '066FFF515786534867184152'

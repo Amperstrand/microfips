@@ -82,12 +82,24 @@ def _sysfs_boards() -> dict[str, str]:
     return boards
 
 
+def _by_path_present(id_path: str) -> str | None:
+    """Port for a serial-less board pinned by /dev/serial/by-path, or None."""
+    link = Path("/dev/serial/by-path") / id_path
+    if link.exists():
+        try:
+            return str(link.resolve())
+        except OSError:
+            return None
+    return None
+
+
 def check_boards(pf: Preflight, registry: "object", op: str = "flash") -> None:
     """Registry boards permitting `op`: absent boards WARN (the smoke
     parametrization auto-skips them — bench composition varies); the hard
     failure is NO flash-allowed board attached at all. STM32 attachment
     keys off the ST-Link (its CDC only enumerates once firmware runs —
-    the smoke flashes first, then expects the CDC)."""
+    the smoke flashes first, then expects the CDC). Serial-less boards
+    (CH340/CYD) key off their by-path pin."""
     attached = _sysfs_boards()
     cdc = _cdc_present()
     stlink = _stlink_present()
@@ -100,6 +112,10 @@ def check_boards(pf: Preflight, registry: "object", op: str = "flash") -> None:
             detail = "ST-Link present" if stlink else "no ST-Link"
             if stlink and not cdc:
                 detail += "; CDC down (smoke flashes, then expects it)"
+        elif identity.get("serial_source") == "ch340":
+            port = _by_path_present(identity.get("id_path", ""))
+            present = port is not None
+            detail = port or f"id_path {identity.get('id_path', '?')} not present"
         else:
             present = serial in attached
             detail = attached.get(serial, "not attached")
