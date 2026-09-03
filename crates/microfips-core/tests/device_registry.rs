@@ -295,7 +295,10 @@ fn retired_secret_literals_are_absent() {
         }
         let is_test_fixture = path
             .components()
-            .any(|c| c.as_os_str() == std::ffi::OsStr::new("tests"));
+            .any(|c| c.as_os_str() == std::ffi::OsStr::new("tests"))
+            // specs/ holds vendored reference data (spec quotes, golden
+            // vectors) — deterministic crypto vectors, not secrets.
+            || path.components().any(|c| c.as_os_str() == std::ffi::OsStr::new("specs"));
         if is_test_fixture {
             continue;
         }
