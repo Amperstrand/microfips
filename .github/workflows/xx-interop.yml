@@ -1,0 +1,193 @@
+name: XX Interop (upstream next)
+
+# #195: every change to the XX/FMP-v1 wire path must prove it still
+# interops with a real upstream-next daemon. The daemon is built in CI at a
+# PINNED commit (never a moving branch — #180 lesson); bump NEXT_REF
+# deliberately when we adopt newer upstream protocol changes.
+#
+# Deliberate failure policy (decided in the #195 close-out):
+# - microfips XX-path regression → this job FAILS and blocks the touching
+#   PR. That is the gate working as intended.
+# - pinned ref vanishes upstream (history rewrite) → warning + skip, same
+#   policy as the golden-vectors job. Not a microfips regression.
+# - unrelated merges → never blocked: the paths filter keeps this workflow
+#   off commits that don't touch the XX protocol path.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/fips-noise/**
+      - crates/fips-fmp/**
+      - crates/fips-identity/**
+      - crates/microfips-core/**
+      - crates/microfips-protocol/**
+      - crates/microfips-sim/**
+      - crates/microfips-link/**
+      - tools/lab_keygen.py
+      - .github/workflows/xx-interop.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/fips-noise/**
+      - crates/fips-fmp/**
+      - crates/fips-identity/**
+      - crates/microfips-core/**
+      - crates/microfips-protocol/**
+      - crates/microfips-sim/**
+      - crates/microfips-link/**
+      - tools/lab_keygen.py
+      - .github/workflows/xx-interop.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xx-interop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # 2026-09-02: f1ff410f = 0.6.0-dev, the ref verified by #179 (sim) and
+  # #193 (bench hardware): negotiates FMP version 1, Full profile.
+  NEXT_REF: f1ff410fd22bba438e32360869dc3edd3350b396
+  XX_PORT: "21215"
+
+jobs:
+  xx-interop:
+    name: XX/FMP-v1 vs next daemon (loopback)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: xx-interop
+
+      - run: cargo build -p microfips-link --features noise-xx --release
+      - run: cargo build -p microfips-sim --features noise-xx --release
+
+      - name: Clone and build pinned upstream-next daemon
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-dev pkg-config
+          git clone https://github.com/jmcorgan/fips.git /tmp/fips-next
+          if ! git -C /tmp/fips-next checkout "$NEXT_REF"; then
+            echo "::warning::Pinned next ref $NEXT_REF is gone upstream (history rewrite?) — XX interop gate SKIPPED, not a microfips regression. Re-pin NEXT_REF deliberately; see Amperstrand/microfips#195."
+            exit 0
+          fi
+          cargo build --release --manifest-path /tmp/fips-next/Cargo.toml --bin fips --bin fipsctl
+
+      - name: Derive deterministic interop identities
+        # Identity discipline (bench-testing playbook / test_bench_xx):
+        # registry boards 1-12, mdns rogue 20, interop sim 21, bench XX
+        # daemon 22 — this job: daemon G*20, sim G*21, link probe G*23.
+        # Distinct identities are REQUIRED: reusing one across the link
+        # probe and the sim makes the next daemon discard the second
+        # session as a simultaneous-init collision ("keeping outbound
+        # session"), leaving the sim's steady loop with zero inbound.
+        run: |
+          pick() {
+            python3 "tools/lab_keygen.py" "$1" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin)['$2'])"
+          }
+          {
+            echo "DAEMON_NPUB=$(pick 20 npub_hex)"
+            echo "SIM_NSEC=$(pick 21 nsec_hex)"
+            echo "SIM_NODE_ADDR=$(pick 21 node_addr)"
+            echo "LINK_NSEC=$(pick 23 nsec_hex)"
+          } >> "$GITHUB_ENV"
+
+      - name: Start loopback next daemon (G*20)
+        run: |
+          mkdir -p /tmp/xx
+          cat > /tmp/xx/daemon.yaml <<'EOF'
+          # #195 CI interop daemon: loopback-only, deterministic identity,
+          # no tun/dns/rendezvous (same shape as the #179 session config).
+          node:
+            identity:
+              nsec: 0000000000000000000000000000000000000000000000000000000000000014
+              persistent: false
+            log_level: debug
+            control:
+              socket_path: "/tmp/xx/control.sock"
+          transports:
+            udp:
+              bind_addr: "127.0.0.1:21215"
+          tun:
+            enabled: false
+          dns:
+            enabled: false
+          EOF
+          setsid /tmp/fips-next/target/release/fips --config /tmp/xx/daemon.yaml \
+            > /tmp/xx/daemon.log 2>&1 < /dev/null &
+          echo $! > /tmp/xx/daemon.pid
+          for i in $(seq 1 20); do
+            grep -q "UDP transport started" /tmp/xx/daemon.log && break
+            sleep 1
+          done
+          grep -q "UDP transport started" /tmp/xx/daemon.log || {
+            echo "::error::next daemon did not start"; tail -20 /tmp/xx/daemon.log; exit 1; }
+          echo "daemon ready on 127.0.0.1:${XX_PORT}"
+
+      - name: Test 1 - fips-handshake (XX + FMP v1 negotiation, one-shot)
+        run: |
+          set -euo pipefail
+          FIPS_NSEC="$LINK_NSEC" FIPS_PEER_NPUB="$DAEMON_NPUB" RUST_LOG=info \
+            ./target/release/fips-handshake "127.0.0.1:${XX_PORT}" 2>&1 | tee /tmp/xx/link.log
+          grep -q "fmp negotiation: agreed version" /tmp/xx/link.log
+          grep -q "SUCCESS: FIPS XX handshake completed!" /tmp/xx/link.log
+          echo "=== LINK XX HANDSHAKE PASSED ==="
+
+      - name: Test 2 - microfips-sim heartbeat session (60s)
+        run: |
+          set -euo pipefail
+          FIPS_NSEC="$SIM_NSEC" FIPS_PEER_NPUB="$DAEMON_NPUB" \
+            timeout 60 ./target/release/microfips-sim --udp "127.0.0.1:${XX_PORT}" \
+            > /tmp/xx/sim.log 2>&1 < /dev/null &
+          echo $! > /tmp/xx/sim.pid
+          sleep 65
+
+          HANDSHAKES=$(grep -c "session: handshake ok, entering steady" /tmp/xx/sim.log || true)
+          NEGOTIATED=$(grep -c "fmp negotiation: agreed version" /tmp/xx/sim.log || true)
+          HB_RECV=$(grep -c "steady: heartbeat received from peer" /tmp/xx/sim.log || true)
+          POLICY_REJECTS=$(grep -c "policy: rejected" /tmp/xx/sim.log || true)
+          PROMOTED=$(grep -c "Connection promoted to active peer" /tmp/xx/daemon.log || true)
+          VIOLATIONS=$(grep -c "SecurityViolation" /tmp/xx/daemon.log || true)
+          MALFORMED_SR=$(grep -c "Malformed SenderReport" /tmp/xx/daemon.log || true)
+
+          PEERS=$(/tmp/fips-next/target/release/fipsctl -s /tmp/xx/control.sock show peers || echo '{"peers":[]}')
+          echo "$PEERS" > /tmp/xx/peers.json
+          echo "verdict: handshakes=$HANDSHAKES negotiated=$NEGOTIATED hb_recv=$HB_RECV policy_rejects=$POLICY_REJECTS promoted=$PROMOTED violations=$VIOLATIONS malformed_sr=$MALFORMED_SR"
+
+          [ "$HANDSHAKES" -eq 1 ] || { echo "::error::expected exactly one session"; exit 1; }
+          [ "$NEGOTIATED" -ge 1 ] || { echo "::error::FMP v1 negotiation never agreed"; exit 1; }
+          [ "$HB_RECV" -ge 3 ] || { echo "::error::no sustained heartbeats"; exit 1; }
+          [ "$POLICY_REJECTS" -eq 0 ] || { echo "::error::silent-peer policy regression (cf. #193)"; exit 1; }
+          [ "$PROMOTED" -ge 1 ] || { echo "::error::daemon never promoted the sim"; exit 1; }
+          [ "$VIOLATIONS" -eq 0 ] || { echo "::error::daemon logged SecurityViolation"; exit 1; }
+          echo "$PEERS" | grep -q "$SIM_NODE_ADDR" || {
+            echo "::error::daemon peer list missing sim node_addr $SIM_NODE_ADDR"; cat /tmp/xx/peers.json; exit 1; }
+          # Known upstream quirk, not a failure: next parses our empty
+          # heartbeat replies as Malformed SenderReport at DEBUG (#196).
+          echo "=== SIM XX SESSION PASSED (malformed_sr lines: $MALFORMED_SR, tracked in #196) ==="
+
+      - name: Stop daemon and sim
+        if: always()
+        run: |
+          [ -f /tmp/xx/sim.pid ] && kill "$(cat /tmp/xx/sim.pid)" 2>/dev/null || true
+          [ -f /tmp/xx/daemon.pid ] && kill "$(cat /tmp/xx/daemon.pid)" 2>/dev/null || true
+
+      - name: Upload interop logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xx-interop-logs
+          path: /tmp/xx/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1527,6 +1527,17 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 - **fips-integration**: local keygen + Noise IK handshake test (must pass), public VPS handshake (continue-on-error)
 - **summary**: aggregate status table
 
+A second workflow, `.github/workflows/xx-interop.yml` (#195, 2026-09-03), gates the
+XX/FMP-v1 wire on push/PR paths touching the protocol crates: it builds upstream
+jmcorgan/fips at a PINNED ref (`NEXT_REF`, currently `f1ff410f` — bump deliberately,
+never track a branch; #180 lesson) and runs `fips-handshake --features noise-xx`
+(one-shot handshake) plus `microfips-sim --features noise-xx` (60 s heartbeat session)
+against it on loopback. Failure policy: our XX regression = fail/block; pinned ref
+vanished upstream = warn+skip (golden-vectors precedent). CI identity discipline:
+daemon G·20, sim G·21, link probe G·23 — never share an identity between the two
+clients in one run (the next daemon discards the second session as a simultaneous-init
+collision, leaving the sim silent). Bench XX daemon stays G·22.
+
 ### Environment variables for CI key override
 
 All host tools accept `FIPS_NSEC` (64 hex chars) to override the identity secret key.

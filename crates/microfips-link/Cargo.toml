@@ -8,6 +8,11 @@ description = "FMP link integration test (host-side, std only)"
 name = "fips-handshake"
 path = "src/main.rs"
 
+[features]
+# Noise XX (3-message) + FMP v1 negotiation — FIPS next wire compat.
+# Same flag shape as the sim/firmware crates (#178/#179).
+noise-xx = ["microfips-core/noise-xx"]
+
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["std"] }
 k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh", "std"] }
