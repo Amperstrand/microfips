@@ -7,7 +7,9 @@
 use core::str;
 
 use microfips_core::fsp::FSP_MSG_DATA;
-use microfips_protocol::fsp_handler::{FspAppHandler, FspAppResult, PeerContext};
+use microfips_protocol::fsp_handler::{FspAppHandler, FspAppResult};
+
+pub use microfips_protocol::fsp_handler::PeerContext;
 
 pub const SERVICE_VERSION: u8 = 1;
 pub const SERVICE_KIND_REQUEST: u8 = 1;
@@ -156,6 +158,11 @@ pub trait ServiceHandler {
         request: ServiceRequest<'_>,
         response: &mut [u8],
     ) -> Result<ServiceReply, ServiceError>;
+
+    /// Peer context observed on the FSP session delivering the next
+    /// request (#198). Called by `FspServiceAdapter` before `handle`.
+    /// Default: ignore — consuming the peer is opt-in.
+    fn on_peer(&mut self, _peer: &PeerContext) {}
 }
 
 /// Route matching strategy: exact string match or prefix match.
@@ -382,7 +389,7 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
         msg_type: u8,
         payload: &[u8],
         response: &mut [u8],
-        _peer: &PeerContext,
+        peer: &PeerContext,
     ) -> FspAppResult {
         if msg_type != FSP_MSG_DATA {
             return FspAppResult::None;
@@ -396,6 +403,7 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
             };
         }
 
+        self.inner.on_peer(peer);
         match dispatch_request(&mut self.inner, payload, response) {
             Ok(len) => FspAppResult::Reply {
                 msg_type: FSP_MSG_DATA,
@@ -432,8 +440,52 @@ mod tests {
     use microfips_core::identity::NodeAddr;
     use microfips_core::noise::{aead_decrypt, ecdh_pubkey, parity_normalize};
     use microfips_core::wire;
-    use microfips_protocol::fsp_handler::FspDualHandler;
+    use microfips_protocol::fsp_handler::{FspDualHandler, PeerContext};
     use microfips_protocol::node::{HandleResult, NodeHandler};
+
+    struct PeerOrderProbe {
+        calls: [&'static str; 4],
+        count: usize,
+        peer_seen: Option<PeerContext>,
+    }
+
+    impl PeerOrderProbe {
+        fn new() -> Self {
+            Self {
+                calls: [""; 4],
+                count: 0,
+                peer_seen: None,
+            }
+        }
+    }
+
+    impl ServiceHandler for PeerOrderProbe {
+        fn handle(
+            &mut self,
+            _request: ServiceRequest<'_>,
+            response: &mut [u8],
+        ) -> Result<ServiceReply, ServiceError> {
+            if self.count < self.calls.len() {
+                self.calls[self.count] = "handle";
+            }
+            self.count += 1;
+            let body = b"ok";
+            response[..body.len()].copy_from_slice(body);
+            Ok(ServiceReply {
+                status: ServiceStatus::OK,
+                content_type: ContentType::Text,
+                body_len: body.len(),
+            })
+        }
+
+        fn on_peer(&mut self, peer: &PeerContext) {
+            if self.count < self.calls.len() {
+                self.calls[self.count] = "on_peer";
+            }
+            self.count += 1;
+            self.peer_seen = Some(*peer);
+        }
+    }
 
     fn health_handler(
         _request: ServiceRequest<'_>,
@@ -630,5 +682,105 @@ mod tests {
         let response = decode_response(inner_payload).unwrap();
         assert_eq!(response.status, ServiceStatus::OK);
         assert_eq!(response.body, br#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn fsp_service_adapter_forwards_peer_to_service_handler() {
+        let init_secret = [0x11; 32];
+        let resp_secret = [0x22; 32];
+        let init_pub = ecdh_pubkey(&init_secret).unwrap();
+        let resp_pub = ecdh_pubkey(&resp_secret).unwrap();
+        let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
+        let resp_xonly: [u8; 32] = parity_normalize(&resp_pub)[1..].try_into().unwrap();
+        let init_addr = NodeAddr::from_pubkey_x(&init_xonly);
+        let resp_addr = NodeAddr::from_pubkey_x(&resp_xonly);
+
+        let mut responder: FspDualHandler<_, 256> = FspDualHandler::new_dual(
+            resp_secret,
+            [0x33; 32],
+            [0x55; 32],
+            &init_pub,
+            [0x33; 16],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
+            FspServiceAdapter::new(PeerOrderProbe::new()),
+        );
+        let mut initiator = FspInitiatorSession::new(&init_secret, &[0x44; 32], &resp_pub).unwrap();
+
+        let mut setup = [0u8; 512];
+        let setup_len = initiator
+            .build_setup(init_addr.as_bytes(), resp_addr.as_bytes(), &mut setup)
+            .unwrap();
+        let mut setup_payload = [0u8; 512];
+        setup_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        setup_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
+            .copy_from_slice(&setup[..setup_len]);
+
+        let mut buf = [0u8; 512];
+        let ack_len = match responder.on_message(
+            wire::MSG_SESSION_DATAGRAM,
+            &setup_payload[..SESSION_DATAGRAM_BODY_SIZE + setup_len],
+            &mut buf,
+        ) {
+            HandleResult::SendDatagram(len) => len,
+            other => panic!("expected SessionAck, got {other:?}"),
+        };
+        initiator
+            .handle_ack(&buf[SESSION_DATAGRAM_BODY_SIZE..ack_len])
+            .unwrap();
+
+        let mut msg3 = [0u8; 512];
+        let msg3_len = initiator
+            .build_msg3(&responder.fsp_epoch, &mut msg3)
+            .unwrap();
+        let mut msg3_payload = [0u8; 512];
+        msg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        msg3_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+            .copy_from_slice(&msg3[..msg3_len]);
+        assert_eq!(
+            responder.on_message(
+                wire::MSG_SESSION_DATAGRAM,
+                &msg3_payload[..SESSION_DATAGRAM_BODY_SIZE + msg3_len],
+                &mut buf,
+            ),
+            HandleResult::None
+        );
+        assert_eq!(initiator.state(), FspInitiatorState::Established);
+
+        let (_k_recv, k_send) = initiator.session_keys().unwrap();
+        let mut service_request = [0u8; 128];
+        let req_len =
+            encode_request(ServiceMethod::Get, "/health", b"", &mut service_request).unwrap();
+        let mut fsp_packet = [0u8; 256];
+        let fsp_len =
+            build_fsp_data_message(0, 0, &service_request[..req_len], &k_send, &mut fsp_packet)
+                .unwrap();
+        let mut request_payload = [0u8; 512];
+        request_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(
+            &build_session_datagram_body(init_addr.as_bytes(), resp_addr.as_bytes()),
+        );
+        request_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp_len]
+            .copy_from_slice(&fsp_packet[..fsp_len]);
+        let mut response_payload = [0u8; 512];
+        let response_len = match responder.on_message(
+            wire::MSG_SESSION_DATAGRAM,
+            &request_payload[..SESSION_DATAGRAM_BODY_SIZE + fsp_len],
+            &mut response_payload,
+        ) {
+            HandleResult::SendDatagram(len) => len,
+            other => panic!("expected service reply, got {other:?}"),
+        };
+        assert!(response_len > SESSION_DATAGRAM_BODY_SIZE);
+
+        let probe = responder.app.inner();
+        assert_eq!(&probe.calls[..2], &["on_peer", "handle"]);
+        let peer = probe.peer_seen.as_ref().unwrap();
+        assert_eq!(peer.link_pubkey, init_xonly);
+        assert_eq!(peer.src_addr, Some(init_addr));
     }
 }
