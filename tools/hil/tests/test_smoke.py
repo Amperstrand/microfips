@@ -7,6 +7,8 @@ implementation, no drift). Needles derive from emitting firmware source /
 proven scenarios (playbook pattern 10):
     s3-lab  wifi:  "WiFi connected" → "handshake ok" → heartbeat (lab daemon)
     atom-a  l2cap: "handshake ok" → heartbeat (lab daemon, BLE)
+    cyd     wifi:  "WiFi connected" → "handshake ok" → heartbeat (lab daemon,
+                   D0WD tier — build_d0wd_wifi, CH340 by-path port, G*10)
     stm32   cdc:   MSG1 within DTR-open — auto-skipped while c0de:cafe is
                    not enumerated on the bench (board off / USB absent)
 
@@ -37,6 +39,7 @@ GENERATOR_MUL = {
     "9D529068B4": 12,
     "cc:8d:a2:2c:91:98": 5,
     "cc:8d:a2:2c:94:08": 7,
+    "cyd-ch340": 10,
 }
 LAB_DAEMON_MUL = 8
 VARIANTS = {
@@ -45,8 +48,18 @@ VARIANTS = {
     "9D529068B4": "l2cap",
     "cc:8d:a2:2c:91:98": "wifi",
     "cc:8d:a2:2c:94:08": "wifi",
+    "cyd-ch340": "wifi",
     "stm32f469i-disco": "cdc",
 }
+
+
+def _board_port(attached_board: str, identity: dict) -> Path | None:
+    """Port for serial and serial-less (CH340 by-path) boards alike."""
+    id_path = identity.get("id_path")
+    if id_path:
+        link = Path("/dev/serial/by-path") / id_path
+        return link.resolve() if link.exists() else None
+    return bench.find_board(vidpid=identity["vidpid"], serial=attached_board)
 
 
 @pytest.mark.hardware
@@ -64,7 +77,10 @@ def test_smoke_flash_boot_handshake(attached_board, registry, rig_lock):
 
     repo = bench.MICROFIPS_REPO
     identity = registry.usb_identity(attached_board)
-    skip = bench.bench_available(attached_board, vidpid=identity["vidpid"])
+    chip_family = registry.lookup(attached_board).chip
+    skip = bench.bench_available(
+        attached_board, vidpid=identity["vidpid"], id_path=identity.get("id_path"),
+    )
     if skip:
         pytest.skip(skip)
 
@@ -91,13 +107,20 @@ def test_smoke_flash_boot_handshake(attached_board, registry, rig_lock):
             if variant == "l2cap":
                 bench.quiesce_peer_radios(repo, attached_board)
 
-            if variant == "wifi":
+            if variant == "wifi" and chip_family == "esp32s3":
                 binary = bench.build_firmware(
                     repo,
                     npub_hex=bench.lab_npub(repo, LAB_DAEMON_MUL),
                     nsec_hex=bench.lab_nsec(repo, GENERATOR_MUL[attached_board]),
                 )
                 chip = "esp32s3"
+            elif variant == "wifi":
+                binary = bench.build_d0wd_wifi(
+                    repo,
+                    npub_hex=bench.lab_npub(repo, LAB_DAEMON_MUL),
+                    nsec_hex=bench.lab_nsec(repo, GENERATOR_MUL[attached_board]),
+                )
+                chip = "esp32"
             else:
                 binary = bench.build_d0wd_l2cap(
                     repo,
@@ -108,14 +131,12 @@ def test_smoke_flash_boot_handshake(attached_board, registry, rig_lock):
                 )
                 chip = "esp32"
 
-            port = bench.find_board(
-                vidpid=identity["vidpid"], serial=attached_board,
-            )
+            port = _board_port(attached_board, identity)
             assert port is not None, f"{attached_board} port vanished mid-smoke"
-            bench.flash(port, binary, chip=chip)
+            bench.flash(port, binary, chip=chip, registry_serial=attached_board)
             tap = bench.ConsoleTap(
                 port, run_dir / "console.log",
-                baud=115200 if identity["serial_source"] == "ftdi" else None,
+                baud=115200 if identity["serial_source"] in ("ftdi", "ch340") else None,
             )
 
             if variant == "wifi":

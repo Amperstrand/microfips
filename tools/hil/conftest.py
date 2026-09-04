@@ -21,7 +21,7 @@ import pytest
 
 from tollgate_lab import BenchLockHeldError, acquire_bench_lock
 
-from hil import DeviceRegistry
+from hil import BoardError, DeviceRegistry
 from hil.preflight import LABGRID_COORDINATOR, MICROFIPS_PLACE
 
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -161,15 +161,27 @@ def registry() -> DeviceRegistry:
 @pytest.fixture
 def attached_board(request, registry: DeviceRegistry) -> str:
     """The parametrized registry serial, verified attached via sysfs
-    (same semantics as fips-lab bench.find_board). Absent boards skip."""
-    from hil.preflight import _sysfs_boards
+    (same semantics as fips-lab bench.find_board). Absent boards skip.
+    Serial-less boards (CYD/CH340, synthetic key) verify via their
+    registry id_path — /dev/serial/by-path is their only stable pin."""
+    from hil.preflight import _by_path_present, _sysfs_boards
 
     expected = request.param
-    attached = _sysfs_boards()
-    if expected in attached:
-        return expected
+    try:
+        id_path = registry.usb_identity(expected).get("id_path")
+    except BoardError:
+        # No USB mapping (e.g. the micronuts wallet, observe-only here) —
+        # fall through to the serial check / skip below.
+        id_path = None
+    if id_path:
+        if _by_path_present(id_path):
+            return expected
+    else:
+        attached = _sysfs_boards()
+        if expected in attached:
+            return expected
     board = registry.lookup(expected)
     pytest.skip(
         f"{board.alias if board else expected} ({expected}) not attached "
-        f"(attached: {', '.join(sorted(attached)) or 'none'})"
+        "(see /dev/serial and /dev/serial/by-path)"
     )

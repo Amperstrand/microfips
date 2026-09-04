@@ -67,6 +67,14 @@ USB_IDENTITIES: dict[str, dict[str, str]] = {
         "serial_source": "cdc",
         "flash_via_vidpid": "0483/374b",
     },
+    # Micronuts wallet (enrolled 2026-09-04): CDC-ACM, flashed by THEIR
+    # scripts via st-flash — microfips hil never drives it (no smoke
+    # variant); the mapping exists so the registry-coverage test holds
+    # and observe-side taps can find the port.
+    "F4691": {
+        "vidpid": "16c0/27dd",
+        "serial_source": "cdc",
+    },
 }
 
 
