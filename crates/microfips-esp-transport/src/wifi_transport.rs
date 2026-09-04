@@ -330,6 +330,8 @@ pub async fn build_wifi_transport(
         TX_BUF.init([0u8; 2048]),
     );
     socket.bind(0).expect("udp bind");
+    #[cfg(feature = "log")]
+    log::info!("wifi: transport socket bound :{}", socket.endpoint().port);
 
     #[cfg(feature = "log")]
     log::info!("FIPS target: {}:{}", vps_ip, vps_port);

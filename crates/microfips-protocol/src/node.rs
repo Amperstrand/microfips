@@ -469,6 +469,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
     fn advance_epoch(&mut self) -> [u8; microfips_core::noise::EPOCH_SIZE] {
         self.epoch = self.epoch.wrapping_add(1);
+        // fips#154 discriminator: every session attempt stamps its epoch —
+        // catches silent run()-loop re-entries that skip other logs.
+        log_steady!("session: attempt epoch={}", self.epoch);
         let mut epoch = [0u8; microfips_core::noise::EPOCH_SIZE];
         let epoch_le = self.epoch.to_le_bytes();
         let copy_len = epoch.len().min(epoch_le.len());
@@ -1090,13 +1093,25 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             match select(rx_fut, hb_fut).await {
                 Either::First(Ok(n)) => {
                     log_steady!("steady: recv returned {} bytes", n);
-                    if self.rlen + n > self.rbuf.len() {
-                        self.rlen = 0;
+                    if self.raw_framing {
+                        // Datagram transports deliver whole frames per recv;
+                        // leftovers never belong to the next datagram.
+                        // Appending let one undersized junk frame park the
+                        // extractor and shred every following frame at a
+                        // bogus boundary until the overflow flush discarded
+                        // the backlog (fips#154 heartbeat starvation).
                         self.rpos = 0;
-                        continue;
+                        self.rlen = n;
+                        self.rbuf[..n].copy_from_slice(&rx[..n]);
+                    } else {
+                        if self.rlen + n > self.rbuf.len() {
+                            self.rlen = 0;
+                            self.rpos = 0;
+                            continue;
+                        }
+                        self.rbuf[self.rlen..self.rlen + n].copy_from_slice(&rx[..n]);
+                        self.rlen += n;
                     }
-                    self.rbuf[self.rlen..self.rlen + n].copy_from_slice(&rx[..n]);
-                    self.rlen += n;
 
                     'frames: while self.rpos < self.rlen {
                         let extracted = if self.raw_framing {
@@ -1145,8 +1160,13 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                         log_steady!("steady: duplicate rekey msg1, resending msg2");
                                         let _ = self.send_frame(&buf[..len]).await;
                                     }
+                                    // Cached msg1 = previously authenticated, still alive.
+                                    last_peer_rekey_at = Some(embassy_time::Instant::now());
+                                    self.policy.record_good_frame();
+                                    last_rx = embassy_time::Instant::now();
                                 } else {
                                     log_steady!("steady: rekey msg1 received, answering");
+                                    let mut answered = false;
                                     #[cfg(not(feature = "noise-xx"))]
                                     if let Some((slot, msg2, msg2_len)) = self
                                         .answer_rekey_msg1_ik(
@@ -1161,6 +1181,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                         pend = Some(slot);
                                         last_rekey_msg1 = Some((msg1_wire, wire_len));
                                         last_rekey_msg2 = Some((msg2, msg2_len));
+                                        answered = true;
                                     }
                                     #[cfg(feature = "noise-xx")]
                                     if let Some((responder, resp_index, msg2, msg2_len)) =
@@ -1170,13 +1191,20 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                         rekey_hs = Some((responder, resp_index, sender_idx));
                                         last_rekey_msg1 = Some((msg1_wire, wire_len));
                                         last_rekey_msg2 = Some((msg2, msg2_len));
+                                        answered = true;
+                                    }
+                                    // Unauthenticated msg1 must not feed the
+                                    // liveness watchdog (#77, fips#154): junk
+                                    // parsing as Msg1 refreshed last_rx and
+                                    // record_good_frame unconditionally, keeping
+                                    // a dead link "alive" for the storm's
+                                    // duration. Only a Noise-accepted msg1 counts.
+                                    if answered {
+                                        last_peer_rekey_at = Some(embassy_time::Instant::now());
+                                        self.policy.record_good_frame();
+                                        last_rx = embassy_time::Instant::now();
                                     }
                                 }
-                                // Peer-initiated rekey observed: dampen our
-                                // own initiation window (dual-init guard).
-                                last_peer_rekey_at = Some(embassy_time::Instant::now());
-                                self.policy.record_good_frame();
-                                last_rx = embassy_time::Instant::now();
                                 continue;
                             }
                             #[cfg(feature = "noise-xx")]
@@ -2140,13 +2168,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             .await
             {
                 Either::First(Ok(n)) => {
-                    if self.rlen + n > self.rbuf.len() {
-                        self.rlen = 0;
-                        self.rpos = 0;
-                        continue;
-                    }
-                    self.rbuf[self.rlen..self.rlen + n].copy_from_slice(&rx[..n]);
-                    self.rlen += n;
+                    // Raw mode is datagram-oriented (the steady-loop sibling
+                    // carries the full rationale; fips#154): one recv
+                    // replaces the buffer, never appends.
+                    self.rpos = 0;
+                    self.rlen = n;
+                    self.rbuf[..n].copy_from_slice(&rx[..n]);
                 }
                 Either::First(Err(_)) => {
                     return Err(ProtocolError::Disconnected);
@@ -2191,14 +2218,18 @@ fn decrypt_established_frame<'a>(
     };
 
     let wire::FmpMessage::Established { .. } = m else {
-        #[cfg(feature = "std")]
+        #[cfg(feature = "log")]
         if matches!(
             m,
             wire::FmpMessage::Msg1 { .. }
                 | wire::FmpMessage::Msg2 { .. }
                 | wire::FmpMessage::Msg3 { .. }
         ) {
-            log::warn!("discarding handshake frame in established state");
+            // WARN not debug: invisible on device builds while diagnosing fips#154.
+            log::warn!(
+                "handle_frame: handshake frame in established state ({}B)",
+                data.len()
+            );
         }
         return None;
     };
@@ -2224,11 +2255,11 @@ fn decrypt_established_frame<'a>(
     ) {
         Ok(l) => l,
         Err(_err) => {
-            #[cfg(feature = "std")]
-            log::debug!(
-                "FMP decrypt failed: counter={} hdr={:02x?} err={:?}",
+            #[cfg(feature = "log")]
+            log::warn!(
+                "FMP decrypt failed: counter={} len={} err={:?}",
                 enc.counter,
-                &enc.header_bytes[..16.min(enc.header_bytes.len())],
+                data.len() - wire::ESTABLISHED_HEADER_SIZE,
                 _err
             );
             return None;
@@ -3894,6 +3925,119 @@ mod tests {
     /// exchanges no FSP/replies starves the counter and we tear down a
     /// healthy link. A listening leaf against an idle daemon is exactly
     /// that shape. Fix under test: app-level sends must count at the send
+    /// Datagram-accurate transport double for raw-framing tests: one send =
+    /// one recv, like UDP (the channel transport merges into a byte stream,
+    /// which would hide the buffering policy under test).
+    struct DatagramQueue {
+        inbox: std::sync::Mutex<std::collections::VecDeque<std::vec::Vec<u8>>>,
+    }
+
+    impl Default for DatagramQueue {
+        fn default() -> Self {
+            Self {
+                inbox: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            }
+        }
+    }
+
+    struct DatagramTransport {
+        inner: &'static DatagramQueue,
+    }
+
+    impl crate::transport::Transport for DatagramTransport {
+        type Error = ProtocolError;
+
+        async fn wait_ready(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        async fn send(&mut self, _data: &[u8]) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+            loop {
+                let n = {
+                    let mut q = self.inner.inbox.lock().unwrap();
+                    match q.pop_front() {
+                        Some(d) => {
+                            let n = d.len().min(buf.len());
+                            buf[..n].copy_from_slice(&d[..n]);
+                            n
+                        }
+                        None => 0,
+                    }
+                };
+                if n > 0 {
+                    return Ok(n);
+                }
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
+            }
+        }
+    }
+
+    #[test]
+    fn test_raw_mode_junk_datagram_does_not_starve_heartbeat() {
+        let q: &'static DatagramQueue = Box::leak(Box::new(DatagramQueue::default()));
+        let key = [0x24; 32];
+        let them = wire::SessionIndex::new(9);
+        let timing = NodeTiming {
+            heartbeat_interval_secs: 1,
+            link_dead_timeout_secs: 2,
+            ..NodeTiming::default()
+        };
+
+        // fips#154 storm shape: an undersized phase-1 junk datagram (declares
+        // msg1, far short of MSG1_WIRE_SIZE) ahead of a real heartbeat and
+        // the peer's disconnect.
+        let mut junk = vec![0x01, 0x00, 0x10, 0x00];
+        junk.extend(core::iter::repeat_n(0xA5, 41));
+        let hb = build_test_frame(them, 100, wire::MSG_HEARTBEAT, 1000, &[], &key);
+        let disc = build_test_frame(
+            them,
+            101,
+            wire::MSG_DISCONNECT,
+            1000,
+            &[wire::DISC_REASON_SHUTDOWN],
+            &key,
+        );
+        {
+            let mut inbox = q.inbox.lock().unwrap();
+            inbox.push_back(junk);
+            inbox.push_back(hb);
+            inbox.push_back(disc);
+        }
+
+        block_on(async move {
+            let mut node = Node::with_timing(
+                DatagramTransport { inner: q },
+                TestRng::from_os_rng(),
+                random_secret(),
+                microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
+                timing,
+            );
+            node.set_raw_framing(true);
+            node.policy.record_handshake_ok(Instant::now());
+            let mut handler = RecordingHandler::default();
+            let result = node
+                .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
+                .await;
+            // Pre-fix the junk datagram parked the raw extractor, the
+            // heartbeat landed behind it and was shredded at a bogus 114B
+            // boundary, and steady died on the link-dead watchdog instead
+            // of the peer's clean disconnect.
+            assert_eq!(result, Ok(()));
+            assert!(
+                handler
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, NodeEvent::HeartbeatRecv)),
+                "heartbeat lost behind a junk datagram: {:?}",
+                handler.events
+            );
+        });
+    }
+
     /// functions, not at the dispatcher.
     #[test]
     fn test_steady_survives_silent_peer_timeout_when_reports_flow() {
