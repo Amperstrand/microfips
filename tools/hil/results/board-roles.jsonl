@@ -14,3 +14,23 @@
 {"ts": "2026-09-03T20:52:14+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": true}
 {"ts": "2026-09-03T20:52:16+0200", "serial": "9D529068B4", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-185216-hil-smoke-9D529068B4"}
 {"ts": "2026-09-03T20:53:52+0200", "serial": "9D529068B4", "event": "flash-end", "variant": "l2cap", "ok": true}
+{"ts": "2026-09-03T21:41:53+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": "wifi", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-194153-hil-smoke-F412FACF0384"}
+{"ts": "2026-09-03T21:41:53+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": false}
+{"ts": "2026-09-03T21:41:54+0200", "serial": "81528A13B6", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-194154-hil-smoke-81528A13B6"}
+{"ts": "2026-09-03T21:42:14+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": false}
+{"ts": "2026-09-03T21:42:14+0200", "serial": "9D529068B4", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-194214-hil-smoke-9D529068B4"}
+{"ts": "2026-09-03T21:42:35+0200", "serial": "9D529068B4", "event": "flash-end", "variant": "l2cap", "ok": false}
+{"ts": "2026-09-03T21:43:03+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": "wifi", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-194303-hil-smoke-F412FACF0384"}
+{"ts": "2026-09-03T21:43:04+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": false}
+{"ts": "2026-09-03T22:00:04+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": "wifi", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-200004-hil-smoke-F412FACF0384"}
+{"ts": "2026-09-03T22:01:33+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": true}
+{"ts": "2026-09-03T22:01:36+0200", "serial": "81528A13B6", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-200136-hil-smoke-81528A13B6"}
+{"ts": "2026-09-03T22:04:44+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": true}
+{"ts": "2026-09-03T22:04:46+0200", "serial": "9D529068B4", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-200446-hil-smoke-9D529068B4"}
+{"ts": "2026-09-03T22:06:30+0200", "serial": "9D529068B4", "event": "flash-end", "variant": "l2cap", "ok": true}
+{"ts": "2026-09-03T22:07:57+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": "wifi", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-200757-hil-smoke-F412FACF0384"}
+{"ts": "2026-09-03T22:08:29+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": true}
+{"ts": "2026-09-03T22:08:31+0200", "serial": "81528A13B6", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-200831-hil-smoke-81528A13B6"}
+{"ts": "2026-09-03T22:12:38+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": true}
+{"ts": "2026-09-03T22:12:41+0200", "serial": "9D529068B4", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-201241-hil-smoke-9D529068B4"}
+{"ts": "2026-09-03T22:15:51+0200", "serial": "9D529068B4", "event": "flash-end", "variant": "l2cap", "ok": true}
