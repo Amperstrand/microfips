@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 
 pub mod bech32;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeAddr(pub [u8; 16]);
 
 impl NodeAddr {
