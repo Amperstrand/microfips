@@ -49,9 +49,15 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # 2026-09-02: f1ff410f = 0.6.0-dev, the ref verified by #179 (sim) and
-  # #193 (bench hardware): negotiates FMP version 1, Full profile.
-  NEXT_REF: f1ff410fd22bba438e32360869dc3edd3350b396
+  # 2026-09-04: e0cc0c86 = 1.0.0-dev line, bumped from f1ff410f (0.6.0-dev,
+  # verified by #179 sim + #193 bench). Delta read before bumping: no wire
+  # format changes — Noise layer gains zeroize hygiene + a msg2 rollback API
+  # only; FMP adds TLV_REKEY_OF(=1) which our codec already implements
+  # identically; the daemon adds a rekey-msg2 static-continuity gate whose
+  # Reject semantics match our #203 (abandon the cycle, session survives);
+  # FSP session-layer negotiation payload still RX-optional (our #192
+  # absence stays tolerated); MMP deltas are internal counters.
+  NEXT_REF: e0cc0c8637d777fcf118ffc84a01b8bbe644e515
   XX_PORT: "21215"
 
 jobs:
