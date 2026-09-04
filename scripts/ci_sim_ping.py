@@ -178,6 +178,52 @@ def _npub_bech32_to_compressed_hex(npub_bech32: str) -> str:
     return (prefix + x_only).hex()
 
 
+def _ssh_banner(host: str, port: int = 22, timeout: float = 5.0) -> str:
+    """Read the SSH identification banner from host:port.
+
+    A TCP accept is NOT proof of a usable VM (earned live 2026-09-04:
+    SHC VM 2428 — active, IP assigned, TCP/22 accepting, but sshd never
+    sent a banner and bootstrap_completed_at stayed null). Demand actual
+    banner bytes. Returns "" when the port is closed, silent, or slow.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            data = s.recv(64)
+    except OSError:
+        return ""
+    return data.decode("utf-8", "replace").strip()
+
+
+def _vm_ready(vm: dict) -> str | None:
+    """Return the VM's IP when it is orderable, else None.
+
+    Earned provider behavior (shc-toolkit, 2026-09-01): provisioning_state
+    may stay "provisioning" forever — on healthy VMs too — so the real
+    readiness signal is service_status active + an assigned IP; SSH
+    usability is verified separately via _ssh_banner.
+    """
+    if vm.get("provisioning_state") in ("failed", "error"):
+        return None
+    if vm.get("service_status") != "active":
+        return None
+    ips = vm.get("ips") or []
+    if not ips:
+        return None
+    return ips[0]["ip"]
+
+
+def _cancel_service(api_key: str, service_id: int) -> None:
+    """Best-effort immediate cancel — billing on SHC stops only at cancel."""
+    try:
+        _api("POST", f"/vm/{service_id}/cancel", api_key=api_key,
+             body={"immediate": True},
+             extra_headers={"Idempotency-Key": f"cancel-{uuid.uuid4().hex[:24]}"})
+        print(f"VM {service_id} cancelled")
+    except Exception as e:  # noqa: BLE001 - cleanup must never mask the real error
+        print(f"Failed to cancel VM {service_id}: {e}", file=sys.stderr)
+
+
 def cmd_provision(args: argparse.Namespace) -> None:
     api_key = os.environ.get("SHC_API_KEY", "")
     if not api_key:
@@ -239,19 +285,24 @@ def cmd_provision(args: argparse.Namespace) -> None:
         print(f"  service={svc} provisioning={prov} ips={len(ips)}")
         if prov in ("failed", "error"):
             print(f"ERROR: provisioning failed: {vm}", file=sys.stderr)
+            _cancel_service(api_key, service_id)
             sys.exit(1)
-        if prov == "ready" and svc == "active" and ips:
-            ip = ips[0]["ip"]
-            try:
-                s = socket.create_connection((ip, 22), timeout=5)
-                s.close()
+        candidate = _vm_ready(vm)
+        if candidate:
+            # SSH banner, not just TCP connect: stuck VMs accept TCP/22 and
+            # never speak (earned 2026-09-04, VM 2428 pattern).
+            if _ssh_banner(candidate):
+                ip = candidate
                 break
-            except OSError:
-                pass
         time.sleep(10)
 
     if not ip:
-        print("ERROR: VM not ready after 300s", file=sys.stderr)
+        print(
+            "ERROR: VM not SSH-ready (banner) after 300s — cancelling so it "
+            "does not bill until the daily reaper",
+            file=sys.stderr,
+        )
+        _cancel_service(api_key, service_id)
         sys.exit(1)
 
     print(f"vm_ip={ip}")
