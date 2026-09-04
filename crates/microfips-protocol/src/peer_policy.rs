@@ -152,7 +152,11 @@ impl PeerPolicy {
         self.consecutive_failures.set(0);
         self.total_reconnect_attempts = 0;
         self.first_failure_time.set(None);
-        self.last_connect = None;
+        // `last_connect` deliberately stays stamped (#77): a peer that
+        // completes handshakes then tears the session down inside the base
+        // reconnect interval must not cycle the node through full Noise IK
+        // with no floor. Healthy sessions outlast the interval, so the
+        // floor never slows a legitimate reconnect.
         self.reset_session();
         self.session_start = Some(now);
     }
@@ -321,15 +325,59 @@ mod tests {
         let mut policy = PeerPolicy::new();
         let now = Instant::now();
         policy.record_handshake_failure(now);
-        policy.record_handshake_failure(now + Duration::from_millis(MIN_RECONNECT_MS));
+        let second_failure = now + Duration::from_millis(MIN_RECONNECT_MS);
+        policy.record_handshake_failure(second_failure);
 
         let ok_at = now + Duration::from_secs(1);
         policy.record_handshake_ok(ok_at);
 
+        // Allow once the base floor from the last stamp (the second
+        // failure) elapses — the exponential failure backoff is gone.
         assert_eq!(
-            policy.check_reconnect(ok_at + Duration::from_millis(MIN_RECONNECT_MS)),
+            policy.check_reconnect(second_failure + Duration::from_millis(MIN_RECONNECT_MS)),
             PolicyVerdict::Allow
         );
+    }
+
+    #[test]
+    fn test_handshake_ok_keeps_reconnect_floor_after_short_session() {
+        // #77: a peer that completes handshakes then tears the session down
+        // fast must not be able to cycle the node through full Noise IK with
+        // no floor. The base reconnect interval stamps at the attempt that
+        // started the session; `record_handshake_ok` must NOT clear it.
+        let mut policy = PeerPolicy::new();
+        let attempt = Instant::now();
+        policy.record_connect_attempt(attempt);
+
+        // Session established quickly and torn down 1s in (< base interval).
+        policy.record_handshake_ok(attempt + Duration::from_secs(1));
+
+        // Next reconnect waits out the remainder of the base floor.
+        assert_backoff(
+            policy.check_reconnect(attempt + Duration::from_secs(1)),
+            MIN_RECONNECT_MS - 1_000,
+        );
+        // ...and is allowed once the floor elapses (healthy-session case:
+        // any session longer than the base interval reconnects immediately).
+        assert_eq!(
+            policy.check_reconnect(attempt + Duration::from_millis(MIN_RECONNECT_MS)),
+            PolicyVerdict::Allow
+        );
+    }
+
+    #[test]
+    fn test_handshake_ok_does_not_grow_backoff() {
+        // The intent of the old `last_connect = None` clear: a successful
+        // handshake resets the *failure* backoff. With failures recorded but
+        // a later success, the required wait is the base floor from the
+        // success stamp, never the exponential failure backoff.
+        let mut policy = PeerPolicy::new();
+        let start = Instant::now();
+        for _ in 0..4 {
+            policy.record_handshake_failure(start);
+        }
+        policy.record_handshake_ok(start);
+        assert_backoff(policy.check_reconnect(start), MIN_RECONNECT_MS);
     }
 
     #[test]
