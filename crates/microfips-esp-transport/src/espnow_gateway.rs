@@ -16,12 +16,11 @@ use embedded_io_async::{Read, Write};
 use esp_hal::peripherals::{USB_DEVICE, WIFI};
 use esp_hal::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx};
 use esp_hal::Async;
-use esp_radio::esp_now::{
-    EspNowManager, EspNowReceiver, EspNowSender, EspNowWifiInterface, PeerInfo, BROADCAST_ADDRESS,
-};
+use esp_radio::esp_now::{EspNowManager, EspNowReceiver, EspNowSender, BROADCAST_ADDRESS};
 use microfips_esp_common::espnow_frag::{
-    pack_mac, unpack_mac, Fragmenter, SrcReassembler, ESP_NOW_MAX_PAYLOAD, MAX_MESSAGE,
+    unpack_mac, Fragmenter, SrcReassembler, ESP_NOW_MAX_PAYLOAD, MAX_MESSAGE,
 };
+use microfips_esp_common::espnow_peer::{PeerSlot, PeerSlotAction};
 use portable_atomic::{AtomicU64, Ordering};
 
 /// Last-seen node MAC, shared between the two relay directions.
@@ -95,31 +94,29 @@ async fn usb_to_espnow_task(
 }
 
 /// Radio → host: reassemble ESP-NOW fragments, length-prefix, write to USB.
-/// Also learns the node's MAC for the reverse direction.
+/// Also learns the node's MAC for the reverse direction. The slot is
+/// sticky (#77): a foreign source is dropped before it can touch
+/// reassembly state, and the previous owner is unregistered from the
+/// radio table when the slot moves.
 async fn espnow_to_usb(
     mut receiver: EspNowReceiver<'static>,
     mut usb_tx: UsbSerialJtagTx<'static, Async>,
     manager: EspNowManager<'static>,
 ) -> ! {
     let mut reassembler = SrcReassembler::new();
+    let mut slot = PeerSlot::new();
     loop {
         let received = receiver.receive_async().await;
         let src = received.info.src_address;
+        let action = slot.observe(src, embassy_time::Instant::now().as_millis());
+        if matches!(action, PeerSlotAction::Ignore) {
+            continue;
+        }
+        crate::esp_now_transport::apply_slot_action(&manager, action);
+        microfips_esp_common::espnow_peer::publish_current(&slot, &PEER_MAC);
         let Some(frame) = reassembler.push(src, received.data()) else {
             continue;
         };
-        if unpack_mac(PEER_MAC.load(Ordering::Relaxed)) != Some(src) {
-            if !manager.peer_exists(&src) {
-                let _ = manager.add_peer(PeerInfo {
-                    interface: EspNowWifiInterface::Station,
-                    peer_address: src,
-                    lmk: None,
-                    channel: None,
-                    encrypt: false,
-                });
-            }
-            PEER_MAC.store(pack_mac(src), Ordering::Relaxed);
-        }
         let prefix = (frame.len() as u16).to_le_bytes();
         let timeout = Duration::from_millis(USB_WRITE_TIMEOUT_MS);
         match with_timeout(timeout, usb_tx.write_all(&prefix)).await {

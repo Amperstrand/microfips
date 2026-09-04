@@ -14,8 +14,37 @@ use esp_radio::esp_now::{
 };
 use esp_radio::wifi::WifiController;
 use microfips_esp_common::espnow_frag::{Fragmenter, SrcReassembler, ESP_NOW_MAX_PAYLOAD};
+pub(crate) use microfips_esp_common::espnow_peer::PeerSlotAction;
 use microfips_protocol::transport::Transport;
 use portable_atomic::{AtomicU8, Ordering};
+
+/// Register `mac` for unicast (MAC-level ACK/retry). Best-effort: on
+/// failure the caller's sends fall back to broadcast.
+pub(crate) fn ensure_radio_peer(manager: &EspNowManager<'_>, mac: [u8; 6]) {
+    if manager.peer_exists(&mac) {
+        return;
+    }
+    let _ = manager.add_peer(PeerInfo {
+        interface: EspNowWifiInterface::Station,
+        peer_address: mac,
+        lmk: None,
+        channel: None,
+        encrypt: false,
+    });
+}
+
+/// Drive the radio peer table from a sticky [`PeerSlot`] verdict so the
+/// table holds at most one unicast peer (#77).
+pub(crate) fn apply_slot_action(manager: &EspNowManager<'_>, action: PeerSlotAction) {
+    match action {
+        PeerSlotAction::Ignore | PeerSlotAction::Keep => {}
+        PeerSlotAction::Register(mac) => ensure_radio_peer(manager, mac),
+        PeerSlotAction::Swap { remove, add } => {
+            let _ = manager.remove_peer(&remove);
+            ensure_radio_peer(manager, add);
+        }
+    }
+}
 
 /// ESP-NOW transport error.
 #[derive(Debug)]
@@ -135,6 +164,14 @@ impl EspNowTransport {
 
     fn lock_peer(&mut self, mac: [u8; 6]) {
         RETAINED_CHANNEL.store(self.channel, Ordering::Relaxed);
+        // Bound the radio peer table (#77): a session that moved to a new
+        // MAC unregisters the old one instead of leaking table slots —
+        // a full table makes add_peer fail silently and wedges unicast.
+        if let Some(old) = self.peer_mac {
+            if old != mac && self.manager.peer_exists(&old) {
+                let _ = self.manager.remove_peer(&old);
+            }
+        }
         if !self.manager.peer_exists(&mac) {
             let result = self.manager.add_peer(PeerInfo {
                 interface: EspNowWifiInterface::Station,

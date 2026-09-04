@@ -14,15 +14,14 @@ use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Config, IpAddress, IpEndpoint, Runner, Stack, StackResources};
 use embassy_time::{with_timeout, Duration, Timer};
 use esp_hal::peripherals::WIFI;
-use esp_radio::esp_now::{
-    EspNowManager, EspNowReceiver, EspNowSender, EspNowWifiInterface, PeerInfo, BROADCAST_ADDRESS,
-};
+use esp_radio::esp_now::{EspNowManager, EspNowReceiver, EspNowSender, BROADCAST_ADDRESS};
 use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
 use microfips_esp_common::dns::resolve_vps_ipv4;
 use microfips_esp_common::espnow_frag::{
-    pack_mac, unpack_mac, Fragmenter, SrcReassembler, ESP_NOW_MAX_PAYLOAD, MAX_MESSAGE,
+    unpack_mac, Fragmenter, SrcReassembler, ESP_NOW_MAX_PAYLOAD, MAX_MESSAGE,
 };
+use microfips_esp_common::espnow_peer::{PeerSlot, PeerSlotAction};
 use microfips_esp_common::mdns::{discover_fips, DiscoveryFilter};
 use portable_atomic::{AtomicU64, Ordering};
 use static_cell::StaticCell;
@@ -195,10 +194,8 @@ pub async fn run_espnow_wifi_gateway(
         None => {
             log::info!("gateway: no mDNS advert, resolving {}", VPS_HOST);
             let ip = loop {
-                if let Some(dns) = dns_server {
-                    if let Ok(ip) = resolve_vps_ipv4(stack, VPS_HOST).await {
-                        break ip;
-                    }
+                if let Ok(ip) = resolve_vps_ipv4(stack, VPS_HOST).await {
+                    break ip;
                 }
                 log::error!(
                     "gateway: DNS resolve failed for {}, retrying in 10s",
@@ -235,6 +232,10 @@ pub async fn run_espnow_wifi_gateway(
     espnow_to_udp(receiver, socket, manager, daemon).await
 }
 
+/// Radio → daemon: reassemble fragments, forward, learn the node's MAC.
+/// The slot is sticky (#77): a foreign source is dropped before it can
+/// touch reassembly state, and the previous owner is unregistered from
+/// the radio table when the slot moves.
 async fn espnow_to_udp(
     mut receiver: EspNowReceiver<'static>,
     socket: &'static UdpSocket<'static>,
@@ -242,33 +243,36 @@ async fn espnow_to_udp(
     daemon: IpEndpoint,
 ) -> ! {
     let mut reassembler = SrcReassembler::new();
+    let mut slot = PeerSlot::new();
     loop {
         let received = receiver.receive_async().await;
         let src = received.info.src_address;
+        let action = slot.observe(src, embassy_time::Instant::now().as_millis());
+        if matches!(action, PeerSlotAction::Ignore) {
+            continue;
+        }
+        if let PeerSlotAction::Swap { remove, add } = action {
+            log::info!(
+                "gateway: node slot moved {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                remove[0],
+                remove[1],
+                remove[2],
+                remove[3],
+                remove[4],
+                remove[5],
+                add[0],
+                add[1],
+                add[2],
+                add[3],
+                add[4],
+                add[5]
+            );
+        }
+        crate::esp_now_transport::apply_slot_action(&manager, action);
+        microfips_esp_common::espnow_peer::publish_current(&slot, &PEER_MAC);
         let Some(frame) = reassembler.push(src, received.data()) else {
             continue;
         };
-        if unpack_mac(PEER_MAC.load(Ordering::Relaxed)) != Some(src) {
-            if !manager.peer_exists(&src) {
-                let _ = manager.add_peer(PeerInfo {
-                    interface: EspNowWifiInterface::Station,
-                    peer_address: src,
-                    lmk: None,
-                    channel: None,
-                    encrypt: false,
-                });
-            }
-            PEER_MAC.store(pack_mac(src), Ordering::Relaxed);
-            log::info!(
-                "gateway: node locked {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                src[0],
-                src[1],
-                src[2],
-                src[3],
-                src[4],
-                src[5]
-            );
-        }
         let _ = socket.send_to(frame, daemon).await;
     }
 }

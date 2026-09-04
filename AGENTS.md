@@ -693,8 +693,11 @@ forces the WiFi path down for the first n seconds of uptime (hardware-verified:
 boots onto ESP-NOW via gateway, then switches to WiFi in ~2 s once the window ends).
 
 **Single-transport topologies** (node = `microfips-esp32s3-espnow`, a full FIPS node;
-both gateways are single-peer relays that unicast to whichever node's frame they saw
-last):
+both gateways are single-peer relays with a sticky MAC slot — #77: the first
+node to speak owns the relay while active (heard within 60 s), a foreign source
+is dropped before touching reassembly state, and a slot move unregisters the
+old MAC so the radio peer table never exceeds one entry; a silent owner
+releases the slot after 60 s):
 1. **Standalone (preferred):** node ↔ ESP-NOW ↔ `microfips-esp32s3-espnow-wifi-gw`
    (joins the AP as station, mDNS-discovers the pinned daemon, relays straight to its
    UDP port; runs on any power brick — no host machine in the data path). Hardware-

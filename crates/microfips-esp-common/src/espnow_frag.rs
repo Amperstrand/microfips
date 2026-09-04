@@ -11,6 +11,12 @@
 //! in order; any gap, duplicate, or source change drops the partial message.
 //! The Noise/FMP layers above treat that as datagram loss and retry, so no
 //! retransmission logic lives here.
+//!
+//! Memory is fixed by construction (#77 audit): [`Reassembler`] holds one
+//! static `MAX_MESSAGE` buffer and no allocation — a fragment flood can
+//! cost CPU, never heap. Unbounded-DoS surfaces around this codec live in
+//! the radio peer table and reconnect cadence, not here (see
+//! `espnow_peer` and the protocol `PeerPolicy`).
 
 /// ESP-NOW's maximum payload per frame (`ESP_NOW_MAX_DATA_LEN`).
 pub const ESP_NOW_MAX_PAYLOAD: usize = 250;

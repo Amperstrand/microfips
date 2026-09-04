@@ -8,6 +8,7 @@ pub mod config;
 pub mod dhcp_server;
 pub mod dns;
 pub mod espnow_frag;
+pub mod espnow_peer;
 pub mod mdns;
 pub mod mdns_responder;
 pub mod node_info;
