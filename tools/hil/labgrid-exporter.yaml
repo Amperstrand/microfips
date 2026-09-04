@@ -32,3 +32,11 @@ stm32-stlink:
   BenchSerialToken:
     usb_serial: '066FFF515786534867184152'
     vidpid: '0483/374b'
+
+## Micronuts Cashu hardware wallet (ttyACM2): another project's board,
+## enrolled 2026-09-04 per the bench-enrollment bundle — flash via st-flash
+## is theirs to drive (FIPS-sidecar ADR); FIPS scenarios observe only.
+micronuts-wallet-serial:
+  BenchSerialToken:
+    usb_serial: 'F4691'
+    vidpid: '16c0/27dd'
