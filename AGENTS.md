@@ -1910,13 +1910,20 @@ ONE session throughout — zero rebuilds across 70 rotations — zero disconnect
 SecurityViolations. Floors scale with the window via REKEY_SOAK_SECS so the
 same file smoke-runs at 120s; the daemon's FIRST rotation is a tail event at
 short windows — only asserted at ≥360s, modeled from the V ∈ [17,47]s
-per-rotation redraw). Remaining:
+ per-rotation redraw). Remaining:
 `test_espnow_gw.py`, `test_hybrid_switch.py` (daemon stop/start
-via the driver = RX-silence test; both blocked on a second S3), and the soak
-cron/nightly wiring (hackathon-tooling bench-nightly job — the scenario exists
-and is marked slow; scheduling is tooling work),
+via the driver = RX-silence test; both blocked on a second S3),
 with keygen→cargo-env wiring automated in fixtures
 (the build matrix + binary verification from the playbook).
+**Soak nightly IS wired (2026-09-04):** a systemd user timer runs the
+slow-scenario set at 03:1x UTC (first green run 09-04 09:12→09:49,
+37 min); failures comment fips-lab #7 — check it at session start.
+Bench exclusivity is now cross-project too (#199, closed 2026-09-04):
+rig_lock takes tollgate-lab BenchLock('amperstrand-bench') FIRST in
+every path (same-user cross-session flock, kernel-enforced), with the
+scripted dual-session proof in `tools/hil/tests/test_rig_lock.py` —
+harnesses must NOT re-acquire it manually (a second fd on the same
+flock file self-deadlocks; see test_smoke's note).
 Phase 3 — port router-automation patterns: per-board file locks, `results/<run_id>/`
 reporting, SHC cloud-lab WAN-daemon job for internet-path scenarios.
 
