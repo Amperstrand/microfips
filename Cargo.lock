@@ -2484,6 +2484,7 @@ version = "0.1.0"
 dependencies = [
  "bech32",
  "embassy-executor",
+ "embassy-futures",
  "embassy-time",
  "env_logger",
  "hex",

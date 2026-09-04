@@ -38,9 +38,15 @@ struct UdpTransport {
 impl UdpTransport {
     fn new(peer: std::net::SocketAddr, label: &'static str) -> Self {
         let socket = UdpSocket::bind("0.0.0.0:0").expect("UDP bind failed");
+        // Non-blocking is load-bearing (#197): a blocking recv_from holds
+        // the executor thread for the whole read timeout, so select(rx,
+        // timer) never polls the timer side — the steady loop can neither
+        // send timer-branch heartbeats nor detect link death on a silent
+        // peer. Idle recv returns WouldBlock instantly and the retry
+        // timer below keeps the future Pending instead.
         socket
-            .set_read_timeout(Some(std::time::Duration::from_secs(120)))
-            .ok();
+            .set_nonblocking(true)
+            .expect("UDP nonblocking failed");
         Self {
             socket,
             peer,
@@ -591,4 +597,64 @@ fn main() {
             node.run(&mut handler).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{block_on, UdpTransport};
+    use embassy_futures::select::{select, Either};
+    use embassy_time::{Duration, Instant, Timer};
+    use microfips_protocol::transport::Transport;
+
+    // #197: embassy-time alarms must fire under the sim's block_on; if the
+    // time driver never wakes, the steady loop goes inbound-only and a
+    // silent peer turns into a permanent stall (no heartbeats, no link-death).
+    #[test]
+    fn timer_fires_under_sim_block_on() {
+        let start = std::time::Instant::now();
+        block_on(async { Timer::after(Duration::from_millis(100)).await });
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(90),
+            "timer resolved after {:?} — alarm never fired?",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn timer_at_fires_under_sim_block_on() {
+        let deadline = Instant::now() + Duration::from_millis(100);
+        block_on(async move { Timer::at(deadline).await });
+        assert!(
+            Instant::now() >= deadline,
+            "Timer::at deadline passed without the alarm firing"
+        );
+    }
+
+    // #197 root cause: UdpTransport::recv must not monopolize the executor
+    // thread while idle — a blocking recv_from stalls select(rx, timer) so
+    // the steady loop can neither send timer-branch heartbeats nor detect
+    // link death on a silent peer. The idle recv must stay Pending so the
+    // timer side of the select wins on schedule.
+    #[test]
+    fn idle_recv_yields_to_timers() {
+        // 127.0.0.1:1 — nothing listens; datagrams are refused, never echoed.
+        let peer: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let mut transport = UdpTransport::new(peer, "T");
+
+        let start = std::time::Instant::now();
+        block_on(async move {
+            let mut buf = [0u8; 1500];
+            let recv_fut = transport.recv(&mut buf);
+            let timer_fut = Timer::after(Duration::from_millis(200));
+            match select(recv_fut, timer_fut).await {
+                Either::Second(()) => {}
+                Either::First(_) => panic!("recv completed against a dead port"),
+            }
+        });
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "idle recv starved the executor for {:?}",
+            start.elapsed()
+        );
+    }
 }
