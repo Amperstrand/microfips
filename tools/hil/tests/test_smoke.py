@@ -68,8 +68,12 @@ def test_smoke_flash_boot_handshake(attached_board, registry, rig_lock):
     if skip:
         pytest.skip(skip)
 
+    # Exclusivity is the session rig_lock fixture's job (conftest, #199):
+    # it already holds BenchLock('amperstrand-bench') — a manual
+    # bench.acquire_board_lock() here would take a SECOND fd on the same
+    # flock file and self-deadlock (flock conflicts per open-file-
+    # description, even within one process).
     acquired = "labgrid-place" if isinstance(rig_lock, str) else "flock"
-    lock = bench.acquire_board_lock()
     run_dir = bench.make_run_dir(f"hil-smoke-{attached_board.replace(':', '')}")
     tap = None
     daemon = None
@@ -133,13 +137,13 @@ def test_smoke_flash_boot_handshake(attached_board, registry, rig_lock):
             tap.stop()
         if daemon:
             daemon.stop()
-        lock.release()
 
 
 def _smoke_stm32(serial: str, registry: "object") -> None:
+    # Called only from within the rig_lock-protected test — no own lock
+    # (see the note at the acquire site above).
     repo = bench.MICROFIPS_REPO
     run_dir = bench.make_run_dir("hil-smoke-stm32")
-    lock = bench.acquire_board_lock()
     bridge = None
     try:
         with board_role(serial, "cdc", registry,
@@ -159,4 +163,3 @@ def _smoke_stm32(serial: str, registry: "object") -> None:
     finally:
         if bridge:
             bridge.stop()
-        lock.release()
