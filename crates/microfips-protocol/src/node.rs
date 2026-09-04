@@ -674,9 +674,21 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                 noise_payload.len(),
                                 neg2.map(|e| e.len()).unwrap_or(0)
                             );
-                            let (_resp_pub, _resp_epoch) = st
+                            let (resp_pub, _resp_epoch) = st
                                 .read_message2(base2)
                                 .map_err(|_| ProtocolError::DecryptFailed)?;
+                            // #203: XX learns the responder static here; it
+                            // must equal the pinned peer key (x-only compare,
+                            // parity byte excluded) or the handshake fails.
+                            // Without this, any completing responder gets the
+                            // session and the pin is advisory. There is no
+                            // unpinned initiator path: `peer_npub` is a
+                            // required constructor argument (compiled-in pin).
+                            if resp_pub[1..33] != self.peer_npub[1..33] {
+                                #[cfg(feature = "log")]
+                                log::warn!("xx init: responder static != pinned peer, aborting");
+                                return Err(ProtocolError::PeerKeyMismatch);
+                            }
                             if let Some(encrypted) = neg2 {
                                 let mut plain = [0u8; wire::negotiation::NEGOTIATION_MAX_SIZE];
                                 let n = st
@@ -1266,40 +1278,55 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     Err(_) => None,
                                 };
                                 #[cfg(feature = "noise-xx")]
-                                let completed = if ri.hs.read_message2(&np2[..np2_len]).is_err() {
-                                    None
-                                } else {
-                                    match microfips_core::noise::ecdh_pubkey(&self.nsec) {
-                                        Ok(my_pub) => {
-                                            let mut n3 = [0u8; 128];
-                                            match ri.hs.write_message3(&my_pub, &epoch, &mut n3) {
-                                                Ok(n3len) => {
-                                                    let mut msg3 = [0u8; 256];
-                                                    match wire::build_msg3(
-                                                        ri.our_index,
-                                                        sender_idx,
-                                                        &n3[..n3len],
-                                                        &mut msg3,
-                                                    ) {
-                                                        Some(msg3_len) => {
-                                                            if self
-                                                                .send_frame(&msg3[..msg3_len])
-                                                                .await
-                                                                .is_err()
-                                                            {
-                                                                None
-                                                            } else {
-                                                                let (c1, c2) = ri.hs.finalize();
-                                                                Some((c1, c2))
-                                                            }
-                                                        }
-                                                        None => None,
-                                                    }
-                                                }
-                                                Err(_) => None,
-                                            }
+                                let completed = match ri.hs.read_message2(&np2[..np2_len]) {
+                                    Err(_) => None,
+                                    Ok((resp_pub, _resp_epoch)) => {
+                                        // #203: the rekey answer must come from
+                                        // the pinned peer. An imposter's msg2 is
+                                        // cryptographically valid XX but proves
+                                        // nothing about the real peer — abandon
+                                        // WITHOUT refreshing liveness (an
+                                        // unauthenticated frame must not feed
+                                        // the link-death watchdog, #77-class).
+                                        if resp_pub[1..33] != self.peer_npub[1..33] {
+                                            log_steady!(
+                                                "steady: rekey msg2 identity mismatch, abandoned"
+                                            );
+                                            continue;
                                         }
-                                        Err(_) => None,
+                                        match microfips_core::noise::ecdh_pubkey(&self.nsec) {
+                                            Ok(my_pub) => {
+                                                let mut n3 = [0u8; 128];
+                                                match ri.hs.write_message3(&my_pub, &epoch, &mut n3)
+                                                {
+                                                    Ok(n3len) => {
+                                                        let mut msg3 = [0u8; 256];
+                                                        match wire::build_msg3(
+                                                            ri.our_index,
+                                                            sender_idx,
+                                                            &n3[..n3len],
+                                                            &mut msg3,
+                                                        ) {
+                                                            Some(msg3_len) => {
+                                                                if self
+                                                                    .send_frame(&msg3[..msg3_len])
+                                                                    .await
+                                                                    .is_err()
+                                                                {
+                                                                    None
+                                                                } else {
+                                                                    let (c1, c2) = ri.hs.finalize();
+                                                                    Some((c1, c2))
+                                                                }
+                                                            }
+                                                            None => None,
+                                                        }
+                                                    }
+                                                    Err(_) => None,
+                                                }
+                                            }
+                                            Err(_) => None,
+                                        }
                                     }
                                 };
 
@@ -3528,6 +3555,94 @@ mod tests {
         });
     }
 
+    /// #203: on the XX wire the initiator learns the responder static in
+    /// MSG2 — a responder whose static differs from the pinned peer key
+    /// must NOT complete the handshake. Today the learned static is
+    /// discarded and any completing responder gets the session.
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn test_xx_handshake_rejects_mismatched_responder_static() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+        use microfips_core::wire;
+
+        let initiator_secret = random_secret();
+        let pinned_secret = random_secret();
+        let imposter_secret = random_secret();
+        let pinned_pub = ecdh_pubkey(&pinned_secret).unwrap();
+
+        let (init_transport, mut resp_transport) = channel_pair();
+
+        block_on(async move {
+            // The imposter answers MSG2 with a valid XX exchange sealed under
+            // ITS OWN static — cryptographically sound, wrong identity.
+            let responder = async {
+                use microfips_core::noise::NoiseXxResponder;
+
+                let mut hdr = [0u8; 2];
+                let mut total = 0;
+                while total < 2 {
+                    total += resp_transport.recv(&mut hdr[total..]).await.unwrap();
+                }
+                let msg1_len = u16::from_le_bytes(hdr) as usize;
+                let mut buf = [0u8; 256];
+                total = 0;
+                while total < msg1_len {
+                    total += resp_transport.recv(&mut buf[total..]).await.unwrap();
+                }
+                let msg = wire::parse_message(&buf[..msg1_len]).unwrap();
+                let noise_payload = match msg {
+                    wire::FmpMessage::Msg1 { noise_payload, .. } => noise_payload,
+                    _ => panic!("expected Msg1"),
+                };
+
+                let mut resp =
+                    NoiseXxResponder::new(&imposter_secret).expect("XX responder init failed");
+                resp.read_message1(noise_payload)
+                    .expect("read_message1 failed");
+                let resp_eph = random_secret();
+                let mut msg2_noise = [0u8; 128];
+                let msg2_noise_len = resp
+                    .write_message2(&resp_eph, &1u64.to_le_bytes(), &mut msg2_noise)
+                    .expect("write_message2 failed");
+
+                let mut msg2_buf = [0u8; 256];
+                let msg2_len = wire::build_msg2(
+                    wire::SessionIndex::new(1),
+                    wire::SessionIndex::new(0),
+                    &msg2_noise[..msg2_noise_len],
+                    &mut msg2_buf,
+                )
+                .unwrap();
+
+                let frame_hdr = (msg2_len as u16).to_le_bytes();
+                resp_transport.send(&frame_hdr).await.unwrap();
+                resp_transport.send(&msg2_buf[..msg2_len]).await.unwrap();
+                // Deliberately NOT reading MSG3: the node must abort at MSG2.
+            };
+
+            let initiator = async move {
+                let mut node = Node::new(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    pinned_pub,
+                );
+                let mut handler = NoopTestHandler;
+                let epoch = node.advance_epoch();
+                let result = node.handshake(epoch, &mut handler).await;
+                assert_eq!(
+                    result,
+                    Err(ProtocolError::PeerKeyMismatch),
+                    "XX handshake must fail when the responder static != pinned peer key"
+                );
+            };
+
+            join(responder, initiator).await;
+        });
+    }
+
     #[test]
     fn test_handshake_msg1_wire_size() {
         use crate::transport::channel::pair as channel_pair;
@@ -5517,6 +5632,112 @@ mod tests {
                 let result = node.session(&mut handler).await;
                 assert_eq!(result, Ok(()));
                 assert!(handler.events.contains(&NodeEvent::HeartbeatRecv));
+            };
+
+            join(peer_task, node_task).await;
+        });
+    }
+
+    /// #203 rekey leg: an established node initiates rekey; an imposter
+    /// answering the rekey MSG2 under a different static must NOT complete
+    /// the rekey (no MSG3, no cutover) and must not refresh link liveness.
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn test_xx_rekey_initiator_rejects_mismatched_static() {
+        use crate::test_harness::success_timing;
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use microfips_core::noise::ecdh_pubkey;
+
+        let initiator_secret = random_secret();
+        let responder_secret = random_secret();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let imposter_secret = random_secret();
+
+        let (init_transport, peer_transport) = channel_pair();
+
+        block_on(async move {
+            let peer_task = async {
+                let mut peer = ScriptedPeer::new(peer_transport, responder_secret);
+                peer.complete_handshake().await;
+
+                // Node's rekey timer fires: its next outbound frame is the
+                // rekey Msg1.
+                let frame =
+                    embassy_time::with_timeout(Duration::from_millis(5000), peer.recv_raw_frame())
+                        .await
+                        .expect("node never initiated rekey");
+                let msg = wire::parse_message(&frame).unwrap();
+                let (node_new_idx, np1) = match msg {
+                    wire::FmpMessage::Msg1 {
+                        sender_idx,
+                        noise_payload,
+                    } => (sender_idx, noise_payload),
+                    _ => panic!("expected rekey Msg1 from node, got {:?}", msg),
+                };
+                let _ = node_new_idx;
+
+                // Imposter answers the rekey under its own static.
+                {
+                    use microfips_core::noise::NoiseXxResponder;
+                    let mut resp = NoiseXxResponder::new(&imposter_secret).unwrap();
+                    resp.read_message1(np1).unwrap();
+                    let mut n2 = [0u8; 128];
+                    let l = resp
+                        .write_message2(&random_secret(), &1u64.to_le_bytes(), &mut n2)
+                        .unwrap();
+                    let mut buf = [0u8; 256];
+                    let bl = wire::build_msg2(
+                        wire::SessionIndex::new(0xBEEF_0002),
+                        node_new_idx,
+                        &n2[..l],
+                        &mut buf,
+                    )
+                    .unwrap();
+                    peer.send_raw_frame(&buf[..bl]).await;
+                }
+
+                // Window where a fooled node would emit Msg3 + new-epoch
+                // frames: everything received must stay old-epoch (no Msg3).
+                for _ in 0..3 {
+                    let f = embassy_time::with_timeout(
+                        Duration::from_millis(1500),
+                        peer.recv_raw_frame(),
+                    )
+                    .await
+                    .expect("node went silent after imposter msg2");
+                    if let Some(wire::FmpMessage::Msg3 { .. }) = wire::parse_message(&f) {
+                        panic!("imposter rekey msg2 completed the rekey (msg3 sent)");
+                    }
+                }
+
+                // Old epoch must still be live: a current-epoch heartbeat
+                // lands, then a clean shutdown ends the session.
+                peer.send_heartbeat().await;
+                Timer::after(Duration::from_millis(200)).await;
+                peer.send_disconnect(wire::DISC_REASON_SHUTDOWN).await;
+            };
+
+            let node_task = async {
+                let mut node = Node::with_timing(
+                    init_transport,
+                    TestRng::from_os_rng(),
+                    initiator_secret,
+                    responder_pub,
+                    NodeTiming {
+                        rekey_after_secs: 1,
+                        heartbeat_interval_secs: 1,
+                        link_dead_timeout_secs: 10,
+                        ..success_timing()
+                    },
+                );
+                let mut handler = RecordingHandler::default();
+                let result = node.session(&mut handler).await;
+                assert_eq!(result, Ok(()));
+                assert!(
+                    handler.events.contains(&NodeEvent::HeartbeatRecv),
+                    "old epoch must stay live after an abandoned imposter rekey"
+                );
             };
 
             join(peer_task, node_task).await;

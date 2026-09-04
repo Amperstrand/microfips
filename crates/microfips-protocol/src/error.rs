@@ -10,6 +10,10 @@ pub enum ProtocolError {
     InvalidMessage,
     DecryptFailed,
     PeerDisconnected,
+    /// The peer's Noise static key (learned in a handshake message) does not
+    /// match the pinned peer key (#203). Distinct from `DecryptFailed`:
+    /// the exchange was cryptographically sound, the identity was wrong.
+    PeerKeyMismatch,
 }
 
 impl core::fmt::Display for ProtocolError {
@@ -21,6 +25,7 @@ impl core::fmt::Display for ProtocolError {
             Self::InvalidMessage => f.write_str("invalid message"),
             Self::DecryptFailed => f.write_str("decrypt failed"),
             Self::PeerDisconnected => f.write_str("peer disconnected"),
+            Self::PeerKeyMismatch => f.write_str("peer key mismatch"),
         }
     }
 }

@@ -30,12 +30,12 @@ pub enum FspAppResult {
 /// `link_pubkey` is the x-only secp256k1 key of the link peer this
 /// handler is bound to. Under Noise IK it is cryptographically verified
 /// in both roles (the initiator encrypts toward the pinned `rs`; the
-/// responder rejects any other MSG1 static). Under Noise XX the
-/// responder role verifies the initiator at MSG3; the initiator role
-/// currently discards the responder static learned in MSG2 (node.rs
-/// `_resp_pub`), so there `link_pubkey` reflects the *configured* pin
-/// and is advisory until learned-key comparison lands. All-zero is the
-/// unprovisioned sentinel — `link_pubkey_is_provisioned()` detects it.
+/// responder rejects any other MSG1 static). Under Noise XX it is
+/// verified in both roles as of #203: the responder verifies the
+/// initiator at MSG3, and the initiator compares the responder static
+/// learned in MSG2 against the pinned `peer_npub` (mismatch aborts the
+/// handshake / abandons the rekey). All-zero is the unprovisioned
+/// sentinel — `link_pubkey_is_provisioned()` detects it.
 ///
 /// `src_addr` is the FSP datagram's src NodeAddr — routing-only, set by
 /// whichever node forwarded the datagram (typically the daemon); not
