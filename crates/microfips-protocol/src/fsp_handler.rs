@@ -8,6 +8,7 @@ use microfips_core::fsp::{
     FspInitiatorSession, FspInitiatorState, FspSession, FspSessionState, FSP_HEADER_SIZE,
     FSP_INNER_HEADER_SIZE, SESSION_DATAGRAM_BODY_SIZE,
 };
+use microfips_core::identity::NodeAddr;
 use microfips_core::noise;
 use microfips_core::wire;
 
@@ -24,9 +25,42 @@ pub enum FspAppResult {
     Disconnect,
 }
 
+/// Identity context for an inbound FSP application message (#198).
+///
+/// `link_pubkey` is the x-only secp256k1 key of the link peer this
+/// handler is bound to. Under Noise IK it is cryptographically verified
+/// in both roles (the initiator encrypts toward the pinned `rs`; the
+/// responder rejects any other MSG1 static). Under Noise XX the
+/// responder role verifies the initiator at MSG3; the initiator role
+/// currently discards the responder static learned in MSG2 (node.rs
+/// `_resp_pub`), so there `link_pubkey` reflects the *configured* pin
+/// and is advisory until learned-key comparison lands. All-zero is the
+/// unprovisioned sentinel — `link_pubkey_is_provisioned()` detects it.
+///
+/// `src_addr` is the FSP datagram's src NodeAddr — routing-only, set by
+/// whichever node forwarded the datagram (typically the daemon); not
+/// authenticated unless the application binds it to a trusted key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerContext {
+    pub link_pubkey: [u8; 32],
+    pub src_addr: Option<NodeAddr>,
+}
+
+impl PeerContext {
+    /// False while `link_pubkey` is the all-zero unprovisioned sentinel.
+    pub fn link_pubkey_is_provisioned(&self) -> bool {
+        self.link_pubkey != [0u8; 32]
+    }
+}
+
 pub trait FspAppHandler {
-    fn on_fsp_message(&mut self, msg_type: u8, payload: &[u8], response: &mut [u8])
-        -> FspAppResult;
+    fn on_fsp_message(
+        &mut self,
+        msg_type: u8,
+        payload: &[u8],
+        response: &mut [u8],
+        peer: &PeerContext,
+    ) -> FspAppResult;
 }
 
 pub struct NoopFspApp;
@@ -37,6 +71,7 @@ impl FspAppHandler for NoopFspApp {
         _msg_type: u8,
         _payload: &[u8],
         _response: &mut [u8],
+        _peer: &PeerContext,
     ) -> FspAppResult {
         FspAppResult::None
     }
@@ -44,6 +79,11 @@ impl FspAppHandler for NoopFspApp {
 
 pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     pub nsec: [u8; 32],
+    /// Link peer's x-only pubkey stamped into every PeerContext (#
+    /// 198). Derived from `target_pub` in dual mode; `[0u8; 32]` (the
+    /// unprovisioned sentinel) in responder mode until
+    /// `set_link_pubkey` stamps the pinned peer.
+    pub link_pubkey: [u8; 32],
     pub fsp_session: FspSession,
     pub fsp_ephemeral: [u8; 32],
     /// FSP session-layer epoch. Aligned with upstream FIPS which reuses its
@@ -63,6 +103,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
     pub fn new_responder(nsec: [u8; 32], ephemeral: [u8; 32], fsp_epoch: [u8; 8], app: A) -> Self {
         Self {
             nsec,
+            link_pubkey: [0u8; 32],
             fsp_session: FspSession::new(),
             fsp_ephemeral: ephemeral,
             fsp_epoch,
@@ -93,6 +134,9 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
         let initiator = FspInitiatorSession::new(&nsec, &initiator_ephemeral, target_pub).ok();
         Self {
             nsec,
+            link_pubkey: target_pub[1..33]
+                .try_into()
+                .expect("33-byte compressed pubkey"),
             fsp_session: FspSession::new(),
             fsp_ephemeral: responder_ephemeral,
             fsp_epoch,
@@ -103,6 +147,14 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             app,
             app_buf: [0u8; APP_BUF],
         }
+    }
+
+    /// Stamp the link peer's x-only pubkey for responder-mode handlers
+    /// (`new_dual` derives it automatically from its target). Composition
+    /// roots that pin the link peer (IK deployments always do) should
+    /// call this so `PeerContext.link_pubkey` is meaningful.
+    pub fn set_link_pubkey(&mut self, pk: [u8; 32]) {
+        self.link_pubkey = pk;
     }
 
     pub fn on_event_default(&mut self, event: NodeEvent) {
@@ -236,11 +288,18 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                         msg_type: microfips_core::fsp::FSP_MSG_DATA,
                         len,
                     },
-                    None => self.app.on_fsp_message(
-                        inner_msg_type,
-                        inner_payload,
-                        &mut resp[app_offset..],
-                    ),
+                    None => {
+                        let peer = PeerContext {
+                            link_pubkey: self.link_pubkey,
+                            src_addr: Some(NodeAddr(src_addr)),
+                        };
+                        self.app.on_fsp_message(
+                            inner_msg_type,
+                            inner_payload,
+                            &mut resp[app_offset..],
+                            &peer,
+                        )
+                    }
                 };
                 match app_result {
                     FspAppResult::None => HandleResult::None,
@@ -501,11 +560,187 @@ impl<A: FspAppHandler, const APP_BUF: usize> NodeHandler for FspDualHandler<A, A
 #[cfg(test)]
 mod tests {
     use super::*;
+    use microfips_core::fsp::build_fsp_data_message;
+    use microfips_core::fsp::build_session_datagram_body;
+    use microfips_core::identity::NodeAddr;
     use microfips_core::identity::STM32_NSEC;
     use microfips_core::noise::ecdh_pubkey;
+    use microfips_core::noise::parity_normalize;
 
     fn test_target_pub() -> [u8; 33] {
         ecdh_pubkey(&[0x22; 32]).unwrap()
+    }
+
+    struct CapturePeers {
+        peers: [PeerContext; 4],
+        count: usize,
+    }
+
+    impl CapturePeers {
+        fn new() -> Self {
+            Self {
+                peers: [PeerContext {
+                    link_pubkey: [0xff; 32],
+                    src_addr: None,
+                }; 4],
+                count: 0,
+            }
+        }
+
+        fn captured(&self) -> &[PeerContext] {
+            &self.peers[..self.count.min(self.peers.len())]
+        }
+    }
+
+    impl FspAppHandler for CapturePeers {
+        fn on_fsp_message(
+            &mut self,
+            _msg_type: u8,
+            _payload: &[u8],
+            _response: &mut [u8],
+            peer: &PeerContext,
+        ) -> FspAppResult {
+            if self.count < self.peers.len() {
+                self.peers[self.count] = *peer;
+            }
+            self.count += 1;
+            FspAppResult::None
+        }
+    }
+
+    /// Drive a full FSP session (setup -> ack -> msg3 -> one data
+    /// message) from a fresh initiator into `responder`, so its app
+    /// handler observes exactly one PeerContext. Returns the
+    /// initiator's NodeAddr.
+    fn dance_one_data_message(responder: &mut FspDualHandler<CapturePeers, 256>) -> NodeAddr {
+        let init_secret = [0x11u8; 32];
+        let resp_secret = [0x22u8; 32];
+        let init_pub = ecdh_pubkey(&init_secret).unwrap();
+        let resp_pub = ecdh_pubkey(&resp_secret).unwrap();
+        let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
+        let resp_xonly: [u8; 32] = parity_normalize(&resp_pub)[1..].try_into().unwrap();
+        let init_addr = NodeAddr::from_pubkey_x(&init_xonly);
+        let resp_addr = NodeAddr::from_pubkey_x(&resp_xonly);
+
+        let mut initiator = FspInitiatorSession::new(&init_secret, &[0x44; 32], &resp_pub).unwrap();
+
+        let mut setup = [0u8; 512];
+        let setup_len = initiator
+            .build_setup(init_addr.as_bytes(), resp_addr.as_bytes(), &mut setup)
+            .unwrap();
+        let mut setup_payload = [0u8; 512];
+        setup_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        setup_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
+            .copy_from_slice(&setup[..setup_len]);
+
+        let mut buf = [0u8; 512];
+        let ack_len = match responder.on_message(
+            wire::MSG_SESSION_DATAGRAM,
+            &setup_payload[..SESSION_DATAGRAM_BODY_SIZE + setup_len],
+            &mut buf,
+        ) {
+            HandleResult::SendDatagram(len) => len,
+            other => panic!("expected SessionAck, got {other:?}"),
+        };
+        initiator
+            .handle_ack(&buf[SESSION_DATAGRAM_BODY_SIZE..ack_len])
+            .unwrap();
+
+        let mut msg3 = [0u8; 512];
+        let msg3_len = initiator
+            .build_msg3(&responder.fsp_epoch, &mut msg3)
+            .unwrap();
+        let mut msg3_payload = [0u8; 512];
+        msg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        msg3_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+            .copy_from_slice(&msg3[..msg3_len]);
+        assert_eq!(
+            responder.on_message(
+                wire::MSG_SESSION_DATAGRAM,
+                &msg3_payload[..SESSION_DATAGRAM_BODY_SIZE + msg3_len],
+                &mut buf,
+            ),
+            HandleResult::None
+        );
+        assert_eq!(initiator.state(), FspInitiatorState::Established);
+
+        let (_k_recv, k_send) = initiator.session_keys().unwrap();
+        let mut fsp_packet = [0u8; 256];
+        let fsp_len = build_fsp_data_message(0, 0, b"peer", &k_send, &mut fsp_packet).unwrap();
+        let mut data_payload = [0u8; 512];
+        data_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        data_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp_len]
+            .copy_from_slice(&fsp_packet[..fsp_len]);
+        assert_eq!(
+            responder.on_message(
+                wire::MSG_SESSION_DATAGRAM,
+                &data_payload[..SESSION_DATAGRAM_BODY_SIZE + fsp_len],
+                &mut buf,
+            ),
+            HandleResult::None
+        );
+        init_addr
+    }
+
+    #[test]
+    fn peer_context_carries_dual_target_link_pubkey_and_src_addr() {
+        let init_pub = ecdh_pubkey(&[0x11; 32]).unwrap();
+        let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
+        let expected_src = NodeAddr::from_pubkey_x(&init_xonly);
+
+        let mut responder: FspDualHandler<CapturePeers, 256> = FspDualHandler::new_dual(
+            [0x22; 32],
+            [0x33; 32],
+            [0x55; 32],
+            &init_pub,
+            [0x33; 16],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
+            CapturePeers::new(),
+        );
+        let src = dance_one_data_message(&mut responder);
+
+        let captured = responder.app.captured();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].link_pubkey, init_xonly);
+        assert!(captured[0].link_pubkey_is_provisioned());
+        assert_eq!(captured[0].src_addr, Some(src));
+        assert_eq!(src, expected_src);
+    }
+
+    #[test]
+    fn peer_context_sentinel_until_stamped_in_responder_mode() {
+        let init_pub = ecdh_pubkey(&[0x11; 32]).unwrap();
+        let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
+
+        let mut responder: FspDualHandler<CapturePeers, 256> = FspDualHandler::new_responder(
+            [0x22; 32],
+            [0x33; 32],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
+            CapturePeers::new(),
+        );
+        let src = dance_one_data_message(&mut responder);
+        let captured = responder.app.captured();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].link_pubkey, [0u8; 32]);
+        assert!(!captured[0].link_pubkey_is_provisioned());
+        assert_eq!(captured[0].src_addr, Some(src));
+
+        // Stamp the pinned peer and verify the next observed message
+        // carries it.
+        responder.set_link_pubkey(init_xonly);
+        dance_one_data_message(&mut responder);
+        let captured = responder.app.captured();
+        assert!(captured.len() >= 2);
+        assert_eq!(captured[1].link_pubkey, init_xonly);
     }
 
     #[test]

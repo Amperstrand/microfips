@@ -7,7 +7,7 @@
 use core::str;
 
 use microfips_core::fsp::FSP_MSG_DATA;
-use microfips_protocol::fsp_handler::{FspAppHandler, FspAppResult};
+use microfips_protocol::fsp_handler::{FspAppHandler, FspAppResult, PeerContext};
 
 pub const SERVICE_VERSION: u8 = 1;
 pub const SERVICE_KIND_REQUEST: u8 = 1;
@@ -382,6 +382,7 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
         msg_type: u8,
         payload: &[u8],
         response: &mut [u8],
+        _peer: &PeerContext,
     ) -> FspAppResult {
         if msg_type != FSP_MSG_DATA {
             return FspAppResult::None;
