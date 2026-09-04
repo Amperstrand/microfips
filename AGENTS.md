@@ -1532,7 +1532,8 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
 
 A second workflow, `.github/workflows/xx-interop.yml` (#195, 2026-09-03), gates the
 XX/FMP-v1 wire on push/PR paths touching the protocol crates: it builds upstream
-jmcorgan/fips at a PINNED ref (`NEXT_REF`, currently `f1ff410f` — bump deliberately,
+jmcorgan/fips at a PINNED ref (`NEXT_REF`, currently `e0cc0c86` 1.0.0-dev — bumped
+from `f1ff410f` 2026-09-04 after a no-wire-change delta read; bump deliberately,
 never track a branch; #180 lesson) and runs `fips-handshake --features noise-xx`
 (one-shot handshake) plus `microfips-sim --features noise-xx` (60 s heartbeat session)
 against it on loopback. Failure policy: our XX regression = fail/block; pinned ref
@@ -1797,7 +1798,7 @@ longer expected on this bench, still refused by boards.toml if it reappears).
 |-------|------|----------------------|-----|------|
 | lab workstation | — | `lab-daemon` G·8 | — | runs the FIPS lab daemon |
 | S3 board `F4:12:FA:CF:03:84` | ESP32-S3 16MB | `s3-lab` G·9 | USB-JTAG | ttyACM by-id Espressif serial |
-| CYD | ESP32-D0WD-V3 | `cyd` G·10 | CH340 | ttyUSB by-path (CH340 has no serial; boards.toml key `cyd-ch340`, registered 2026-09-03, no smoke variant yet) |
+| CYD | ESP32-D0WD-V3 | `cyd` G·10 | CH340 | ttyUSB by-path (CH340 has no serial; boards.toml key `cyd-ch340`; hil-smoke wifi leg since 2026-09-04 — `build_d0wd_wifi`, by-path port, `registry_serial` required for the flash gate) |
 | M5 Atom `81528A13B6` | ESP32-PICO-D4 | `atom-a` G·11 | FTDI | ttyUSB by-id |
 | M5 Atom `9D529068B4` | ESP32-PICO-D4 | `atom-b` G·12 | FTDI | ttyUSB by-id; wired to ACR1252 NFC reader |
 | Micronuts Cashu wallet | STM32F469 | — | CDC-ACM | ttyACM2 — other project, refused |
