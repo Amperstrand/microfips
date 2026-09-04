@@ -34,3 +34,5 @@
 {"ts": "2026-09-03T22:12:38+0200", "serial": "81528A13B6", "event": "flash-end", "variant": "l2cap", "ok": true}
 {"ts": "2026-09-03T22:12:41+0200", "serial": "9D529068B4", "event": "flash-begin", "variant": "l2cap", "previous_variant": "l2cap", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260903-201241-hil-smoke-9D529068B4"}
 {"ts": "2026-09-03T22:15:51+0200", "serial": "9D529068B4", "event": "flash-end", "variant": "l2cap", "ok": true}
+{"ts": "2026-09-04T15:47:29+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": "wifi", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260904-134729-hil-smoke-F412FACF0384"}
+{"ts": "2026-09-04T15:49:27+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": true}
