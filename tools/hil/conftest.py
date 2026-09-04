@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tollgate_lab import BenchLockHeldError, acquire_bench_lock
+
 from hil import DeviceRegistry
 from hil.preflight import LABGRID_COORDINATOR, MICROFIPS_PLACE
 
@@ -68,13 +70,27 @@ def pytest_sessionstart(session):
 
 @pytest.fixture(scope="session")
 def rig_lock(request):
+    # Cross-project, cross-session flock FIRST (#199 fix: HardwareLock is
+    # same-user-permissive; the place/flock below only covered hil-vs-hil;
+    # two same-user sessions collided on port + target/ 2026-09-03).
+    # Ordering rule: BenchLock before place/legacy locks, never reversed.
+    try:
+        bench_lock = acquire_bench_lock(
+            "amperstrand-bench", project="microfips-hil",
+            cwd=str(Path(__file__).resolve().parents[2]),
+        )
+    except BenchLockHeldError as exc:
+        pytest.exit(f"bench flock held: {exc}", returncode=3)
+
     if request.session.stash.get(LG_ACQUIRED_KEY, False):
         yield "labgrid-place"
+        bench_lock.release()
         return
     if _lg_coordinator_up():
         _lg_acquire_or_exit()
         yield "labgrid-place"
         _lg_client("release")
+        bench_lock.release()
         return
 
     RESULTS_DIR.mkdir(exist_ok=True)
@@ -83,6 +99,7 @@ def rig_lock(request):
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock_fd.close()
+        bench_lock.release()
         pytest.exit(
             f"bench is locked by another session ({RIG_LOCK_PATH})",
             returncode=3,
@@ -90,6 +107,7 @@ def rig_lock(request):
     yield lock_fd
     fcntl.flock(lock_fd, fcntl.LOCK_UN)
     lock_fd.close()
+    bench_lock.release()
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)

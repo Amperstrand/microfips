@@ -31,6 +31,15 @@ hil-status:
 	  || echo "exporter-microfips: not-running"
 	@labgrid-client -x 192.168.13.221:20408 resources 2>/dev/null \
 	  | grep -i "$(shell hostname)" || echo "no resources on coordinator"
+	@echo "bench flock: $$([ -f /tmp/amperstrand-bench.lock ] \
+	  && cat /tmp/amperstrand-bench.lock | tr '\n' ' ' \
+	  || echo free)"
+	@echo "board state (labgrid per-board places):"
+	@for b in s3-lab atom-a atom-b cyd stm32; do \
+	  echo "  $$b: $$(labgrid-client -x 192.168.13.221:20408 \
+	    -p microfips-$$b show 2>/dev/null \
+	    | sed -n 's/^  tags: //p' | tr ',' ' ' || echo '?')"; \
+	done
 	@echo "role ledger (last 3):"
 	@tail -3 $(HIL_DIR)/results/board-roles.jsonl 2>/dev/null || echo "  (empty)"
 

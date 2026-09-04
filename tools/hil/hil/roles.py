@@ -11,6 +11,7 @@ instead of guessing what a board runs.
 """
 
 import json
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +23,21 @@ LEDGER_PATH = RESULTS_DIR / "board-roles.jsonl"
 
 def role_ledger_path() -> Path:
     return LEDGER_PATH
+
+
+def _mirror_to_labgrid(serial: str, variant: str, event: str) -> None:
+    """Best-effort tag mirror onto the per-board labgrid place (visible to
+    every project/machine via labgrid-client). Never fails the flash —
+    the local ledger above stays the durable record."""
+    try:
+        from fips_lab.bench import note_board_state  # late import: hil runs
+        # without fips-lab on sys.path in preflight contexts.
+        note_board_state(
+            serial, firmware=variant,
+            test=f"{event}:{os.getpid()}", owner=os.getenv("USER", "?"),
+        )
+    except Exception:  # noqa: BLE001 — mirroring is advisory
+        pass
 
 
 def _append(entry: dict) -> None:
@@ -80,6 +96,7 @@ def board_role(
         "lock": acquired,
         **(extra or {}),
     })
+    _mirror_to_labgrid(serial, variant, "flash-begin")
     ok = False
     try:
         yield payload
@@ -97,3 +114,6 @@ def board_role(
             "variant": variant,
             "ok": ok,
         })
+        _mirror_to_labgrid(
+            serial, f"{variant}{'-ok' if ok else '-FAILED'}", "flash-end"
+        )

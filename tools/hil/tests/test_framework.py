@@ -106,3 +106,56 @@ def test_board_role_enforces_registry(tmp_path: Path, monkeypatch):
 def test_warn_severity_passes_when_not_ok():
     assert Check(name="x", severity=SEVERITY_WARN, ok=False).passed
     assert not Check(name="x", severity="fail", ok=False).passed
+
+
+def test_bench_lock_excludes_same_user_second_process(tmp_path: Path):
+    """The #199 case: two sessions of the SAME unix user must serialize.
+    A holder subprocess keeps the flock; a contender must fail with holder
+    info; after the holder exits, acquire succeeds again."""
+    import subprocess
+    import sys
+    import time
+
+    from tollgate_lab import BenchLockHeldError, acquire_bench_lock
+
+    ready = tmp_path / "holder-ready"
+    holder = subprocess.Popen([
+        sys.executable, "-c",
+        f"from tollgate_lab import acquire_bench_lock; "
+        f"l = acquire_bench_lock('test-bench-lock-x', project='holder'); "
+        f"open({str(ready)!r}, 'w').write('go'); import time; time.sleep(5)",
+    ])
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert ready.exists(), "holder never signaled"
+        try:
+            acquire_bench_lock("test-bench-lock-x")
+            raise AssertionError("second same-user acquire succeeded")
+        except BenchLockHeldError as exc:
+            assert "holder" in str(exc), str(exc)
+        holder.wait(timeout=10)
+        lock = acquire_bench_lock("test-bench-lock-x")
+        lock.release()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait()
+
+
+def test_note_board_state_is_advisory_for_missing_place():
+    """Mirroring must never fail a scenario: a nonexistent coordinator
+    place returns False, no exception."""
+    import os
+    import sys
+
+    fips_lab_root = Path(__file__).resolve().parents[4] / "fips-lab"
+    sys.path.insert(0, str(fips_lab_root))
+    from fips_lab import bench
+
+    os.environ["LABGRID_COORDINATOR"] = "127.0.0.1:1"  # nothing listens
+    try:
+        assert bench.note_board_state("81528A13B6", "l2cap") is False
+    finally:
+        os.environ.pop("LABGRID_COORDINATOR", None)
