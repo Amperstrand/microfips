@@ -20,5 +20,7 @@ __pycache__/
 
 # Runtime FIPS transport-key keylog consumed by fips-decrypt (never commit)
 keys.jsonl
+# ESP8266 bridge local WiFi credentials (copy from wifi_secrets.h.example — never commit)
+wifi_secrets.h
 tools/hil/results/allure*
 tools/hil/results/.bench-lock

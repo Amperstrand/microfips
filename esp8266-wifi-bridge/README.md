@@ -27,11 +27,14 @@ esptool --port /dev/ttyUSB0 --before default-reset -b 115200 \
 
 ## Configure
 
-Edit `src/main.cpp`:
-- `WIFI_SSID` — WiFi network name
-- `WIFI_PASS` — WiFi password
-- `FIPS_HOST` — FIPS daemon IP
-- `FIPS_PORT` — FIPS UDP port (default: 2121)
+Credentials live in a gitignored local header — never commit real values:
+
+```bash
+cp wifi_secrets.h.example wifi_secrets.h   # then fill in SSID + password
+```
+
+- `wifi_secrets.h` — `WIFI_SSID` / `WIFI_PASS` (local-only, gitignored)
+- `main.cpp` — `FIPS_HOST` (FIPS daemon IP), `FIPS_PORT` (default 2121), `LOCAL_PORT`
 
 ## Serial Protocol
 
