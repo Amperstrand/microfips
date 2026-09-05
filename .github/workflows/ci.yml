@@ -811,7 +811,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, golden-vectors, build-host, lint, sim-smoke, sim-ping, build-firmware, build-esp32, fips-integration, spec-quotes]
+    needs: [test, golden-vectors, build-host, lint, sim-smoke, sim-ping, build-firmware, build-esp32, fips-integration, spec-quotes, noise-compliance, audit, build-firmware-extended]
     if: always()
     steps:
       - run: |
@@ -829,5 +829,8 @@ jobs:
           echo "| Build ESP32 | \`${{ needs.build-esp32.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Spec Quotes | \`${{ needs.spec-quotes.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Noise Spec Compliance | \`${{ needs.noise-compliance.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Security Audit | \`${{ needs.audit.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Extended Firmware | \`${{ needs.build-firmware-extended.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
