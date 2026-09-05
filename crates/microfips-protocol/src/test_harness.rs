@@ -376,6 +376,7 @@ pub fn success_timing() -> NodeTiming {
         connect_delay_ms: 0,
         rekey_after_secs: 0,
         rekey_after_messages: 0,
+        bad_frame_grace_secs: 0,
     }
 }
 

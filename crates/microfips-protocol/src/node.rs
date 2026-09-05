@@ -59,6 +59,8 @@ pub const DEFAULT_HANDSHAKE_RESEND_INTERVAL_MS: u64 = 3_000;
 pub const DEFAULT_HANDSHAKE_RESEND_BACKOFF: u64 = 1;
 pub const DEFAULT_HANDSHAKE_MAX_RESENDS: u32 = 10;
 pub const DEFAULT_CONNECT_DELAY_MS: u64 = 500;
+/// #204: post-cutover bad-frame grace (see `NodeTiming::bad_frame_grace_secs`).
+pub const DEFAULT_BAD_FRAME_GRACE_SECS: u64 = 10;
 pub const MAX_COMPETING_MSG1: u32 = 3;
 
 pub const RECV_BUF_SIZE: usize = 1500;
@@ -116,6 +118,15 @@ pub struct NodeTiming {
     pub handshake_resend_backoff: u64,
     pub handshake_max_resends: u32,
     pub connect_delay_ms: u64,
+    /// #204: after steady entry and after every key-epoch cutover, frames
+    /// still sealed under the PREVIOUS epoch (the peer's un-ACKed
+    /// heartbeat/report retries in flight during the rotation handshake)
+    /// arrive well-formed but undecryptable on every live slot. Dropping
+    /// them is correct; CHARGING them to the bad-frame policy is not —
+    /// ~3.6 such frames per rotation crossed MAX_TOTAL_BAD_FRAMES in the
+    /// 2026-09-05 soak-long and tore down a healthy session. This many
+    /// seconds of decrypt/replay failures are absorbed silently (0 = off).
+    pub bad_frame_grace_secs: u64,
 }
 
 impl Default for NodeTiming {
@@ -131,6 +142,7 @@ impl Default for NodeTiming {
             handshake_resend_backoff: DEFAULT_HANDSHAKE_RESEND_BACKOFF,
             handshake_max_resends: DEFAULT_HANDSHAKE_MAX_RESENDS,
             connect_delay_ms: DEFAULT_CONNECT_DELAY_MS,
+            bad_frame_grace_secs: DEFAULT_BAD_FRAME_GRACE_SECS,
         }
     }
 }
@@ -1062,6 +1074,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         let mut pend: Option<EpochSlot> = None;
         let mut prev: Option<EpochSlot> = None;
         let mut prev_drain_base = embassy_time::Instant::now();
+        // #204: steady entry is itself a key-epoch boundary — after a
+        // reconnect the peer may still be retrying frames sealed under the
+        // previous session's epoch. Armed again at every in-run cutover.
+        let mut bad_frame_grace_until =
+            embassy_time::Instant::now() + Duration::from_secs(self.timing.bad_frame_grace_secs);
         #[cfg(all(feature = "noise-keylog", feature = "log"))]
         self.log_keylog(&cur.ks, &cur.kr);
         let mut session_started = embassy_time::Instant::now();
@@ -1413,6 +1430,17 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     break 'winner f;
                                 }
                             }
+                            // #204: stale-epoch stragglers inside the grace
+                            // window are dropped, not charged — the peer's
+                            // in-flight retries are protocol noise, not an
+                            // attack (the drop still applies).
+                            if embassy_time::Instant::now() < bad_frame_grace_until {
+                                log_steady!(
+                                    "steady: stale-epoch frame dropped (grace, {}B)",
+                                    frame_data.len()
+                                );
+                                continue 'frames;
+                            }
                             self.policy.record_bad_frame();
                             if self.policy.check_bad_frame_limit() == PolicyVerdict::Reject
                                 || self.policy.check_total_bad_frame_limit()
@@ -1441,6 +1469,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             #[cfg(feature = "mmp")]
                             self.mmp.reset_for_rekey(Instant::now());
                             log_steady!("steady: rekey cutover complete, K-bit flipped");
+                            bad_frame_grace_until = embassy_time::Instant::now()
+                                + Duration::from_secs(self.timing.bad_frame_grace_secs);
                             #[cfg(all(feature = "noise-keylog", feature = "log"))]
                             self.log_keylog(&cur.ks, &cur.kr);
                         } else if from_prev {
@@ -1610,6 +1640,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         log_steady!(
                             "steady: rekey cutover complete (self-initiated), K-bit flipped"
                         );
+                        bad_frame_grace_until = embassy_time::Instant::now()
+                            + Duration::from_secs(self.timing.bad_frame_grace_secs);
                         #[cfg(all(feature = "noise-keylog", feature = "log"))]
                         self.log_keylog(&cur.ks, &cur.kr);
                     }
@@ -2706,6 +2738,7 @@ mod tests {
             connect_delay_ms: 42,
             rekey_after_secs: 0,
             rekey_after_messages: 0,
+            bad_frame_grace_secs: 13,
         };
 
         let node = Node::with_timing(
@@ -4157,6 +4190,133 @@ mod tests {
                 "heartbeat lost behind a junk datagram: {:?}",
                 handler.events
             );
+        });
+    }
+
+    #[test]
+    fn test_stale_epoch_burst_after_entry_does_not_rip_session() {
+        // #204: the peer's un-ACKed retries sealed under the previous epoch
+        // arrive right after steady entry (or a cutover) as well-formed but
+        // undecryptable frames. Pre-grace, 20 consecutive of them tripped
+        // the bad-frame limit and tore the session down — the 2026-09-05
+        // soak-long failure (~3.6/rotation crossed MAX_TOTAL_BAD_FRAMES at
+        // minute ~28). With the grace window they must be dropped silently
+        // and the queued good traffic still processed.
+        let q: &'static DatagramQueue = Box::leak(Box::new(DatagramQueue::default()));
+        let key = [0x24; 32];
+        let old_key = [0x99; 32];
+        let them = wire::SessionIndex::new(9);
+        let timing = NodeTiming {
+            heartbeat_interval_secs: 1,
+            link_dead_timeout_secs: 2,
+            bad_frame_grace_secs: 10,
+            ..NodeTiming::default()
+        };
+
+        let mut inbox = q.inbox.lock().unwrap();
+        for i in 1..=25u64 {
+            inbox.push_back(build_test_frame(
+                them,
+                i,
+                wire::MSG_HEARTBEAT,
+                1000,
+                &[],
+                &old_key,
+            ));
+        }
+        inbox.push_back(build_test_frame(
+            them,
+            500,
+            wire::MSG_HEARTBEAT,
+            1000,
+            &[],
+            &key,
+        ));
+        inbox.push_back(build_test_frame(
+            them,
+            501,
+            wire::MSG_DISCONNECT,
+            1000,
+            &[wire::DISC_REASON_SHUTDOWN],
+            &key,
+        ));
+        drop(inbox);
+
+        block_on(async move {
+            let mut node = Node::with_timing(
+                DatagramTransport { inner: q },
+                TestRng::from_os_rng(),
+                random_secret(),
+                microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
+                timing,
+            );
+            node.set_raw_framing(true);
+            node.policy.record_handshake_ok(Instant::now());
+            let mut handler = RecordingHandler::default();
+            let result = node
+                .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
+                .await;
+            assert_eq!(
+                result,
+                Ok(()),
+                "stale-epoch burst inside the grace window must not rip the session"
+            );
+            assert!(
+                handler
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, NodeEvent::HeartbeatRecv)),
+                "good frame behind the stale burst was not processed: {:?}",
+                handler.events
+            );
+        });
+    }
+
+    #[test]
+    fn test_sustained_undecryptable_frames_still_rip_session_without_grace() {
+        // The guard side of #204: with the grace disabled (0s), the same
+        // burst still trips the bad-frame limit — this is the pre-fix
+        // behavior and the DoS protection for genuine junk outside any
+        // transition window.
+        let q: &'static DatagramQueue = Box::leak(Box::new(DatagramQueue::default()));
+        let key = [0x24; 32];
+        let old_key = [0x99; 32];
+        let them = wire::SessionIndex::new(9);
+        let timing = NodeTiming {
+            heartbeat_interval_secs: 1,
+            link_dead_timeout_secs: 2,
+            bad_frame_grace_secs: 0,
+            ..NodeTiming::default()
+        };
+
+        let mut inbox = q.inbox.lock().unwrap();
+        for i in 1..=25u64 {
+            inbox.push_back(build_test_frame(
+                them,
+                i,
+                wire::MSG_HEARTBEAT,
+                1000,
+                &[],
+                &old_key,
+            ));
+        }
+        drop(inbox);
+
+        block_on(async move {
+            let mut node = Node::with_timing(
+                DatagramTransport { inner: q },
+                TestRng::from_os_rng(),
+                random_secret(),
+                microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
+                timing,
+            );
+            node.set_raw_framing(true);
+            node.policy.record_handshake_ok(Instant::now());
+            let mut handler = RecordingHandler::default();
+            let result = node
+                .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
+                .await;
+            assert_eq!(result, Err(ProtocolError::Disconnected));
         });
     }
 
