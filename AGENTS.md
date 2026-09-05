@@ -1558,7 +1558,7 @@ When not set, tools panic — no default device identity is allowed.
 | #81 | BLE address type mismatch pitfall | pitfall | `Address::random()` hardcodes RANDOM kind — must match target. Current code correct. |
 | #90 | L2CAP RX channel capacity overflow | bug | Fixed: RX channel increased 5→16 slots (commit `dcf3dc8`). Needs hardware verification. |
 | #88 | FRAME_CAP vs FIPS MTU RAM tradeoff | analysis | Resolved: FRAME_CAP=768 (max that links on ESP32-D0WD DRAM budget). MTU stays 2048. |
-| #77 | Firmware DoS hardening | security | Reconnect limits, memory protection. See also FIPS #57 (packet loss degradation on ESP32-S3). |
+| #77 | Firmware DoS hardening | fixed | Closed 2026-09-05: sticky PeerSlot + reconnect floor + rekey-answer rate limit (commits `62954b5`, `0a7cc88`, `5613f2f`), bench-proven by fips-lab `test_espnow_dos_floor` (green ×2 + RED vs reverted floor; also the first D0WD-atom esp-now hardware run). Phases 2-4 (ring buffers, data-ratio, busy-frame) deferred — codec already static-bounded, silent-peer + rate-limit policies cover the vectors. |
 | #91 | ESP32-S3 STA WiFi power-save latency spikes | fixed (STA) | Pure-STA path fixed via init-config PS=None (commit `07bbdcf`, min ~9 ms across a 5-min soak). Relay AP+STA must keep default power save — disabling it regresses to 180–830 ms. See "ESP32-S3 WiFi Power-Save Latency" below. |
 
 ### FIPS Issues Affecting microfips
