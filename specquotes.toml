@@ -37,3 +37,24 @@ file = "specs/fips/fsp-wire.rs"
 [sources.fips-mdns]
 format = "mediawiki"
 file = "specs/fips/mdns-mod.rs"
+
+# FIPS XX-wire invariants (specquotes-XX): verbatim quotes from the FIPS
+# `next` daemon we interop with on the XX/FMP-v1 wire, vendored under
+# specs/fips-next/ at the pinned NEXT_REF e0cc0c86 (the same ref the
+# xx-interop CI gate builds). Same mediawiki/stripped-comment convention
+# as specs/fips/.
+[sources.fips-xx-noise]
+format = "mediawiki"
+file = "specs/fips-next/noise-handshake.rs"
+
+[sources.fips-xx-fmp]
+format = "mediawiki"
+file = "specs/fips-next/fmp-wire.rs"
+
+[sources.fips-xx-active]
+format = "mediawiki"
+file = "specs/fips-next/peer-active.rs"
+
+[sources.fips-xx-session]
+format = "mediawiki"
+file = "specs/fips-next/session-handlers.rs"

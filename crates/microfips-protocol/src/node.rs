@@ -684,6 +684,11 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             // session and the pin is advisory. There is no
                             // unpinned initiator path: `peer_npub` is a
                             // required constructor argument (compiled-in pin).
+                            // FIPS-XX-NOISE: because it is XX, not XK: nothing in msg2 binds the sender to the
+                            // identity we dialled, so a read can succeed and the message still be a
+                            // forgery. The checks that catch that — the negotiation payload and the
+                            // static-key comparison — run after the read, and they need the same way
+                            // back that a failed read gets.
                             if resp_pub[1..33] != self.peer_npub[1..33] {
                                 #[cfg(feature = "log")]
                                 log::warn!("xx init: responder static != pinned peer, aborting");
@@ -806,6 +811,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                                 let (init_pub, _init_epoch) = responder
                                                     .read_message3(base3)
                                                     .map_err(|_| ProtocolError::InvalidMessage)?;
+                                                // FIPS-XX-ACTIVE: Must decrypt negotiation payload (if present) to keep hash chain
+                                                // in sync, even though rekey doesn't use the negotiation result.
                                                 if let Some(encrypted) = neg3 {
                                                     let mut plain = [0u8;
                                                         wire::negotiation::NEGOTIATION_MAX_SIZE];

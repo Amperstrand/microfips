@@ -142,6 +142,11 @@ pub struct NegotiationHeader {
 
 impl NegotiationHeader {
     pub fn parse(data: &[u8]) -> Result<Self, NegotiationError> {
+        // FIPS-XX-FMP: Wire Format:
+        //   Byte 0:     format (must be 0)
+        //   Byte 1:     [version_min:4 high][version_max:4 low]
+        //   Bytes 2-9:  feature bitfield (64 bits, LE)
+        //   Bytes 10+:  TLV entries, each: [field_num:2 LE][length:2 LE][value:N]
         if data.len() < NEGOTIATION_HEADER_SIZE {
             return Err(NegotiationError::TooShort);
         }
@@ -246,6 +251,12 @@ pub fn rekey_of(data: &[u8]) -> Result<Option<u32>, NegotiationError> {
 ///
 /// Bytes beyond the base XX message are the encrypted negotiation payload
 /// (FIPS next `complete_handshake` split at `noise::HANDSHAKE_MSG2_SIZE`).
+// FIPS-XX-ACTIVE:         let base_size = crate::noise::HANDSHAKE_MSG2_SIZE;
+//         let (base_msg2, extra) = if msg2_bytes.len() > base_size {
+//             (&msg2_bytes[..base_size], Some(&msg2_bytes[base_size..]))
+//         } else {
+//             (msg2_bytes, None)
+//         };
 pub fn split_msg2_noise(payload: &[u8]) -> (&[u8], Option<&[u8]>) {
     split_handshake_noise(payload, noise::XX_HANDSHAKE_MSG2_SIZE)
 }

@@ -1,0 +1,779 @@
+use super::{
+    CipherState, EPOCH_ENCRYPTED_SIZE, EPOCH_SIZE, HANDSHAKE_MSG1_SIZE, HANDSHAKE_MSG2_SIZE,
+    HANDSHAKE_MSG3_SIZE, HandshakeProgress, HandshakeRole, NoiseError, NoisePattern, NoiseSession,
+    PROTOCOL_NAME_XX, PUBKEY_SIZE,
+};
+use hkdf::Hkdf;
+use rand::Rng;
+use secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey, ecdh::shared_secret_point};
+use sha2::{Digest, Sha256};
+use std::fmt;
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+Symmetric state during handshake.
+
+Maintains the chaining key (ck), handshake hash (h), and current cipher.
+
+`Clone` exists for [`HandshakeState::try_read_message_2`], which has to put
+the pre-read state back after a message that mixed material in before
+failing to authenticate.
+
+`ck` and `h` are cleared on drop, including on the clone above once it
+goes out of scope. `cipher` is skipped because [`CipherState`] clears its
+own retained key.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+struct SymmetricState {
+Chaining key for key derivation.
+    ck: [u8; 32],
+Running SHA-256 accumulator over the handshake transcript.
+
+Maintained by `mix_hash` at every step, but never fed to the AEAD:
+`encrypt_and_hash` passes an empty associated-data field. Nothing in
+production reads it, so it provides no transcript binding today, and
+anything built on `handshake_hash()` (channel binding, an exporter,
+cookie binding) will silently not work until the AAD carries `h`.
+    h: [u8; 32],
+Current cipher state for encrypting handshake payloads.
+    #[zeroize(skip)]
+    cipher: CipherState,
+}
+
+impl SymmetricState {
+Initialize with protocol name.
+    fn initialize(protocol_name: &[u8]) -> Self {
+If protocol name <= 32 bytes, pad with zeros
+If > 32 bytes, hash it
+        let h = if protocol_name.len() <= 32 {
+            let mut h = [0u8; 32];
+            h[..protocol_name.len()].copy_from_slice(protocol_name);
+            h
+        } else {
+            let mut hasher = Sha256::new();
+            hasher.update(protocol_name);
+            hasher.finalize().into()
+        };
+
+        Self {
+            ck: h,
+            h,
+            cipher: CipherState::empty(),
+        }
+    }
+
+Mix data into the handshake hash.
+    fn mix_hash(&mut self, data: &[u8]) {
+        let mut hasher = Sha256::new();
+        hasher.update(self.h);
+        hasher.update(data);
+        self.h = hasher.finalize().into();
+    }
+
+Mix key material into the chaining key.
+    fn mix_key(&mut self, input_key_material: &[u8]) {
+        let hk = Hkdf::<Sha256>::new(Some(&self.ck), input_key_material);
+        let mut output = [0u8; 64];
+        hk.expand(&[], &mut output)
+            .expect("64 bytes is valid output length");
+
+        self.ck.copy_from_slice(&output[..32]);
+
+Initialize cipher with derived key for handshake encryption
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&output[32..64]);
+        self.cipher.initialize_key(key);
+        key.zeroize();
+
+        output.zeroize();
+    }
+
+Encrypt and mix into hash.
+    fn encrypt_and_hash(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        let ciphertext = self.cipher.encrypt(plaintext)?;
+        self.mix_hash(&ciphertext);
+        Ok(ciphertext)
+    }
+
+Decrypt and mix ciphertext into hash.
+    fn decrypt_and_hash(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        let plaintext = self.cipher.decrypt(ciphertext)?;
+        self.mix_hash(ciphertext);
+        Ok(plaintext)
+    }
+
+Split into two cipher states for transport.
+    fn split(&self) -> (CipherState, CipherState) {
+        let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
+        let mut output = [0u8; 64];
+        hk.expand(&[], &mut output)
+            .expect("64 bytes is valid output length");
+
+        let mut k1 = [0u8; 32];
+        let mut k2 = [0u8; 32];
+        k1.copy_from_slice(&output[..32]);
+        k2.copy_from_slice(&output[32..64]);
+
+        let ciphers = (CipherState::new(k1), CipherState::new(k2));
+
+        output.zeroize();
+        k1.zeroize();
+        k2.zeroize();
+
+        ciphers
+    }
+
+Get the handshake hash.
+    fn handshake_hash(&self) -> [u8; 32] {
+        self.h
+    }
+}
+
+The handshake state msg2 overwrites, kept so it can be put back.
+
+Produced by [`HandshakeState::try_read_message_2`] and applied by
+[`HandshakeState::restore_message_2`]. Opaque on purpose: the field set is
+a hand-maintained mirror of what `read_message_2` writes, and callers have
+no business editing it.
+pub struct Message2Rollback {
+    symmetric: SymmetricState,
+    remote_ephemeral: Option<PublicKey>,
+    remote_static: Option<PublicKey>,
+    remote_epoch: Option<[u8; 8]>,
+    progress: HandshakeProgress,
+}
+
+Handshake state for the Noise XX pattern.
+pub struct HandshakeState {
+Which Noise pattern is being used.
+    pattern: NoisePattern,
+Our role in the handshake.
+    role: HandshakeRole,
+Current progress.
+    progress: HandshakeProgress,
+Symmetric state.
+    symmetric: SymmetricState,
+Our static keypair.
+    static_keypair: Keypair,
+Our ephemeral keypair (generated at handshake start).
+    ephemeral_keypair: Option<Keypair>,
+Remote static public key.
+For XX initiator: learned from message 2.
+For XX responder: learned from message 3.
+    remote_static: Option<PublicKey>,
+Remote ephemeral public key (learned during handshake).
+    remote_ephemeral: Option<PublicKey>,
+Secp256k1 context.
+    secp: Secp256k1<secp256k1::All>,
+Our startup epoch for restart detection.
+    local_epoch: Option<[u8; 8]>,
+Remote peer's startup epoch (learned during handshake).
+    remote_epoch: Option<[u8; 8]>,
+}
+
+impl HandshakeState {
+Create a new XX handshake as initiator.
+
+XX: neither side knows the other's static key. No pre-message.
+    pub fn new_initiator(mut static_keypair: Keypair) -> Self {
+        let secp = Secp256k1::new();
+        let state = Self {
+            pattern: NoisePattern::Xx,
+            role: HandshakeRole::Initiator,
+            progress: HandshakeProgress::Initial,
+            symmetric: SymmetricState::initialize(PROTOCOL_NAME_XX),
+            static_keypair,
+            ephemeral_keypair: None,
+            remote_static: None,
+            remote_ephemeral: None,
+            secp,
+            local_epoch: None,
+            remote_epoch: None,
+        };
+No pre-message: neither side's static is mixed into hash.
+
+The struct now holds its own copy of the long-term private key and
+clears it on drop, so this frame's parameter copy is erased here.
+        static_keypair.non_secure_erase();
+
+        state
+    }
+
+Create a new XX handshake as responder.
+
+XX: neither side knows the other's static key. No pre-message.
+    pub fn new_responder(mut static_keypair: Keypair) -> Self {
+        let secp = Secp256k1::new();
+        let state = Self {
+            pattern: NoisePattern::Xx,
+            role: HandshakeRole::Responder,
+            progress: HandshakeProgress::Initial,
+            symmetric: SymmetricState::initialize(PROTOCOL_NAME_XX),
+            static_keypair,
+            ephemeral_keypair: None,
+            remote_static: None,
+            remote_ephemeral: None,
+            secp,
+            local_epoch: None,
+            remote_epoch: None,
+        };
+No pre-message: neither side's static is mixed into hash.
+
+The struct now holds its own copy of the long-term private key and
+clears it on drop, so this frame's parameter copy is erased here.
+        static_keypair.non_secure_erase();
+
+        state
+    }
+
+Get our role.
+    pub fn role(&self) -> HandshakeRole {
+        self.role
+    }
+
+Get current progress.
+    pub fn progress(&self) -> HandshakeProgress {
+        self.progress
+    }
+
+Check if handshake is complete.
+    pub fn is_complete(&self) -> bool {
+        self.progress == HandshakeProgress::Complete
+    }
+
+Get the remote static key (available after message 2 for initiator, message 3 for responder).
+    pub fn remote_static(&self) -> Option<&PublicKey> {
+        self.remote_static.as_ref()
+    }
+
+Set the local startup epoch for restart detection.
+    pub fn set_local_epoch(&mut self, epoch: [u8; 8]) {
+        self.local_epoch = Some(epoch);
+    }
+
+Get the remote peer's startup epoch (available after processing their message).
+    pub fn remote_epoch(&self) -> Option<[u8; 8]> {
+        self.remote_epoch
+    }
+
+Generate ephemeral keypair.
+    fn generate_ephemeral(&mut self) {
+        let mut rng = rand::rng();
+        let mut secret_bytes = [0u8; 32];
+        rng.fill_bytes(&mut secret_bytes);
+
+        let mut secret_key =
+            SecretKey::from_slice(&secret_bytes).expect("32 random bytes is valid secret key");
+        self.ephemeral_keypair = Some(Keypair::from_secret_key(&self.secp, &secret_key));
+        secret_bytes.zeroize();
+The erase is called non-secure because the private key may sit in
+further copies this function cannot name. It still clears the copy
+this frame owns; the keypair the key was just stored in is cleared
+by `Drop for HandshakeState`.
+        secret_key.non_secure_erase();
+    }
+
+Perform ECDH between our secret and their public key.
+
+Uses x-only hashing (SHA-256 of just the x-coordinate) to produce
+a parity-independent shared secret. This is necessary because Nostr
+npubs encode x-only keys without parity information, so the initiator
+may have the wrong parity for the responder's static key. Since P and
+-P produce ECDH result points with the same x-coordinate, hashing
+only x ensures both sides derive the same shared secret.
+
+`our_secret` is borrowed, so this frame makes no copy of it. Every
+caller below binds the value `Keypair::secret_key` hands back and
+erases that binding once the DH is done, because the returned
+`SecretKey` is a whole private key rather than a handle to one. Those
+erases clear the copies this crate owns; `secp256k1` names its erase
+non-secure because the compiler may hold further copies that no code
+here can name.
+    fn ecdh(&self, our_secret: &SecretKey, their_public: &PublicKey) -> [u8; 32] {
+Get raw (x, y) coordinates (64 bytes) without any hashing
+        let mut point = shared_secret_point(their_public, our_secret);
+Hash only the x-coordinate (first 32 bytes), ignoring y/parity
+        let mut hasher = Sha256::new();
+        hasher.update(&point[..32]);
+        let mut hash = hasher.finalize();
+        let mut result = [0u8; 32];
+        result.copy_from_slice(&hash);
+        hash.as_mut_slice().zeroize();
+        point.zeroize();
+`result` is moved out, so clearing it belongs to the caller.
+        result
+    }
+
+Write message 1 (initiator only).
+
+XX msg1: `-> e`
+- e: ephemeral public key (33 bytes)
+- No DH operations (responder's static is unknown)
+
+Total: 33 bytes
+    pub fn write_message_1(&mut self) -> Result<Vec<u8>, NoiseError> {
+        if self.role != HandshakeRole::Initiator {
+            return Err(NoiseError::WrongState {
+                expected: "initiator".to_string(),
+                got: "responder".to_string(),
+            });
+        }
+        if self.progress != HandshakeProgress::Initial {
+            return Err(NoiseError::WrongState {
+                expected: HandshakeProgress::Initial.to_string(),
+                got: self.progress.to_string(),
+            });
+        }
+
+Generate ephemeral keypair
+        self.generate_ephemeral();
+        let ephemeral = self.ephemeral_keypair.as_ref().unwrap();
+        let e_pub = ephemeral.public_key().serialize();
+
+        let mut message = Vec::with_capacity(HANDSHAKE_MSG1_SIZE);
+
+-> e: send ephemeral, mix into hash
+        message.extend_from_slice(&e_pub);
+        self.symmetric.mix_hash(&e_pub);
+
+No DH here — responder's static is unknown in XX
+
+        self.progress = HandshakeProgress::Message1Done;
+
+        Ok(message)
+    }
+
+Read message 1 (responder only).
+
+Parses the initiator's ephemeral key. No identity learned.
+    pub fn read_message_1(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        if self.role != HandshakeRole::Responder {
+            return Err(NoiseError::WrongState {
+                expected: "responder".to_string(),
+                got: "initiator".to_string(),
+            });
+        }
+        if self.progress != HandshakeProgress::Initial {
+            return Err(NoiseError::WrongState {
+                expected: HandshakeProgress::Initial.to_string(),
+                got: self.progress.to_string(),
+            });
+        }
+        if message.len() != HANDSHAKE_MSG1_SIZE {
+            return Err(NoiseError::MessageTooShort {
+                expected: HANDSHAKE_MSG1_SIZE,
+                got: message.len(),
+            });
+        }
+
+-> e: parse remote ephemeral, mix into hash
+        let re = PublicKey::from_slice(&message[..PUBKEY_SIZE])
+            .map_err(|_| NoiseError::InvalidPublicKey)?;
+        self.remote_ephemeral = Some(re);
+        self.symmetric.mix_hash(&message[..PUBKEY_SIZE]);
+
+No DH here — responder's static is not in pre-message for XX
+
+        self.progress = HandshakeProgress::Message1Done;
+
+        Ok(())
+    }
+
+Write message 2 (responder only).
+
+XX msg2: `<- e, ee, s, es` + encrypted epoch
+- e: ephemeral public key (33 bytes)
+- ee: DH(e_priv, re_pub), mix_key
+- s: encrypt_and_hash(s_pub) — encrypted static (49 bytes)
+- es: DH(s_priv, re_pub), mix_key
+- encrypted epoch (24 bytes)
+
+Total: 106 bytes
+    pub fn write_message_2(&mut self) -> Result<Vec<u8>, NoiseError> {
+        if self.role != HandshakeRole::Responder {
+            return Err(NoiseError::WrongState {
+                expected: "responder".to_string(),
+                got: "initiator".to_string(),
+            });
+        }
+        if self.progress != HandshakeProgress::Message1Done {
+            return Err(NoiseError::WrongState {
+                expected: HandshakeProgress::Message1Done.to_string(),
+                got: self.progress.to_string(),
+            });
+        }
+
+        let re = self.remote_ephemeral.expect("should have remote ephemeral");
+        let epoch = self
+            .local_epoch
+            .expect("local epoch must be set before write_message_2");
+
+Generate ephemeral keypair
+        self.generate_ephemeral();
+        let ephemeral = self.ephemeral_keypair.as_ref().unwrap();
+        let e_pub = ephemeral.public_key().serialize();
+
+        let mut message = Vec::with_capacity(HANDSHAKE_MSG2_SIZE);
+
+<- e: send ephemeral, mix into hash
+        message.extend_from_slice(&e_pub);
+        self.symmetric.mix_hash(&e_pub);
+
+<- ee: DH(e, re), mix into key
+        let mut sk = ephemeral.secret_key();
+        let mut ee = self.ecdh(&sk, &re);
+        self.symmetric.mix_key(&ee);
+        ee.zeroize();
+        sk.non_secure_erase();
+
+<- s: encrypt our static and send
+        let our_static = self.static_keypair.public_key().serialize();
+        let encrypted_static = self.symmetric.encrypt_and_hash(&our_static)?;
+        message.extend_from_slice(&encrypted_static);
+
+<- es: DH(s, re), mix into key
+        let mut sk = self.static_keypair.secret_key();
+        let mut es = self.ecdh(&sk, &re);
+        self.symmetric.mix_key(&es);
+        es.zeroize();
+        sk.non_secure_erase();
+
+<- epoch: encrypt startup epoch for restart detection
+        let encrypted_epoch = self.symmetric.encrypt_and_hash(&epoch)?;
+        debug_assert_eq!(encrypted_epoch.len(), EPOCH_ENCRYPTED_SIZE);
+        message.extend_from_slice(&encrypted_epoch);
+
+        self.progress = HandshakeProgress::Message2Done;
+
+        Ok(message)
+    }
+
+Read message 2 (initiator only).
+
+Processes the responder's ephemeral and encrypted static key.
+After this, the initiator learns the responder's identity.
+    pub fn read_message_2(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        if self.role != HandshakeRole::Initiator {
+            return Err(NoiseError::WrongState {
+                expected: "initiator".to_string(),
+                got: "responder".to_string(),
+            });
+        }
+        if self.progress != HandshakeProgress::Message1Done {
+            return Err(NoiseError::WrongState {
+                expected: HandshakeProgress::Message1Done.to_string(),
+                got: self.progress.to_string(),
+            });
+        }
+        if message.len() != HANDSHAKE_MSG2_SIZE {
+            return Err(NoiseError::MessageTooShort {
+                expected: HANDSHAKE_MSG2_SIZE,
+                got: message.len(),
+            });
+        }
+
+<- e: parse remote ephemeral, mix into hash
+        let e_pub = &message[..PUBKEY_SIZE];
+        let re = PublicKey::from_slice(e_pub).map_err(|_| NoiseError::InvalidPublicKey)?;
+        self.remote_ephemeral = Some(re);
+        self.symmetric.mix_hash(e_pub);
+
+<- ee: DH(e, re), mix into key
+        let ephemeral = self.ephemeral_keypair.as_ref().unwrap();
+        let mut sk = ephemeral.secret_key();
+        let mut ee = self.ecdh(&sk, &re);
+        self.symmetric.mix_key(&ee);
+        ee.zeroize();
+        sk.non_secure_erase();
+
+<- s: decrypt responder's static
+        let encrypted_static_end = PUBKEY_SIZE + PUBKEY_SIZE + super::TAG_SIZE;
+        let encrypted_static = &message[PUBKEY_SIZE..encrypted_static_end];
+        let decrypted_static = self.symmetric.decrypt_and_hash(encrypted_static)?;
+        let rs =
+            PublicKey::from_slice(&decrypted_static).map_err(|_| NoiseError::InvalidPublicKey)?;
+        self.remote_static = Some(rs);
+
+<- es: DH(e, rs), mix into key
+        let mut sk = ephemeral.secret_key();
+        let mut es = self.ecdh(&sk, &rs);
+        self.symmetric.mix_key(&es);
+        es.zeroize();
+        sk.non_secure_erase();
+
+<- epoch: decrypt responder's startup epoch
+        let encrypted_epoch = &message[encrypted_static_end..];
+        debug_assert_eq!(encrypted_epoch.len(), EPOCH_ENCRYPTED_SIZE);
+        let decrypted_epoch = self.symmetric.decrypt_and_hash(encrypted_epoch)?;
+        debug_assert_eq!(decrypted_epoch.len(), EPOCH_SIZE);
+        let mut epoch = [0u8; EPOCH_SIZE];
+        epoch.copy_from_slice(&decrypted_epoch);
+        self.remote_epoch = Some(epoch);
+
+        self.progress = HandshakeProgress::Message2Done;
+
+        Ok(())
+    }
+
+Read message 2, leaving the handshake untouched when the message does
+not authenticate, and handing the caller the means to undo a read that
+succeeded.
+
+`read_message_2` mixes the sender's ephemeral into the symmetric state
+before it authenticates anything, so a message that fails partway
+leaves a handshake that can never read the genuine msg2 afterwards. A
+caller that keeps its session entry across a failed read — because the
+message may be a forgery rather than a real peer's corrupt reply —
+needs the pre-read state back.
+
+On failure the pre-read state is restored here. On success the caller
+gets a [`Message2Rollback`] and may restore it later with
+[`HandshakeState::restore_message_2`]. That matters on this line
+because it is XX, not XK: nothing in msg2 binds the sender to the
+identity we dialled, so a read can succeed and the message still be a
+forgery. The checks that catch that — the negotiation payload and the
+static-key comparison — run after the read, and they need the same way
+back that a failed read gets.
+
+The saved set is exactly what `read_message_2` writes: `symmetric`,
+`remote_ephemeral`, `remote_static`, `remote_epoch` and `progress`.
+**That mirror is manual.** A later edit that adds a write to
+`read_message_2` without adding it here silently reintroduces the
+poisoning, and no caller can detect it. `remote_static` is in the set
+where the XK equivalent has no need of it: XX msg2 carries the
+responder's static, stored before the epoch decrypt that can still
+fail.
+
+`symmetric` also covers [`HandshakeState::decrypt_payload`], which
+touches nothing else, so a rollback taken here undoes a failed
+negotiation-payload decrypt as well.
+    pub fn try_read_message_2(&mut self, message: &[u8]) -> Result<Message2Rollback, NoiseError> {
+        let saved = Message2Rollback {
+            symmetric: self.symmetric.clone(),
+            remote_ephemeral: self.remote_ephemeral,
+            remote_static: self.remote_static,
+            remote_epoch: self.remote_epoch,
+            progress: self.progress,
+        };
+
+        match self.read_message_2(message) {
+            Ok(()) => Ok(saved),
+            Err(e) => {
+                self.restore_message_2(saved);
+                Err(e)
+            }
+        }
+    }
+
+Put back the state a [`Message2Rollback`] was taken before.
+
+Leaves the handshake able to read a genuine msg2 elicited by a msg1
+resend, which is the only reason keeping the session entry is worth
+anything.
+    pub fn restore_message_2(&mut self, saved: Message2Rollback) {
+        self.symmetric = saved.symmetric;
+        self.remote_ephemeral = saved.remote_ephemeral;
+        self.remote_static = saved.remote_static;
+        self.remote_epoch = saved.remote_epoch;
+        self.progress = saved.progress;
+    }
+
+Write message 3 (initiator only).
+
+XX msg3: `-> s, se` + encrypted epoch
+- s: encrypt_and_hash(s_pub) — encrypted static (49 bytes)
+- se: DH(s_priv, re_pub), mix_key
+- encrypted epoch (24 bytes)
+
+Total: 73 bytes
+    pub fn write_message_3(&mut self) -> Result<Vec<u8>, NoiseError> {
+        if self.role != HandshakeRole::Initiator {
+            return Err(NoiseError::WrongState {
+                expected: "initiator".to_string(),
+                got: "responder".to_string(),
+            });
+        }
+        if self.progress != HandshakeProgress::Message2Done {
+            return Err(NoiseError::WrongState {
+                expected: HandshakeProgress::Message2Done.to_string(),
+                got: self.progress.to_string(),
+            });
+        }
+
+        let re = self
+            .remote_ephemeral
+            .expect("should have remote ephemeral after msg2");
+        let epoch = self
+            .local_epoch
+            .expect("local epoch must be set before write_message_3");
+
+        let mut message = Vec::with_capacity(HANDSHAKE_MSG3_SIZE);
+
+-> s: encrypt our static and send
+        let our_static = self.static_keypair.public_key().serialize();
+        let encrypted_static = self.symmetric.encrypt_and_hash(&our_static)?;
+        message.extend_from_slice(&encrypted_static);
+
+-> se: DH(s, re), mix into key
+        let mut sk = self.static_keypair.secret_key();
+        let mut se = self.ecdh(&sk, &re);
+        self.symmetric.mix_key(&se);
+        se.zeroize();
+        sk.non_secure_erase();
+
+-> epoch: encrypt startup epoch for restart detection
+        let encrypted_epoch = self.symmetric.encrypt_and_hash(&epoch)?;
+        debug_assert_eq!(encrypted_epoch.len(), EPOCH_ENCRYPTED_SIZE);
+        message.extend_from_slice(&encrypted_epoch);
+
+        self.progress = HandshakeProgress::Complete;
+
+        Ok(message)
+    }
+
+Read message 3 (responder only).
+
+Processes the initiator's encrypted static key and epoch.
+After this, the responder learns the initiator's identity.
+    pub fn read_message_3(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        if self.role != HandshakeRole::Responder {
+            return Err(NoiseError::WrongState {
+                expected: "responder".to_string(),
+                got: "initiator".to_string(),
+            });
+        }
+        if self.progress != HandshakeProgress::Message2Done {
+            return Err(NoiseError::WrongState {
+                expected: HandshakeProgress::Message2Done.to_string(),
+                got: self.progress.to_string(),
+            });
+        }
+        if message.len() != HANDSHAKE_MSG3_SIZE {
+            return Err(NoiseError::MessageTooShort {
+                expected: HANDSHAKE_MSG3_SIZE,
+                got: message.len(),
+            });
+        }
+
+-> s: decrypt initiator's static
+        let encrypted_static_end = PUBKEY_SIZE + super::TAG_SIZE;
+        let encrypted_static = &message[..encrypted_static_end];
+        let decrypted_static = self.symmetric.decrypt_and_hash(encrypted_static)?;
+        let rs =
+            PublicKey::from_slice(&decrypted_static).map_err(|_| NoiseError::InvalidPublicKey)?;
+        self.remote_static = Some(rs);
+
+-> se: DH(e, rs), mix into key
+(responder uses their ephemeral with initiator's now-known static)
+        let ephemeral = self
+            .ephemeral_keypair
+            .as_ref()
+            .expect("should have ephemeral after msg2");
+        let mut sk = ephemeral.secret_key();
+        let mut se = self.ecdh(&sk, &rs);
+        self.symmetric.mix_key(&se);
+        se.zeroize();
+        sk.non_secure_erase();
+
+-> epoch: decrypt initiator's startup epoch
+        let encrypted_epoch = &message[encrypted_static_end..];
+        debug_assert_eq!(encrypted_epoch.len(), EPOCH_ENCRYPTED_SIZE);
+        let decrypted_epoch = self.symmetric.decrypt_and_hash(encrypted_epoch)?;
+        debug_assert_eq!(decrypted_epoch.len(), EPOCH_SIZE);
+        let mut epoch = [0u8; EPOCH_SIZE];
+        epoch.copy_from_slice(&decrypted_epoch);
+        self.remote_epoch = Some(epoch);
+
+        self.progress = HandshakeProgress::Complete;
+
+        Ok(())
+    }
+
+========================================================================
+Payload Encryption (for negotiation payload in msg2/msg3)
+========================================================================
+
+Encrypt additional payload and mix into the handshake hash.
+
+Called after write_message_2/3 to append negotiation payload.
+Must be called before `into_session()`.
+    pub fn encrypt_payload(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        self.symmetric.encrypt_and_hash(plaintext)
+    }
+
+Decrypt additional payload and mix ciphertext into the handshake hash.
+
+Called after read_message_2/3 to extract negotiation payload.
+Must be called before `into_session()`.
+    pub fn decrypt_payload(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        self.symmetric.decrypt_and_hash(ciphertext)
+    }
+
+Complete the handshake and return a NoiseSession.
+
+Must be called after the handshake is complete.
+    pub fn into_session(self) -> Result<NoiseSession, NoiseError> {
+        if !self.is_complete() {
+            return Err(NoiseError::HandshakeNotComplete);
+        }
+
+        let (c1, c2) = self.symmetric.split();
+        let handshake_hash = self.symmetric.handshake_hash();
+        let remote_static = self
+            .remote_static
+            .expect("remote static must be known after handshake");
+
+Initiator sends with c1, receives with c2
+Responder sends with c2, receives with c1
+        let (send_cipher, recv_cipher) = match self.role {
+            HandshakeRole::Initiator => (c1, c2),
+            HandshakeRole::Responder => (c2, c1),
+        };
+
+        Ok(NoiseSession::from_handshake(
+            self.role,
+            send_cipher,
+            recv_cipher,
+            handshake_hash,
+            remote_static,
+        ))
+    }
+
+Get the handshake hash (available after complete).
+    pub fn handshake_hash(&self) -> [u8; 32] {
+        self.symmetric.handshake_hash()
+    }
+}
+
+impl Drop for HandshakeState {
+Erase the two private keys this state holds.
+
+`static_keypair` is the node's long-term private key and
+`ephemeral_keypair` is the handshake's own. Both live here for the
+whole handshake, which is longer than in any other frame, so this is
+where clearing them matters most. `Keypair` is `Copy` and so cannot
+clear itself on drop; `HandshakeState` is not, so it does it for both.
+
+This clears the copies this crate owns, not every copy that ever
+existed: `secp256k1` names its erase non-secure because the compiler
+may duplicate or move the bytes to places no code here can name.
+    fn drop(&mut self) {
+        self.static_keypair.non_secure_erase();
+        if let Some(ephemeral) = self.ephemeral_keypair.as_mut() {
+            ephemeral.non_secure_erase();
+        }
+    }
+}
+
+impl fmt::Debug for HandshakeState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandshakeState")
+            .field("pattern", &self.pattern)
+            .field("role", &self.role)
+            .field("progress", &self.progress)
+            .field("has_ephemeral", &self.ephemeral_keypair.is_some())
+            .field("has_remote_static", &self.remote_static.is_some())
+            .field("has_remote_ephemeral", &self.remote_ephemeral.is_some())
+            .field("has_local_epoch", &self.local_epoch.is_some())
+            .field("has_remote_epoch", &self.remote_epoch.is_some())
+            .finish()
+    }
+}

@@ -1,0 +1,1944 @@
+Active Peer (Authenticated Phase)
+
+Represents a fully authenticated peer after successful Noise handshake.
+ActivePeer holds tree state, Bloom filter, and routing information.
+
+use crate::config::MmpConfig;
+use crate::node::REKEY_JITTER_SECS;
+use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseError, NoiseSession};
+use crate::proto::bloom::BloomFilter;
+use crate::proto::fmp::{NegotiationPayload, NodeProfile};
+use crate::proto::mmp::MmpPeerState;
+use crate::proto::stp::{ParentDeclaration, TreeCoordinate};
+use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+use crate::utils::index::SessionIndex;
+use crate::{FipsAddress, NodeAddr, PeerIdentity};
+use rand::RngExt;
+use secp256k1::XOnlyPublicKey;
+use std::fmt;
+use std::time::Instant;
+
+Result of completing a rekey msg2 on the initiator (XX pattern):
+the XX msg3 bytes to send, the completed Noise session, the remote
+peer's startup epoch (for peer-restart detection), and the node address
+derived from the static key the returned session is bound to.
+
+XX transmits the responder's static in msg2 rather than pinning it a priori
+(as IK did), so the learned identity is surfaced here for the caller's
+static-continuity decision: a cryptographically valid handshake alone does
+not establish that the rekey was answered by the peer already holding the
+link.
+type RekeyMsg2Completion = (Vec<u8>, NoiseSession, Option<[u8; 8]>, NodeAddr);
+
+Draw a fresh per-session rekey jitter from `[-REKEY_JITTER_SECS, +REKEY_JITTER_SECS]`.
+fn draw_rekey_jitter() -> i64 {
+    rand::rng().random_range(-REKEY_JITTER_SECS..=REKEY_JITTER_SECS)
+}
+
+Connectivity state for an active peer.
+
+This is simpler than the full PeerState since authentication is complete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectivityState {
+Peer is fully connected and responsive.
+    Connected,
+Peer hasn't been heard from recently (potential timeout).
+    Stale,
+Connection lost, attempting to reconnect.
+    Reconnecting,
+Peer has been explicitly disconnected.
+    Disconnected,
+}
+
+impl ConnectivityState {
+Check if the peer is usable for sending traffic.
+    pub fn can_send(&self) -> bool {
+        matches!(
+            self,
+            ConnectivityState::Connected | ConnectivityState::Stale
+        )
+    }
+
+Check if this is a terminal state requiring cleanup.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, ConnectivityState::Disconnected)
+    }
+
+Check if peer is fully healthy.
+    pub fn is_healthy(&self) -> bool {
+        matches!(self, ConnectivityState::Connected)
+    }
+}
+
+impl fmt::Display for ConnectivityState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ConnectivityState::Connected => "connected",
+            ConnectivityState::Stale => "stale",
+            ConnectivityState::Reconnecting => "reconnecting",
+            ConnectivityState::Disconnected => "disconnected",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+Published active-send-state for a peer (the two-tier boundary).
+
+This is the send-critical subset of an `ActivePeer` that the data plane
+reads (and, on roam/responder-cutover, writes) directly by plain borrow
+with no FSM dispatch: the three epoch slots (current / previous-draining /
+pending), the K-bit + session-relative time base, the transport target,
+the connected-UDP handles, and the hot per-packet counters. Grouping these
+draws the control/published-send-state boundary inside the peer entry.
+
+Co-located, not behind `Arc`/`ArcSwap` — the data plane is not sharded, so
+the hot path reads this by plain borrow. Publishing behind `Arc`/`ArcSwap`
+is later-increment plumbing for a sharded data plane.
+
+Like `ActivePeer`, this does not implement `Clone` because it contains
+`NoiseSession`, which cannot be safely cloned (cloning would risk nonce
+reuse, a catastrophic security failure).
+#[derive(Debug)]
+struct PeerSendState {
+=== Current epoch slot ===
+Noise session for encryption/decryption (None if legacy peer).
+    noise_session: Option<NoiseSession>,
+Our session index (they include this when sending TO us).
+    our_index: Option<SessionIndex>,
+Their session index (we include this when sending TO them).
+    their_index: Option<SessionIndex>,
+
+=== Previous / draining epoch slot ===
+Previous session kept alive during drain window after cutover.
+    previous_session: Option<NoiseSession>,
+Previous session's our_index (for peers_by_index cleanup on drain expiry).
+    previous_our_index: Option<SessionIndex>,
+When the drain window started (None = no drain in progress).
+    drain_started: Option<Instant>,
+
+=== Pending epoch slot ===
+Pending new session from completed rekey (before K-bit cutover).
+    pending_new_session: Option<NoiseSession>,
+Pending new session's our_index.
+    pending_our_index: Option<SessionIndex>,
+Pending new session's their_index.
+    pending_their_index: Option<SessionIndex>,
+
+=== Epoch bit + session-relative time base ===
+Current K-bit epoch value (alternates each rekey).
+    current_k_bit: bool,
+Session start time for computing session-relative timestamps.
+Used as the epoch for the 4-byte inner header timestamp field.
+    session_start: Instant,
+
+=== Transport target ===
+Transport ID for this peer's link.
+    transport_id: Option<TransportId>,
+Current transport address (for roaming support).
+    current_addr: Option<TransportAddr>,
+Link used to reach this peer.
+    link_id: LinkId,
+
+=== Connected-UDP handles ===
+Unix UDP fast-path: per-peer `connect()`-ed socket (paired with
+the listen socket via `SO_REUSEPORT`). The kernel demux prefers
+the connected 5-tuple, so inbound packets land here; the
+encrypt-worker send path sends with `msg_name = NULL`, skipping
+per-packet sockaddr handling + route lookup. Behind an `Arc` so
+in-flight worker jobs survive rekey/address-change rotations.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    connected_udp: Option<std::sync::Arc<crate::transport::udp::ConnectedPeerSocket>>,
+
+Per-peer recv drain thread. Always paired with `connected_udp`:
+the kernel routes inbound packets from this peer to the
+connected socket, so it *must* be drained or the kernel recv
+buffer fills. Drop signals shutdown via self-pipe.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    peer_recv_drain: Option<crate::transport::udp::PeerRecvDrain>,
+
+=== Hot counters ===
+Link statistics.
+    link_stats: LinkStats,
+When this peer was last seen (any activity, Unix milliseconds).
+    last_seen: u64,
+Number of replay detections suppressed since last session reset.
+    replay_suppressed_count: u32,
+Consecutive decryption failures (reset on any successful decrypt).
+    consecutive_decrypt_failures: u32,
+Per-peer MMP state (None for legacy peers without Noise sessions).
+    mmp: Option<MmpPeerState>,
+}
+
+impl PeerSendState {
+Empty send-state for a peer with no Noise session yet. Mirrors the
+send-critical portion of `ActivePeer::new`.
+    fn new(link_id: LinkId, session_start: Instant, last_seen: u64) -> Self {
+        Self {
+            noise_session: None,
+            our_index: None,
+            their_index: None,
+            previous_session: None,
+            previous_our_index: None,
+            drain_started: None,
+            pending_new_session: None,
+            pending_our_index: None,
+            pending_their_index: None,
+            current_k_bit: false,
+            session_start,
+            transport_id: None,
+            current_addr: None,
+            link_id,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_udp: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            peer_recv_drain: None,
+            link_stats: LinkStats::new(),
+            last_seen,
+            replay_suppressed_count: 0,
+            consecutive_decrypt_failures: 0,
+            mmp: None,
+        }
+    }
+}
+
+A fully authenticated remote FIPS node.
+
+Created only after successful Noise KK handshake. The identity is
+cryptographically verified at this point.
+
+Note: ActivePeer intentionally does not implement Clone because it
+contains NoiseSession, which cannot be safely cloned (cloning would
+risk nonce reuse, a catastrophic security failure).
+#[derive(Debug)]
+pub struct ActivePeer {
+=== Identity (Verified) ===
+Cryptographic identity (verified via handshake).
+    identity: PeerIdentity,
+Bech32 npub, derived once at construction.
+
+The npub is a pure function of `identity`'s public key, and
+`identity` is never mutated after construction, so this can never
+go stale. Deriving it costs a bech32 encode, which the per-tick
+stats snapshot was paying once per peer per tick.
+    npub: String,
+Shortened npub for log/UI display, derived once at construction.
+Immutable for the same reason as [`ActivePeer::npub`].
+    short_npub: String,
+
+=== Connection ===
+Current connectivity state.
+    connectivity: ConnectivityState,
+
+=== Spanning Tree ===
+Their latest parent declaration.
+    declaration: Option<ParentDeclaration>,
+Their path to root.
+    ancestry: Option<TreeCoordinate>,
+
+=== Tree Announce Rate Limiting ===
+Minimum interval between TreeAnnounce messages (milliseconds).
+    tree_announce_min_interval_ms: u64,
+Last time we sent a TreeAnnounce to this peer (Unix milliseconds).
+    last_tree_announce_sent_ms: u64,
+Whether a tree announce is pending (deferred due to rate limit).
+    pending_tree_announce: bool,
+
+=== Bloom Filter ===
+What's reachable through them (inbound filter).
+    inbound_filter: Option<BloomFilter>,
+Their filter's sequence number.
+    filter_sequence: u64,
+When we received their last filter (Unix milliseconds).
+    filter_received_at: u64,
+Whether we owe them a filter update.
+    pending_filter_update: bool,
+
+=== Statistics ===
+When this peer was authenticated (Unix milliseconds).
+    authenticated_at: u64,
+
+=== Epoch (Restart Detection) ===
+Remote peer's startup epoch (from handshake). Used to detect restarts.
+    remote_epoch: Option<[u8; 8]>,
+
+=== Negotiated Profile ===
+Peer's node profile (Full, NonRouting, Leaf).
+    peer_profile: NodeProfile,
+Whether to send sender reports to this peer (our provides_sr AND peer wants_sr).
+    send_sr: bool,
+Whether to send receiver reports to this peer (our provides_rr AND peer wants_rr).
+    send_rr: bool,
+
+=== Heartbeat ===
+When we last sent a heartbeat to this peer.
+    last_heartbeat_sent: Option<Instant>,
+
+=== Handshake Resend ===
+Wire-format msg2 for resend on duplicate msg1 (responder only).
+Cleared after the handshake timeout window.
+    handshake_msg2: Option<Vec<u8>>,
+
+=== Rekey (Key Rotation) ===
+When the current Noise session was established (for rekey timer).
+    session_established_at: Instant,
+Per-session symmetric jitter applied to the rekey timer trigger.
+Drawn once at construction (and at each cutover) uniformly from
+`[-REKEY_JITTER_SECS, +REKEY_JITTER_SECS]`. Desynchronizes
+dual-initiation in symmetric-start meshes; mean interval is
+preserved.
+    rekey_jitter_secs: i64,
+Whether a rekey is currently in progress (handshake sent, not yet complete).
+    rekey_in_progress: bool,
+When we last received a rekey msg1 from this peer (dampening).
+    last_peer_rekey: Option<Instant>,
+In-progress rekey: Noise handshake state (initiator only).
+    rekey_handshake: Option<NoiseHandshakeState>,
+In-progress rekey: our new session index.
+    rekey_our_index: Option<SessionIndex>,
+In-progress rekey: wire-format msg1 for resend.
+    rekey_msg1: Option<Vec<u8>>,
+In-progress rekey: next resend timestamp (Unix ms).
+    rekey_msg1_next_resend: u64,
+In-progress rekey: number of msg1 retransmissions performed so far.
+    rekey_msg1_resend_count: u32,
+
+=== Rekey Responder State (XX pattern) ===
+In-progress rekey responder: Noise handshake state awaiting msg3.
+    rekey_responder_handshake: Option<NoiseHandshakeState>,
+In-progress rekey responder: our new session index.
+    rekey_responder_our_index: Option<SessionIndex>,
+
+=== Rekey msg3 retransmission (initiator liveness) ===
+Retained wire-format rekey msg3, resent until the responder is
+confirmed on the new epoch. Mirrors the FSP
+`rekey_msg3_payload` mechanism (node/session/mod.rs). Liveness only:
+overlapping-epoch decrypt covers cutover skew; retransmission
+guarantees the responder eventually derives the new session even
+if the first msg3 datagram is lost.
+    rekey_msg3_payload: Option<Vec<u8>>,
+Next msg3 resend timestamp (Unix ms; 0 = none retained).
+    rekey_msg3_next_resend_ms: u64,
+Number of msg3 retransmissions performed this rekey cycle.
+    rekey_msg3_resend_count: u32,
+
+=== Published active-send-state (two-tier boundary) ===
+The send-critical subset read (and, on roam/responder-cutover, written)
+directly by the data plane. See `PeerSendState`.
+    send: PeerSendState,
+}
+
+impl ActivePeer {
+Create a new active peer from verified identity.
+
+Called after successful authentication handshake.
+For peers with Noise sessions, use `with_session` instead.
+    pub fn new(identity: PeerIdentity, link_id: LinkId, authenticated_at: u64) -> Self {
+        let now = Instant::now();
+        Self {
+            npub: identity.npub(),
+            short_npub: identity.short_npub(),
+            identity,
+            connectivity: ConnectivityState::Connected,
+            declaration: None,
+            ancestry: None,
+            tree_announce_min_interval_ms: 500,
+            last_tree_announce_sent_ms: 0,
+            pending_tree_announce: false,
+            inbound_filter: None,
+            filter_sequence: 0,
+            filter_received_at: 0,
+            pending_filter_update: true, // Send filter on new connection
+            authenticated_at,
+            remote_epoch: None,
+            peer_profile: NodeProfile::Full,
+            send_sr: true,
+            send_rr: true,
+            last_heartbeat_sent: None,
+            handshake_msg2: None,
+            session_established_at: now,
+            rekey_jitter_secs: draw_rekey_jitter(),
+            rekey_in_progress: false,
+            last_peer_rekey: None,
+            rekey_handshake: None,
+            rekey_our_index: None,
+            rekey_msg1: None,
+            rekey_msg1_next_resend: 0,
+            rekey_msg1_resend_count: 0,
+            rekey_responder_handshake: None,
+            rekey_responder_our_index: None,
+            rekey_msg3_payload: None,
+            rekey_msg3_next_resend_ms: 0,
+            rekey_msg3_resend_count: 0,
+            send: PeerSendState::new(link_id, now, authenticated_at),
+        }
+    }
+
+Create from verified identity with existing link stats.
+
+Used when promoting a completed handshake, preserving its link stats.
+For peers with Noise sessions, use `with_session` instead.
+    pub fn with_stats(
+        identity: PeerIdentity,
+        link_id: LinkId,
+        authenticated_at: u64,
+        link_stats: LinkStats,
+    ) -> Self {
+        let mut peer = Self::new(identity, link_id, authenticated_at);
+        peer.send.link_stats = link_stats;
+        peer
+    }
+
+Create from verified identity with Noise session and index tracking.
+
+This is the primary constructor for the wire protocol path.
+The NoiseSession provides encryption/decryption and replay protection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_session(
+        identity: PeerIdentity,
+        link_id: LinkId,
+        authenticated_at: u64,
+        noise_session: NoiseSession,
+        our_index: SessionIndex,
+        their_index: SessionIndex,
+        transport_id: TransportId,
+        current_addr: TransportAddr,
+        link_stats: LinkStats,
+        _is_initiator: bool,
+        mmp_config: &MmpConfig,
+        remote_epoch: Option<[u8; 8]>,
+        our_profile: NodeProfile,
+        peer_profile: NodeProfile,
+    ) -> Self {
+Compute MMP report gating: A sends to B iff A.provides AND B.wants
+        let our_neg = NegotiationPayload::fmp(0, 0, our_profile);
+        let their_neg = NegotiationPayload::fmp(0, 0, peer_profile);
+        let send_sr = our_neg.provides_sr() && their_neg.wants_sr();
+        let send_rr = our_neg.provides_rr() && their_neg.wants_rr();
+
+        let now = Instant::now();
+        let mut send = PeerSendState::new(link_id, now, authenticated_at);
+        send.noise_session = Some(noise_session);
+        send.our_index = Some(our_index);
+        send.their_index = Some(their_index);
+        send.transport_id = Some(transport_id);
+        send.current_addr = Some(current_addr);
+        send.link_stats = link_stats;
+        send.mmp = Some(MmpPeerState::new(
+            mmp_config.mode,
+            mmp_config.log_interval_secs,
+            mmp_config.owd_window_size,
+        ));
+        Self {
+            npub: identity.npub(),
+            short_npub: identity.short_npub(),
+            identity,
+            connectivity: ConnectivityState::Connected,
+            declaration: None,
+            ancestry: None,
+            tree_announce_min_interval_ms: 500,
+            last_tree_announce_sent_ms: 0,
+            pending_tree_announce: false,
+            inbound_filter: None,
+            filter_sequence: 0,
+            filter_received_at: 0,
+            pending_filter_update: true,
+            authenticated_at,
+            remote_epoch,
+            peer_profile,
+            send_sr,
+            send_rr,
+            last_heartbeat_sent: None,
+            handshake_msg2: None,
+            session_established_at: now,
+            rekey_jitter_secs: draw_rekey_jitter(),
+            rekey_in_progress: false,
+            last_peer_rekey: None,
+            rekey_handshake: None,
+            rekey_our_index: None,
+            rekey_msg1: None,
+            rekey_msg1_next_resend: 0,
+            rekey_msg1_resend_count: 0,
+            rekey_responder_handshake: None,
+            rekey_responder_our_index: None,
+            rekey_msg3_payload: None,
+            rekey_msg3_next_resend_ms: 0,
+            rekey_msg3_resend_count: 0,
+            send,
+        }
+    }
+
+=== Connected-UDP fast path ===
+
+Refcount the per-peer `connect()`-ed UDP socket if installed.
+Encrypt-worker send path uses this to bypass the wildcard
+listen socket's per-packet sockaddr handling.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn connected_udp(
+        &self,
+    ) -> Option<std::sync::Arc<crate::transport::udp::ConnectedPeerSocket>> {
+        self.send.connected_udp.clone()
+    }
+
+Install a per-peer `connect()`-ed UDP socket with its paired
+recv drain thread. The two own each other's lifetime: the drain
+is the only consumer of packets on this socket.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn set_connected_udp(
+        &mut self,
+        socket: std::sync::Arc<crate::transport::udp::ConnectedPeerSocket>,
+        drain: crate::transport::udp::PeerRecvDrain,
+    ) {
+Drop the old drain BEFORE the old socket so its last fd
+reference is released cleanly.
+        self.send.peer_recv_drain = None;
+        self.send.connected_udp = None;
+        self.send.connected_udp = Some(socket);
+        self.send.peer_recv_drain = Some(drain);
+    }
+
+Clear the per-peer connected UDP socket + drain. The drain
+exits via self-pipe signal; the kernel fd closes on last `Arc`
+drop (any in-flight worker jobs holding the old `Arc` stay
+valid until they complete).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[allow(dead_code)] // called from session-deregister + rekey follow-up
+    pub(crate) fn clear_connected_udp(&mut self) {
+        self.send.peer_recv_drain = None;
+        self.send.connected_udp = None;
+    }
+
+=== Identity Accessors ===
+
+Get the peer's verified identity.
+    pub fn identity(&self) -> &PeerIdentity {
+        &self.identity
+    }
+
+Get the peer's NodeAddr.
+    pub fn node_addr(&self) -> &NodeAddr {
+        self.identity.node_addr()
+    }
+
+Get the peer's FIPS address.
+    pub fn address(&self) -> &FipsAddress {
+        self.identity.address()
+    }
+
+Get the peer's public key.
+    pub fn pubkey(&self) -> XOnlyPublicKey {
+        self.identity.pubkey()
+    }
+
+Get the peer's npub string.
+
+Returns a clone of the value cached at construction; the bech32
+encode is not repeated.
+    pub fn npub(&self) -> String {
+        self.npub.clone()
+    }
+
+Borrow the peer's cached npub without allocating.
+    pub fn npub_str(&self) -> &str {
+        &self.npub
+    }
+
+Borrow the peer's cached shortened npub (e.g. `npub1abcd...wxyz`).
+    pub fn short_npub(&self) -> &str {
+        &self.short_npub
+    }
+
+=== Connection Accessors ===
+
+Get the link ID.
+    pub fn link_id(&self) -> LinkId {
+        self.send.link_id
+    }
+
+Get the connectivity state.
+    pub fn connectivity(&self) -> ConnectivityState {
+        self.connectivity
+    }
+
+Check if peer can receive traffic.
+    pub fn can_send(&self) -> bool {
+        self.connectivity.can_send()
+    }
+
+Check if peer is fully healthy.
+    pub fn is_healthy(&self) -> bool {
+        self.connectivity.is_healthy()
+    }
+
+Check if peer is disconnected.
+    pub fn is_disconnected(&self) -> bool {
+        self.connectivity.is_terminal()
+    }
+
+=== Session Accessors ===
+
+Check if this peer has a Noise session.
+    pub fn has_session(&self) -> bool {
+        self.send.noise_session.is_some()
+    }
+
+Get the Noise session, if present.
+    pub fn noise_session(&self) -> Option<&NoiseSession> {
+        self.send.noise_session.as_ref()
+    }
+
+Get mutable access to the Noise session.
+    pub fn noise_session_mut(&mut self) -> Option<&mut NoiseSession> {
+        self.send.noise_session.as_mut()
+    }
+
+Get our session index (they use this to send TO us).
+    pub fn our_index(&self) -> Option<SessionIndex> {
+        self.send.our_index
+    }
+
+Get their session index (we use this to send TO them).
+    pub fn their_index(&self) -> Option<SessionIndex> {
+        self.send.their_index
+    }
+
+Update their session index (used during cross-connection resolution
+when the losing node keeps its inbound session but needs the peer's
+outbound index).
+    pub fn set_their_index(&mut self, index: SessionIndex) {
+        self.send.their_index = Some(index);
+    }
+
+Replace the Noise session and indices during cross-connection resolution.
+
+When both nodes simultaneously initiate, each promotes its inbound
+handshake first. When the peer's msg2 arrives, we learn the correct
+session — the outbound handshake that pairs with the peer's inbound.
+This replaces the entire session so both nodes use matching keys.
+
+Returns the old our_index so the caller can update peers_by_index.
+Also resets the replay suppression counter since the session changed.
+    pub fn replace_session(
+        &mut self,
+        new_session: NoiseSession,
+        new_our_index: SessionIndex,
+        new_their_index: SessionIndex,
+    ) -> Option<SessionIndex> {
+        self.reset_replay_suppressed();
+        let old_our_index = self.send.our_index;
+        self.send.noise_session = Some(new_session);
+        self.send.our_index = Some(new_our_index);
+        self.send.their_index = Some(new_their_index);
+        old_our_index
+    }
+
+Get the transport ID for this peer.
+    pub fn transport_id(&self) -> Option<TransportId> {
+        self.send.transport_id
+    }
+
+Get the current transport address.
+    pub fn current_addr(&self) -> Option<&TransportAddr> {
+        self.send.current_addr.as_ref()
+    }
+
+Update the current address (for roaming support).
+
+Called when we receive a valid authenticated packet from a new address.
+Returns `true` if `(transport_id, addr)` actually changed — callers
+use this to invalidate per-peer `connect(2)`-ed UDP sockets whose
+5-tuple just went stale.
+    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: TransportAddr) -> bool {
+        let changed = self.send.transport_id != Some(transport_id)
+            || self.send.current_addr.as_ref() != Some(&addr);
+        self.send.transport_id = Some(transport_id);
+        self.send.current_addr = Some(addr);
+        changed
+    }
+
+=== Handshake Resend ===
+
+Store wire-format msg2 for resend on duplicate msg1.
+    pub fn set_handshake_msg2(&mut self, msg2: Vec<u8>) {
+        self.handshake_msg2 = Some(msg2);
+    }
+
+Get stored msg2 bytes for resend.
+    pub fn handshake_msg2(&self) -> Option<&[u8]> {
+        self.handshake_msg2.as_deref()
+    }
+
+Clear stored msg2 (no longer needed after handshake window).
+    pub fn clear_handshake_msg2(&mut self) {
+        self.handshake_msg2 = None;
+    }
+
+=== Replay Detection Suppression ===
+
+Increment replay suppression counter. Returns the new count.
+    pub fn increment_replay_suppressed(&mut self) -> u32 {
+        self.send.replay_suppressed_count += 1;
+        self.send.replay_suppressed_count
+    }
+
+Reset replay suppression counter, returning previous count.
+    pub fn reset_replay_suppressed(&mut self) -> u32 {
+        let count = self.send.replay_suppressed_count;
+        self.send.replay_suppressed_count = 0;
+        count
+    }
+
+Current replay suppression count.
+    pub fn replay_suppressed_count(&self) -> u32 {
+        self.send.replay_suppressed_count
+    }
+
+=== Decryption Failure Tracking ===
+
+Increment consecutive decryption failure counter, returning new count.
+    pub fn increment_decrypt_failures(&mut self) -> u32 {
+        self.send.consecutive_decrypt_failures += 1;
+        self.send.consecutive_decrypt_failures
+    }
+
+Reset consecutive decryption failure counter.
+    pub fn reset_decrypt_failures(&mut self) {
+        self.send.consecutive_decrypt_failures = 0;
+    }
+
+Current consecutive decryption failure count.
+    pub fn consecutive_decrypt_failures(&self) -> u32 {
+        self.send.consecutive_decrypt_failures
+    }
+
+=== Epoch Accessors ===
+
+Get the remote peer's startup epoch (from handshake).
+    pub fn remote_epoch(&self) -> Option<[u8; 8]> {
+        self.remote_epoch
+    }
+
+Update the remote peer's startup epoch after a successful in-place
+rekey. Initial handshakes set this through `with_session`, but recovery
+rekeys also exchange epochs and must keep restart detection current.
+    pub(crate) fn set_remote_epoch(&mut self, remote_epoch: Option<[u8; 8]>) {
+        self.remote_epoch = remote_epoch;
+    }
+
+=== Negotiated Profile ===
+
+Get peer's node profile.
+    pub fn peer_profile(&self) -> NodeProfile {
+        self.peer_profile
+    }
+
+Whether to send sender reports to this peer.
+    pub fn send_sr(&self) -> bool {
+        self.send_sr
+    }
+
+Whether to send receiver reports to this peer.
+    pub fn send_rr(&self) -> bool {
+        self.send_rr
+    }
+
+=== Tree Accessors ===
+
+Get the peer's tree coordinates, if known.
+    pub fn coords(&self) -> Option<&TreeCoordinate> {
+        self.ancestry.as_ref()
+    }
+
+Get the peer's parent declaration, if known.
+    pub fn declaration(&self) -> Option<&ParentDeclaration> {
+        self.declaration.as_ref()
+    }
+
+Check if this peer has a known tree position.
+    pub fn has_tree_position(&self) -> bool {
+        self.declaration.is_some() && self.ancestry.is_some()
+    }
+
+=== Filter Accessors ===
+
+Get the peer's inbound filter, if known.
+    pub fn inbound_filter(&self) -> Option<&BloomFilter> {
+        self.inbound_filter.as_ref()
+    }
+
+Get the filter sequence number.
+    pub fn filter_sequence(&self) -> u64 {
+        self.filter_sequence
+    }
+
+Check if this peer's filter is stale.
+    pub fn filter_is_stale(&self, current_time_ms: u64, stale_threshold_ms: u64) -> bool {
+        if self.filter_received_at == 0 {
+            return true;
+        }
+        current_time_ms.saturating_sub(self.filter_received_at) > stale_threshold_ms
+    }
+
+Check if a destination might be reachable through this peer.
+    pub fn may_reach(&self, node_addr: &NodeAddr) -> bool {
+        match &self.inbound_filter {
+            Some(filter) => filter.contains(node_addr),
+            None => false,
+        }
+    }
+
+Check if we need to send this peer a filter update.
+    pub fn needs_filter_update(&self) -> bool {
+        self.pending_filter_update
+    }
+
+=== Statistics Accessors ===
+
+Get link statistics.
+    pub fn link_stats(&self) -> &LinkStats {
+        &self.send.link_stats
+    }
+
+Get mutable link statistics.
+    pub fn link_stats_mut(&mut self) -> &mut LinkStats {
+        &mut self.send.link_stats
+    }
+
+=== MMP Accessors ===
+
+Get MMP state (None for legacy peers without sessions).
+    pub fn mmp(&self) -> Option<&MmpPeerState> {
+        self.send.mmp.as_ref()
+    }
+
+Get mutable MMP state.
+    pub fn mmp_mut(&mut self) -> Option<&mut MmpPeerState> {
+        self.send.mmp.as_mut()
+    }
+
+Link cost for routing decisions.
+
+Returns a scalar cost where lower is better (1.0 = ideal).
+Computed as RTT-weighted ETX: `etx * (1.0 + srtt_ms / 100.0)`.
+
+Returns 1.0 (optimistic default) when MMP metrics are not yet
+available, matching depth-only parent selection behavior.
+    pub fn link_cost(&self) -> f64 {
+        match self.mmp() {
+            Some(mmp) => {
+                let etx = mmp.metrics.etx;
+                match mmp.metrics.srtt_ms() {
+                    Some(srtt_ms) => etx * (1.0 + srtt_ms / 100.0),
+                    None => 1.0,
+                }
+            }
+            None => 1.0,
+        }
+    }
+
+Whether this peer has at least one MMP RTT measurement.
+    pub fn has_srtt(&self) -> bool {
+        self.mmp()
+            .is_some_and(|mmp| mmp.metrics.srtt_ms().is_some())
+    }
+
+When this peer was authenticated.
+    pub fn authenticated_at(&self) -> u64 {
+        self.authenticated_at
+    }
+
+When this peer was last seen.
+    pub fn last_seen(&self) -> u64 {
+        self.send.last_seen
+    }
+
+Time since last activity.
+    pub fn idle_time(&self, current_time_ms: u64) -> u64 {
+        current_time_ms.saturating_sub(self.send.last_seen)
+    }
+
+Connection duration since authentication.
+    pub fn connection_duration(&self, current_time_ms: u64) -> u64 {
+        current_time_ms.saturating_sub(self.authenticated_at)
+    }
+
+Session-relative elapsed time in milliseconds (for inner header timestamp).
+
+Returns milliseconds since session establishment, truncated to u32.
+Wraps at ~49.7 days which is acceptable for session-relative timing.
+    pub fn session_elapsed_ms(&self) -> u32 {
+        self.send.session_start.elapsed().as_millis() as u32
+    }
+
+When this peer's session started (for link-dead fallback timing).
+    pub fn session_start(&self) -> Instant {
+        self.send.session_start
+    }
+
+=== Heartbeat ===
+
+When we last sent a heartbeat to this peer.
+    pub fn last_heartbeat_sent(&self) -> Option<Instant> {
+        self.last_heartbeat_sent
+    }
+
+Record that we sent a heartbeat.
+    pub fn mark_heartbeat_sent(&mut self, now: Instant) {
+        self.last_heartbeat_sent = Some(now);
+    }
+
+=== State Updates ===
+
+Update last seen timestamp.
+    pub fn touch(&mut self, current_time_ms: u64) {
+        self.send.last_seen = current_time_ms;
+If we were stale, receiving traffic makes us connected again
+        if self.connectivity == ConnectivityState::Stale {
+            self.connectivity = ConnectivityState::Connected;
+        }
+    }
+
+Mark peer as stale (no recent traffic).
+    pub fn mark_stale(&mut self) {
+        if self.connectivity == ConnectivityState::Connected {
+            self.connectivity = ConnectivityState::Stale;
+        }
+    }
+
+Mark peer as reconnecting.
+    pub fn mark_reconnecting(&mut self) {
+        self.connectivity = ConnectivityState::Reconnecting;
+    }
+
+Mark peer as disconnected.
+    pub fn mark_disconnected(&mut self) {
+        self.connectivity = ConnectivityState::Disconnected;
+    }
+
+Mark peer as connected (e.g., after successful reconnect).
+    pub fn mark_connected(&mut self, current_time_ms: u64) {
+        self.connectivity = ConnectivityState::Connected;
+        self.send.last_seen = current_time_ms;
+    }
+
+Update the link ID (e.g., on reconnect).
+    pub fn set_link_id(&mut self, link_id: LinkId) {
+        self.send.link_id = link_id;
+    }
+
+=== Tree Updates ===
+
+Update peer's tree position.
+    pub fn update_tree_position(
+        &mut self,
+        declaration: ParentDeclaration,
+        ancestry: TreeCoordinate,
+        current_time_ms: u64,
+    ) {
+        self.declaration = Some(declaration);
+        self.ancestry = Some(ancestry);
+        self.send.last_seen = current_time_ms;
+    }
+
+Clear peer's tree position.
+    pub fn clear_tree_position(&mut self) {
+        self.declaration = None;
+        self.ancestry = None;
+    }
+
+=== Tree Announce Rate Limiting ===
+
+Set the minimum interval between TreeAnnounce messages (milliseconds).
+    pub fn set_tree_announce_min_interval_ms(&mut self, ms: u64) {
+        self.tree_announce_min_interval_ms = ms;
+    }
+
+Get the last tree announce send timestamp (for carrying across reconnection).
+    pub fn last_tree_announce_sent_ms(&self) -> u64 {
+        self.last_tree_announce_sent_ms
+    }
+
+Set the last tree announce send timestamp (to preserve rate limit across reconnection).
+    pub fn set_last_tree_announce_sent_ms(&mut self, ms: u64) {
+        self.last_tree_announce_sent_ms = ms;
+    }
+
+Check if we can send a TreeAnnounce now (rate limiting).
+    pub fn can_send_tree_announce(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.last_tree_announce_sent_ms) >= self.tree_announce_min_interval_ms
+    }
+
+Record that we sent a TreeAnnounce to this peer.
+    pub fn record_tree_announce_sent(&mut self, now_ms: u64) {
+        self.last_tree_announce_sent_ms = now_ms;
+        self.pending_tree_announce = false;
+    }
+
+Mark that a tree announce is pending (deferred due to rate limit).
+    pub fn mark_tree_announce_pending(&mut self) {
+        self.pending_tree_announce = true;
+    }
+
+Check if a deferred tree announce is waiting to be sent.
+    pub fn has_pending_tree_announce(&self) -> bool {
+        self.pending_tree_announce
+    }
+
+=== Filter Updates ===
+
+Update peer's inbound filter.
+    pub fn update_filter(&mut self, filter: BloomFilter, sequence: u64, current_time_ms: u64) {
+        self.inbound_filter = Some(filter);
+        self.filter_sequence = sequence;
+        self.filter_received_at = current_time_ms;
+        self.send.last_seen = current_time_ms;
+    }
+
+Clear peer's inbound filter.
+    pub fn clear_filter(&mut self) {
+        self.inbound_filter = None;
+        self.filter_sequence = 0;
+        self.filter_received_at = 0;
+    }
+
+Mark that we need to send this peer a filter update.
+    pub fn mark_filter_update_needed(&mut self) {
+        self.pending_filter_update = true;
+    }
+
+Clear the pending filter update flag.
+    pub fn clear_filter_update_needed(&mut self) {
+        self.pending_filter_update = false;
+    }
+
+=== Rekey (Key Rotation) ===
+
+When the current Noise session was established.
+    pub fn session_established_at(&self) -> Instant {
+        self.session_established_at
+    }
+
+Test-only seam: install link-layer MMP state with a chosen operating
+mode on a peer that was constructed without a Noise session (the bare
+`new` constructor leaves `mmp` as `None`). This only attaches the same
+`MmpPeerState::new` the session path installs; it changes no decision
+logic and no threshold, and is compiled out of release builds.
+    #[cfg(test)]
+    pub(crate) fn test_init_mmp(&mut self, mode: crate::proto::mmp::MmpMode) {
+        let config = MmpConfig {
+            mode,
+            ..MmpConfig::default()
+        };
+        self.send.mmp = Some(MmpPeerState::new(
+            config.mode,
+            config.log_interval_secs,
+            config.owd_window_size,
+        ));
+    }
+
+Shift `instant` back by `age`, panicking rather than falling back.
+
+`Instant::checked_sub` returns `None` when the result would precede the
+monotonic clock's epoch, which on a freshly booted machine means any
+backdate larger than the uptime. The fallback these seams used to share
+was `unwrap_or_else(Instant::now)`, which moved the timestamp *forward*
+to now — the opposite of every caller's intent — so the caller's
+assertion then failed for a reason its message did not describe. Failing
+loudly keeps a machine-dependent limit from reading as a logic bug.
+    #[cfg(test)]
+    fn backdate(instant: Instant, age: std::time::Duration, what: &str) -> Instant {
+        instant.checked_sub(age).unwrap_or_else(|| {
+            panic!(
+                "cannot backdate {what} by {age:?}: the monotonic clock's epoch is more \
+                 recent than that, so the result is unrepresentable. This machine has been \
+                 up for less than the requested age — use a smaller backdate."
+            )
+        })
+    }
+
+Test-only seam: backdate the session-start instant so a test can make
+`session_elapsed_ms()` read as `age`-old (needed to synthesize a
+positive RTT sample from a crafted ReceiverReport). This only shifts the
+private timestamp field; it changes no decision logic, no threshold, and
+is compiled out of release builds.
+    #[cfg(test)]
+    pub(crate) fn test_backdate_session_start(&mut self, age: std::time::Duration) {
+        self.send.session_start = Self::backdate(self.send.session_start, age, "session_start");
+    }
+
+Test-only seam: backdate the session-established instant so a test can
+make `session_established_at().elapsed()` read as `age`-old (needed to
+fire the age half of the rekey trigger without waiting for it). This only
+shifts the private timestamp field; it changes no decision logic, no
+threshold, and is compiled out of release builds.
+
+Backdate past the whole jitter band, not the nominal `after_secs`: the
+effective trigger is `after_secs + jitter` with jitter drawn from
+`[-REKEY_JITTER_SECS, +REKEY_JITTER_SECS]`, so a smaller margin makes the
+test depend on the draw.
+    #[cfg(test)]
+    pub(crate) fn test_backdate_session_established(&mut self, age: std::time::Duration) {
+        self.session_established_at =
+            Self::backdate(self.session_established_at, age, "session_established_at");
+    }
+
+Test-only seam: backdate the drain-start instant so a test can make
+`drain_expired()` read true without waiting out the drain window. Only
+shifts the private timestamp field, and is a no-op when no drain is in
+progress, so it cannot manufacture a drain that did not happen. It changes
+no decision logic, no threshold, and is compiled out of release builds.
+    #[cfg(test)]
+    pub(crate) fn test_backdate_drain_start(&mut self, age: std::time::Duration) {
+        if let Some(started) = self.send.drain_started {
+            self.send.drain_started = Some(Self::backdate(started, age, "drain_started"));
+        }
+    }
+
+Per-session symmetric rekey-timer jitter offset (seconds).
+
+Drawn at session construction and at each rekey cutover; uniform
+over `[-REKEY_JITTER_SECS, +REKEY_JITTER_SECS]`. Callers add this
+to the configured `node.rekey.after_secs` to obtain the effective
+trigger interval for this session.
+    pub fn rekey_jitter_secs(&self) -> i64 {
+        self.rekey_jitter_secs
+    }
+
+Current K-bit epoch value.
+    pub fn current_k_bit(&self) -> bool {
+        self.send.current_k_bit
+    }
+
+Whether a rekey is currently in progress.
+    pub fn rekey_in_progress(&self) -> bool {
+        self.rekey_in_progress
+    }
+
+Mark that a rekey has been initiated.
+    pub fn set_rekey_in_progress(&mut self) {
+        self.rekey_in_progress = true;
+    }
+
+Check if rekey initiation is dampened (peer recently sent us msg1).
+    pub fn is_rekey_dampened(&self, dampening_secs: u64) -> bool {
+        match self.last_peer_rekey {
+            Some(t) => t.elapsed().as_secs() < dampening_secs,
+            None => false,
+        }
+    }
+
+Record that the peer initiated a rekey (for dampening).
+    pub fn record_peer_rekey(&mut self) {
+        self.last_peer_rekey = Some(Instant::now());
+    }
+
+Get the pending new session's our_index.
+    pub fn pending_our_index(&self) -> Option<SessionIndex> {
+        self.send.pending_our_index
+    }
+
+Get the pending new session's their_index.
+    pub fn pending_their_index(&self) -> Option<SessionIndex> {
+        self.send.pending_their_index
+    }
+
+Get the previous session's our_index (during drain).
+    pub fn previous_our_index(&self) -> Option<SessionIndex> {
+        self.send.previous_our_index
+    }
+
+Get the previous session for decryption fallback.
+    pub fn previous_session(&self) -> Option<&NoiseSession> {
+        self.send.previous_session.as_ref()
+    }
+
+Get mutable access to the previous session for decryption.
+    pub fn previous_session_mut(&mut self) -> Option<&mut NoiseSession> {
+        self.send.previous_session.as_mut()
+    }
+
+Get the pending new session (completed rekey, not yet cut over).
+    pub fn pending_new_session(&self) -> Option<&NoiseSession> {
+        self.send.pending_new_session.as_ref()
+    }
+
+Mutable access to the pending new session, for trial-decrypt of an
+inbound frame before promoting it on a peer K-bit flip.
+    pub fn pending_new_session_mut(&mut self) -> Option<&mut NoiseSession> {
+        self.send.pending_new_session.as_mut()
+    }
+
+Store a completed rekey session and its indices.
+
+Called when the rekey handshake completes. The session is held
+as pending until the initiator flips the K-bit on the next outbound packet.
+    pub fn set_pending_session(
+        &mut self,
+        session: NoiseSession,
+        our_index: SessionIndex,
+        their_index: SessionIndex,
+    ) {
+        self.send.pending_new_session = Some(session);
+        self.send.pending_our_index = Some(our_index);
+        self.send.pending_their_index = Some(their_index);
+        self.rekey_in_progress = false;
+Clear initiator handshake state (index now lives in pending_our_index)
+        self.rekey_our_index = None;
+        self.rekey_handshake = None;
+        self.rekey_msg1 = None;
+        self.rekey_msg1_next_resend = 0;
+        self.rekey_msg1_resend_count = 0;
+    }
+
+Cut over to the pending new session (initiator side).
+
+Moves current session to previous (for drain), promotes pending to current,
+flips the K-bit. Returns the old our_index that should remain in peers_by_index
+during the drain window.
+    pub fn cutover_to_new_session(&mut self) -> Option<SessionIndex> {
+        let new_session = self.send.pending_new_session.take()?;
+        let new_our_index = self.send.pending_our_index.take();
+        let new_their_index = self.send.pending_their_index.take();
+
+Demote current to previous
+        self.send.previous_session = self.send.noise_session.take();
+        self.send.previous_our_index = self.send.our_index;
+        self.send.drain_started = Some(Instant::now());
+
+Promote pending to current
+        self.send.noise_session = Some(new_session);
+        self.send.our_index = new_our_index;
+        self.send.their_index = new_their_index;
+
+Flip K-bit and reset timing
+        self.send.current_k_bit = !self.send.current_k_bit;
+        self.session_established_at = Instant::now();
+        self.send.session_start = Instant::now();
+        self.rekey_in_progress = false;
+        self.rekey_msg1_resend_count = 0;
+        self.rekey_jitter_secs = draw_rekey_jitter();
+        self.reset_replay_suppressed();
+
+Reset MMP counters to avoid metric discontinuity
+        let now_ms = crate::time::mono_ms();
+        if let Some(mmp) = &mut self.send.mmp {
+            mmp.reset_for_rekey(now_ms);
+        }
+
+        self.send.previous_our_index
+    }
+
+Handle receiving a K-bit flip from the peer (responder side).
+
+Promotes pending_new_session to current, demotes current to previous.
+Returns the old our_index for drain tracking.
+    pub fn handle_peer_kbit_flip(&mut self) -> Option<SessionIndex> {
+        let new_session = self.send.pending_new_session.take()?;
+        let new_our_index = self.send.pending_our_index.take();
+        let new_their_index = self.send.pending_their_index.take();
+
+Demote current to previous
+        self.send.previous_session = self.send.noise_session.take();
+        self.send.previous_our_index = self.send.our_index;
+        self.send.drain_started = Some(Instant::now());
+
+Promote pending to current
+        self.send.noise_session = Some(new_session);
+        self.send.our_index = new_our_index;
+        self.send.their_index = new_their_index;
+
+Match peer's K-bit
+        self.send.current_k_bit = !self.send.current_k_bit;
+        self.session_established_at = Instant::now();
+        self.send.session_start = Instant::now();
+        self.rekey_in_progress = false;
+        self.rekey_msg1_resend_count = 0;
+        self.rekey_jitter_secs = draw_rekey_jitter();
+        self.reset_replay_suppressed();
+
+Reset MMP counters to avoid metric discontinuity
+        let now_ms = crate::time::mono_ms();
+        if let Some(mmp) = &mut self.send.mmp {
+            mmp.reset_for_rekey(now_ms);
+        }
+
+        self.send.previous_our_index
+    }
+
+Check if the drain window has expired.
+    pub fn drain_expired(&self, drain_secs: u64) -> bool {
+        match self.send.drain_started {
+            Some(t) => t.elapsed().as_secs() >= drain_secs,
+            None => false,
+        }
+    }
+
+Whether a drain is in progress.
+    pub fn is_draining(&self) -> bool {
+        self.send.drain_started.is_some()
+    }
+
+Complete the drain: drop previous session and free its index.
+
+Returns the previous our_index so the caller can remove it from
+peers_by_index and free it from the IndexAllocator.
+    pub fn complete_drain(&mut self) -> Option<SessionIndex> {
+        self.send.previous_session = None;
+        self.send.drain_started = None;
+        self.send.previous_our_index.take()
+    }
+
+Abandon an in-progress rekey.
+
+Returns the rekey our_index so the caller can free it.
+Also clears any pending session state if the handshake was completed
+but not yet cut over.
+    pub fn abandon_rekey(&mut self) -> Option<SessionIndex> {
+        self.rekey_handshake = None;
+        self.rekey_msg1 = None;
+        self.rekey_msg1_next_resend = 0;
+        self.rekey_msg1_resend_count = 0;
+        self.rekey_in_progress = false;
+        self.clear_rekey_msg3_payload();
+Return whichever index needs freeing
+        self.rekey_our_index.take().or_else(|| {
+            self.send.pending_new_session = None;
+            self.send.pending_their_index = None;
+            self.send.pending_our_index.take()
+        })
+    }
+
+=== Rekey Handshake State (Initiator) ===
+
+Store rekey handshake state after sending msg1.
+    pub fn set_rekey_state(
+        &mut self,
+        handshake: NoiseHandshakeState,
+        our_index: SessionIndex,
+        wire_msg1: Vec<u8>,
+        next_resend_ms: u64,
+    ) {
+        self.rekey_handshake = Some(handshake);
+        self.rekey_our_index = Some(our_index);
+        self.rekey_msg1 = Some(wire_msg1);
+        self.rekey_msg1_next_resend = next_resend_ms;
+        self.rekey_msg1_resend_count = 0;
+        self.rekey_in_progress = true;
+    }
+
+Get the rekey our_index (for msg2 dispatch lookup).
+    pub fn rekey_our_index(&self) -> Option<SessionIndex> {
+        self.rekey_our_index
+    }
+
+Complete the rekey by processing msg2 (initiator side, XX pattern).
+
+Takes the stored handshake state, reads XX msg2, generates XX msg3, and
+returns (msg3_bytes, completed NoiseSession, remote startup epoch,
+learned peer node address). Clears the handshake-related fields but
+leaves rekey_our_index for set_pending_session to use. The remote epoch
+is surfaced so the caller can detect a peer restart (changed epoch)
+during recovery rekey; the learned node address is surfaced so the
+caller can gate the install on static-key continuity.
+
+Completing the handshake here is deliberately identity-agnostic: this
+is the crypto leaf, and whether the learned identity may replace the
+peer's session is a decision, taken by the caller against the FMP core.
+    pub fn complete_rekey_msg2(
+        &mut self,
+        msg2_bytes: &[u8],
+        our_profile: NodeProfile,
+    ) -> Result<RekeyMsg2Completion, NoiseError> {
+        let mut hs = self
+            .rekey_handshake
+            .take()
+            .ok_or_else(|| NoiseError::WrongState {
+                expected: "rekey handshake in progress".to_string(),
+                got: "no handshake state".to_string(),
+            })?;
+
+Split msg2 into base XX part and any extra (negotiation payload)
+        let base_size = crate::noise::HANDSHAKE_MSG2_SIZE;
+        let (base_msg2, extra) = if msg2_bytes.len() > base_size {
+            (&msg2_bytes[..base_size], Some(&msg2_bytes[base_size..]))
+        } else {
+            (msg2_bytes, None)
+        };
+
+        hs.read_message_2(base_msg2)?;
+
+The remote static identity (and its startup epoch) is available once
+msg2 has been read; capture it for peer-restart detection.
+        let remote_epoch = hs.remote_epoch();
+
+Must decrypt negotiation payload (if present) to keep hash chain
+in sync, even though rekey doesn't use the negotiation result.
+        if let Some(encrypted_neg) = extra {
+            let _ = hs.decrypt_payload(encrypted_neg)?;
+        }
+
+Declare this handshake a rekey of the session already installed, naming
+the index the RESPONDER receives on (our `their_index`) so it can match
+the marker against its own `our_index`. Without it the responder cannot
+tell a rekey from a fresh dial — both arrive as a new msg1 on a new
+link — and every attempt to infer that from local state has a failure
+band. The pre-rekey session is still installed at this point; the
+pending one is not set until the caller drives it.
+
+An absent `their_index` would silently omit the marker and put this
+rekey back on the cross-connection path — the defect verbatim. It is
+unreachable today (the rekey cadence filters on `has_session`, and
+every production peer is built by `with_session`, which sets the
+index), so it is asserted rather than handled: a silent `if let` is
+the wrong shape for a value whose absence reintroduces the bug.
+        let mut msg3 = hs.write_message_3()?;
+        match self.their_index() {
+            Some(their_index) => {
+                let marker = NegotiationPayload::fmp(1, 1, our_profile)
+                    .with_rekey_of(their_index)
+                    .encode();
+                let encrypted = hs.encrypt_payload(&marker)?;
+                msg3.extend_from_slice(&encrypted);
+            }
+            None => {
+                debug_assert!(false, "rekeying peer has no their_index to declare");
+                tracing::warn!(
+                    "Rekey msg3 built with no session index to declare; \
+                     the peer will read it as a fresh dial"
+                );
+            }
+        }
+        let session = hs.into_session()?;
+
+Derive the learned identity from the session rather than the consumed
+handshake so the address returned is provably the one the session
+about to be installed is bound to.
+        let learned_peer = NodeAddr::from_pubkey(&session.remote_static_xonly());
+
+Clear msg1 resend state
+        self.rekey_msg1 = None;
+        self.rekey_msg1_next_resend = 0;
+        self.rekey_msg1_resend_count = 0;
+
+        Ok((msg3, session, remote_epoch, learned_peer))
+    }
+
+Complete the rekey by processing msg3 (responder side, XX pattern).
+
+Takes the stored responder handshake state, reads XX msg3, and returns
+the completed NoiseSession.
+    pub fn complete_rekey_msg3(&mut self, msg3_bytes: &[u8]) -> Result<NoiseSession, NoiseError> {
+        let mut hs =
+            self.rekey_responder_handshake
+                .take()
+                .ok_or_else(|| NoiseError::WrongState {
+                    expected: "rekey responder handshake awaiting msg3".to_string(),
+                    got: "no responder handshake state".to_string(),
+                })?;
+
+Split msg3 into base XX part and any extra (negotiation payload)
+        let base_size = crate::noise::HANDSHAKE_MSG3_SIZE;
+        let (base_msg3, extra) = if msg3_bytes.len() > base_size {
+            (&msg3_bytes[..base_size], Some(&msg3_bytes[base_size..]))
+        } else {
+            (msg3_bytes, None)
+        };
+
+        hs.read_message_3(base_msg3)?;
+
+Must decrypt negotiation payload (if present) to keep hash chain
+in sync, even though rekey doesn't use the negotiation result.
+        if let Some(encrypted_neg) = extra {
+            let _ = hs.decrypt_payload(encrypted_neg)?;
+        }
+
+        let session = hs.into_session()?;
+
+        self.rekey_responder_our_index = None;
+
+        Ok(session)
+    }
+
+=== Rekey msg3 retransmission (initiator liveness) ===
+
+Retain the rekey msg3 wire payload for retransmission until the
+responder is confirmed on the new epoch. Called by the initiator
+right after the first successful msg3 send. Mirrors the FSP
+`SessionEntry::set_rekey_msg3_payload`.
+    pub fn set_rekey_msg3_payload(&mut self, payload: Vec<u8>, next_resend_at_ms: u64) {
+        self.rekey_msg3_payload = Some(payload);
+        self.rekey_msg3_next_resend_ms = next_resend_at_ms;
+        self.rekey_msg3_resend_count = 0;
+    }
+
+Get the retained rekey msg3 payload for retransmission.
+    pub fn rekey_msg3_payload(&self) -> Option<&[u8]> {
+        self.rekey_msg3_payload.as_deref()
+    }
+
+Get the next msg3 resend timestamp (Unix ms; 0 = none retained).
+    pub fn rekey_msg3_next_resend_ms(&self) -> u64 {
+        self.rekey_msg3_next_resend_ms
+    }
+
+Get the number of msg3 retransmissions this cycle.
+    pub fn rekey_msg3_resend_count(&self) -> u32 {
+        self.rekey_msg3_resend_count
+    }
+
+Record a msg3 retransmission and schedule the next one.
+    pub fn record_rekey_msg3_resend(&mut self, next_resend_at_ms: u64) {
+        self.rekey_msg3_resend_count += 1;
+        self.rekey_msg3_next_resend_ms = next_resend_at_ms;
+    }
+
+Clear the retained rekey msg3 payload (responder confirmed on the
+new epoch, or the rekey cycle was abandoned).
+    pub fn clear_rekey_msg3_payload(&mut self) {
+        self.rekey_msg3_payload = None;
+        self.rekey_msg3_next_resend_ms = 0;
+        self.rekey_msg3_resend_count = 0;
+    }
+
+Check if msg1 needs resending.
+    pub fn needs_msg1_resend(&self, now_ms: u64) -> bool {
+        self.rekey_in_progress && self.rekey_msg1.is_some() && now_ms >= self.rekey_msg1_next_resend
+    }
+
+Get msg1 bytes for resend (without consuming).
+    pub fn rekey_msg1(&self) -> Option<&[u8]> {
+        self.rekey_msg1.as_deref()
+    }
+
+Update next resend timestamp.
+    pub fn set_msg1_next_resend(&mut self, next_ms: u64) {
+        self.rekey_msg1_next_resend = next_ms;
+    }
+
+Number of rekey msg1 retransmissions performed so far.
+    pub fn rekey_msg1_resend_count(&self) -> u32 {
+        self.rekey_msg1_resend_count
+    }
+
+Record a rekey msg1 retransmission and schedule the next one.
+    pub fn record_rekey_msg1_resend(&mut self, next_ms: u64) {
+        self.rekey_msg1_resend_count += 1;
+        self.rekey_msg1_next_resend = next_ms;
+    }
+
+=== Rekey Responder State (XX pattern) ===
+
+Whether this peer has a rekey responder handshake awaiting msg3.
+    pub fn has_rekey_responder_handshake(&self) -> bool {
+        self.rekey_responder_handshake.is_some()
+    }
+
+Get the rekey responder our_index.
+    pub fn rekey_responder_our_index(&self) -> Option<SessionIndex> {
+        self.rekey_responder_our_index
+    }
+
+Store rekey responder handshake state after sending msg2.
+
+Called when processing a rekey msg1 from the peer. The handshake
+state is held here until msg3 arrives to complete the rekey.
+    pub fn set_rekey_responder_state(
+        &mut self,
+        handshake: NoiseHandshakeState,
+        our_index: SessionIndex,
+    ) {
+        self.rekey_responder_handshake = Some(handshake);
+        self.rekey_responder_our_index = Some(our_index);
+    }
+
+Clear rekey responder state (on failure or abandonment).
+    pub fn clear_rekey_responder(&mut self) {
+        self.rekey_responder_handshake = None;
+        self.rekey_responder_our_index = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Identity;
+    use crate::noise::HandshakeState;
+
+    fn make_peer_identity() -> PeerIdentity {
+        let identity = Identity::generate();
+        PeerIdentity::from_pubkey(identity.pubkey())
+    }
+
+A completed XX handshake, returning the initiator's session. Only the
+session's existence matters here: this test is about `with_session`
+populating the npub cache from the identity it is handed.
+    fn xx_session_pair() -> (NoiseSession, NoiseSession) {
+        let initiator_id = Identity::generate();
+        let responder_id = Identity::generate();
+        let mut initiator = HandshakeState::new_initiator(initiator_id.keypair());
+        initiator.set_local_epoch([0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44]);
+        let mut responder = HandshakeState::new_responder(responder_id.keypair());
+        responder.set_local_epoch([0xD4, 0xC3, 0xB2, 0xA1, 0x44, 0x33, 0x22, 0x11]);
+
+        let msg1 = initiator.write_message_1().unwrap();
+        responder.read_message_1(&msg1).unwrap();
+        let msg2 = responder.write_message_2().unwrap();
+        initiator.read_message_2(&msg2).unwrap();
+        let msg3 = initiator.write_message_3().unwrap();
+        responder.read_message_3(&msg3).unwrap();
+
+        (
+            initiator.into_session().unwrap(),
+            responder.into_session().unwrap(),
+        )
+    }
+
+    fn make_node_addr(val: u8) -> NodeAddr {
+        let mut bytes = [0u8; 16];
+        bytes[0] = val;
+        NodeAddr::from_bytes(bytes)
+    }
+
+    fn make_coords(ids: &[u8]) -> TreeCoordinate {
+        TreeCoordinate::from_addrs(ids.iter().map(|&v| make_node_addr(v)).collect()).unwrap()
+    }
+
+    #[test]
+    fn test_connectivity_state_properties() {
+        assert!(ConnectivityState::Connected.can_send());
+        assert!(ConnectivityState::Stale.can_send());
+        assert!(!ConnectivityState::Reconnecting.can_send());
+        assert!(!ConnectivityState::Disconnected.can_send());
+
+        assert!(ConnectivityState::Connected.is_healthy());
+        assert!(!ConnectivityState::Stale.is_healthy());
+
+        assert!(ConnectivityState::Disconnected.is_terminal());
+        assert!(!ConnectivityState::Connected.is_terminal());
+    }
+
+    #[test]
+    fn test_active_peer_creation() {
+        let identity = make_peer_identity();
+        let peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+        assert_eq!(peer.identity().node_addr(), identity.node_addr());
+        assert_eq!(peer.link_id(), LinkId::new(1));
+        assert!(peer.is_healthy());
+        assert!(peer.can_send());
+        assert_eq!(peer.authenticated_at(), 1000);
+        assert!(peer.needs_filter_update()); // New peers need filter
+    }
+
+    #[test]
+    fn test_npub_cache_matches_identity() {
+        let identity = make_peer_identity();
+        let peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+        assert_eq!(peer.npub(), identity.npub());
+        assert_eq!(peer.npub_str(), identity.npub());
+        assert_eq!(peer.short_npub(), identity.short_npub());
+    }
+
+    #[test]
+    fn test_npub_cache_matches_identity_with_session() {
+`with_session` builds its own struct literal, so it needs its
+own check that the cache is populated from the same identity.
+        let identity = make_peer_identity();
+        let (session, _peer_session) = xx_session_pair();
+
+        let peer = ActivePeer::with_session(
+            identity,
+            LinkId::new(1),
+            1000,
+            session,
+            SessionIndex::new(1),
+            SessionIndex::new(2),
+            TransportId::new(1),
+            TransportAddr::from_string("127.0.0.1:9000"),
+            LinkStats::new(),
+            true,
+            &MmpConfig::default(),
+            None,
+            NodeProfile::Full,
+            NodeProfile::Full,
+        );
+
+        assert_eq!(peer.npub(), identity.npub());
+        assert_eq!(peer.short_npub(), identity.short_npub());
+    }
+
+    #[test]
+    fn test_npub_is_memoized_not_rederived() {
+The whole point of the fix: the strings are stored on the peer,
+not recomputed per call. A stored string keeps one heap buffer,
+so repeated borrows have a stable address. A per-call bech32
+encode would hand back a fresh allocation each time.
+        let identity = make_peer_identity();
+        let peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+        let first = peer.npub_str().as_ptr();
+        let second = peer.npub_str().as_ptr();
+        assert_eq!(first, second);
+
+        let short_first = peer.short_npub().as_ptr();
+        let short_second = peer.short_npub().as_ptr();
+        assert_eq!(short_first, short_second);
+    }
+
+    #[test]
+    fn test_connectivity_transitions() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+        assert!(peer.is_healthy());
+
+        peer.mark_stale();
+        assert_eq!(peer.connectivity(), ConnectivityState::Stale);
+        assert!(peer.can_send()); // Stale can still send
+
+Traffic received brings back to connected
+        peer.touch(2000);
+        assert!(peer.is_healthy());
+
+        peer.mark_reconnecting();
+        assert!(!peer.can_send());
+
+        peer.mark_connected(3000);
+        assert!(peer.is_healthy());
+
+        peer.mark_disconnected();
+        assert!(peer.is_disconnected());
+        assert!(!peer.can_send());
+    }
+
+    #[test]
+    fn test_tree_position() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+        assert!(!peer.has_tree_position());
+        assert!(peer.coords().is_none());
+
+        let node = make_node_addr(1);
+        let parent = make_node_addr(2);
+        let decl = ParentDeclaration::new(node, parent, 1, 1000);
+        let coords = make_coords(&[1, 2, 0]);
+
+        peer.update_tree_position(decl, coords, 2000);
+
+        assert!(peer.has_tree_position());
+        assert!(peer.coords().is_some());
+        assert_eq!(peer.last_seen(), 2000);
+    }
+
+    #[test]
+    fn test_bloom_filter() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+        let target = make_node_addr(42);
+
+        assert!(!peer.may_reach(&target));
+        assert!(peer.filter_is_stale(2000, 500));
+
+        let mut filter = BloomFilter::new();
+        filter.insert(&target);
+        peer.update_filter(filter, 1, 1500);
+
+        assert!(peer.may_reach(&target));
+        assert!(!peer.filter_is_stale(1800, 500));
+        assert!(peer.filter_is_stale(2500, 500));
+    }
+
+    #[test]
+    fn test_timing() {
+        let identity = make_peer_identity();
+        let peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+        assert_eq!(peer.connection_duration(2000), 1000);
+        assert_eq!(peer.idle_time(2000), 1000);
+    }
+
+    #[test]
+    fn test_filter_update_flag() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+        assert!(peer.needs_filter_update()); // New peer
+
+        peer.clear_filter_update_needed();
+        assert!(!peer.needs_filter_update());
+
+        peer.mark_filter_update_needed();
+        assert!(peer.needs_filter_update());
+    }
+
+    #[test]
+    fn test_with_stats() {
+        let identity = make_peer_identity();
+        let mut stats = LinkStats::new();
+        stats.record_sent(100);
+        stats.record_recv(200, 500);
+
+        let peer = ActivePeer::with_stats(identity, LinkId::new(1), 1000, stats);
+
+        assert_eq!(peer.link_stats().packets_sent, 1);
+        assert_eq!(peer.link_stats().packets_recv, 1);
+    }
+
+    #[test]
+    fn test_replay_suppression_counter() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+Initial count is zero
+        assert_eq!(peer.replay_suppressed_count(), 0);
+
+Increment returns new count
+        assert_eq!(peer.increment_replay_suppressed(), 1);
+        assert_eq!(peer.increment_replay_suppressed(), 2);
+        assert_eq!(peer.increment_replay_suppressed(), 3);
+        assert_eq!(peer.replay_suppressed_count(), 3);
+
+Reset returns previous count and zeroes it
+        assert_eq!(peer.reset_replay_suppressed(), 3);
+        assert_eq!(peer.replay_suppressed_count(), 0);
+
+Can increment again after reset
+        assert_eq!(peer.increment_replay_suppressed(), 1);
+        assert_eq!(peer.replay_suppressed_count(), 1);
+
+Reset when zero returns zero
+        peer.reset_replay_suppressed();
+        assert_eq!(peer.reset_replay_suppressed(), 0);
+    }
+
+    #[test]
+    fn test_increment_decrypt_failures_monotonic() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+Initial count is zero
+        assert_eq!(peer.consecutive_decrypt_failures(), 0);
+
+Each call returns a strictly increasing count
+        let mut prev = 0u32;
+        for expected in 1..=25u32 {
+            let count = peer.increment_decrypt_failures();
+            assert_eq!(count, expected, "increment must return monotonic count");
+            assert!(count > prev, "count must strictly increase");
+            assert_eq!(peer.consecutive_decrypt_failures(), count);
+            prev = count;
+        }
+    }
+
+    #[test]
+    fn test_reset_decrypt_failures_zeroes_counter() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+
+Drive counter up
+        for _ in 0..7 {
+            peer.increment_decrypt_failures();
+        }
+        assert_eq!(peer.consecutive_decrypt_failures(), 7);
+
+Reset zeroes it
+        peer.reset_decrypt_failures();
+        assert_eq!(peer.consecutive_decrypt_failures(), 0);
+
+Reset on zero is a no-op (still zero, no panic)
+        peer.reset_decrypt_failures();
+        assert_eq!(peer.consecutive_decrypt_failures(), 0);
+
+Counter resumes at 1 after reset
+        assert_eq!(peer.increment_decrypt_failures(), 1);
+        assert_eq!(peer.consecutive_decrypt_failures(), 1);
+    }
+
+    #[test]
+    fn test_rekey_jitter_in_range() {
+Every newly constructed peer's jitter must lie in the
+symmetric range [-REKEY_JITTER_SECS, +REKEY_JITTER_SECS].
+        for _ in 0..100 {
+            let identity = make_peer_identity();
+            let peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+            let j = peer.rekey_jitter_secs();
+            assert!(
+                (-REKEY_JITTER_SECS..=REKEY_JITTER_SECS).contains(&j),
+                "jitter {} outside [-{}, +{}]",
+                j,
+                REKEY_JITTER_SECS,
+                REKEY_JITTER_SECS
+            );
+        }
+    }
+
+    #[test]
+    fn test_rekey_jitter_mean_near_zero() {
+Sanity check that the distribution is roughly symmetric and
+not stuck at one extreme. With N=200 draws from a uniform
+~30-second-wide range, the empirical mean should be well
+under 5 in absolute value with overwhelming probability.
+        let mut sum: i64 = 0;
+        let n: i64 = 200;
+        for _ in 0..n {
+            let identity = make_peer_identity();
+            let peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+            sum += peer.rekey_jitter_secs();
+        }
+        let mean = sum / n;
+        assert!(
+            mean.abs() < 5,
+            "empirical mean {} not within 5 of 0 over {} samples",
+            mean,
+            n
+        );
+    }
+
+Put a peer into a rekey-in-progress state with a real (initiator)
+handshake so the msg1 resend budget can be exercised.
+    fn arm_rekey(peer: &mut ActivePeer) {
+        let local = Identity::generate();
+        let hs = NoiseHandshakeState::new_initiator(local.keypair());
+        peer.set_rekey_state(hs, SessionIndex::new(7), vec![0xAB; 64], 0);
+    }
+
+    #[test]
+    fn rekey_msg1_resend_count_increments_and_caps() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+        arm_rekey(&mut peer);
+
+        assert!(peer.rekey_in_progress());
+        assert_eq!(peer.rekey_msg1_resend_count(), 0);
+        assert!(peer.rekey_msg1().is_some());
+
+The driver records one resend per call; the count tracks them.
+        let max_resends: u32 = 5;
+        for i in 0..max_resends {
+            peer.record_rekey_msg1_resend(1000 + i as u64 * 100);
+            assert_eq!(peer.rekey_msg1_resend_count(), i + 1);
+        }
+        assert_eq!(peer.rekey_msg1_resend_count(), max_resends);
+    }
+
+    #[test]
+    fn rekey_msg1_budget_exhaustion_abandons_cleanly() {
+        let identity = make_peer_identity();
+        let mut peer = ActivePeer::new(identity, LinkId::new(1), 1000);
+        arm_rekey(&mut peer);
+
+Simulate the driver exhausting its budget.
+        let max_resends: u32 = 5;
+        for i in 0..max_resends {
+            peer.record_rekey_msg1_resend(1000 + i as u64 * 100);
+        }
+        assert_eq!(peer.rekey_msg1_resend_count(), max_resends);
+
+Budget exhausted -> abandon: state clears and the counter resets.
+        peer.abandon_rekey();
+        assert!(!peer.rekey_in_progress());
+        assert!(peer.rekey_msg1().is_none());
+        assert_eq!(peer.rekey_msg1_resend_count(), 0);
+    }
+}

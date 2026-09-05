@@ -1,0 +1,4 @@
+e0cc0c8637d777fcf118ffc84a01b8bbe644e515
+# Amperstrand/fips next @ e0cc0c86 (jmcorgan/next, pinned NEXT_REF for xx-interop)
+# source: src/noise/handshake.rs
+# rust comment markers stripped (same rule as specs/fips/)

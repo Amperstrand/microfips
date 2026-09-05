@@ -988,11 +988,25 @@ impl FspInitiatorSession {
             // the session on the XX wire.
             let (base2, extra2) = negotiation::split_msg2_noise(xk_msg2_payload);
             let (resp_pub, _resp_epoch) = initiator.read_message2(base2)?;
+            // FIPS-XX-NOISE: because it is XX, not XK: nothing in msg2 binds the sender to the
+            // identity we dialled, so a read can succeed and the message still be a
+            // forgery. The checks that catch that — the negotiation payload and the
+            // static-key comparison — run after the read, and they need the same way
+            // back that a failed read gets.
             if resp_pub[1..33] != self.pinned_responder_pub[1..33] {
                 return Err(FspInitiatorError::PeerKeyMismatch);
             }
             if let Some(enc) = extra2 {
                 // Validate-and-discard (daemon parity): content unused.
+                // FIPS-XX-SESSION: Reached by a forgery, so the entry survives it. Any node with any
+                // keypair can answer our msg1 with a well-formed msg2 of its own and
+                // append garbage here; the static-key comparison that would expose
+                // it has not run yet. Rolling back rather than keeping the advanced
+                // handshake, because the sender's material is mixed in by now.
+                // Note: divergence on a FAILED block decrypt — the daemon restores the pre-read
+                // Note: handshake and rejects; we consume the nonce and continue (#192 decision: the
+                // Note: nonce consumption is load-bearing for msg3, and a retried SessionAck
+                // Note: carries a fresh msg2 either way).
                 let mut plain = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
                 let _ = initiator.decrypt_payload(enc, &mut plain);
             }

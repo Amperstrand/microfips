@@ -514,7 +514,9 @@ jobs:
             crates/fips-identity/src/bech32.rs \
             crates/fips-noise/src/lib.rs \
             crates/fips-fmp/src/lib.rs \
+            crates/fips-fmp/src/negotiation.rs \
             crates/microfips-core/src/fsp.rs \
+            crates/microfips-protocol/src/node.rs \
             crates/microfips-esp-transport/src/l2cap_host.rs \
             crates/microfips-esp-common/src/mdns.rs
 

@@ -2122,9 +2122,19 @@ branch; upstream conversations only after the dogfood proves value).
   routing-hint trust model). Vendored under `specs/fips/` from Amperstrand/fips
   fork/main `0aef8ea2` (the same ref the CI daemon builds use) with leading
   rust comment markers stripped (`//!`, `///`, `//`) so multi-line quotes
-  match across lines. Placement rule learned the hard way: a quote block
-  continues through ANY following `//`-family comment — always place quotes
-  LAST in a comment run, directly above the code they pin.
+   match across lines. Placement rule learned the hard way: a quote block
+   continues through ANY following `//`-family comment — always place quotes
+   LAST in a comment run, directly above the code they pin. Multi-line
+   asides must prefix EVERY line with `// Note:` — only marker-prefixed
+   lines are dropped from the quote.
+- XX-wire pins (specquotes-XX, 2026-09-05): six quotes pin the XX/FMP-v1
+  surfaces — `FIPS-XX-NOISE` (XX static-comparison rationale; decrypt-
+  payload order), `FIPS-XX-ACTIVE` (base/extra split codec; the "keep hash
+  chain in sync" nonce-consumption rule), `FIPS-XX-FMP` (negotiation wire
+  format; MSG2 variable size), `FIPS-XX-SESSION` (forgery/rollback prose at
+  the session Ack path, with our validate-and-discard divergence noted).
+  Vendored under `specs/fips-next/` from Amperstrand/fips next `e0cc0c86`
+  (the pinned NEXT_REF the xx-interop gate builds), same strip rule.
 - First use: `crates/fips-identity/src/bech32.rs` pins BIP-173's encoder-
   lowercase MUST (we comply) and the mixed-case MUST NOT (documented deviation
   from the PR #156 review — harmless because the decoded key is only a routing

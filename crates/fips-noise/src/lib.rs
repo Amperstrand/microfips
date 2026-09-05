@@ -1294,6 +1294,8 @@ impl NoiseXxInitiator {
     }
 
     /// Decrypt negotiation payload after msg2, before finalize.
+    // FIPS-XX-NOISE: Called after read_message_2/3 to extract negotiation payload.
+    // Must be called before `into_session()`.
     pub fn decrypt_payload(
         &mut self,
         ciphertext: &[u8],

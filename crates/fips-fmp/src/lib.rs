@@ -46,6 +46,9 @@ pub const HANDSHAKE_MSG3_SIZE: usize = noise::XX_HANDSHAKE_MSG3_SIZE;
 pub const EPOCH_ENCRYPTED_SIZE: usize = noise::EPOCH_SIZE + noise::TAG_SIZE;
 
 pub const MSG1_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + IDX_SIZE + HANDSHAKE_MSG1_SIZE;
+// FIPS-XX-FMP: Minimum size of handshake msg2 wire packet: prefix + sender_idx + receiver_idx + noise_msg2.
+// Actual size may be larger due to optional negotiation payload.
+// Note: raw-UDP framing must size from this constant, not the base noise msg (the #179 truncation bug).
 pub const MSG2_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG2_SIZE;
 pub const MSG3_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + IDX_SIZE * 2 + HANDSHAKE_MSG3_SIZE;
 
