@@ -61,6 +61,13 @@ pub const DEFAULT_HANDSHAKE_MAX_RESENDS: u32 = 10;
 pub const DEFAULT_CONNECT_DELAY_MS: u64 = 500;
 /// #204: post-cutover bad-frame grace (see `NodeTiming::bad_frame_grace_secs`).
 pub const DEFAULT_BAD_FRAME_GRACE_SECS: u64 = 10;
+/// #77/fips#154: min spacing between FRESH rekey-answer attempts. Each
+/// attempt burns two secp256k1 ECDH ops before the identity pin check
+/// can reject an unauthenticated msg1 (217-248 attempts per 90 s junk
+/// storm measured in the chaos verdicts). The duplicate-msg1 cached
+/// resend path is cheap and stays unlimited; only the fresh-ECDH path
+/// is bounded (0 = off).
+pub const DEFAULT_REKEY_ANSWER_MIN_INTERVAL_MS: u64 = 500;
 pub const MAX_COMPETING_MSG1: u32 = 3;
 
 pub const RECV_BUF_SIZE: usize = 1500;
@@ -127,6 +134,10 @@ pub struct NodeTiming {
     /// 2026-09-05 soak-long and tore down a healthy session. This many
     /// seconds of decrypt/replay failures are absorbed silently (0 = off).
     pub bad_frame_grace_secs: u64,
+    /// #77: min milliseconds between fresh rekey-answer attempts (the
+    /// duplicate-msg1 cached resend is exempt — see
+    /// `DEFAULT_REKEY_ANSWER_MIN_INTERVAL_MS`). 0 = off.
+    pub rekey_answer_min_interval_ms: u64,
 }
 
 impl Default for NodeTiming {
@@ -143,6 +154,7 @@ impl Default for NodeTiming {
             handshake_max_resends: DEFAULT_HANDSHAKE_MAX_RESENDS,
             connect_delay_ms: DEFAULT_CONNECT_DELAY_MS,
             bad_frame_grace_secs: DEFAULT_BAD_FRAME_GRACE_SECS,
+            rekey_answer_min_interval_ms: DEFAULT_REKEY_ANSWER_MIN_INTERVAL_MS,
         }
     }
 }
@@ -1093,6 +1105,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         // the 2026-09-01 soak blip).
         let mut last_rekey_msg1: Option<([u8; 128], usize)> = None;
         let mut last_rekey_msg2: Option<([u8; 256], usize)> = None;
+        // #77: fresh-answer rate limiting (see NodeTiming::rekey_answer_min_interval_ms).
+        let mut last_fresh_answer_at: Option<embassy_time::Instant> = None;
         // Mid-flight XX rekey responder: (state, our msg2 index, their msg1 index).
         #[cfg(feature = "noise-xx")]
         let mut rekey_hs: Option<(
@@ -1201,44 +1215,62 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     self.policy.record_good_frame();
                                     last_rx = embassy_time::Instant::now();
                                 } else {
-                                    log_steady!("steady: rekey msg1 received, answering");
-                                    let mut answered = false;
-                                    #[cfg(not(feature = "noise-xx"))]
-                                    if let Some((slot, msg2, msg2_len)) = self
-                                        .answer_rekey_msg1_ik(
-                                            sender_idx,
-                                            &np[..np_len],
-                                            epoch,
-                                            cur.k_bit,
-                                        )
-                                        .await
-                                    {
-                                        let _ = self.send_frame(&msg2[..msg2_len]).await;
-                                        pend = Some(slot);
-                                        last_rekey_msg1 = Some((msg1_wire, wire_len));
-                                        last_rekey_msg2 = Some((msg2, msg2_len));
-                                        answered = true;
+                                    // #77: rate-bound the fresh-answer path —
+                                    // each attempt costs two ECDH ops BEFORE
+                                    // the pin check can reject junk. Suppressed
+                                    // attempts are pure drops: no watchdog
+                                    // feed, no policy charge (unauthenticated).
+                                    let fresh_ok = last_fresh_answer_at.is_none_or(|t| {
+                                        embassy_time::Instant::now().duration_since(t)
+                                            >= Duration::from_millis(
+                                                self.timing.rekey_answer_min_interval_ms,
+                                            )
+                                    });
+                                    if !fresh_ok {
+                                        log_steady!("steady: rekey answer suppressed (rate limit)");
                                     }
-                                    #[cfg(feature = "noise-xx")]
-                                    if let Some((responder, resp_index, msg2, msg2_len)) =
-                                        self.begin_rekey_xx(sender_idx, &np[..np_len], epoch).await
-                                    {
-                                        let _ = self.send_frame(&msg2[..msg2_len]).await;
-                                        rekey_hs = Some((responder, resp_index, sender_idx));
-                                        last_rekey_msg1 = Some((msg1_wire, wire_len));
-                                        last_rekey_msg2 = Some((msg2, msg2_len));
-                                        answered = true;
-                                    }
-                                    // Unauthenticated msg1 must not feed the
-                                    // liveness watchdog (#77, fips#154): junk
-                                    // parsing as Msg1 refreshed last_rx and
-                                    // record_good_frame unconditionally, keeping
-                                    // a dead link "alive" for the storm's
-                                    // duration. Only a Noise-accepted msg1 counts.
-                                    if answered {
-                                        last_peer_rekey_at = Some(embassy_time::Instant::now());
-                                        self.policy.record_good_frame();
-                                        last_rx = embassy_time::Instant::now();
+                                    if fresh_ok {
+                                        last_fresh_answer_at = Some(embassy_time::Instant::now());
+                                        log_steady!("steady: rekey msg1 received, answering");
+                                        let mut answered = false;
+                                        #[cfg(not(feature = "noise-xx"))]
+                                        if let Some((slot, msg2, msg2_len)) = self
+                                            .answer_rekey_msg1_ik(
+                                                sender_idx,
+                                                &np[..np_len],
+                                                epoch,
+                                                cur.k_bit,
+                                            )
+                                            .await
+                                        {
+                                            let _ = self.send_frame(&msg2[..msg2_len]).await;
+                                            pend = Some(slot);
+                                            last_rekey_msg1 = Some((msg1_wire, wire_len));
+                                            last_rekey_msg2 = Some((msg2, msg2_len));
+                                            answered = true;
+                                        }
+                                        #[cfg(feature = "noise-xx")]
+                                        if let Some((responder, resp_index, msg2, msg2_len)) = self
+                                            .begin_rekey_xx(sender_idx, &np[..np_len], epoch)
+                                            .await
+                                        {
+                                            let _ = self.send_frame(&msg2[..msg2_len]).await;
+                                            rekey_hs = Some((responder, resp_index, sender_idx));
+                                            last_rekey_msg1 = Some((msg1_wire, wire_len));
+                                            last_rekey_msg2 = Some((msg2, msg2_len));
+                                            answered = true;
+                                        }
+                                        // Unauthenticated msg1 must not feed the
+                                        // liveness watchdog (#77, fips#154): junk
+                                        // parsing as Msg1 refreshed last_rx and
+                                        // record_good_frame unconditionally, keeping
+                                        // a dead link "alive" for the storm's
+                                        // duration. Only a Noise-accepted msg1 counts.
+                                        if answered {
+                                            last_peer_rekey_at = Some(embassy_time::Instant::now());
+                                            self.policy.record_good_frame();
+                                            last_rx = embassy_time::Instant::now();
+                                        }
                                     }
                                 }
                                 continue;
@@ -2739,6 +2771,7 @@ mod tests {
             rekey_after_secs: 0,
             rekey_after_messages: 0,
             bad_frame_grace_secs: 13,
+            rekey_answer_min_interval_ms: 777,
         };
 
         let node = Node::with_timing(
@@ -3433,7 +3466,7 @@ mod tests {
         // Use fresh random keys to prove the handshake works with any valid keypair.
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, mut resp_transport) = channel_pair();
 
@@ -3610,7 +3643,7 @@ mod tests {
         let initiator_secret = random_secret();
         let pinned_secret = random_secret();
         let imposter_secret = random_secret();
-        let pinned_pub = ecdh_pubkey(&pinned_secret).unwrap();
+        let pinned_pub = microfips_core::noise::ecdh_pubkey(&pinned_secret).unwrap();
 
         let (init_transport, mut resp_transport) = channel_pair();
 
@@ -3692,7 +3725,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, mut resp_transport) = channel_pair();
 
@@ -3792,7 +3825,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, mut resp_transport) = channel_pair();
 
@@ -3906,7 +3939,10 @@ mod tests {
                         wire::FmpMessage::Msg3 { noise_payload, .. } => {
                             let (base3, _) = negotiation::split_msg3_noise(noise_payload);
                             let (init_pub, init_epoch) = resp.read_message3(base3).unwrap();
-                            assert_eq!(init_pub, ecdh_pubkey(&initiator_secret).unwrap());
+                            assert_eq!(
+                                init_pub,
+                                microfips_core::noise::ecdh_pubkey(&initiator_secret).unwrap()
+                            );
                             assert_eq!(init_epoch, 1u64.to_le_bytes());
                         }
                         _ => panic!("expected Msg3"),
@@ -4085,12 +4121,14 @@ mod tests {
     /// which would hide the buffering policy under test).
     struct DatagramQueue {
         inbox: std::sync::Mutex<std::collections::VecDeque<std::vec::Vec<u8>>>,
+        outbox: std::sync::Mutex<std::vec::Vec<std::vec::Vec<u8>>>,
     }
 
     impl Default for DatagramQueue {
         fn default() -> Self {
             Self {
                 inbox: std::sync::Mutex::new(std::collections::VecDeque::new()),
+                outbox: std::sync::Mutex::new(std::vec::Vec::new()),
             }
         }
     }
@@ -4106,7 +4144,8 @@ mod tests {
             Ok(())
         }
 
-        async fn send(&mut self, _data: &[u8]) -> Result<(), Self::Error> {
+        async fn send(&mut self, data: &[u8]) -> Result<(), Self::Error> {
+            self.inner.outbox.lock().unwrap().push(data.to_vec());
             Ok(())
         }
 
@@ -4269,6 +4308,165 @@ mod tests {
                 "good frame behind the stale burst was not processed: {:?}",
                 handler.events
             );
+        });
+    }
+
+    /// Builds a full, valid IK rekey-msg1 datagram from the PEER's static
+    /// (fresh ephemeral => distinct bytes every call), as the daemon would
+    /// send it on the live link.
+    fn distinct_peer_rekey_msg1(
+        node_pub: &[u8; 33],
+        peer_sec: &[u8; 32],
+        seed: u8,
+    ) -> std::vec::Vec<u8> {
+        use microfips_core::noise::NoiseIkInitiator;
+        let mut rng = TestRng::new(&[seed; 32]);
+        let eph = crate::test_harness::generate_valid_eph(&mut rng);
+        let (mut initiator, _) = NoiseIkInitiator::new(&eph, peer_sec, node_pub).unwrap();
+        let mut noise = [0u8; 256];
+        let n = initiator
+            .write_message1(
+                &microfips_core::noise::ecdh_pubkey(peer_sec).unwrap(),
+                &7u64.to_le_bytes(),
+                &mut noise,
+            )
+            .unwrap();
+        let mut frame = [0u8; 256];
+        let flen = wire::build_msg1(
+            wire::SessionIndex::new(seed as u32),
+            &noise[..n],
+            &mut frame,
+        )
+        .unwrap();
+        frame[..flen].to_vec()
+    }
+
+    #[test]
+    fn test_rekey_answer_rate_limited_under_distinct_msg1_burst() {
+        // #77: each fresh-answer attempt costs two ECDH ops before the pin
+        // check can reject junk (217-248 per 90 s storm in the fips#154
+        // chaos verdicts). A back-to-back burst of DISTINCT valid peer
+        // msg1s must draw exactly ONE fresh answer inside the interval.
+        let q: &'static DatagramQueue = Box::leak(Box::new(DatagramQueue::default()));
+        let key = [0x24; 32];
+        let them = wire::SessionIndex::new(9);
+        let timing = NodeTiming {
+            heartbeat_interval_secs: 1,
+            link_dead_timeout_secs: 2,
+            bad_frame_grace_secs: 10,
+            rekey_answer_min_interval_ms: 500,
+            ..NodeTiming::default()
+        };
+        let (node_sec, peer_sec) = distinct_secret_pair();
+        let node_pub = microfips_core::noise::ecdh_pubkey(&node_sec).unwrap();
+
+        {
+            let mut inbox = q.inbox.lock().unwrap();
+            for seed in 1..=3u8 {
+                inbox.push_back(distinct_peer_rekey_msg1(&node_pub, &peer_sec, seed));
+            }
+            inbox.push_back(build_test_frame(
+                them,
+                500,
+                wire::MSG_HEARTBEAT,
+                1000,
+                &[],
+                &key,
+            ));
+            inbox.push_back(build_test_frame(
+                them,
+                501,
+                wire::MSG_DISCONNECT,
+                1000,
+                &[wire::DISC_REASON_SHUTDOWN],
+                &key,
+            ));
+        }
+
+        block_on(async move {
+            let mut node = Node::with_timing(
+                DatagramTransport { inner: q },
+                TestRng::from_os_rng(),
+                node_sec,
+                microfips_core::noise::ecdh_pubkey(&peer_sec).unwrap(),
+                timing,
+            );
+            node.set_raw_framing(true);
+            node.policy.record_handshake_ok(Instant::now());
+            let mut handler = RecordingHandler::default();
+            let result = node
+                .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
+                .await;
+            assert_eq!(result, Ok(()), "burst must not rip the session");
+            let answers = q
+                .outbox
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|f| matches!(wire::parse_message(f), Some(wire::FmpMessage::Msg2 { .. })))
+                .count();
+            assert_eq!(
+                answers, 1,
+                "only the first fresh msg1 may draw an ECDH answer inside the interval"
+            );
+        });
+    }
+
+    #[test]
+    fn test_rekey_answers_unlimited_when_interval_zero() {
+        // The off-switch twin: same distinct-msg1 burst, interval 0 => all
+        // three answered (the limiter is the only suppression).
+        let q: &'static DatagramQueue = Box::leak(Box::new(DatagramQueue::default()));
+        let key = [0x24; 32];
+        let them = wire::SessionIndex::new(9);
+        let timing = NodeTiming {
+            heartbeat_interval_secs: 1,
+            link_dead_timeout_secs: 2,
+            bad_frame_grace_secs: 10,
+            rekey_answer_min_interval_ms: 0,
+            ..NodeTiming::default()
+        };
+        let (node_sec, peer_sec) = distinct_secret_pair();
+        let node_pub = microfips_core::noise::ecdh_pubkey(&node_sec).unwrap();
+
+        {
+            let mut inbox = q.inbox.lock().unwrap();
+            for seed in 1..=3u8 {
+                inbox.push_back(distinct_peer_rekey_msg1(&node_pub, &peer_sec, seed));
+            }
+            inbox.push_back(build_test_frame(
+                them,
+                501,
+                wire::MSG_DISCONNECT,
+                1000,
+                &[wire::DISC_REASON_SHUTDOWN],
+                &key,
+            ));
+        }
+
+        block_on(async move {
+            let mut node = Node::with_timing(
+                DatagramTransport { inner: q },
+                TestRng::from_os_rng(),
+                node_sec,
+                microfips_core::noise::ecdh_pubkey(&peer_sec).unwrap(),
+                timing,
+            );
+            node.set_raw_framing(true);
+            node.policy.record_handshake_ok(Instant::now());
+            let mut handler = RecordingHandler::default();
+            let result = node
+                .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
+                .await;
+            assert_eq!(result, Ok(()));
+            let answers = q
+                .outbox
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|f| matches!(wire::parse_message(f), Some(wire::FmpMessage::Msg2 { .. })))
+                .count();
+            assert_eq!(answers, 3, "interval 0 disables the limiter");
         });
     }
 
@@ -4454,8 +4652,8 @@ mod tests {
         use microfips_core::noise::ecdh_pubkey;
 
         let (secret_a, secret_b) = distinct_secret_pair();
-        let pub_a = ecdh_pubkey(&secret_a).unwrap();
-        let pub_b = ecdh_pubkey(&secret_b).unwrap();
+        let pub_a = microfips_core::noise::ecdh_pubkey(&secret_a).unwrap();
+        let pub_b = microfips_core::noise::ecdh_pubkey(&secret_b).unwrap();
         let addr_a = node_addr_from_secret(&secret_a);
         let addr_b = node_addr_from_secret(&secret_b);
 
@@ -4497,8 +4695,8 @@ mod tests {
         use microfips_core::noise::ecdh_pubkey;
 
         let (secret_a, secret_b) = distinct_secret_pair();
-        let pub_a = ecdh_pubkey(&secret_a).unwrap();
-        let pub_b = ecdh_pubkey(&secret_b).unwrap();
+        let pub_a = microfips_core::noise::ecdh_pubkey(&secret_a).unwrap();
+        let pub_b = microfips_core::noise::ecdh_pubkey(&secret_b).unwrap();
         let addr_a = node_addr_from_secret(&secret_a);
         let addr_b = node_addr_from_secret(&secret_b);
 
@@ -4550,8 +4748,8 @@ mod tests {
             } else {
                 (b, a)
             };
-        let local_pub = ecdh_pubkey(&local_secret).unwrap();
-        let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
+        let local_pub = microfips_core::noise::ecdh_pubkey(&local_secret).unwrap();
+        let remote_pub = microfips_core::noise::ecdh_pubkey(&remote_secret).unwrap();
 
         let (local_transport, mut remote_transport) = channel_pair();
 
@@ -4654,8 +4852,8 @@ mod tests {
             } else {
                 (b, a)
             };
-        let local_pub = ecdh_pubkey(&local_secret).unwrap();
-        let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
+        let local_pub = microfips_core::noise::ecdh_pubkey(&local_secret).unwrap();
+        let remote_pub = microfips_core::noise::ecdh_pubkey(&remote_secret).unwrap();
 
         let (local_transport, mut remote_transport) = channel_pair();
 
@@ -4764,8 +4962,8 @@ mod tests {
             } else {
                 (b, a)
             };
-        let local_pub = ecdh_pubkey(&local_secret).unwrap();
-        let remote_pub = ecdh_pubkey(&remote_secret).unwrap();
+        let local_pub = microfips_core::noise::ecdh_pubkey(&local_secret).unwrap();
+        let remote_pub = microfips_core::noise::ecdh_pubkey(&remote_secret).unwrap();
 
         let (local_transport, mut remote_transport) = channel_pair();
 
@@ -5083,7 +5281,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5129,7 +5327,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5165,7 +5363,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5203,7 +5401,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5260,7 +5458,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5311,7 +5509,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5370,7 +5568,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5405,7 +5603,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5455,7 +5653,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5519,8 +5717,8 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
-        let node_pub = ecdh_pubkey(&initiator_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
+        let node_pub = microfips_core::noise::ecdh_pubkey(&initiator_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5630,8 +5828,8 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
-        let node_pub = ecdh_pubkey(&initiator_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
+        let node_pub = microfips_core::noise::ecdh_pubkey(&initiator_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -5818,7 +6016,7 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
         let imposter_secret = random_secret();
 
         let (init_transport, peer_transport) = channel_pair();
@@ -5920,8 +6118,8 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
-        let node_pub = ecdh_pubkey(&initiator_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
+        let node_pub = microfips_core::noise::ecdh_pubkey(&initiator_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 
@@ -6051,8 +6249,8 @@ mod tests {
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
-        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
-        let node_pub = ecdh_pubkey(&initiator_secret).unwrap();
+        let responder_pub = microfips_core::noise::ecdh_pubkey(&responder_secret).unwrap();
+        let node_pub = microfips_core::noise::ecdh_pubkey(&initiator_secret).unwrap();
 
         let (init_transport, peer_transport) = channel_pair();
 

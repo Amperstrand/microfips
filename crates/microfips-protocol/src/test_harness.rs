@@ -377,6 +377,7 @@ pub fn success_timing() -> NodeTiming {
         rekey_after_secs: 0,
         rekey_after_messages: 0,
         bad_frame_grace_secs: 0,
+        rekey_answer_min_interval_ms: 0,
     }
 }
 
