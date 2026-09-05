@@ -401,8 +401,9 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                         // rejected SessionAck is otherwise invisible — this
                         // line is what surfaces pin mismatches (#192/#203)
                         // and wire drift on the session layer.
-                        Err(e) => {
-                            log::debug!("fsp: SessionAck rejected ({:?})", e);
+                        Err(_e) => {
+                            #[cfg(feature = "log")]
+                            log::debug!("fsp: SessionAck rejected ({:?})", _e);
                         }
                     }
                 }
