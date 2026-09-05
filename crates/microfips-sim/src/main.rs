@@ -528,6 +528,15 @@ fn main() {
         0x13, 0x2f, 0x39, 0xa9, 0x8c, 0x31, 0xba, 0xad, 0xdb, 0xa6, 0x52, 0x5f, 0x5d, 0x43, 0xf2,
         0x95,
     ];
+    // The linked peer (FIPS_PEER_NPUB) is a valid FSP target: the daemon
+    // terminates FSP sessions itself, so its address maps to its own key
+    // (#192 interop — an XX sim can open an FSP session to the daemon
+    // it is linked to; without this arm the fallback pin is a placeholder
+    // and the session-layer pin check correctly rejects the daemon).
+    let peer_pub_normalized = noise::parity_normalize(&peer_pub);
+    let peer_x_only: [u8; 32] = peer_pub_normalized[1..].try_into().unwrap();
+    let peer_target_addr = NodeAddr::from_pubkey_x(&peer_x_only);
+
     let fsp_target_pub = if use_sim_b {
         SIM_A_PUBKEY
     } else if let Some(hex_str) = target_arg {
@@ -536,6 +545,7 @@ fn main() {
             Ok(ref bytes) if *bytes == stm32_target => STM32_PUBKEY,
             Ok(ref bytes) if *bytes == ESP32_TARGET => ESP32_PUBKEY,
             Ok(ref bytes) if *bytes == ESP32S3_TARGET => ESP32S3_PUBKEY,
+            Ok(ref bytes) if *bytes == peer_target_addr.0 => peer_pub,
             _ => {
                 log::warn!(
                     "[{}] unknown target NodeAddr, FSP will fail (no pubkey mapping)",

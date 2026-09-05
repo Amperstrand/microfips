@@ -518,6 +518,9 @@ fn test_noise_ik_transport_key_symmetry_randomized() {
     }
 }
 
+// XK-wire exact sizes; under noise-xx the FSP session layer runs XX and
+// the symmetry proof lives in fsp.rs xx_fsp_our_roundtrip (#192).
+#[cfg(not(feature = "noise-xx"))]
 #[test]
 fn test_noise_xk_transport_key_symmetry() {
     // FIPS: handshake.rs:85-97 split()

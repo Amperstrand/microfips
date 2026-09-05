@@ -378,20 +378,31 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             FspInitiatorState::Idle => {}
             FspInitiatorState::AwaitingAck => {
                 if fsp_phase == 0x02 {
-                    if let Ok(()) = fsp.handle_ack(fsp_data) {
-                        let mut msg3_buf = [0u8; 512];
-                        if let Ok(msg3_len) = fsp.build_msg3(&self.fsp_epoch, &mut msg3_buf) {
-                            let dg_body = microfips_core::fsp::build_session_datagram_body(
-                                &my_addr,
-                                &target_addr,
-                            );
-                            let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
-                            resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
-                            resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
-                                .copy_from_slice(&msg3_buf[..msg3_len]);
-                            self.fsp_timer =
-                                Some(Instant::now() + Duration::from_secs(FSP_MSG3_TIMEOUT_SECS));
-                            return HandleResult::SendDatagram(dg_len);
+                    match fsp.handle_ack(fsp_data) {
+                        Ok(()) => {
+                            let mut msg3_buf = [0u8; 512];
+                            if let Ok(msg3_len) = fsp.build_msg3(&self.fsp_epoch, &mut msg3_buf) {
+                                let dg_body = microfips_core::fsp::build_session_datagram_body(
+                                    &my_addr,
+                                    &target_addr,
+                                );
+                                let dg_len = SESSION_DATAGRAM_BODY_SIZE + msg3_len;
+                                resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
+                                resp[SESSION_DATAGRAM_BODY_SIZE
+                                    ..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+                                    .copy_from_slice(&msg3_buf[..msg3_len]);
+                                self.fsp_timer = Some(
+                                    Instant::now() + Duration::from_secs(FSP_MSG3_TIMEOUT_SECS),
+                                );
+                                return HandleResult::SendDatagram(dg_len);
+                            }
+                        }
+                        // Presence signature (AGENTS doctrine): a repeatedly
+                        // rejected SessionAck is otherwise invisible — this
+                        // line is what surfaces pin mismatches (#192/#203)
+                        // and wire drift on the session layer.
+                        Err(e) => {
+                            log::debug!("fsp: SessionAck rejected ({:?})", e);
                         }
                     }
                 }

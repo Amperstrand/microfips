@@ -159,6 +159,17 @@ pub fn build_session_setup(
 // FIPS: bd08505 protocol/session.rs:SessionSetup::decode()
 // FIPS: bd08505 handlers/session.rs:handle_session_setup()
 pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
+    let (session_flags, _src, handshake) = parse_session_setup_full(data)?;
+    Ok((session_flags, handshake))
+}
+
+/// `parse_session_setup` plus the first src coord. Under Noise XX the
+/// responder cannot derive the initiator address from a msg1 that carries
+/// only an ephemeral, so the SessionAck dst mirrors the setup's src
+/// instead (daemon shape, e0cc0c86 `SessionAck::new(our, setup.src)`).
+pub fn parse_session_setup_full(
+    data: &[u8],
+) -> Result<(u8, [u8; NODE_ADDR_SIZE], &[u8]), FspError> {
     if data.len() < FSP_COMMON_PREFIX_SIZE {
         return Err(FspError::InvalidFrame);
     }
@@ -173,13 +184,23 @@ pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
     }
     let body = &body[..payload_len];
 
-    if body.is_empty() {
+    // 1 flags + 2 src_count + 16 first coord are the minimum decodable
+    // body; anything shorter is malformed (a 1-2 byte body used to panic
+    // on the coord-count read below — reachable with a crafted 5-byte
+    // setup datagram on the unauthenticated path, #77-class).
+    if body.len() < 1 + 2 + NODE_ADDR_SIZE {
         return Err(FspError::InvalidFrame);
     }
     let session_flags = body[0];
     let mut pos = 1;
 
     let src_count = u16::from_le_bytes([body[pos], body[pos + 1]]) as usize;
+    if src_count == 0 {
+        return Err(FspError::InvalidCoords);
+    }
+    let src_first: [u8; NODE_ADDR_SIZE] = body[pos + 2..pos + 2 + NODE_ADDR_SIZE]
+        .try_into()
+        .map_err(|_| FspError::InvalidCoords)?;
     pos += 2 + src_count * NODE_ADDR_SIZE;
     if body.len() < pos {
         return Err(FspError::InvalidCoords);
@@ -199,7 +220,7 @@ pub fn parse_session_setup(data: &[u8]) -> Result<(u8, &[u8]), FspError> {
     if body.len() < pos + hs_len {
         return Err(FspError::InvalidFrame);
     }
-    Ok((session_flags, &body[pos..pos + hs_len]))
+    Ok((session_flags, src_first, &body[pos..pos + hs_len]))
 }
 
 // FIPS: bd08505 protocol/session.rs:SessionAck::encode()
@@ -557,7 +578,26 @@ pub fn parse_fsp_encrypted_header(data: &[u8]) -> Option<(u8, u64, &[u8], &[u8])
     Some((flags, counter, header, payload))
 }
 
-use crate::noise::{NoiseError, NoiseXkInitiator, NoiseXkResponder, EPOCH_SIZE, PUBKEY_SIZE};
+use crate::noise::{NoiseError, EPOCH_SIZE, PUBKEY_SIZE};
+#[cfg(not(feature = "noise-xx"))]
+use crate::noise::{NoiseXkInitiator as SessionInitiator, NoiseXkResponder as SessionResponder};
+#[cfg(feature = "noise-xx")]
+use crate::noise::{
+    NoiseXxInitiator as SessionInitiator, NoiseXxResponder as SessionResponder, TAG_SIZE,
+    XX_HANDSHAKE_MSG2_SIZE, XX_HANDSHAKE_MSG3_SIZE,
+};
+#[cfg(feature = "noise-xx")]
+use crate::wire::negotiation;
+
+// #192: on the XX wire the FSP handshake messages carry an appended
+// encrypted negotiation payload (daemon shape, next e0cc0c86) — size the
+// noise buffers for the base message plus the largest block.
+#[cfg(feature = "noise-xx")]
+const SESSION_MSG2_BUF: usize =
+    XX_HANDSHAKE_MSG2_SIZE + negotiation::NEGOTIATION_MAX_SIZE + TAG_SIZE;
+#[cfg(feature = "noise-xx")]
+const SESSION_MSG3_BUF: usize =
+    XX_HANDSHAKE_MSG3_SIZE + negotiation::NEGOTIATION_MAX_SIZE + TAG_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspSessionState {
@@ -599,7 +639,7 @@ impl From<NoiseError> for FspSessionError {
 // FIPS: bd08505 handlers/session.rs:handle_session_payload()
 pub struct FspSession {
     state: FspSessionState,
-    responder: Option<NoiseXkResponder>,
+    responder: Option<SessionResponder>,
     k_recv: Option<[u8; 32]>,
     k_send: Option<[u8; 32]>,
     initiator_pub: Option<[u8; PUBKEY_SIZE]>,
@@ -659,19 +699,36 @@ impl FspSession {
             return Err(FspSessionError::InvalidState);
         }
 
-        let (_flags, handshake_payload) = parse_session_setup(setup_data)?;
+        let (_flags, setup_src, handshake_payload) = parse_session_setup_full(setup_data)?;
+        #[cfg(not(feature = "noise-xx"))]
+        let _ = setup_src;
 
         if handshake_payload.len() != XK_HANDSHAKE_MSG1_SIZE {
             return Err(FspSessionError::InvalidMessage);
         }
 
-        let ei_pub: [u8; PUBKEY_SIZE] = handshake_payload[..PUBKEY_SIZE]
-            .try_into()
-            .map_err(|_| FspSessionError::InvalidMessage)?;
+        // XX msg1 is e-only (33B — same size as XK's), so the responder
+        // learns nothing about the initiator until msg3; the SessionAck
+        // dst then mirrors the setup's src coord (daemon shape) instead of
+        // an address derived from the ephemeral.
+        #[cfg(not(feature = "noise-xx"))]
+        let mut responder = {
+            let ei_pub: [u8; PUBKEY_SIZE] = handshake_payload[..PUBKEY_SIZE]
+                .try_into()
+                .map_err(|_| FspSessionError::InvalidMessage)?;
+            SessionResponder::new(my_secret, &ei_pub)?
+        };
+        #[cfg(feature = "noise-xx")]
+        let mut responder = {
+            let mut r = SessionResponder::new(my_secret)?;
+            r.read_message1(handshake_payload)?;
+            r
+        };
 
-        let mut responder = NoiseXkResponder::new(my_secret, &ei_pub)?;
-
+        #[cfg(not(feature = "noise-xx"))]
         let mut msg2_noise = [0u8; 128];
+        #[cfg(feature = "noise-xx")]
+        let mut msg2_noise = [0u8; SESSION_MSG2_BUF];
         let msg2_len = responder.write_message2(my_ephemeral, my_epoch, &mut msg2_noise)?;
 
         let my_pub = crate::noise::ecdh_pubkey(my_secret)?;
@@ -680,10 +737,27 @@ impl FspSession {
         x_only.copy_from_slice(&normalized[1..]);
         let my_addr = crate::identity::NodeAddr::from_pubkey_x(&x_only);
         let src = [my_addr.0];
-        let mut ei_x_only = [0u8; 32];
-        ei_x_only.copy_from_slice(&ei_pub[1..]);
-        let initiator_addr = crate::identity::NodeAddr::from_pubkey_x(&ei_x_only);
-        let dst = [initiator_addr.0];
+        #[cfg(not(feature = "noise-xx"))]
+        let dst = {
+            let mut ei_x_only = [0u8; 32];
+            ei_x_only.copy_from_slice(&handshake_payload[1..PUBKEY_SIZE]);
+            let initiator_addr = crate::identity::NodeAddr::from_pubkey_x(&ei_x_only);
+            [initiator_addr.0]
+        };
+        #[cfg(feature = "noise-xx")]
+        let dst = [setup_src];
+
+        #[cfg(feature = "noise-xx")]
+        let msg2_len = {
+            // #192 TX: mirror the daemon — append the encrypted FSP
+            // negotiation payload (version [0,0], features 0) to the
+            // SessionAck handshake body.
+            let mut neg = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+            let neglen = negotiation::encode_payload(&mut neg, 0, 0, 0, None)
+                .ok_or(FspSessionError::BufferTooSmall)?;
+            let enc = responder.encrypt_payload(&neg[..neglen], &mut msg2_noise[msg2_len..])?;
+            msg2_len + enc
+        };
 
         let ack_len = build_session_ack(&src, &dst, &msg2_noise[..msg2_len], ack_out)?;
 
@@ -704,7 +778,15 @@ impl FspSession {
 
         let handshake_payload = parse_session_msg3(msg3_data)?;
 
+        // #192: on the XX wire the peer may append an encrypted negotiation
+        // block after the base msg3 — split-tolerant read (RX-optional,
+        // daemon parity: a failing block never fails the session).
+        #[cfg(not(feature = "noise-xx"))]
         if handshake_payload.len() != XK_HANDSHAKE_MSG3_SIZE {
+            return Err(FspSessionError::InvalidMessage);
+        }
+        #[cfg(feature = "noise-xx")]
+        if handshake_payload.len() < XX_HANDSHAKE_MSG3_SIZE {
             return Err(FspSessionError::InvalidMessage);
         }
 
@@ -712,8 +794,21 @@ impl FspSession {
             .responder
             .as_mut()
             .ok_or(FspSessionError::InvalidState)?;
+        #[cfg(not(feature = "noise-xx"))]
         let (initiator_static_pub, _initiator_epoch) =
             responder.read_message3(handshake_payload)?;
+        #[cfg(feature = "noise-xx")]
+        let (initiator_static_pub, _initiator_epoch) = {
+            let (base3, extra3) = negotiation::split_msg3_noise(handshake_payload);
+            let parsed = responder.read_message3(base3)?;
+            if let Some(enc) = extra3 {
+                // Validate-and-discard: the block's content is currently
+                // unused on this side too (daemon parity).
+                let mut plain = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+                let _ = responder.decrypt_payload(enc, &mut plain);
+            }
+            parsed
+        };
 
         let (k_recv, k_send) = responder.finalize();
 
@@ -724,7 +819,7 @@ impl FspSession {
         self.state = FspSessionState::Established;
 
         #[cfg(feature = "std")]
-        log::info!("FSP session: established (responder, XK)");
+        log::info!("FSP session: established (responder)");
 
         Ok(())
     }
@@ -758,6 +853,9 @@ pub enum FspInitiatorState {
 pub enum FspInitiatorError {
     InvalidState,
     InvalidMessage,
+    /// XX (#192/#203 discipline): the responder static learned in msg2 does
+    /// not match the pinned responder key the session was opened with.
+    PeerKeyMismatch,
     DecryptFailed,
     BufferTooSmall,
     Noise(NoiseError),
@@ -782,10 +880,15 @@ impl From<FspError> for FspInitiatorError {
 // FIPS: bd08505 handlers/session.rs:initiate_session()
 pub struct FspInitiatorSession {
     state: FspInitiatorState,
-    initiator: Option<NoiseXkInitiator>,
+    initiator: Option<SessionInitiator>,
     k_recv: Option<[u8; 32]>,
     k_send: Option<[u8; 32]>,
     my_pub: [u8; PUBKEY_SIZE],
+    // #203 discipline on the session layer: under XX the responder static
+    // is learned in msg2 and compared against this pin; under XK the pin
+    // is structural (the initiator encrypts toward it from msg1).
+    #[cfg_attr(not(feature = "noise-xx"), allow(dead_code))]
+    pinned_responder_pub: [u8; PUBKEY_SIZE],
     send_counter: u64,
 }
 
@@ -796,8 +899,11 @@ impl FspInitiatorSession {
         my_ephemeral_secret: &[u8; 32],
         responder_static_pub: &[u8; PUBKEY_SIZE],
     ) -> Result<Self, FspInitiatorError> {
+        #[cfg(not(feature = "noise-xx"))]
         let (initiator, _e_pub) =
-            NoiseXkInitiator::new(my_ephemeral_secret, my_static_secret, responder_static_pub)?;
+            SessionInitiator::new(my_ephemeral_secret, my_static_secret, responder_static_pub)?;
+        #[cfg(feature = "noise-xx")]
+        let (initiator, _e_pub) = SessionInitiator::new(my_ephemeral_secret, my_static_secret)?;
         let my_pub = crate::noise::ecdh_pubkey(my_static_secret)?;
         Ok(Self {
             state: FspInitiatorState::Idle,
@@ -805,6 +911,7 @@ impl FspInitiatorSession {
             k_recv: None,
             k_send: None,
             my_pub,
+            pinned_responder_pub: *responder_static_pub,
             send_counter: 0,
         })
     }
@@ -871,7 +978,25 @@ impl FspInitiatorSession {
             .initiator
             .as_mut()
             .ok_or(FspInitiatorError::InvalidState)?;
+        #[cfg(not(feature = "noise-xx"))]
         let _responder_epoch = initiator.read_message2(xk_msg2_payload)?;
+        #[cfg(feature = "noise-xx")]
+        {
+            // #192/#203: split the daemon's optional negotiation block,
+            // then verify the learned responder static against the pin —
+            // without the comparison any completing responder would get
+            // the session on the XX wire.
+            let (base2, extra2) = negotiation::split_msg2_noise(xk_msg2_payload);
+            let (resp_pub, _resp_epoch) = initiator.read_message2(base2)?;
+            if resp_pub[1..33] != self.pinned_responder_pub[1..33] {
+                return Err(FspInitiatorError::PeerKeyMismatch);
+            }
+            if let Some(enc) = extra2 {
+                // Validate-and-discard (daemon parity): content unused.
+                let mut plain = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+                let _ = initiator.decrypt_payload(enc, &mut plain);
+            }
+        }
         self.state = FspInitiatorState::AwaitingEstablished;
 
         #[cfg(feature = "std")]
@@ -893,13 +1018,26 @@ impl FspInitiatorSession {
             .initiator
             .as_mut()
             .ok_or(FspInitiatorError::InvalidState)?;
+        #[cfg(not(feature = "noise-xx"))]
         let mut msg3_noise = [0u8; 128];
+        #[cfg(feature = "noise-xx")]
+        let mut msg3_noise = [0u8; SESSION_MSG3_BUF];
         let msg3_len = initiator.write_message3(&self.my_pub, epoch, &mut msg3_noise)?;
+        #[cfg(feature = "noise-xx")]
+        let msg3_len = {
+            // #192 TX: append the encrypted FSP negotiation payload so
+            // both directions are exercised and hash-chained symmetrically.
+            let mut neg = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+            let neglen = negotiation::encode_payload(&mut neg, 0, 0, 0, None)
+                .ok_or(FspInitiatorError::BufferTooSmall)?;
+            let enc = initiator.encrypt_payload(&neg[..neglen], &mut msg3_noise[msg3_len..])?;
+            msg3_len + enc
+        };
         let msg3_fsp_len = build_session_msg3(&msg3_noise[..msg3_len], out)?;
         self.state = FspInitiatorState::Established;
 
         #[cfg(feature = "std")]
-        log::info!("FSP initiator: established (XK)");
+        log::info!("FSP initiator: established");
 
         let (k_send, k_recv) = initiator.finalize();
         self.k_send = Some(k_send);
@@ -1259,6 +1397,9 @@ mod tests {
         assert_eq!(result, Err(FspSessionError::InvalidState));
     }
 
+    // Exact XK-wire sizes; the XX equivalents are the xx_fsp_* tests
+    // (handshake messages grow by the negotiation block, #192).
+    #[cfg(not(feature = "noise-xx"))]
     #[test]
     fn fsp_session_full_flow() {
         use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
@@ -1349,9 +1490,12 @@ mod tests {
 
     #[test]
     fn fsp_session_rejects_double_setup() {
-        use crate::noise::{ecdh_pubkey, NoiseXkInitiator};
+        use crate::noise::ecdh_pubkey;
+        #[cfg(not(feature = "noise-xx"))]
+        use crate::noise::NoiseXkInitiator;
 
         let (responder_secret, responder_eph, initiator_secret) = test_keys();
+        #[cfg(not(feature = "noise-xx"))]
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
         let (initiator_eph, _) = {
             use k256::SecretKey;
@@ -1368,8 +1512,12 @@ mod tests {
         };
         let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
+        #[cfg(not(feature = "noise-xx"))]
         let (mut initiator, _) =
             NoiseXkInitiator::new(&initiator_eph, &initiator_secret, &responder_pub).unwrap();
+        #[cfg(feature = "noise-xx")]
+        let (mut initiator, _) =
+            crate::noise::NoiseXxInitiator::new(&initiator_eph, &initiator_secret).unwrap();
         let mut xk_msg1 = [0u8; 64];
         let msg1_len = initiator.write_message1(&mut xk_msg1).unwrap();
 
@@ -1400,6 +1548,280 @@ mod tests {
             &mut ack,
         );
         assert_eq!(result, Err(FspSessionError::InvalidState));
+    }
+
+    /// The pre-#192 parser panicked on a 1-2 byte body (coord-count read
+    /// before any length guard) — reachable from a crafted 5-byte setup
+    /// datagram on the unauthenticated inbound path (#77-class).
+    #[test]
+    fn parse_session_setup_rejects_short_body_without_panic() {
+        let one = [0x01u8, 0x00, 0x01, 0x00, 0xAA];
+        assert!(parse_session_setup(&one).is_err());
+        let two = [0x01u8, 0x00, 0x02, 0x00, 0xAA, 0xBB];
+        assert!(parse_session_setup(&two).is_err());
+    }
+
+    /// #192: the daemon (next, e0cc0c86) appends an encrypted FSP
+    /// negotiation payload to its SessionAck msg2. Our XX initiator must
+    /// split at the base XX msg2 and accept the trailing block.
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn xx_fsp_initiator_accepts_daemon_msg2_with_negotiation_block() {
+        use crate::noise::{ecdh_pubkey, NoiseXxResponder};
+        use crate::wire::negotiation;
+
+        let (responder_secret, responder_eph, initiator_secret) = test_keys();
+        let (_, initiator_eph, _) = test_keys();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let mut init =
+            FspInitiatorSession::new(&initiator_secret, &initiator_eph, &responder_pub).unwrap();
+        let mut setup_buf = [0u8; 512];
+        let setup_len = init
+            .build_setup(&make_addr(0x02), &make_addr(0x01), &mut setup_buf)
+            .unwrap();
+
+        let (_, _src, msg1) = parse_session_setup_full(&setup_buf[..setup_len]).unwrap();
+        let mut resp = NoiseXxResponder::new(&responder_secret).unwrap();
+        resp.read_message1(msg1).unwrap();
+        let mut msg2 = [0u8; 256];
+        let msg2_len = resp
+            .write_message2(&responder_eph, &epoch_r, &mut msg2)
+            .unwrap();
+        let mut neg = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+        let neglen = negotiation::encode_payload(&mut neg, 0, 0, 0, None).unwrap();
+        let neg_enc = resp
+            .encrypt_payload(&neg[..neglen], &mut msg2[msg2_len..])
+            .unwrap();
+        let total = msg2_len + neg_enc;
+
+        let mut ack_buf = [0u8; 512];
+        let ack_len = build_session_ack(
+            &[make_addr(0x01)],
+            &[make_addr(0x02)],
+            &msg2[..total],
+            &mut ack_buf,
+        )
+        .unwrap();
+
+        init.handle_ack(&ack_buf[..ack_len])
+            .expect("daemon-shaped msg2 (base + negotiation block) must be accepted");
+        assert_eq!(init.state(), FspInitiatorState::AwaitingEstablished);
+    }
+
+    /// #203 discipline on the session layer: an XX msg2 that completes
+    /// cryptographically but presents a static other than the pinned
+    /// responder key must fail the session setup.
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn xx_fsp_initiator_rejects_wrong_responder_static() {
+        use crate::noise::{ecdh_pubkey, NoiseXxResponder};
+
+        let (responder_secret, _responder_eph, initiator_secret) = test_keys();
+        let (imposter_secret, imposter_eph, _) = test_keys();
+        let (_, initiator_eph, _) = test_keys();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let mut init =
+            FspInitiatorSession::new(&initiator_secret, &initiator_eph, &responder_pub).unwrap();
+        let mut setup_buf = [0u8; 512];
+        let setup_len = init
+            .build_setup(&make_addr(0x02), &make_addr(0x01), &mut setup_buf)
+            .unwrap();
+
+        let (_, _src, msg1) = parse_session_setup_full(&setup_buf[..setup_len]).unwrap();
+        let mut imposter = NoiseXxResponder::new(&imposter_secret).unwrap();
+        imposter.read_message1(msg1).unwrap();
+        let mut msg2 = [0u8; 256];
+        let msg2_len = imposter
+            .write_message2(&imposter_eph, &epoch_r, &mut msg2)
+            .unwrap();
+
+        let mut ack_buf = [0u8; 512];
+        let ack_len = build_session_ack(
+            &[make_addr(0x01)],
+            &[make_addr(0x02)],
+            &msg2[..msg2_len],
+            &mut ack_buf,
+        )
+        .unwrap();
+
+        assert_eq!(
+            init.handle_ack(&ack_buf[..ack_len]),
+            Err(FspInitiatorError::PeerKeyMismatch),
+            "imposter static must abort the XX FSP session setup"
+        );
+    }
+
+    /// Block absence stays tolerated in both directions (RX-optional, the
+    /// daemon accepts our un-appended messages and vice versa).
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn xx_fsp_initiator_tolerates_absent_negotiation_block() {
+        use crate::noise::{ecdh_pubkey, NoiseXxResponder};
+
+        let (responder_secret, responder_eph, initiator_secret) = test_keys();
+        let (_, initiator_eph, _) = test_keys();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let mut init =
+            FspInitiatorSession::new(&initiator_secret, &initiator_eph, &responder_pub).unwrap();
+        let mut setup_buf = [0u8; 512];
+        let setup_len = init
+            .build_setup(&make_addr(0x02), &make_addr(0x01), &mut setup_buf)
+            .unwrap();
+
+        let (_, _src, msg1) = parse_session_setup_full(&setup_buf[..setup_len]).unwrap();
+        let mut resp = NoiseXxResponder::new(&responder_secret).unwrap();
+        resp.read_message1(msg1).unwrap();
+        let mut msg2 = [0u8; 256];
+        let msg2_len = resp
+            .write_message2(&responder_eph, &epoch_r, &mut msg2)
+            .unwrap();
+
+        let mut ack_buf = [0u8; 512];
+        let ack_len = build_session_ack(
+            &[make_addr(0x01)],
+            &[make_addr(0x02)],
+            &msg2[..msg2_len],
+            &mut ack_buf,
+        )
+        .unwrap();
+
+        init.handle_ack(&ack_buf[..ack_len])
+            .expect("block-less msg2 must still be accepted");
+        assert_eq!(init.state(), FspInitiatorState::AwaitingEstablished);
+    }
+
+    /// Full responder-side flow against a daemon stand-in initiator:
+    /// our SessionAck must CARRY the negotiation block (#192 TX) and our
+    /// msg3 read must split-tolerate the daemon's appended block.
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn xx_fsp_responder_full_flow_with_daemon_initiator() {
+        use crate::noise::{ecdh_pubkey, NoiseXxInitiator};
+        use crate::wire::negotiation;
+
+        let (responder_secret, responder_eph, initiator_secret) = test_keys();
+        let (_, initiator_eph, _) = test_keys();
+        let initiator_pub = ecdh_pubkey(&initiator_secret).unwrap();
+        let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let epoch_i = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let (mut dinit, _) = NoiseXxInitiator::new(&initiator_eph, &initiator_secret).unwrap();
+        let mut msg1 = [0u8; 64];
+        let msg1_len = dinit.write_message1(&mut msg1).unwrap();
+        assert_eq!(msg1_len, 33, "XX msg1 is e-only, same shape as XK");
+
+        let mut setup_buf = [0u8; 512];
+        let setup_len = build_session_setup(
+            0x00,
+            &[make_addr(0x02)],
+            &[make_addr(0x01)],
+            &msg1[..msg1_len],
+            &mut setup_buf,
+        )
+        .unwrap();
+
+        let mut session = FspSession::new();
+        let mut ack_buf = [0u8; 512];
+        let ack_len = session
+            .handle_setup(
+                &responder_secret,
+                &responder_eph,
+                &epoch_r,
+                &setup_buf[..setup_len],
+                &mut ack_buf,
+            )
+            .expect("XX msg1 (e-only, 33B) must be accepted");
+        assert_eq!(session.state(), FspSessionState::AwaitingMsg3);
+
+        let ack_hs = parse_session_ack(&ack_buf[..ack_len]).unwrap();
+        let (base2, extra2) = negotiation::split_msg2_noise(ack_hs);
+        assert_eq!(base2.len(), 106, "base XX msg2");
+        let extra2 = extra2.expect("our SessionAck must carry the negotiation block");
+        assert_eq!(extra2.len(), 26, "new(0,0,0): 10B payload + 16B tag");
+
+        let _ = dinit.read_message2(base2).unwrap();
+        // Daemon parity: the msg2 read path decrypts the optional
+        // negotiation block, consuming its nonce before msg3 — skipping
+        // it desyncs the AEAD counter and msg3 fails (CryptoError).
+        let mut neg_plain = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+        let neg_n = dinit
+            .decrypt_payload(extra2, &mut neg_plain)
+            .expect("our negotiation block must decrypt on the daemon side");
+        negotiation::NegotiationHeader::parse(&neg_plain[..neg_n])
+            .expect("our negotiation block must parse as a valid header");
+        let mut msg3 = [0u8; 256];
+        let msg3_len = dinit
+            .write_message3(&initiator_pub, &epoch_i, &mut msg3)
+            .unwrap();
+        let mut neg = [0u8; negotiation::NEGOTIATION_MAX_SIZE];
+        let neglen = negotiation::encode_payload(&mut neg, 0, 0, 0, None).unwrap();
+        let neg_enc = dinit
+            .encrypt_payload(&neg[..neglen], &mut msg3[msg3_len..])
+            .unwrap();
+        let mut msg3_buf = [0u8; 512];
+        let msg3_fsp = build_session_msg3(&msg3[..msg3_len + neg_enc], &mut msg3_buf).unwrap();
+
+        session
+            .handle_msg3(&msg3_buf[..msg3_fsp])
+            .expect("daemon-shaped msg3 (base + block) must complete the session");
+        assert_eq!(session.state(), FspSessionState::Established);
+        assert_eq!(session.initiator_pub(), Some(initiator_pub));
+
+        let (c1, c2) = dinit.finalize();
+        let (k_recv, k_send) = session.session_keys().unwrap();
+        assert_eq!(k_recv, c1, "session k_recv == initiator send key");
+        assert_eq!(k_send, c2, "session k_send == initiator recv key");
+    }
+
+    /// Our initiator ↔ our responder on the XX wire, blocks flowing in both
+    /// directions — the regression guard for the whole cfg switch.
+    #[cfg(feature = "noise-xx")]
+    #[test]
+    fn xx_fsp_our_roundtrip() {
+        use crate::noise::ecdh_pubkey;
+
+        let (responder_secret, responder_eph, initiator_secret) = test_keys();
+        let (_, initiator_eph, _) = test_keys();
+        let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
+        let epoch_r = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let mut init =
+            FspInitiatorSession::new(&initiator_secret, &initiator_eph, &responder_pub).unwrap();
+        let mut setup_buf = [0u8; 512];
+        let setup_len = init
+            .build_setup(&make_addr(0x02), &make_addr(0x01), &mut setup_buf)
+            .unwrap();
+
+        let mut session = FspSession::new();
+        let mut ack_buf = [0u8; 512];
+        let ack_len = session
+            .handle_setup(
+                &responder_secret,
+                &responder_eph,
+                &epoch_r,
+                &setup_buf[..setup_len],
+                &mut ack_buf,
+            )
+            .unwrap();
+
+        init.handle_ack(&ack_buf[..ack_len]).unwrap();
+        let mut msg3_buf = [0u8; 512];
+        let msg3_len = init.build_msg3(&epoch_r, &mut msg3_buf).unwrap();
+
+        session.handle_msg3(&msg3_buf[..msg3_len]).unwrap();
+        assert_eq!(session.state(), FspSessionState::Established);
+        assert_eq!(init.state(), FspInitiatorState::Established);
+
+        let (i_recv, i_send) = init.session_keys().unwrap();
+        let (r_recv, r_send) = session.session_keys().unwrap();
+        assert_eq!(r_recv, i_send);
+        assert_eq!(r_send, i_recv);
     }
 
     #[test]

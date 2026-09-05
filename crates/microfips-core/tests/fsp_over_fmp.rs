@@ -194,8 +194,12 @@ fn test_fsp_full_handshake_over_fmp() {
     let fsp_resp_epoch: [u8; 8] = [0x01, 0, 0, 0, 0, 0, 0, 0];
     let fsp_init_epoch: [u8; 8] = [0x02, 0, 0, 0, 0, 0, 0, 0];
 
+    #[cfg(not(feature = "noise-xx"))]
     let (mut xk_init, xk_init_pub_check) =
         NoiseXkInitiator::new(&fsp_init_eph, &fsp_init_secret, &fsp_resp_pub).unwrap();
+    #[cfg(feature = "noise-xx")]
+    let (mut xk_init, xk_init_pub_check) =
+        microfips_core::noise::NoiseXxInitiator::new(&fsp_init_eph, &fsp_init_secret).unwrap();
     assert_eq!(xk_init_pub_check, ecdh_pubkey(&fsp_init_eph).unwrap());
 
     let mut xk_msg1 = [0u8; 64];
@@ -240,10 +244,27 @@ fn test_fsp_full_handshake_over_fmp() {
     let mut ack_stored = [0u8; 512];
     ack_stored[..ack_len].copy_from_slice(&ack_buf[..ack_len]);
     let xk_msg2_payload = parse_session_ack(&ack_stored[..ack_len]).unwrap();
-    assert_eq!(xk_msg2_payload.len(), fsp::XK_HANDSHAKE_MSG2_SIZE);
-
-    let received_epoch = xk_init.read_message2(xk_msg2_payload).unwrap();
-    assert_eq!(received_epoch, fsp_resp_epoch);
+    #[cfg(not(feature = "noise-xx"))]
+    {
+        assert_eq!(xk_msg2_payload.len(), fsp::XK_HANDSHAKE_MSG2_SIZE);
+        let received_epoch = xk_init.read_message2(xk_msg2_payload).unwrap();
+        assert_eq!(received_epoch, fsp_resp_epoch);
+    }
+    #[cfg(feature = "noise-xx")]
+    {
+        // XX: our SessionAck carries the negotiation block — split, read
+        // the base, and consume the block's nonce before msg3 (daemon
+        // parity). The learned static must equal the pinned responder.
+        let (base2, extra2) = microfips_core::wire::negotiation::split_msg2_noise(xk_msg2_payload);
+        assert_eq!(base2.len(), microfips_core::noise::XX_HANDSHAKE_MSG2_SIZE);
+        let (learned_resp_pub, received_epoch) = xk_init.read_message2(base2).unwrap();
+        assert_eq!(learned_resp_pub, fsp_resp_pub);
+        assert_eq!(received_epoch, fsp_resp_epoch);
+        if let Some(enc) = extra2 {
+            let mut plain = [0u8; microfips_core::wire::negotiation::NEGOTIATION_MAX_SIZE];
+            xk_init.decrypt_payload(enc, &mut plain).unwrap();
+        }
+    }
 
     let mut xk_msg3_noise = [0u8; 128];
     let xk_msg3_len = xk_init

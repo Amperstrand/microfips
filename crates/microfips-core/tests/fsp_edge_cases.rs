@@ -197,7 +197,11 @@ fn test_msg3_before_session_ack_rejected() {
     let init_pub = init_pub();
     let init_eph2: [u8; 32] = [0x02; 32];
 
+    #[cfg(not(feature = "noise-xx"))]
     let (mut init, _) = NoiseXkInitiator::new(&init_eph2, &INIT_SECRET, &resp_pub).unwrap();
+    #[cfg(feature = "noise-xx")]
+    let (mut init, _) =
+        microfips_core::noise::NoiseXxInitiator::new(&init_eph2, &INIT_SECRET).unwrap();
     let mut msg1 = [0u8; 64];
     let msg1_len = init.write_message1(&mut msg1).unwrap();
 
@@ -220,7 +224,19 @@ fn test_msg3_before_session_ack_rejected() {
         .unwrap();
 
     let xk_msg2 = parse_session_ack(&ack_buf[..ack_len]).unwrap();
+    #[cfg(not(feature = "noise-xx"))]
     init.read_message2(xk_msg2).unwrap();
+    #[cfg(feature = "noise-xx")]
+    {
+        // XX: our SessionAck carries the negotiation block — read the
+        // base and consume the block's nonce before msg3 (daemon parity).
+        let (base2, extra2) = microfips_core::wire::negotiation::split_msg2_noise(xk_msg2);
+        init.read_message2(base2).unwrap();
+        if let Some(enc) = extra2 {
+            let mut plain = [0u8; microfips_core::wire::negotiation::NEGOTIATION_MAX_SIZE];
+            init.decrypt_payload(enc, &mut plain).unwrap();
+        }
+    }
 
     let init_pub_key = ecdh_pubkey(&INIT_SECRET).unwrap();
     let mut msg3_noise = [0u8; 128];
