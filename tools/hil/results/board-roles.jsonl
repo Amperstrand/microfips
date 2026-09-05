@@ -38,3 +38,4 @@
 {"ts": "2026-09-04T15:49:27+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-end", "variant": "wifi", "ok": true}
 {"ts": "2026-09-04T21:28:11+0200", "serial": "cyd-ch340", "event": "flash-begin", "variant": "wifi", "previous_variant": null, "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260904-192811-hil-smoke-cyd-ch340"}
 {"ts": "2026-09-04T21:29:41+0200", "serial": "cyd-ch340", "event": "flash-end", "variant": "wifi", "ok": true}
+{"ts": "2026-09-04T21:52:06+0200", "serial": "F4:12:FA:CF:03:84", "event": "flash-begin", "variant": "wifi", "previous_variant": "wifi", "lock": "labgrid-place", "run_dir": "/home/ubuntu/src/fips-lab/results/20260904-195206-hil-smoke-F412FACF0384"}
