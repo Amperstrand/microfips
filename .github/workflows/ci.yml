@@ -511,14 +511,7 @@ jobs:
           greatspectate check --config specquotes.toml \
             --comment-start "// " --comment-continue "//" \
             --comment-aside "// Note:" \
-            crates/fips-identity/src/bech32.rs \
-            crates/fips-noise/src/lib.rs \
-            crates/fips-fmp/src/lib.rs \
-            crates/fips-fmp/src/negotiation.rs \
-            crates/microfips-core/src/fsp.rs \
-            crates/microfips-protocol/src/node.rs \
-            crates/microfips-esp-transport/src/l2cap_host.rs \
-            crates/microfips-esp-common/src/mdns.rs
+            $(git ls-files '*.rs')
 
   build-esp32:
     name: Build ESP32 Firmware
@@ -562,8 +555,8 @@ jobs:
 
       # #206: push-path compile guard for the four S3 esp-now binaries —
       # espnow-wifi-gw bit-rotted silently from the #184 DNS refactor to
-      # 62954b5 because no push/PR job built it (the extended matrix only
-      # runs on release/workflow_dispatch). One invocation shares the dep
+      # 62954b5 because no CI job built it (the extended matrix only runs
+      # on release/workflow_dispatch). One invocation shares the dep
       # compilation across all four bins.
       - name: Build ESP32-S3 ESP-NOW (node, gw, wifi-gw, hybrid)
         run: >
@@ -818,7 +811,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, golden-vectors, build-host, lint, sim-smoke, sim-ping, build-firmware, build-esp32, fips-integration]
+    needs: [test, golden-vectors, build-host, lint, sim-smoke, sim-ping, build-firmware, build-esp32, fips-integration, spec-quotes]
     if: always()
     steps:
       - run: |
@@ -835,5 +828,6 @@ jobs:
           echo "| Build Firmware | \`${{ needs.build-firmware.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build ESP32 | \`${{ needs.build-esp32.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Spec Quotes | \`${{ needs.spec-quotes.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
