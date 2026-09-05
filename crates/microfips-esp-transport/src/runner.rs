@@ -2,10 +2,9 @@ use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::rng::{Trng, TrngSource};
 use rand_core::RngCore;
 
-use microfips_core::identity::{STM32_NODE_ADDR, STM32_NPUB};
 use microfips_protocol::node::Node;
 
-use crate::config::DEVICE_NSEC;
+use crate::config::{DEVICE_NSEC, FSP_TARGET_NODE_ADDR, FSP_TARGET_NPUB};
 use crate::handler::build_demo_fsp;
 use crate::led::Led;
 use crate::rng::EspRng;
@@ -75,8 +74,8 @@ pub async fn run_node<T: microfips_protocol::transport::Transport>(
         &DEVICE_NSEC,
         resp_eph,
         init_eph,
-        &STM32_NPUB,
-        STM32_NODE_ADDR,
+        &FSP_TARGET_NPUB,
+        FSP_TARGET_NODE_ADDR,
         1u64.to_le_bytes(),
     );
     let mut handler = crate::handler::SharedEspHandler { led, fsp };

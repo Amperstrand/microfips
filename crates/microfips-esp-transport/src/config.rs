@@ -7,6 +7,22 @@ pub const PANIC_BLINK_CYCLES: u32 = 5_000_000;
 pub const UART_FIFO_THRESHOLD: u16 = 64;
 pub const UART_BAUDRATE: u32 = 115200;
 
+// FSP dual-mode initiator target (the peer the node opens FSP sessions
+// toward). Defaults to the STM32 (the MCU-to-MCU mesh topology); build-time
+// overrides let a bench scenario point the initiator at its daemon instead
+// (FIPS_FSP_TARGET_NPUB_HEX 66-hex compressed, FIPS_FSP_TARGET_NODE_ADDR_HEX
+// 32-hex) — e.g. test_bench_xx's XX daemon, upgrading the #192 session
+// layer to hardware-verified. Both knobs are in the microfips-build KNOBS
+// tracker (rerun-if-env-changed).
+pub const FSP_TARGET_NPUB: [u8; 33] = match option_env!("FIPS_FSP_TARGET_NPUB_HEX") {
+    Some(v) => microfips_core::hex::hex_bytes_33(v),
+    None => microfips_core::identity::STM32_NPUB,
+};
+pub const FSP_TARGET_NODE_ADDR: [u8; 16] = match option_env!("FIPS_FSP_TARGET_NODE_ADDR_HEX") {
+    Some(v) => microfips_core::hex::hex_bytes_16(v),
+    None => microfips_core::identity::STM32_NODE_ADDR,
+};
+
 #[cfg(feature = "ble")]
 pub const BLE_MAX_FRAME: usize = 256;
 

@@ -165,6 +165,8 @@ pub fn emit_env_trackers() {
         "WIFI_PASSWORD",
         "FIPS_TARGET_HOST",
         "FIPS_TARGET_PORT",
+        "FIPS_FSP_TARGET_NPUB_HEX",
+        "FIPS_FSP_TARGET_NODE_ADDR_HEX",
         "FIPS_DISCOVERY_SCOPE",
         "ESP_NOW_CHANNEL",
         "HYBRID_TEST_WIFI_DOWN_SECS",

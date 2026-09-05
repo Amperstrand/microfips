@@ -122,7 +122,6 @@ pub async fn run_wifi_node(
     use crate::rng::EspRng;
     use crate::stats::STATS;
     use crate::wifi_transport::build_wifi_transport;
-    use microfips_core::identity::{STM32_NODE_ADDR, STM32_NPUB};
     use microfips_protocol::node::Node;
     use portable_atomic::Ordering;
     use rand_core::RngCore;
@@ -186,8 +185,8 @@ pub async fn run_wifi_node(
         &config::DEVICE_NSEC,
         resp_eph,
         init_eph,
-        &STM32_NPUB,
-        STM32_NODE_ADDR,
+        &config::FSP_TARGET_NPUB,
+        config::FSP_TARGET_NODE_ADDR,
         1u64.to_le_bytes(),
     );
     let mut handler = SharedEspHandler { led: &mut led, fsp };
