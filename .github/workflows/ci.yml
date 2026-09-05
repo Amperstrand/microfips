@@ -560,6 +560,19 @@ jobs:
       - name: Build ESP32-S3 WiFi + Noise XX (FMP v1)
         run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --features noise-xx
 
+      # #206: push-path compile guard for the four S3 esp-now binaries —
+      # espnow-wifi-gw bit-rotted silently from the #184 DNS refactor to
+      # 62954b5 because no push/PR job built it (the extended matrix only
+      # runs on release/workflow_dispatch). One invocation shares the dep
+      # compilation across all four bins.
+      - name: Build ESP32-S3 ESP-NOW (node, gw, wifi-gw, hybrid)
+        run: >
+          WIFI_SSID=ci WIFI_PASSWORD=ci cargo +esp build -p microfips-esp32s3
+          --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+          --no-default-features --features esp-now,wifi
+          --bin microfips-esp32s3-espnow --bin microfips-esp32s3-espnow-gw
+          --bin microfips-esp32s3-espnow-wifi-gw --bin microfips-esp32s3-hybrid
+
       # ESP32-C3 has no compiled-in identity (issue #134: RETRIEVE_FROM_BUILD) —
       # inject a throwaway scalar so the env! const resolves. Compile-only check.
       - name: Build ESP32-C3 UART
