@@ -692,7 +692,10 @@ AND the npub override). Chaos knob for testing: `HYBRID_TEST_WIFI_DOWN_SECS=<n>`
 forces the WiFi path down for the first n seconds of uptime (hardware-verified:
 boots onto ESP-NOW via gateway, then switches to WiFi in ~2 s once the window ends).
 
-**Single-transport topologies** (node = `microfips-esp32s3-espnow`, a full FIPS node;
+**Single-transport topologies** (node = `microfips-esp32s3-espnow` OR
+`microfips-esp32-espnow` — the D0WD/atom esp-now leaf is hardware-proven since
+2026-09-05 by fips-lab `test_espnow_dos_floor`, so esp-now benches need only
+one S3 (gateway) plus atoms as leaves; both node binaries are full FIPS nodes;
 both gateways are single-peer relays with a sticky MAC slot — #77: the first
 node to speak owns the relay while active (heard within 60 s), a foreign source
 is dropped before touching reassembly state, and a slot move unregisters the
