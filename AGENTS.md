@@ -1568,7 +1568,7 @@ Tracking upstream FIPS GitHub issues (Amperstrand/fips) that affect microfips:
 | FIPS # | Title | State | microfips Impact |
 |--------|-------|-------|------------------|
 | #57 | Monotonic packet loss degradation on ESP32-S3 | OPEN | **Monitor** — WiFi/BLE coexistence issue on S3. May affect D0WD. |
-| #58 | microfips compatibility vs 0.4.0-dev | OPEN | **P0 future** — Noise IK→XX, FMP v0→v1, version negotiation. Breaking changes. microfips prep: `noise-xx` feature complete and CI-enforced on both wires (2026-08-31, #178); FMP v1 negotiation remains (#179). |
+| #58 | microfips compatibility vs 0.4.0-dev | OPEN | **P0 future** — Noise IK→XX, FMP v0→v1, version negotiation. Breaking changes. microfips prep: `noise-xx` feature complete and CI-enforced on both wires (2026-08-31, #178); FMP v1 link negotiation landed (#179/#195); FSP session layer on XX + its negotiation payload landed and live-verified vs next `e0cc0c86` (2026-09-05, #192 — the session machines now switch XX under the feature; before that they ran XK unconditionally). |
 | #73 | Privacy: cleartext pubkeys enable device tracking | OPEN | **Consider** — Ephemeral introduction keys for BLE pubkey exchange. |
 | #79 | PeerBackoff auto-denies legitimate ESP32 peers | CLOSED | **Verified fixed** — FIPS no longer counts tie-breaker yields as failures. |
 | #82 | FilterAnnounce exceeds L2CAP MTU | CLOSED | **Accepted** — Leaf nodes skip bloom filters. FRAME_CAP=768 < 1071B FilterAnnounce. |
