@@ -1,0 +1,43 @@
+name: protocol-drift
+
+# Drift gate between microfips's vendored wire constants and the canonical
+# profile output of Amperstrand/fips-protocol-defs-mvp (Closes #202).
+# Runs on PRs and pushes that touch the vendored definitions, plus a weekly
+# cron that catches upstream profile movement even when this repo is quiet.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/microfips-core/src/generated/**"
+      - ".github/workflows/protocol-drift.yml"
+  pull_request:
+    paths:
+      - "crates/microfips-core/src/generated/**"
+      - ".github/workflows/protocol-drift.yml"
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout fips-protocol-defs-mvp (source of truth)
+        uses: actions/checkout@v4
+        with:
+          repository: Amperstrand/fips-protocol-defs-mvp
+          path: fips-protocol-defs-mvp
+
+      - name: Compare vendored constants against profile output
+        run: |
+          python3 fips-protocol-defs-mvp/tools/check_consumer_drift.py \
+            fips-protocol-defs-mvp/generated/rust/fips_v0_ik_xk.rs \
+            crates/microfips-core/src/generated/fips_protocol_types.rs \
+            --fail-on-drift
