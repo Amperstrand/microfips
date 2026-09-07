@@ -928,7 +928,7 @@ dependencies = [
  "embassy-time-driver",
  "embassy-time-queue-utils",
  "embassy-usb-driver",
- "embassy-usb-synopsys-otg",
+ "embassy-usb-synopsys-otg 0.3.3",
  "embedded-can",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
@@ -1089,6 +1089,20 @@ name = "embassy-usb-synopsys-otg"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb205e26d59e483e8c48f91f637ec217ec7e2cfb0b61d50482301b991b4ff431"
+dependencies = [
+ "critical-section",
+ "defmt 1.1.1",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "embassy-usb-driver",
+ "portable-atomic",
+]
+
+[[package]]
+name = "embassy-usb-synopsys-otg"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6efd0c0e0b21bcf91b475b8fa47347c1df32c9a99728ae1e1b0e6625862dfd1a"
 dependencies = [
  "critical-section",
  "defmt 1.1.1",
@@ -1359,7 +1373,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "embassy-usb-driver",
- "embassy-usb-synopsys-otg",
+ "embassy-usb-synopsys-otg 0.3.3",
  "embedded-can",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -2232,7 +2246,7 @@ dependencies = [
  "embassy-sync 0.8.0",
  "embassy-time",
  "embassy-usb",
- "embassy-usb-synopsys-otg",
+ "embassy-usb-synopsys-otg 0.4.0",
  "embedded-graphics",
  "heapless 0.9.3",
  "microfips-core",
