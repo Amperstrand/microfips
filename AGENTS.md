@@ -2179,3 +2179,31 @@ trust-on-first-advert discovery + IK handshake against the lab daemon. Rule: giv
 a board's WiFi retry loop at least 2-3 minutes (5 attempts) before concluding
 hardware faults — and prefer cross-checking (another board on the same AP) over
 attributing to the radio early.
+
+## Process hygiene — teardown + orphan collection (2026-09-17 sweep)
+
+Found by the 2026-09-17 sweep: a `microfips_protocol` test binary
+(`target/debug/deps/`) stuck mid-test since Aug 31 — 17 days at ppid=1.
+The standing HIL tooling (microfips-sim UDP :21219, labgrid
+exporter/coordinator) is the hardware lab rig and stays.
+
+### Spawn → teardown
+
+| Artifact | Teardown |
+|---|---|
+| cargo test binaries (`target/debug/deps/microfips_*`) | wrap `cargo test` in `timeout` on shared boxes; kill strays: `pkill -f "target/(debug\|release)/.*microfips"` |
+| microfips-sim instances | `pkill -f microfips-sim` when the experiment ends |
+| labgrid exporter/coordinator | standing HIL infra — do not kill without owner sign-off |
+
+### Orphan hunt (run before ending a session)
+
+```bash
+pgrep -af microfips | grep -v grep
+ss -ulnp 2>/dev/null | grep 21219
+```
+
+### Rule
+
+Hung rust test binaries hold device/UDP context and skew the next session's
+device discovery. The session that starts a test kills it if it hangs; the
+next session in this repo runs the orphan hunt before plugging into the lab.
