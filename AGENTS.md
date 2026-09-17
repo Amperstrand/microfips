@@ -51,12 +51,18 @@ export VPS_USER=routstr
 export VPS_PASS=<password>
 
 # Shorthand:
-vssh() { sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" "$@"; }
-vscp() { sshpass -p "$VPS_PASS" scp -o StrictHostKeyChecking=no "$1" "$VPS_USER@$VPS_HOST:$2"; }
+vssh() { SSHPASS="$VPS_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new "$VPS_USER@$VPS_HOST" "$@"; }
+vscp() { SSHPASS="$VPS_PASS" sshpass -e scp -o StrictHostKeyChecking=accept-new "$1" "$VPS_USER@$VPS_HOST:$2"; }
 ```
 
+`sshpass -e` reads the password from `SSHPASS` rather than argv — mitigation, not elimination: `SSHPASS` is still readable by same-user processes and inherited by children; it is simply no longer in argv.
+`StrictHostKeyChecking=accept-new` trusts the host key on first contact but refuses a
+*changed* key, which `no` accepts silently. Pinning (`ssh-keyscan` + verified fingerprint
++ `UserKnownHostsFile`) is stronger but deliberately not the default: `shc order --reap 6h` gets a new key every time.
+For remote `sudo`, use an interactive TTY (`vssh -t 'sudo ...'`) or a `NOPASSWD` sudoers rule scoped to the exact command.
+
 VPS FIPS binds `0.0.0.0:2121`, MCU peers configured at `127.0.0.1:31337` (STM32) and `127.0.0.1:31338` (ESP32).
-FIPS logs: `vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 30 --since '5 min ago'"`
+FIPS logs: `vssh -t "sudo journalctl -u fips --no-pager -n 30 --since '5 min ago'"`
 
 **orangeclaw status (2026-09-02, #190):** host is alive (DNS + ICMP green) but the
 daemon is silent — a pinned-key MSG1 gets zero reply (daemon down or key rotated;
@@ -1043,8 +1049,8 @@ See `scripts/test_hw_handshake.sh` for the full automated procedure. The manual 
 # If you have saved PIDs from a previous run:
 kill $PROXY_PID $TUNNEL_PID 2>/dev/null
 fuser -k 45679/tcp 2>/dev/null  # local port cleanup
-vssh 'pkill -f fips_bridge 2>/dev/null; echo $VPS_PASS | sudo -S fuser -k 45679/tcp 2>/dev/null'
-vssh "echo $VPS_PASS | sudo -S systemctl restart fips"
+vssh -t 'pkill -f fips_bridge 2>/dev/null; sudo fuser -k 45679/tcp 2>/dev/null'
+vssh -t "sudo systemctl restart fips"
 
 # 1. Verify USB (after MCU reset + 7s enumeration wait)
 lsusb | grep -E "c0de|0483"
@@ -1058,7 +1064,7 @@ done
 python3 tools/serial_tcp_proxy.py --serial /dev/ttyACM<N> --port 45679 &
 
 # 3. SSH reverse tunnel: VPS:45679 → host:45679
-sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no -fN \
+SSHPASS="$VPS_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -fN \
   -R 45679:127.0.0.1:45679 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
   $VPS_USER@$VPS_HOST
 
@@ -1068,7 +1074,7 @@ vssh 'nohup python3 /tmp/fips_bridge.py --tcp 127.0.0.1:45679 > /tmp/bridge_hw.l
 
 # 5. Check results (after ~10s)
 vssh 'cat /tmp/bridge_hw.log'
-vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 min ago'"
+vssh -t "sudo journalctl -u fips --no-pager -n 10 --since '1 min ago'"
 ```
 
 **Expected in bridge log:** `CDC->UDP: frame#1 114B` (MSG1), `UDP->CDC: frame#1 69B` (MSG2)
@@ -1083,8 +1089,8 @@ Manual steps for ESP32 (uses port 45680, VPS peer port 31338):
 # 0. CLEANUP — kill stale processes
 kill $PROXY_PID $TUNNEL_PID 2>/dev/null
 fuser -k 45680/tcp 2>/dev/null
-vssh 'pkill -f fips_bridge 2>/dev/null; echo $VPS_PASS | sudo -S fuser -k 45680/tcp 2>/dev/null'
-vssh "echo $VPS_PASS | sudo -S systemctl restart fips"
+vssh -t 'pkill -f fips_bridge 2>/dev/null; sudo fuser -k 45680/tcp 2>/dev/null'
+vssh -t "sudo systemctl restart fips"
 
 # 1. Verify ESP32 serial port (CP210x, NOT ttyACM*)
 for p in /dev/ttyUSB*; do
@@ -1096,7 +1102,7 @@ done
 python3 tools/serial_tcp_proxy.py --serial /dev/ttyUSB0 --port 45680 &
 
 # 3. SSH reverse tunnel: VPS:45680 → host:45680
-sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no -fN \
+SSHPASS="$VPS_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -fN \
   -R 45680:127.0.0.1:45680 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
   $VPS_USER@$VPS_HOST
 
@@ -1106,7 +1112,7 @@ vssh 'nohup python3 /tmp/fips_bridge.py --tcp 127.0.0.1:45680 --local-port 31338
 
 # 5. Check results (after ~10s)
 vssh 'cat /tmp/bridge_esp32.log'
-vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 min ago'"
+vssh -t "sudo journalctl -u fips --no-pager -n 10 --since '1 min ago'"
 ```
 
 **Note:** ESP32 does not use USB CDC, so there is no DTR-based `wait_connection()` blocking.
@@ -1142,7 +1148,7 @@ sleep 30
 
 # 5. Check results
 # Expected in bridge output: "BLE->UDP: frame#1" (MSG1), "UDP->BLE: frame#1" (MSG2)
-# Check VPS: vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 5 --since '1 min ago'"
+# Check VPS: vssh -t "sudo journalctl -u fips --no-pager -n 5 --since '1 min ago'"
 ```
 
 **Note:** BLE bridge uses BlueZ D-Bus API, not the serial port. No DTR-based `wait_connection()`
