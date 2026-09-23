@@ -9,6 +9,6 @@ log = "0.4"
 microfips-core = { path = "../microfips-core", features = ["std"] }
 microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-service = { path = "../microfips-service" }
-k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
+k256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
 rand = "0.9"
 hex = "0.4"
