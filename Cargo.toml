@@ -24,7 +24,7 @@ esp-rtos = "0.3.0"
 esp-bootloader-esp-idf = "0.5"
 esp-radio = { version = "0.18.0", default-features = false }
 esp-alloc = "0.10"
-bt-hci = "0.9"
+bt-hci = "0.10"
 embedded-io = "0.7"
 esp-println = { version = "0.18.0", default-features = false }
 log = "0.4"
