@@ -40,3 +40,8 @@ micronuts-wallet-serial:
   BenchSerialToken:
     usb_serial: 'F4691'
     vidpid: '16c0/27dd'
+
+m5stick-nucula-serial:
+  BenchSerialToken:
+    usb_serial: '49D6163EBE'
+    vidpid: '0403/6001'

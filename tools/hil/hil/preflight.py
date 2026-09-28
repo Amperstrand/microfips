@@ -14,7 +14,7 @@ from pathlib import Path
 SEVERITY_FAIL = "fail"
 SEVERITY_WARN = "warn"
 
-LABGRID_COORDINATOR = "192.168.13.221:20408"
+LABGRID_COORDINATOR = "192.168.13.208:20408"
 MICROFIPS_PLACE = "microfips-bench"
 EXPORT_ESP = Path("/home/ubuntu/export-esp.sh")
 
