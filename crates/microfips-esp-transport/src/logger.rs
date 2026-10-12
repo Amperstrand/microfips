@@ -114,9 +114,12 @@ pub fn init() {
 /// 4203bdd0: addi  a1, a1, -0x90   # &(dyn Log vtable of UartLogger) — likewise
 /// 4203bdd4: auipc ra, 0x32
 /// 4203bdd8: jalr  0x302(ra)       # log::set_logger_racy
-///         ...                     # 15 instructions: the unwrap() of that Result —
-///                                 # sb/lbu/andi, the branch to
-///                                 # core::result::unwrap_failed, that call's setup
+///         ...                     # 15 instructions: the unwrap() of that Result — on the
+///                                 # fast path only sb/lbu/andi/beqz, and that beqz (at
+///                                 # 4203bde6) branches to 4203be12; the 11 instructions
+///                                 # that follow it are the cold path (skipped on success):
+///                                 # the branch to core::result::unwrap_failed and that
+///                                 # call's setup
 /// 4203be12: li    a0, 0x3         # LevelFilter::Info
 /// 4203be14: auipc ra, 0x0
 /// 4203be18: jalr  -0x1c0(ra)      # log::set_max_level_racy
