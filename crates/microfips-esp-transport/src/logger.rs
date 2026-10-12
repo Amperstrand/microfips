@@ -97,9 +97,26 @@ pub fn init() {
 /// again), and `#[used]` keeps the pointer in the object file so the C3 image can
 /// be inspected as evidence (`llvm-nm`/`llvm-objdump`) that a real installer is
 /// linked in. It does **not** prove the installer is called: an `init()` body
-/// emptied to `{}` still compiles with this static present. The disassembly A/B —
-/// `init` tail-calling `set_logger_racy` (its `Result` checked) and then
-/// `set_max_level_racy(LevelFilter::Info)` — is what shows the install happens.
+/// emptied to `{}` still compiles with this static present (that empty body was
+/// built as the control on card t_2ac11284: exit 0, witness still linked).
+///
+/// What does show the install happening is the disassembly of `init` itself — the
+/// racy installer called first, its `Result` unwrapped, then the level store:
+///
+/// ```text
+/// 4203bdc4: lui   a0, 0x3c008   # &LOGGER
+/// 4203bdcc: lui   a1, 0x3c008   # &UartLogger vtable
+/// 4203bdd4: auipc ra, 0x32
+/// 4203bdd8: jalr  0x302(ra)    # log::set_logger_racy
+/// 4203be12: li    a0, 0x3      # LevelFilter::Info
+/// 4203be18: jalr  -0x1c0(ra)   # log::set_max_level_racy
+/// ```
+///
+/// (Between the two calls, `sb`/`lbu`/`andi` plus the branch to
+/// `core::result::unwrap_failed` is the `unwrap()`.) Those addresses are from the
+/// C3 `uart` image; the full `llvm-objdump -d` dumps behind this excerpt are the
+/// `disasm_{base,after}.txt` pair in the kanban evidence bundle for card
+/// t_2ac11284, not in this tree.
 #[cfg(not(target_has_atomic = "ptr"))]
 #[used]
 static RACY_INSTALL_WITNESS: unsafe fn(&'static dyn Log) -> Result<(), log::SetLoggerError> =

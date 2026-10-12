@@ -54,7 +54,7 @@ pub async fn run_usb_node(
 
     // Deliberately NO `logger::init()` here: this binary's transport *is* the
     // esp-println channel, so logs would corrupt the FIPS frame stream — see
-    // AGENTS.md "Console (ESP32-C3)".
+    // AGENTS.md "Console (ESP32-C3)" (panics too: this bin uses `panic_blink!`).
 
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
