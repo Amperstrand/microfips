@@ -59,6 +59,13 @@ jobs:
           cargo --version
           rustc --version
 
+      # Source-text guard for docs/console-channels.md: a silent image must not gain a
+      # `logger::init()` call, and no file may install the backend without being
+      # declared there. Bash only — no toolchain, no build, so it runs first and fails
+      # fast.
+      - name: Console-channel policy guard
+        run: bash scripts/check-console-policy.sh
+
       - name: microfips-core (no_std default features)
         run: cargo test -p microfips-core --no-fail-fast
 
