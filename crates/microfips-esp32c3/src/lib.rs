@@ -7,7 +7,6 @@ pub use microfips_esp_transport::{led, rng, stats, uart_transport};
 
 #[cfg(any(feature = "wifi", feature = "esp-now"))]
 pub use microfips_esp_transport::control;
-#[cfg(any(feature = "wifi", feature = "esp-now"))]
 pub use microfips_esp_transport::logger;
 
 #[cfg(feature = "wifi")]

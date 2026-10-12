@@ -790,6 +790,16 @@ Only the USB-bridged gateway never initializes the logger — its USB channel ca
 frames, and log text would corrupt the stream (only ROM boot text and panics appear
 there; the bridge's length-prefix resync skips that noise).
 
+**Console (ESP32-C3):** C3 images compile the shared `log::` calls but only log once
+an entry point installs the backend via `microfips_esp_transport::logger::init()`.
+That install now works on `riscv32imc`, which has no compare-and-swap: `logger::init()`
+uses `log`'s racy installer there, the same mechanism `esp-println`'s `log-04` backend
+uses. The C3 `uart` binary installs it first thing (frames on UART0, logs on
+USB-Serial-JTAG) and the `wifi`/`esp-now` binaries install it through `run_tasks`.
+The C3 `usb` binary deliberately does NOT: its transport is the USB-Serial-JTAG FIFO,
+i.e. the same channel esp-println writes to, so log text would land inside the FIPS
+frame stream (same reason it uses `panic_blink!` instead of `panic_blink_print!`).
+
 **Pitfalls:**
 - When testing bridge outages, kill the bridge's *python* PID, not the wrapping shell —
   an orphaned bridge keeps the port open and both processes steal bytes from each other

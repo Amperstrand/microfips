@@ -33,7 +33,10 @@ path = "src/bin/usb.rs"
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }
 microfips-esp-common = { path = "../microfips-esp-common" }
-microfips-esp-transport = { path = "../microfips-esp-transport", features = ["esp32c3"] }
+# `log` is enabled unconditionally so the C3 `uart`/`usb` binaries (which have no
+# radio feature) can install the logger backend; the radio features below already
+# implied it before this change.
+microfips-esp-transport = { path = "../microfips-esp-transport", features = ["esp32c3", "log"] }
 microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
