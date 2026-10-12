@@ -101,22 +101,31 @@ pub fn init() {
 /// built as the control on card t_2ac11284: exit 0, witness still linked).
 ///
 /// What does show the install happening is the disassembly of `init` itself — the
-/// racy installer called first, its `Result` unwrapped, then the level store:
+/// racy installer called first, its `Result` unwrapped, then the level store. Every
+/// stretch this excerpt drops is marked, so it can be diffed against a fresh dump
+/// without unexplained holes; the nine quoted instructions plus the three marked
+/// spans are all 29 instructions `llvm-objdump` prints for `init`:
 ///
 /// ```text
-/// 4203bdc4: lui   a0, 0x3c008   # &LOGGER
-/// 4203bdcc: lui   a1, 0x3c008   # &UartLogger vtable
+///         ...                     # init's prologue: addi sp, sp, -0x10; sw ra, 0xc(sp)
+/// 4203bdc4: lui   a0, 0x3c008
+/// 4203bdc8: addi  a0, a0, -0x68   # &LOGGER — lui+addi is the whole address
+/// 4203bdcc: lui   a1, 0x3c008
+/// 4203bdd0: addi  a1, a1, -0x90   # &(dyn Log vtable of UartLogger) — likewise
 /// 4203bdd4: auipc ra, 0x32
-/// 4203bdd8: jalr  0x302(ra)    # log::set_logger_racy
-/// 4203be12: li    a0, 0x3      # LevelFilter::Info
-/// 4203be18: jalr  -0x1c0(ra)   # log::set_max_level_racy
+/// 4203bdd8: jalr  0x302(ra)       # log::set_logger_racy
+///         ...                     # 15 instructions: the unwrap() of that Result —
+///                                 # sb/lbu/andi, the branch to
+///                                 # core::result::unwrap_failed, that call's setup
+/// 4203be12: li    a0, 0x3         # LevelFilter::Info
+/// 4203be14: auipc ra, 0x0
+/// 4203be18: jalr  -0x1c0(ra)      # log::set_max_level_racy
+///         ...                     # epilogue: lw ra, 0xc(sp); addi sp, sp, 0x10; ret
 /// ```
 ///
-/// (Between the two calls, `sb`/`lbu`/`andi` plus the branch to
-/// `core::result::unwrap_failed` is the `unwrap()`.) Those addresses are from the
-/// C3 `uart` image; the full `llvm-objdump -d` dumps behind this excerpt are the
-/// `disasm_{base,after}.txt` pair in the kanban evidence bundle for card
-/// t_2ac11284, not in this tree.
+/// Those addresses are from the C3 `uart` image; the full `llvm-objdump -d` dumps
+/// behind this excerpt are the `disasm_{base,after}.txt` pair in the kanban
+/// evidence bundle for card t_2ac11284, not in this tree.
 #[cfg(not(target_has_atomic = "ptr"))]
 #[used]
 static RACY_INSTALL_WITNESS: unsafe fn(&'static dyn Log) -> Result<(), log::SetLoggerError> =
