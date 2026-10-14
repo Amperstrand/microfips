@@ -24,3 +24,6 @@ keys.jsonl
 wifi_secrets.h
 tools/hil/results/allure*
 tools/hil/results/.bench-lock
+
+# canary standalone workspace build output
+canary/fips-core-canary/target/

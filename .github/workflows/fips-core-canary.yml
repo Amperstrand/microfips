@@ -1,0 +1,212 @@
+name: fips-core-canary
+
+# Watches the no_std fips-core crate served by the Amperstrand/fips remote
+# WITHOUT coupling the library to it (microfips #219). Build-only compile
+# check of the thin canary crate in canary/fips-core-canary/.
+#
+# Pin mechanism: the ONLY pin lives in canary/fips-core-canary/Cargo.toml
+# ([dependencies] rev). Bump it deliberately; fork-line branches are rebased
+# per release, so a pin is expected to eventually vanish — when it does, this
+# workflow SKIPS with a warning (probe job), never red, never blocking.
+#
+# Result classification (per target): the matrix carries an `expect` verdict
+# from the last human-verified run. A leg is GREEN when reality MATCHES the
+# expectation; any drift in EITHER direction is RED ("update the matrix"),
+# because a canary's job is change detection, not absolute pass/fail.
+#   SKIP(pin)         — pinned ref gone from the Amperstrand/fips remote
+#   SKIP(toolchain)   — xtensa C compiler could not be installed (distinct
+#                       from a build failure: the strategic question stays
+#                       open, it is not answered "no")
+#   PASS / KNOWN-FAIL — matches expectation
+#   FAIL / IMPROVED   — drift: red, a human updates `expect` + note
+
+on:
+  schedule:
+    - cron: "23 4 * * 1" # weekly, Monday 04:23 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["canary/**", ".github/workflows/fips-core-canary.yml"]
+  pull_request:
+    paths: ["canary/**", ".github/workflows/fips-core-canary.yml"]
+
+permissions:
+  contents: read
+
+env:
+  CANARY_MANIFEST: canary/fips-core-canary/Cargo.toml
+  # Upstream is referenced ONLY through the Amperstrand mirror + commit
+  # hashes, per the org interaction policy.
+  FIPS_GIT_URL: https://github.com/Amperstrand/fips.git
+
+jobs:
+  pin-probe:
+    name: pin probe
+    runs-on: ubuntu-latest
+    outputs:
+      rev: ${{ steps.rev.outputs.rev }}
+      pin-ok: ${{ steps.probe.outputs.ok }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read pinned rev
+        id: rev
+        run: |
+          rev=$(grep -oP 'rev = "\K[0-9a-f]{40}' "$CANARY_MANIFEST")
+          [ -n "$rev" ] || { echo "::error::no 40-hex rev found in $CANARY_MANIFEST"; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+      - name: Probe pin reachability
+        id: probe
+        run: |
+          rev="${{ steps.rev.outputs.rev }}"
+          mkdir -p /tmp/opencode-pinprobe && cd /tmp/opencode-pinprobe && git init -q .
+          if git fetch --depth=1 "$FIPS_GIT_URL" "$rev" 2>/dev/null; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "### fips-core canary: pin $rev reachable" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::pinned fips-core ref $rev is unreachable on the Amperstrand/fips remote (fork rebased?). Canary SKIPPED — bump the rev in $CANARY_MANIFEST deliberately."
+            echo "### fips-core canary: SKIPPED (pin $rev vanished)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  canary:
+    name: canary ${{ matrix.target }}
+    needs: pin-probe
+    if: needs.pin-probe.outputs.pin-ok == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: thumbv7em-none-eabi
+            toolchain: stable
+            expect: pass
+            # Control leg: upstream's own bare-metal CI proves thumbv7em.
+            expect_note: >-
+              control (upstream-proven target class); clang + llvm-ar for
+              secp256k1-sys, mirroring the upstream baremetal script
+          - target: riscv32imc-unknown-none-elf
+            toolchain: stable
+            expect: fail
+            # KNOWN limitation, verified locally 2026-10-14 at the pin:
+            # fips-core uses alloc::sync::Arc (proto/lookup + transport
+            # types); riscv32imc has no pointer atomics so the alloc::sync
+            # module does not exist there. Fix belongs in fips-core
+            # (portable-atomic-util Arc), not the consumer — the consumer-side
+            # once_cell/portable-atomic unification is already applied in the
+            # canary crate and gets past every OTHER CAS-less failure.
+            expect_note: >-
+              KNOWN-FAIL: alloc::sync (Arc) missing on CAS-less riscv32imc —
+              fips-core source change needed
+            fail_signature: "alloc::sync"
+          - target: xtensa-esp32s3-none-elf
+            toolchain: esp
+            expect: pass
+            # The strategic leg, locally verified 2026-10-14: secp256k1-sys C
+            # + the alloc-only tree DO build on xtensa (esp toolchain
+            # -Zbuild-std + crosstool xtensa-esp32s3-elf-gcc esp-14.2.0).
+            expect_note: >-
+              strategic leg: secp256k1-sys on xtensa — proven building with
+              crosstool gcc + esp toolchain -Zbuild-std=core,alloc
+    env:
+      CC_thumbv7em_none_eabi: clang
+      CC_riscv32imc_unknown_none_elf: clang
+      CC_xtensa_esp32s3_none_elf: xtensa-esp32s3-elf-gcc
+      AR_xtensa_esp32s3_none_elf: xtensa-esp32s3-elf-ar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang/llvm (C toolchain for secp256k1-sys)
+        if: matrix.toolchain == 'stable'
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang llvm
+
+      - name: Install stable target
+        if: matrix.toolchain == 'stable'
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install esp toolchain
+        if: matrix.toolchain == 'esp'
+        uses: esp-rs/xtensa-toolchain@v1.6 # same action/version as ci.yml build-firmware
+
+      - name: Install xtensa C compiler (crosstool, for secp256k1-sys)
+        if: matrix.toolchain == 'esp'
+        id: xtensa-cc
+        run: |
+          set -x
+          if command -v xtensa-esp32s3-elf-gcc >/dev/null 2>&1; then
+            echo "found=$(command -v xtensa-esp32s3-elf-gcc)" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          ver=esp-14.2.0_20241119
+          url="https://github.com/espressif/crosstool-NG/releases/download/${ver}/xtensa-esp-elf-14.2.0_20241119-x86_64-linux-gnu.tar.xz"
+          mkdir -p "$HOME/.espressif/tools/xtensa-esp-elf"
+          if curl -fsSL --retry 2 "$url" -o /tmp/xt.tar.xz; then
+            tar -xJf /tmp/xt.tar.xz -C "$HOME/.espressif/tools/xtensa-esp-elf"
+            gccbin=$(find "$HOME/.espressif/tools/xtensa-esp-elf" -name xtensa-esp32s3-elf-gcc -type f | head -1)
+            if [ -n "$gccbin" ]; then echo "found=$gccbin" >> "$GITHUB_OUTPUT"; exit 0; fi
+          fi
+          echo "found=" >> "$GITHUB_OUTPUT" # toolchain-unavailable => SKIP, not FAIL
+
+      - name: Build canary
+        id: build
+        shell: bash
+        run: |
+          set -x
+          target="${{ matrix.target }}"
+          export AR_thumbv7em_none_eabi="$(command -v llvm-ar || compgen -c llvm-ar- | sort -V | tail -n 1)"
+          export AR_riscv32imc_unknown_none_elf="$AR_thumbv7em_none_eabi"
+          args=(--manifest-path "$CANARY_MANIFEST" --target "$target")
+          if [ "${{ matrix.toolchain }}" = esp ]; then
+            gccbin="${{ steps.xtensa-cc.outputs.found }}"
+            if [ -z "$gccbin" ]; then
+              echo "outcome=SKIP-TOOLCHAIN" >> "$GITHUB_OUTPUT"
+              echo "::warning::xtensa C compiler unavailable — canary SKIPPED for $target (the strategic question stays OPEN, it is not answered 'no')"
+              exit 0
+            fi
+            export PATH="$(dirname "$gccbin"):$PATH"
+            args+=(-Zbuild-std=core,alloc)
+            toolchain=+esp
+          fi
+          set +e
+          cargo $toolchain build "${args[@]}" 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Classify result
+        env:
+          EXPECT: ${{ matrix.expect }}
+          SIGNATURE: ${{ matrix.fail_signature }}
+        run: |
+          outcome="${{ steps.build.outputs.outcome }}"
+          rc="${{ steps.build.outputs.rc }}"
+          echo "### canary ${{ matrix.target }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$outcome" = "SKIP-TOOLCHAIN" ]; then
+            echo "- result: **SKIP(toolchain)** — xtensa C compiler unavailable" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          note="${{ matrix.expect_note }}"
+          if [ "$rc" = "0" ] && [ "$EXPECT" = "pass" ]; then
+            echo "- result: **PASS** (as expected)" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$rc" = "0" ] && [ "$EXPECT" = "fail" ]; then
+            echo "::error::canary ${{ matrix.target }} now BUILDS but expectation was fail — KNOWN LIMITATION GONE. Update the matrix expect + note."
+            echo "- result: **IMPROVED (drift!)** — expectation says fail, build is green. Update the matrix." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          elif [ "$rc" != "0" ] && [ "$EXPECT" = "fail" ]; then
+            if [ -n "$SIGNATURE" ] && ! grep -q "$SIGNATURE" build.log; then
+              echo "::error::canary ${{ matrix.target }} fails for a NEW reason (signature '$SIGNATURE' absent) — investigate."
+              echo "- result: **FAIL, NEW CAUSE (drift!)** — expected failure signature not found. Investigate." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "- result: **KNOWN-FAIL** (as expected) — $note" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::canary ${{ matrix.target }} FAILED but expectation was pass — regression or environment change. Investigate."
+            echo "- result: **FAIL (drift!)** — expectation was pass. Investigate." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-${{ matrix.target }}-build-log
+          path: build.log
+          if-no-files-found: ignore

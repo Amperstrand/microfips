@@ -1,0 +1,28 @@
+[package]
+name = "fips-core-canary"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Thin compile-check canary against a pinned Amperstrand/fips ref that serves the no_std fips-core crate (microfips #219). Build-only: proves the dep tree (secp256k1-sys C cross-compile, alloc-only features) builds per target and that the exercised API surface still exists."
+
+[dependencies]
+# THE PIN (single source of truth — the workflow reads this rev back out).
+# Served by the Amperstrand/fips remote. Bump deliberately, never track a
+# branch: fork-line branches are rebased per release and pins must vanish
+# loudly, never silently drift. Upstream is referenced only by this commit
+# hash via the Amperstrand mirror — never by external URL.
+fips-core = { git = "https://github.com/Amperstrand/fips.git", rev = "6abbca377690b0efa1f2da9f05f14d3954c991e7" }
+
+# Deliberately NOT a member of the microfips workspace: the canary owns its
+# dependency graph so the workspace's feature unification (esp features,
+# embassy) can never mask or alter what this proves about fips-core.
+[workspace]
+
+# ESP32-C3 (riscv32imc) consumer requirement, recorded on purpose: the target
+# has no atomic CAS, and fips-core's once_cell (race feature) needs
+# portable-atomic's single-core CAS fallback. Feature unification applies it
+# to the whole graph — exactly what any real embedder on riscv32imc must add.
+# The `portable_atomic_unsafe_assume_single_core` rustflag comes from this
+# repo's .cargo/config.toml (target-scoped, from the felix line).
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+once_cell = { version = "1.21", default-features = false, features = ["portable-atomic"] }
