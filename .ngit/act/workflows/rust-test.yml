@@ -1,0 +1,175 @@
+name: Rust Tests
+
+# Nostr CI (ngit-ci) workflow — read from `.ngit/act/workflows/` by the ngit-ci
+# coordinator. `.github/workflows/` is a SEPARATE directory and is untouched, so
+# the GitHub pipeline and this one run side by side.
+#
+# The steps are the repo's own host-side commands, ported from the jobs of
+# `.github/workflows/ci.yml`: `test`, `golden-vectors`, `build-host`. Two
+# deliberate substitutions, both documented in `.ngit/README.md`:
+#   * `cargo test` instead of `cargo nextest run` for the protocol suites
+#     (nextest is installed in GitHub CI via taiki-e/install-action@v2, which
+#     downloads a release binary; the coordinator's act image is not assumed to
+#     have network access for that).
+#   * `--no-fail-fast` on every test step, so one red target cannot hide the
+#     suites after it (a plain `cargo test` stops at the first failing binary).
+#
+# ngit-ci constraints honoured here: no `container:`, no `services:`, no
+# job-level `uses:` (reusable workflows), no `secrets.`/`GITHUB_TOKEN`, no
+# `schedule:`, `runs-on: ubuntu-latest`, every job `timeout-minutes` <= 30.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    name: Host Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      # Upstream's own CI pins `toolchain: stable` and the repo has no
+      # rust-toolchain.toml, so host tests are unpinned. Follow the upstream
+      # pin rather than inventing a nightly one.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # Printed first so a toolchain-related failure is attributable from the
+      # job log tail alone.
+      - name: Show toolchain
+        run: |
+          cargo --version
+          rustc --version
+
+      # Source-text guard for docs/console-channels.md: a silent image must not gain a
+      # `logger::init()` call, and no file may install the backend without being
+      # declared there. Bash only — no toolchain, no build, so it runs first and fails
+      # fast.
+      - name: Console-channel policy guard
+        run: bash scripts/check-console-policy.sh
+
+      - name: microfips-core (no_std default features)
+        run: cargo test -p microfips-core --no-fail-fast
+
+      # --features std pulls in the env-var tests; --test-threads=1 because
+      # they mutate process-global state.
+      - name: microfips-core (std features)
+        run: cargo test -p microfips-core --features std --no-fail-fast -- --test-threads=1
+
+      - name: microfips-protocol (std features)
+        run: cargo test -p microfips-protocol --features std --no-fail-fast -- --test-threads=1
+
+      - name: microfips-protocol (std + noise-xx)
+        run: cargo test -p microfips-protocol --features std,noise-xx --no-fail-fast -- --test-threads=1
+
+      - name: microfips-service
+        run: cargo test -p microfips-service --no-fail-fast
+
+      - name: microfips-l2cap-test
+        run: cargo test -p microfips-l2cap-test --no-fail-fast
+
+      - name: fips-noise
+        run: cargo test -p fips-noise --no-fail-fast
+
+      - name: fips-noise (noise-xx)
+        run: cargo test -p fips-noise --features noise-xx --no-fail-fast
+
+      - name: fips-fmp
+        run: cargo test -p fips-fmp --no-fail-fast
+
+      - name: fips-identity
+        run: cargo test -p fips-identity --no-fail-fast
+
+  golden-vectors:
+    name: Golden Vectors
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check FIPS golden vectors drift
+        run: |
+          # The reference is vendored in-repo at specs/fips/golden_vectors.json
+          # (the Amperstrand/fips@golden-vectors branch and the fips-golden-gen
+          # generator were deleted upstream 2026-08-31, so our copy is the
+          # surviving reference). Hard gate: no external fetch, nothing that can
+          # "unavailable-skip".
+          LOCAL_HASH=$(sha256sum crates/microfips-core/tests/golden_vectors.json | cut -d ' ' -f1)
+          FIPS_HASH=$(sha256sum specs/fips/golden_vectors.json | cut -d ' ' -f1)
+          echo "Local hash:     $LOCAL_HASH"
+          echo "Reference hash: $FIPS_HASH"
+          if [ "$LOCAL_HASH" != "$FIPS_HASH" ]; then
+            echo "::error::Golden vectors drift detected! The test-data copy and the vendored reference diverged."
+            exit 1
+          fi
+          echo "Golden vectors match the vendored reference"
+
+      - name: golden_vectors (Noise IK/XK + edge-case vectors)
+        run: cargo test -p microfips-core --test golden_vectors --no-fail-fast
+
+  build-host:
+    name: Build Host Tools
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # GitHub's job builds the three binaries and uploads them as artifacts;
+      # the upload half is not ported, nothing consumes those artifacts inside
+      # ngit-ci.
+      - name: Build host tools (release)
+        run: cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release

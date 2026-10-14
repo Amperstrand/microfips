@@ -11,6 +11,19 @@ pub async fn run_uart_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
+    // Install the global log backend before anything can log. This is the only entry
+    // point of this image (`src/bin/uart.rs`), it is called once from `main`, and no
+    // other entry point is reachable from here, so the backend is installed exactly
+    // once — never twice. That invariant is a property of the bins, not something the
+    // compiler checks: a second install would panic inside `logger::init` (its
+    // `set_logger` result is `unwrap`ped), and that is the intended behaviour — not a
+    // silent double-install.
+    //
+    // Frames leave on UART0 (GPIO43/GPIO44) while the S3 esp-println backend prints on
+    // the USB-Serial-JTAG FIFO (`esp-println/jtag-serial`, selected by the transport's
+    // `esp32s3` feature), so logs cannot corrupt the link. See `run_usb_node` for the
+    // mirror-image case.
+    microfips_esp_transport::logger::init();
     microfips_esp_transport::heap::init();
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
@@ -45,6 +58,15 @@ pub async fn run_usb_node(
 ) -> ! {
     use esp_hal::usb_serial_jtag::UsbSerialJtag;
     use microfips_esp_transport::usb_transport::UsbTransport;
+
+    // Deliberately NO `logger::init()` here: this binary's transport *is* the
+    // USB-Serial-JTAG peripheral, i.e. the same FIFO esp-println prints on for the S3,
+    // so a backend would inject log text into the FIPS frame stream
+    // (docs/console-channels.md). The silence is guarded, not just commented:
+    // `scripts/check-console-policy.sh` fails the CI job on a `logger::init()` call in
+    // this body (section A), in any file it declares silent — `src/bin/usb.rs` for this
+    // image (section B) — or anywhere that guard's repo-wide call-site census does not
+    // expect one (section C).
 
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);

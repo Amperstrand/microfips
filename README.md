@@ -352,7 +352,7 @@ Host tools do not fall back to hardcoded identities anymore. Set both variables 
 - **Clocks:** HSI 16 MHz + PLL -> 216 MHz sys, 48 MHz USB
 - **USB VID:PID:** `c0de:cafe` (CDC ACM, detected as `/dev/ttyACM*`)
 - **Flash:** `st-flash --connect-under-reset write` (NOT probe-rs during USB testing)
-- Hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes
+- Hardware-verified 2026-05-04: FIPS Noise IK handshake + VPS heartbeat round-trip passes
 
 ### ESP32-D0WD
 - **MCU:** ESP32-D0WD (Xtensa LX6, 240 MHz, 4 MB Flash)

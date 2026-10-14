@@ -307,7 +307,7 @@ VPS peer entry: alias "microfips-esp32", local port 31338.
 
 ### Dual-MCU simultaneous handshake
 
-- Both STM32 and ESP32 sustain heartbeat with VPS concurrently
+- Both STM32 and ESP32 sustain VPS heartbeat round-trips concurrently
 - MCU-to-MCU FSP PING/PONG through FIPS proven on hardware (STM32 to ESP32 and back)
 
 ## Known Issues and Risks

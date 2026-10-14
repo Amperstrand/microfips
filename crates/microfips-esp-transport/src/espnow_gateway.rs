@@ -9,7 +9,10 @@
 //! Single-peer: the gateway unicasts to whichever node's frame it saw
 //! last, and broadcasts until it has seen one. The log output stays
 //! uninitialized on purpose — USB Serial/JTAG carries frames, and log
-//! text would corrupt the stream.
+//! text would corrupt the stream (docs/console-channels.md; re-measured
+//! on this image: 0 `logger::init` mentions, 6 `heap::init` mentions).
+//! `scripts/check-console-policy.sh` declares `run_espnow_gateway`
+//! `silent` and fails CI if a `logger::init()` call appears here.
 
 use embassy_time::{with_timeout, Duration};
 use embedded_io_async::{Read, Write};

@@ -1,38 +1,214 @@
 #!/usr/bin/env bash
-# pre-push: block pushes containing secrets + run quality gates.
-# Portable: ERE (grep -En) — macOS BSD grep has no -P.
-set -e
+# ---------------------------------------------------------------------------
+# pre-push hook for microfips -- versioned in this repo at .githooks/pre-push
+#
+# INSTALL (once per clone):
+#     scripts/install-git-hooks.sh
+# which sets the repo-local, repo-relative `core.hooksPath = .githooks`.
+# Committing a hook does NOT activate it: a fresh clone is UNPROTECTED until
+# that installer runs.
+#
+# Two independent gates, both must pass before a push is allowed:
+#
+#   gate 1 -- secret scan.  Refuses the push if the outgoing commit history
+#             matches a pattern in .secret-patterns.txt.  No-op when that file
+#             is absent.  Logic carried over unchanged from the previous
+#             .githooks/pre-push.
+#
+#   gate 2 -- .ngit/ fork hygiene.  Refuses the push if the outgoing diff of a
+#             pushed ref contains a path under .ngit/ AND the destination is a
+#             repo we do not own (see POLICED_REPOS below).
+#             WHY: .ngit/ is the ngit-CI workflow directory and it deliberately
+#             lives on `main` so the workflow runs continuously.  On a fork's
+#             default branch that is one careless branch cut away from
+#             appearing in a pull request against a third-party upstream we do
+#             not own.  Our own fork `felixfelix-bot/microfips` -- which
+#             legitimately carries .ngit/ -- and every ngit/nostr remote are
+#             unaffected and stay silent.  See .ngit/README.md.
+#
+# Deliberate design points -- please do not "tidy" these away:
+#   * stdin carries the list of refs git intends to push.  It is read EXACTLY
+#     ONCE, up front, into REFS, and every gate reads REFS.  So no gate can
+#     drain stdin out from under another: a gate that consumed stdin first
+#     would silently disable whatever came after it.  (Same hazard when this
+#     logic is appended to the fleet's shared ~/.git-hooks/pre-push.)
+#   * gate 2 runs WITHOUT `set -e`: a git probe failing must never spill a
+#     non-zero exit out of the hook on its own; every path decides explicitly.
+#     `set -e` is scoped to gate 1's subshell, which is where it came from.
+#   * gate 2 resolves the destination from the hook's own argv AND from the
+#     remote's configured url/pushurl, so a url.<x>.insteadOf rewrite cannot
+#     hide where the push is really going.  An argv-only guard is bypassable.
+#
+# Override, only when pushing .ngit/ upstream is genuinely intended:
+#     git push --no-verify
+# ---------------------------------------------------------------------------
 
-PATTERNS_FILE="$(git rev-parse --show-toplevel)/.secret-patterns.txt"
+# ---------------------------------------------------------------------------
+# gate 2 policy: THE EDITABLE LIST.  Destinations that must never receive
+# `.ngit/`, written as `owner/repo` exactly as it appears on github.com.
+# https://..., https://user:pw@... and git@github.com:... forms are all
+# normalised to `owner/repo` before matching.  Add or remove entries here.
+# ---------------------------------------------------------------------------
+POLICED_REPOS=(
+    "Amperstrand/microfips"    # third-party upstream  (remote "amp")
+    "c03rad0r/microfips"       # the parent fork
+)
 
-if [ ! -f "$PATTERNS_FILE" ]; then
+# ---------------------------------------------------------------------------
+# stdin: the refs git wants pushed.  Read once, here, for every gate below.
+# ---------------------------------------------------------------------------
+REFS="$(cat)"
+
+# ===========================================================================
+# gate 1: secret scan
+# ===========================================================================
+(
+    # scoped to this subshell on purpose -- gate 2 must run without it
+    set -e
+
+    PATTERNS_FILE="$(git rev-parse --show-toplevel)/.secret-patterns.txt"
+
+    if [ ! -f "$PATTERNS_FILE" ]; then
+        exit 0
+    fi
+
+    RANGE="@{u}..HEAD"
+    COMMITS=$(git rev-list "$RANGE" 2>/dev/null || echo "")
+    if [ -z "$COMMITS" ]; then
+        COMMITS=$(git rev-list HEAD~5..HEAD 2>/dev/null || echo "")
+    fi
+
+    FOUND=0
+    while IFS= read -r pattern; do
+        [ -z "$pattern" ] && continue
+        case "$pattern" in \#*) continue ;; esac
+        MATCH=$(git log -p "$RANGE" 2>/dev/null | grep -En -- "$pattern" 2>/dev/null | head -5)
+        if [ -n "$MATCH" ]; then
+            echo "SECRET in push history (pattern: $pattern):"
+            echo "$MATCH"
+            FOUND=1
+        fi
+    done < "$PATTERNS_FILE"
+
+    if [ $FOUND -eq 1 ]; then
+        echo ""
+        echo "PUSH BLOCKED — secrets detected in commit history."
+        echo "Scrub with: git filter-repo --replace-text .secret-patterns.txt"
+        exit 1
+    fi
+
+    exit 0
+)
+secret_rc=$?
+if [ "$secret_rc" -ne 0 ]; then
+    exit "$secret_rc"
+fi
+
+# ===========================================================================
+# gate 2: .ngit/ fork hygiene
+# ===========================================================================
+REMOTE_NAME="${1:-}"
+REMOTE_URL="${2:-}"
+ZERO="0000000000000000000000000000000000000000"
+
+# --- normalise a remote URL down to <owner>/<repo> -------------------------
+norm_of() {
+    local u="$1"
+    case "$u" in
+        *github.com:*) u="${u##*github.com:}" ;;   # git@github.com:owner/repo.git
+        *github.com/*) u="${u##*github.com/}" ;;   # https://[user[:pw]@]github.com/owner/repo.git
+    esac
+    u="${u%%\?*}"
+    u="${u%.git}"
+    u="${u%/}"
+    printf '%s' "$u"
+}
+
+# --- is this normalised destination on the policed list? -------------------
+is_policed() {
+    local n="$1" p
+    for p in "${POLICED_REPOS[@]}"; do
+        if [ "$n" = "$p" ]; then
+            printf '%s' "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# --- decide whether this destination is policed ----------------------------
+# argv first, then the configured URL / pushurl for the named remote.
+POLICED=0
+POLICED_AS=""
+cfg_url=$(git config --get "remote.${REMOTE_NAME}.url" 2>/dev/null || true)
+cfg_pushurl=$(git config --get "remote.${REMOTE_NAME}.pushurl" 2>/dev/null || true)
+
+while IFS= read -r u; do
+    [ -z "$u" ] && continue
+    n=$(norm_of "$u")
+    if hit=$(is_policed "$n"); then POLICED=1; POLICED_AS="$hit"; fi
+done <<EOF
+${REMOTE_URL}
+${cfg_url}
+${cfg_pushurl}
+EOF
+
+if [ "${NGIT_GUARD_DEBUG:-0}" = "1" ]; then
+    echo "pre-push[guard]: name='${REMOTE_NAME}' url='${REMOTE_URL}' cfg='${cfg_url}' pushurl='${cfg_pushurl}' policed=${POLICED} as='${POLICED_AS}'" >&2
+fi
+
+if [ "$POLICED" -ne 1 ]; then
+    # not a destination we guard: silent allow.  (stdin was already consumed
+    # once, up front, into REFS -- there is nothing left to drain.)
     exit 0
 fi
 
-RANGE="@{u}..HEAD"
-COMMITS=$(git rev-list "$RANGE" 2>/dev/null || echo "")
-if [ -z "$COMMITS" ]; then
-    COMMITS=$(git rev-list HEAD~5..HEAD 2>/dev/null || echo "")
-fi
+REFUSE_MSG="pre-push: REFUSED - .ngit/ must not be pushed to ${POLICED_AS} (third-party upstream); push this ref to 'fork' instead, or drop the .ngit/ paths"
 
-FOUND=0
-while IFS= read -r pattern; do
-    [ -z "$pattern" ] && continue
-    case "$pattern" in \#*) continue ;; esac
-    MATCH=$(git log -p "$RANGE" 2>/dev/null | grep -En -- "$pattern" 2>/dev/null | head -5)
-    if [ -n "$MATCH" ]; then
-        echo "SECRET in push history (pattern: $pattern):"
-        echo "$MATCH"
-        FOUND=1
+blocked_ref=""
+blocked_path=""
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "${local_sha:-}" ] && continue
+    [ "$local_sha" = "$ZERO" ] && continue            # branch deletion
+    git cat-file -e "${local_sha}^{commit}" 2>/dev/null || continue
+
+    paths=""
+    if [ -n "${remote_sha:-}" ] && [ "$remote_sha" != "$ZERO" ] \
+       && git cat-file -e "${remote_sha}^{commit}" 2>/dev/null \
+       && git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        # normal update: exactly what the upstream does not already have
+        paths=$(git diff --name-only "$remote_sha" "$local_sha" -- '.ngit/' 2>/dev/null)
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            # diff undecidable -> fall back to the conservative tree test
+            paths=$(git ls-tree -r --name-only "$local_sha" -- '.ngit/' 2>/dev/null)
+        fi
+    else
+        # new branch / non-ancestor base: every commit the upstream lacks is
+        # part of the outgoing diff
+        paths=$(git log --format= --name-only "$local_sha" \
+                    --not --remotes="$REMOTE_NAME" -- '.ngit/' 2>/dev/null)
+        rc=$?
+        if [ -z "$paths" ] || [ "$rc" -ne 0 ]; then
+            # nothing reported, or the scope could not be computed: fail closed
+            # by testing whether the outgoing ref's tree carries .ngit/ at all
+            paths=$(git ls-tree -r --name-only "$local_sha" -- '.ngit/' 2>/dev/null)
+        fi
     fi
-done < "$PATTERNS_FILE"
 
-if [ $FOUND -eq 1 ]; then
-    echo ""
-    echo "PUSH BLOCKED — secrets detected in commit history."
-    echo "Scrub with: git filter-repo --replace-text .secret-patterns.txt"
+    if [ -n "$paths" ]; then
+        blocked_ref="$remote_ref"
+        blocked_path=$(printf '%s\n' "$paths" | grep -v '^$' | head -1)
+        break
+    fi
+done <<<"$REFS"
+
+if [ -n "$blocked_ref" ]; then
+    echo "$REFUSE_MSG" >&2
+    echo "pre-push: offending ref: ${blocked_ref} (path: ${blocked_path})" >&2
+    echo "pre-push: override (intentionally pushing .ngit/ upstream): git push --no-verify" >&2
     exit 1
 fi
 
-echo "No secrets detected."
 exit 0

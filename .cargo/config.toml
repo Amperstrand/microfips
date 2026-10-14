@@ -11,6 +11,13 @@ runner = "espflash flash --monitor -p /dev/ttyACM0 --chip esp32c3"
 rustflags = [
   "-C", "link-arg=-Tc3-link.x",
   "-C", "force-frame-pointers=no",
+  # riscv32imc has no atomic CAS instruction. Tell portable-atomic to use its
+  # single-core fallback (CAS emulated with interrupts disabled) instead of
+  # failing E0277 for every dependency that does compare_exchange (e.g.
+  # static_cell). Target-scoped on purpose: on x86_64 the same cfg is a hard
+  # error ("not supported yet on this architecture"), so it must not be set
+  # workspace-wide or as a Cargo feature.
+  "--cfg", "portable_atomic_unsafe_assume_single_core",
 ]
 
 [env]
