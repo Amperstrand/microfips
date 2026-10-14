@@ -2236,7 +2236,7 @@ exporter/coordinator) is the hardware lab rig and stays.
 |---|---|
 | cargo test binaries (`target/debug/deps/microfips_*`) | wrap `cargo test` in `timeout` on shared boxes; kill strays: `pkill -f "target/(debug\|release)/.*microfips"` |
 | microfips-sim instances | `pkill -f microfips-sim` when the experiment ends |
-| labgrid exporter/coordinator | standing HIL infra — do not kill without owner sign-off |
+| labgrid exporter/coordinator | standing HIL infra — do not kill without owner sign-off. Canon: conwrt-bench `docs/labgrid-coordination.md` (queue with `reserve --wait`; coordinator `.208:20408` via `LG_COORDINATOR`) |
 
 ### Orphan hunt (run before ending a session)
 
