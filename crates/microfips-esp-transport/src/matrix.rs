@@ -39,7 +39,10 @@ impl<'d> MatrixPixel<'d> {
             .configure_tx(&config)
             .map(|ch| ch.with_pin(pin))
             .expect("RMT channel0 for the matrix pixel");
-        let mut p = Self { tx: Some(tx), off_at: None };
+        let mut p = Self {
+            tx: Some(tx),
+            off_at: None,
+        };
         p.write((0, 0, 0));
         p
     }
@@ -77,7 +80,8 @@ impl<'d> MatrixPixel<'d> {
     /// Light the single center pixel green and schedule the auto-off.
     pub fn flash(&mut self) {
         self.write((0, MAX_CHANNEL, 0));
-        self.off_at = Some(embassy_time::Instant::now() + embassy_time::Duration::from_millis(FLASH_MS));
+        self.off_at =
+            Some(embassy_time::Instant::now() + embassy_time::Duration::from_millis(FLASH_MS));
     }
 
     /// Extinguish immediately.

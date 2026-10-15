@@ -14,7 +14,8 @@ pub type EspHandler<'a> = SharedEspHandler<'a>;
 
 /// The bench showcase handler: the LED service replaces the cashu demo
 /// service as the FSP application.
-pub type EspLedFspHandler<'d> = FspDualHandler<FspServiceAdapter<crate::led_service::LedService<'d>>>;
+pub type EspLedFspHandler<'d> =
+    FspDualHandler<FspServiceAdapter<crate::led_service::LedService<'d>>>;
 
 pub fn build_led_fsp(
     secret: &[u8; 32],

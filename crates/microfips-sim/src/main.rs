@@ -197,7 +197,11 @@ impl SimHandler {
         else {
             return None;
         };
-        let (k_recv, _) = self.inner.initiator.as_ref().and_then(|i| i.session_keys())?;
+        let (k_recv, _) = self
+            .inner
+            .initiator
+            .as_ref()
+            .and_then(|i| i.session_keys())?;
         let mut dec = [0u8; 512];
         let dl = noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec).ok()?;
         let (_ts, _mt, _flags, inner_payload) =
