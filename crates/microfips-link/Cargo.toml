@@ -15,7 +15,7 @@ noise-xx = ["microfips-core/noise-xx"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["std"] }
-k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh", "std"] }
+k256 = { version = "0.14", features = ["arithmetic", "ecdsa", "ecdh", "std"] }
 hex = "0.4"
 rand = "0.9"
 env_logger = "0.11"
