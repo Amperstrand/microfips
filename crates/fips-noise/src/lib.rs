@@ -257,7 +257,7 @@ use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Tag};
 use hkdf::Hkdf;
 use k256::ecdh::diffie_hellman as raw_ecdh;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::sec1::ToSec1Point;
 use k256::{PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
 
@@ -357,7 +357,7 @@ pub fn x_only_ecdh(
 pub fn ecdh_pubkey(secret: &[u8; 32]) -> Result<[u8; PUBKEY_SIZE], NoiseError> {
     let sk = SecretKey::from_slice(secret).map_err(|_| NoiseError::InvalidKey)?;
     let pk = sk.public_key();
-    let encoded = pk.to_encoded_point(true);
+    let encoded = pk.to_sec1_point(true);
     let bytes = encoded.as_bytes();
     let mut out = [0u8; PUBKEY_SIZE];
     out.copy_from_slice(&bytes[..PUBKEY_SIZE]);
