@@ -27,3 +27,5 @@ tools/hil/results/.bench-lock
 
 # canary standalone workspace build output
 canary/fips-core-canary/target/
+sizes.json
+canary/size-probe-*/target/

@@ -1,0 +1,18 @@
+[package]
+name = "size-probe-ours"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Binary-size probe: linked image cost of OUR identity/crypto path (fips-noise k256 + fips-identity) on a bare-metal target. Companion to size-probe-upstream — identical structure, different backend. Feeds the identity/crypto backend decision (docs/fips-core-adoption-audit.md area 5, microfips #219)."
+
+[dependencies]
+fips-noise = { path = "../../crates/fips-noise" }
+fips-identity = { path = "../../crates/fips-identity" }
+
+[workspace]
+
+[profile.release]
+# Match firmware measurement practice: the flashed-image cost of the backend.
+panic = "abort"
+opt-level = "z"
+lto = true

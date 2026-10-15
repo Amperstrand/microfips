@@ -1,0 +1,20 @@
+[package]
+name = "size-probe-upstream"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Binary-size probe: linked image cost of the pinned upstream fips-core (secp256k1-sys C backend) on a bare-metal target. Companion to size-probe-ours — identical structure, different backend. Feeds the identity/crypto backend decision (docs/fips-core-adoption-audit.md area 5, microfips #219)."
+
+[dependencies]
+# Rides the canary lib so the fips-core git pin stays single-sourced in
+# canary/fips-core-canary/Cargo.toml — this probe measures exactly the
+# surface the compile check exercises.
+fips-core-canary = { path = "../fips-core-canary" }
+
+[workspace]
+
+[profile.release]
+# Match firmware measurement practice: the flashed-image cost of the backend.
+panic = "abort"
+opt-level = "z"
+lto = true

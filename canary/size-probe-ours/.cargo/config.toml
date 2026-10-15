@@ -1,0 +1,5 @@
+# The nearest config file's target rustflags REPLACE the repo-root stanza
+# (lists do not merge across files): this drops -Tlinkall.x for the probe's
+# xtensa link — build.rs supplies the probe's own script instead.
+[target.xtensa-esp32-none-elf]
+rustflags = ["-C", "force-frame-pointers=no"]

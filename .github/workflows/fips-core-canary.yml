@@ -68,6 +68,83 @@ jobs:
             echo "### fips-core canary: SKIPPED (pin $rev vanished)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  size-probe:
+    name: size probe (backend flash cost)
+    needs: pin-probe
+    if: needs.pin-probe.outputs.pin-ok == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CC_thumbv7em_none_eabi: clang
+      CC_xtensa_esp32_none_elf: xtensa-esp32-elf-gcc
+      AR_xtensa_esp32_none_elf: xtensa-esp32-elf-ar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang/llvm (measurement tools + thumb C toolchain)
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang llvm
+
+      - name: Install stable target
+        run: rustup target add thumbv7em-none-eabi
+
+      - name: Install esp toolchain
+        uses: esp-rs/xtensa-toolchain@v1.6 # same action/version as ci.yml build-firmware
+
+      - name: Install xtensa C compiler (crosstool, for secp256k1-sys)
+        run: |
+          set -x
+          ver=esp-14.2.0_20241119
+          url="https://github.com/espressif/crosstool-NG/releases/download/${ver}/xtensa-esp-elf-14.2.0_20241119-x86_64-linux-gnu.tar.xz"
+          mkdir -p "$HOME/.espressif/tools/xtensa-esp-elf"
+          curl -fsSL --retry 2 "$url" -o /tmp/xt.tar.xz
+          tar -xJf /tmp/xt.tar.xz -C "$HOME/.espressif/tools/xtensa-esp-elf"
+          echo "$HOME/.espressif/tools/xtensa-esp-elf/xtensa-esp-elf/bin" >> "$GITHUB_PATH"
+
+      - name: Build, measure, and record
+        env:
+          PIN: ${{ needs.pin-probe.outputs.rev }}
+        run: |
+          set -euxo pipefail
+          ar_tool="$(command -v llvm-ar || compgen -c llvm-ar- | sort -V | tail -n 1)"
+          strip_tool="$(command -v llvm-strip || compgen -c llvm-strip- | sort -V | tail -n 1)"
+          size_tool="$(command -v llvm-size || compgen -c llvm-size- | sort -V | tail -n 1)"
+          export AR_thumbv7em_none_eabi="$ar_tool"
+          build_one() {
+            local target="$1" probe="$2" extra="${3:-}"
+            (cd "canary/size-probe-$probe" && cargo $extra build --release --target "$target" 2>&1 | tee "/tmp/build-$target-$probe.log" | tail -1)
+          }
+          # thumb control leg (stable)
+          build_one thumbv7em-none-eabi ours
+          build_one thumbv7em-none-eabi upstream
+          # the strategic leg: ESP32-D0WD class, esp toolchain + build-std
+          build_one xtensa-esp32-none-elf ours "+esp -Zbuild-std=core,alloc"
+          build_one xtensa-esp32-none-elf upstream "+esp -Zbuild-std=core,alloc"
+          PIN="$PIN" STRIP="$strip_tool" SIZE="$size_tool" python3 tools/record_canary_sizes.py
+          cat sizes.json
+
+      - name: Summarize
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("sizes.json"))
+          print("## fips-core canary — backend flash cost")
+          print()
+          print("| target | ours (k256) stripped | upstream (secp256k1-sys) stripped | delta |")
+          print("|---|---:|---:|---:|")
+          for t, delta in d["deltas"].items():
+              ours = next(e for e in d["entries"] if e["target"] == t and e["config"] == "ours")
+              up = next(e for e in d["entries"] if e["target"] == t and e["config"] == "upstream")
+              print(f"| {t} | {ours['stripped_bytes']:,} B | {up['stripped_bytes']:,} B | {delta['stripped_delta_bytes']:+,} B ({delta['ratio_percent']:+.0f}%) |")
+          print()
+          print(f"pin: `{d['pin']}` — raw+stripped per section in the `canary-sizes` artifact (sizes.json)")
+          EOF
+
+      - name: Persist sizes.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-sizes
+          path: sizes.json
+          if-no-files-found: error
+
   canary:
     name: canary ${{ matrix.target }}
     needs: pin-probe
