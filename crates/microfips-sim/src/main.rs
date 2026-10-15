@@ -119,6 +119,7 @@ struct SimHandler {
     inner: FspDualHandler<FspServiceAdapter<DemoService>>,
     is_initiator: bool,
     test_http: bool,
+    led_cmd: Option<&'static str>,
     label: &'static str,
 }
 
@@ -135,6 +136,7 @@ impl SimHandler {
             ),
             is_initiator: false,
             test_http: false,
+            led_cmd: None,
             label,
         }
     }
@@ -145,6 +147,7 @@ impl SimHandler {
         target_addr: [u8; 16],
         test_ping: bool,
         test_http: bool,
+        led_cmd: Option<&'static str>,
         label: &'static str,
     ) -> Self {
         let mut resp_eph = [0u8; 32];
@@ -165,6 +168,7 @@ impl SimHandler {
             inner,
             is_initiator: true,
             test_http,
+            led_cmd,
             label,
         }
     }
@@ -183,33 +187,31 @@ impl SimHandler {
         Some(NodeAddr::from_pubkey_x(&x_only).0)
     }
 
-    fn is_http_response(&self, payload: &[u8]) -> bool {
+    fn decrypted_service_payload<'p>(&self, payload: &'p [u8]) -> Option<&'p [u8]> {
         if payload.len() < microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE {
-            return false;
+            return None;
         }
         let fsp_data = &payload[microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE..];
-        if fsp_data.is_empty() {
-            return false;
-        }
         let Some((_flags, counter, header, encrypted)) =
             microfips_core::fsp::parse_fsp_encrypted_header(fsp_data)
         else {
-            return false;
+            return None;
         };
-        let (k_recv, _) = match self.inner.initiator.as_ref().and_then(|i| i.session_keys()) {
-            Some(k) => k,
-            None => return false,
-        };
+        let (k_recv, _) = self.inner.initiator.as_ref().and_then(|i| i.session_keys())?;
         let mut dec = [0u8; 512];
-        let Ok(dl) = noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec) else {
-            return false;
-        };
-        let Some((_ts, _mt, _flags, inner_payload)) =
-            microfips_core::fsp::fsp_strip_inner_header(&dec[..dl])
-        else {
-            return false;
-        };
-        decode_response(inner_payload)
+        let dl = noise::aead_decrypt(&k_recv, counter, header, encrypted, &mut dec).ok()?;
+        let (_ts, _mt, _flags, inner_payload) =
+            microfips_core::fsp::fsp_strip_inner_header(&dec[..dl])?;
+        // The decrypted buffer is local; hand back a slice of a leaked copy
+        // so callers can format it. The sim exits right after, so the leak
+        // is bounded by the one response.
+        let owned: &'p [u8] = Box::leak(inner_payload.to_vec().into_boxed_slice());
+        Some(owned)
+    }
+
+    fn is_http_response(&self, payload: &[u8]) -> bool {
+        self.decrypted_service_payload(payload)
+            .and_then(|inner| decode_response(inner).ok())
             .map(|response| response.status == ServiceStatus::OK)
             .unwrap_or(false)
     }
@@ -254,6 +256,20 @@ impl NodeHandler for SimHandler {
             std::process::exit(0);
         }
         if self.test_http && self.is_established() && self.is_http_response(payload) {
+            if let Some(cmd) = self.led_cmd {
+                if let Some(inner) = self.decrypted_service_payload(payload) {
+                    let body = decode_response(inner)
+                        .map(|r| r.body.to_vec())
+                        .unwrap_or_default();
+                    log::info!(
+                        "[{}] /led {} -> {}",
+                        self.label,
+                        cmd,
+                        String::from_utf8_lossy(&body)
+                    );
+                }
+                std::process::exit(0);
+            }
             log::info!("[{}] *** test http success, exiting ***", self.label);
             std::process::exit(0);
         }
@@ -288,11 +304,13 @@ impl NodeHandler for SimHandler {
             };
             let send_ctr = fsp.next_send_counter();
             let mut request = [0u8; 128];
-            let request_len = match encode_request(ServiceMethod::Get, "/health", b"", &mut request)
-            {
-                Ok(len) => len,
-                Err(_) => return HandleResult::None,
-            };
+            let request_len = match self.led_cmd {
+                Some("on") => encode_request(ServiceMethod::Post, "/led", b"on", &mut request),
+                Some("off") => encode_request(ServiceMethod::Post, "/led", b"off", &mut request),
+                Some("status") => encode_request(ServiceMethod::Get, "/led", b"", &mut request),
+                _ => encode_request(ServiceMethod::Get, "/health", b"", &mut request),
+            }
+            .expect("service request encode fits 128B buffer");
             let ts = 0u32;
             let mut fsp_packet = [0u8; 512];
             let fsp_total = match microfips_core::fsp::build_fsp_data_message(
@@ -478,6 +496,19 @@ fn main() {
     let fips_addr = args.get(2).expect("--udp requires an address");
     let test_ping = args.iter().any(|a| a == "--test-ping");
     let test_http = args.iter().any(|a| a == "--test-http");
+    let led_cmd: Option<&'static str> = args
+        .iter()
+        .position(|a| a == "--led")
+        .and_then(|p| args.get(p + 1))
+        .and_then(|v| match v.as_str() {
+            "on" | "off" | "status" => Some(match v.as_str() {
+                "on" => "on",
+                "off" => "off",
+                _ => "status",
+            }),
+            _ => None,
+        });
+    let test_http = test_http || led_cmd.is_some();
     let test_ping = test_ping && !test_http;
     let is_initiator = args.iter().any(|a| a == "--initiator") || use_sim_b;
     let target_arg = args
@@ -599,6 +630,7 @@ fn main() {
                 target_addr,
                 test_ping,
                 test_http,
+                led_cmd,
                 node_label,
             );
             node.run(&mut handler).await;
