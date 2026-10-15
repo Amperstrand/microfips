@@ -109,6 +109,111 @@ pub async fn run_l2cap_node(
 }
 
 #[cfg(feature = "wifi")]
+pub async fn run_led_wifi_node(
+    spawner: embassy_executor::Spawner,
+    rmt: esp_hal::rmt::Rmt<'static, esp_hal::Blocking>,
+    gpio2: esp_hal::peripherals::GPIO2<'static>,
+    matrix_pin: esp_hal::peripherals::GPIO27<'static>,
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    rng_periph: esp_hal::peripherals::RNG<'static>,
+    adc1: esp_hal::peripherals::ADC1<'static>,
+) -> ! {
+    use crate::config;
+    use crate::handler::{build_led_fsp, SharedLedHandler};
+    use crate::matrix::MatrixPixel;
+    use crate::node_info::NodeIdentity;
+    use crate::rng::EspRng;
+    use crate::stats::STATS;
+    use crate::wifi_transport::build_wifi_transport;
+    use microfips_protocol::node::Node;
+    use portable_atomic::Ordering;
+    use rand_core::RngCore;
+
+    let mut led = crate::runner::make_led(gpio2);
+    let (_trng_source, mut trng) = crate::runner::init_trng(rng_periph, adc1);
+
+    let identity = NodeIdentity::compute();
+    crate::logger::init();
+    STATS.boot_tick_ms.store(
+        embassy_time::Instant::now().as_millis() as u32,
+        Ordering::Relaxed,
+    );
+    log::info!("WiFi LED-service mode starting");
+
+    let mut resp_eph = [0u8; 32];
+    trng.fill_bytes(&mut resp_eph);
+    let mut init_eph = [0u8; 32];
+    trng.fill_bytes(&mut init_eph);
+
+    let (transport, peer_npub) = match build_wifi_transport(
+        spawner,
+        wifi,
+        &mut trng,
+        config::WIFI_SSID,
+        config::WIFI_PASSWORD,
+    )
+    .await
+    {
+        Ok(transport) => transport,
+        Err(err) => {
+            log::error!(
+                "WiFi: max retries exceeded, entering error state: {:?}",
+                err
+            );
+            led.set_state(config::LED_OFF);
+            loop {
+                led.set_state(config::LED_ON);
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+                led.set_state(config::LED_OFF);
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+            }
+        }
+    };
+
+    let rng = EspRng(trng);
+    let mut node = if crate::config::REKEY_AFTER_SECS > 0 {
+        let timing = microfips_protocol::node::NodeTiming {
+            rekey_after_secs: crate::config::REKEY_AFTER_SECS,
+            ..microfips_protocol::node::NodeTiming::default()
+        };
+        Node::with_timing(transport, rng, config::DEVICE_NSEC, peer_npub, timing)
+    } else {
+        Node::new(transport, rng, config::DEVICE_NSEC, peer_npub)
+    };
+    node.set_raw_framing(true);
+
+    let pixel = MatrixPixel::new(
+        rmt,
+        esp_hal::gpio::Output::new(
+            matrix_pin,
+            esp_hal::gpio::Level::Low,
+            esp_hal::gpio::OutputConfig::default(),
+        ),
+    );
+    let fsp = build_led_fsp(
+        &config::DEVICE_NSEC,
+        resp_eph,
+        init_eph,
+        &config::FSP_TARGET_NPUB,
+        config::FSP_TARGET_NODE_ADDR,
+        1u64.to_le_bytes(),
+        crate::led_service::LedService::new(pixel),
+    );
+    let mut handler = SharedLedHandler { led: &mut led, fsp };
+
+    crate::control::init_control(&identity, "wifi-led");
+    crate::control::set_peer_pub(peer_npub);
+    if let Ok(token) = crate::control::control_task() {
+        spawner.spawn(token);
+    }
+
+    log::info!("Node running over WiFi (LED service)...");
+    node.run(&mut handler).await;
+    #[allow(unreachable_code)]
+    #[allow(clippy::empty_loop)]
+    loop {}
+}
+
 pub async fn run_wifi_node(
     spawner: embassy_executor::Spawner,
     gpio2: esp_hal::peripherals::GPIO2<'static>,

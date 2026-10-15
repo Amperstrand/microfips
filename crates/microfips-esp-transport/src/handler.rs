@@ -12,6 +12,99 @@ use crate::stats::STATS;
 pub type EspFspHandler = FspDualHandler<FspServiceAdapter<DemoService>>;
 pub type EspHandler<'a> = SharedEspHandler<'a>;
 
+/// The bench showcase handler: the LED service replaces the cashu demo
+/// service as the FSP application.
+pub type EspLedFspHandler<'d> = FspDualHandler<FspServiceAdapter<crate::led_service::LedService<'d>>>;
+
+pub fn build_led_fsp(
+    secret: &[u8; 32],
+    responder_ephemeral: [u8; 32],
+    initiator_ephemeral: [u8; 32],
+    peer_pub: &[u8; 33],
+    peer_addr: [u8; 16],
+    fsp_epoch: [u8; 8],
+    service: crate::led_service::LedService<'static>,
+) -> EspLedFspHandler<'static> {
+    FspDualHandler::new_dual(
+        *secret,
+        responder_ephemeral,
+        initiator_ephemeral,
+        peer_pub,
+        peer_addr,
+        fsp_epoch,
+        FspServiceAdapter::new(service),
+    )
+}
+
+/// SharedEspHandler shape with the LED service behind the FSP adapter;
+/// on_tick also drives the pixel's hardware auto-off.
+pub struct SharedLedHandler<'a, 'd> {
+    pub led: &'a mut Led,
+    pub fsp: EspLedFspHandler<'d>,
+}
+
+impl NodeHandler for SharedLedHandler<'_, '_> {
+    async fn on_event(&mut self, event: NodeEvent) {
+        match event {
+            NodeEvent::Connected => {
+                STATS.state.store(1, Ordering::Relaxed);
+                self.led.set_state(LED_ON);
+            }
+            NodeEvent::Msg1Sent => {
+                STATS.state.store(2, Ordering::Relaxed);
+                STATS.msg1_tx.fetch_add(1, Ordering::Relaxed);
+                self.led.set_state(LED_ON);
+            }
+            NodeEvent::HandshakeOk => {
+                STATS.state.store(3, Ordering::Relaxed);
+                STATS.msg2_rx.fetch_add(1, Ordering::Relaxed);
+                self.led.set_state(LED_ON);
+            }
+            NodeEvent::HeartbeatSent => {
+                STATS.state.store(4, Ordering::Relaxed);
+                STATS.hb_tx.fetch_add(1, Ordering::Relaxed);
+            }
+            NodeEvent::HeartbeatRecv => {
+                STATS.hb_rx.fetch_add(1, Ordering::Relaxed);
+            }
+            NodeEvent::Disconnected => {
+                STATS.state.store(5, Ordering::Relaxed);
+                self.led.set_state(LED_OFF);
+            }
+            NodeEvent::Error => {
+                STATS.state.store(6, Ordering::Relaxed);
+                self.led.set_state(LED_OFF);
+            }
+        }
+        self.fsp.on_event_default(event);
+    }
+
+    fn on_message(&mut self, msg_type: u8, payload: &[u8], resp: &mut [u8]) -> HandleResult {
+        if msg_type != 0x00 {
+            return HandleResult::None;
+        }
+        STATS.data_rx.fetch_add(1, Ordering::Relaxed);
+        let result = self.fsp.on_message(msg_type, payload, resp);
+        if let HandleResult::SendDatagram(_) = result {
+            STATS.data_tx.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn poll_at(&self) -> Option<embassy_time::Instant> {
+        self.fsp.poll_at()
+    }
+
+    fn on_tick(&mut self, resp: &mut [u8]) -> HandleResult {
+        self.fsp.app.inner_mut().poll();
+        let result = self.fsp.on_tick(resp);
+        if let HandleResult::SendDatagram(_) = result {
+            STATS.data_tx.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
 pub fn build_demo_fsp(
     secret: &[u8; 32],
     responder_ephemeral: [u8; 32],

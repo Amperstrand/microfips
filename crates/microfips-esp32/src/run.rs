@@ -55,3 +55,6 @@ pub use microfips_esp_transport::run_tasks::run_l2cap_node;
 
 #[cfg(feature = "wifi")]
 pub use microfips_esp_transport::run_tasks::run_wifi_node;
+
+#[cfg(feature = "wifi")]
+pub use microfips_esp_transport::run_tasks::run_led_wifi_node;
