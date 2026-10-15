@@ -1856,7 +1856,7 @@ longer expected on this bench, still refused by boards.toml if it reappears).
 | M5 Atom `9D529068B4` | ESP32-PICO-D4 | `atom-b` G·12 | FTDI | ttyUSB by-id; wired to ACR1252 NFC reader |
 | Micronuts Cashu wallet | STM32F469 | — | CDC-ACM | ttyACM2 — other project, refused |
 | ACR1252 NFC reader | — | — | USB CCID | bench shared device, not a board |
-| M5 Stack `Hades2001` | — | — | FTDI | **on maintainer laptop — evmap charger project** |
+| M5 Stack `Hades2001` | ESP32 | — | FTDI | **returned to the bench** (ai-legion ttyUSB0; the ccid-firmware-rs m5stick DUT — shared via its labgrid place, signed holds per the bench canon). Supersedes the maintainer-laptop note (issue fips-lab#12) |
 
 **Two-atom BLE interference (2026-09-03, hil-smoke atom-a leg):** an atom
 running L2CAP firmware central-scans at boot and connects to ANY FIPS advert
