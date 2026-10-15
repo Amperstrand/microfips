@@ -568,7 +568,13 @@ fn main() {
     let peer_x_only: [u8; 32] = peer_pub_normalized[1..].try_into().unwrap();
     let peer_target_addr = NodeAddr::from_pubkey_x(&peer_x_only);
 
-    let fsp_target_pub = if use_sim_b {
+    let fsp_target_npub = std::env::var("FSP_TARGET_NPUB")
+        .ok()
+        .and_then(|s| hex::decode(s).ok())
+        .and_then(|v| <[u8; 33]>::try_from(v.as_slice()).ok());
+    let fsp_target_pub: [u8; 33] = if let Some(pk) = fsp_target_npub {
+        pk
+    } else if use_sim_b {
         SIM_A_PUBKEY
     } else if let Some(hex_str) = target_arg {
         match hex::decode(hex_str) {
