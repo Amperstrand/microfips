@@ -1,11 +1,57 @@
 # microfips
 
-> **EXPERIMENTAL SOFTWARE** — not production-ready. Wire protocol tracks
-> jmcorgan/fips and may break on any upstream release. Identities are
+> **EXPERIMENTAL RESEARCH PROJECT** — not production-ready. Wire protocol tracks
+> upstream fips and may break on any upstream release. Identities are
 > deterministic test keys. See [docs/STATE-OF-PROJECT.md](docs/STATE-OF-PROJECT.md)
-> for the current verified-state matrix.
+> for the current verified-state matrix and [docs/ROADMAP.md](docs/ROADMAP.md)
+> for where this is going.
 
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32-D0WD.
+
+## What this project is (and is not) — 2026-10
+
+microfips is Amperstrand's microcontroller FIPS program. It was born out of
+necessity and experimentation: when it started, upstream fips had no embedded
+story at all, so this repo built a complete no_std leaf stack (Noise IK/XK,
+FMP, FSP), the MCU firmwares, and — it turned out just as valuable — the
+lab bench that proves any of it on real hardware.
+
+**The end goal: just run FIPS on microcontrollers.** Upstream fips is now
+extracting its own no_std core, and this project's long-term success is
+*becoming smaller*: the embedded protocol stack converges onto upstream
+code, and what remains here is what upstream doesn't ship — the bench, the
+HIL scenarios, the golden vectors, and the ESP32 bring-up glue.
+
+### Relationship to upstream fips-core
+
+Upstream's `fips-core` (no_std: identity, protocol state machines, host
+entropy seam; bare-metal CI) overlaps the leaf subset our
+`microfips-core`/`microfips-protocol`/`fips-fmp` implement. What it does
+not have yet: the Noise handshake/session **crypto** (only IK-era wire
+sizes), the XX/FMP-v1 forward-compat wire, and a published/stable surface.
+Our canary CI (#219) proves upstream's core builds on all our target
+families including xtensa.
+
+**Policy: inherit or reuse upstream code whenever possible.** Our crates
+exist to be replaced by upstream's, not to compete with them. Each crate
+has an adoption path and a trigger — see [docs/ROADMAP.md](docs/ROADMAP.md).
+
+### What we have tested (proof points)
+
+- Every transport end to end on hardware: USB CDC serial, BLE GATT,
+  **BLE L2CAP direct to a local fips daemon**, and WiFi — on STM32F469I-DISCO,
+  ESP32-D0WD and ESP32-S3 (details in the matrix below).
+- Dual-wire protocol leadership: IK against released daemons, XX/FMP-v1
+  against the pinned upstream `next` line, CI-gated via drift gates and
+  canonical cross-vectors (this repo is the golden-vector generator of record).
+- 2026-10-15 hardware E2E (#222, #223): atom board running this firmware,
+  live BLE L2CAP link to a current pinned fips daemon — handshake,
+  sustained heartbeats, periodic rekeys — with both sides' transport-key
+  logs cross-validated and the radio capture decrypting at 100% offline.
+- 2026-10-15 canary (#219): upstream fips-core compiles for
+  riscv32imc (C3), xtensa-esp32s3, thumbv7em.
+
+## Current Status
 
 A Rust embedded firmware that implements leaf FIPS nodes using Embassy for async HAL,
 Noise_IK/XK handshakes, FMP link framing, FSP session protocol, and a no_std FIPS
