@@ -4,9 +4,7 @@ extern crate alloc;
 
 use portable_atomic::{AtomicBool, Ordering};
 
-use bt_hci::{
-    ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci,
-};
+use bt_hci::{FromHciBytes, FromHciBytesError, WriteHci};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -88,7 +86,10 @@ impl embedded_io::ErrorType for BleHciTransport<'_> {
 }
 
 impl bt_hci::transport::Transport for BleHciTransport<'_> {
-    async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
+    async fn read<'a, P: bt_hci::transport::PacketToHost<'a>>(
+        &self,
+        rx: &'a mut [u8],
+    ) -> Result<P, Self::Error> {
         loop {
             if !have_hci_read_data() {
                 embassy_futures::yield_now().await;
@@ -99,15 +100,27 @@ impl bt_hci::transport::Transport for BleHciTransport<'_> {
             // concurrently — the trouble runner serializes HCI packet processing.
             let connector = unsafe { &mut *self.connector.get() };
             let len = connector.next(rx).map_err(|_| BleHciError::Io)?;
-            if len > 0 {
-                return ControllerToHostPacket::from_hci_bytes_complete(&rx[..len])
-                    .map_err(BleHciError::from);
+            if len > 0 && len <= rx.len() {
+                // bt-hci 0.10: P::read_hci(kind, data, buf) parses from
+                // `data` (past the kind byte) and stages borrows in `buf`.
+                // `data` must not alias `buf`, so the received payload is
+                // copied to a local staging slice first (<= 259 B).
+                let kind =
+                    bt_hci::transport::PacketKind::from_byte(rx[0]).ok_or(BleHciError::Parse)?;
+                let n = len - 1;
+                let mut staging = [0u8; 259];
+                staging[..n].copy_from_slice(&rx[1..len]);
+                let mut rd: &[u8] = &staging[..n];
+                return P::read_hci(kind, &mut rd, rx).map_err(|_| BleHciError::Parse);
             }
             embassy_futures::yield_now().await;
         }
     }
 
-    async fn write<T: HostToControllerPacket>(&self, val: &T) -> Result<(), Self::Error> {
+    async fn write<T: bt_hci::transport::PacketToController>(
+        &self,
+        val: &T,
+    ) -> Result<(), Self::Error> {
         let mut buf = [0u8; 259];
         let wi = bt_hci::transport::WithIndicator::new(val);
         let len = wi.size();

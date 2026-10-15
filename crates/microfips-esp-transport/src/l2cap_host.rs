@@ -4,9 +4,7 @@ extern crate alloc;
 
 use portable_atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
-use bt_hci::{
-    ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, WriteHci,
-};
+use bt_hci::{FromHciBytes, FromHciBytesError, WriteHci};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -111,7 +109,10 @@ impl embedded_io::ErrorType for BleHciTransport<'_> {
 }
 
 impl bt_hci::transport::Transport for BleHciTransport<'_> {
-    async fn read<'a>(&self, rx: &'a mut [u8]) -> Result<ControllerToHostPacket<'a>, Self::Error> {
+    async fn read<'a, P: bt_hci::transport::PacketToHost<'a>>(
+        &self,
+        rx: &'a mut [u8],
+    ) -> Result<P, Self::Error> {
         let rx_ptr: *mut [u8] = rx;
         loop {
             // SAFETY: Obtaining a mutable reference from the UnsafeCell. This is safe because
@@ -126,17 +127,38 @@ impl bt_hci::transport::Transport for BleHciTransport<'_> {
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
                 continue;
             }
-            match ControllerToHostPacket::from_hci_bytes_complete(&rx[..len]) {
-                Ok(pkt) => return Ok(pkt),
-                Err(_) => {
-                    log::warn!("parse error, dropping packet");
-                    continue;
+            // bt-hci 0.10: P::read_hci(kind, data, buf) parses from
+            // `data` (past the kind byte) and stages borrows in `buf`;
+            // `data` must not alias `buf`, so the payload is copied to a
+            // local staging slice first (<= 259 B). Malformed packets are
+            // dropped and the read continues, matching the old behavior.
+            if len <= rx.len() {
+                let kind = match bt_hci::transport::PacketKind::from_byte(rx[0]) {
+                    Some(k) => k,
+                    None => {
+                        log::warn!("bad packet kind, dropping");
+                        continue;
+                    }
+                };
+                let n = len - 1;
+                let mut staging = [0u8; 259];
+                staging[..n].copy_from_slice(&rx[1..len]);
+                let mut rd: &[u8] = &staging[..n];
+                match P::read_hci(kind, &mut rd, rx) {
+                    Ok(pkt) => return Ok(pkt),
+                    Err(_) => {
+                        log::warn!("parse error, dropping packet");
+                        continue;
+                    }
                 }
             }
         }
     }
 
-    async fn write<T: HostToControllerPacket>(&self, val: &T) -> Result<(), Self::Error> {
+    async fn write<T: bt_hci::transport::PacketToController>(
+        &self,
+        val: &T,
+    ) -> Result<(), Self::Error> {
         let mut buf = [0u8; 259];
         let wi = bt_hci::transport::WithIndicator::new(val);
         let len = wi.size();
