@@ -214,6 +214,7 @@ pub async fn run_led_wifi_node(
     loop {}
 }
 
+#[cfg(feature = "wifi")]
 pub async fn run_wifi_node(
     spawner: embassy_executor::Spawner,
     gpio2: esp_hal::peripherals::GPIO2<'static>,
