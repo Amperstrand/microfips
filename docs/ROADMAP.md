@@ -29,7 +29,11 @@ The weekly **fips-core canary** (issue #219, workflow `fips-core-canary`)
 watches these triggers: any one firing starts a port review for that
 crate. Canary status at time of writing: all three target families build
 (riscv32imc, xtensa-esp32s3, thumbv7em) — xtensa viability is proven,
-so adoption is a policy question, not a technical one.
+so adoption is a policy question, not a technical one. The per-area
+verdicts, pros/cons and acceptance conditions live in
+[fips-core-adoption-audit.md](fips-core-adoption-audit.md); its one
+addition to this ladder is a canary binary-size measurement to inform
+the crypto-backend decision.
 
 ## Milestones
 
