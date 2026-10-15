@@ -192,11 +192,8 @@ impl SimHandler {
             return None;
         }
         let fsp_data = &payload[microfips_core::fsp::SESSION_DATAGRAM_BODY_SIZE..];
-        let Some((_flags, counter, header, encrypted)) =
-            microfips_core::fsp::parse_fsp_encrypted_header(fsp_data)
-        else {
-            return None;
-        };
+        let (_flags, counter, header, encrypted) =
+            microfips_core::fsp::parse_fsp_encrypted_header(fsp_data)?;
         let (k_recv, _) = self
             .inner
             .initiator
