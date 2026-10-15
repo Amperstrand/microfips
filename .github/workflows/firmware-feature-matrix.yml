@@ -1,0 +1,49 @@
+name: firmware-feature-matrix
+on:
+  pull_request:
+    paths:
+      - "crates/microfips-esp-transport/**"
+      - "crates/microfips-esp32/**"
+      - "crates/microfips-esp32s3/**"
+      - "crates/microfips-esp32c3/**"
+
+jobs:
+  esp32-feature-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: uart (default)
+            features: ""
+            bin: microfips-esp32
+          - name: l2cap
+            features: "l2cap"
+            bin: microfips-esp32-l2cap
+          - name: wifi
+            features: "wifi"
+            bin: microfips-esp32-wifi
+          - name: ble
+            features: "ble"
+            bin: microfips-esp32-ble
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install esp toolchain
+        run: |
+          rustup toolchain install esp --profile minimal
+          rustup component add rust-src --toolchain esp
+
+      - name: Build ${{ matrix.name }}
+        run: |
+          export DEVICE_NPUB_HEX_vps="020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21"
+          export DEVICE_NSEC_HEX_esp32="0000000000000000000000000000000000000000000000000000000000000002"
+          export DEVICE_NPUB_HEX_esp32="02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+          export DEVICE_NODE_ADDR_esp32="0135da2f8acf7b9e3090939432e47684"
+          export WIFI_SSID="ci-matrix-test"
+          export WIFI_PASSWORD="ci-matrix-test"
+          RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 \
+            --release --target xtensa-esp32-none-elf \
+            -Zbuild-std=core,alloc \
+            ${{ matrix.features != '' && format('--features {0}', matrix.features) || '' }} \
+            --bin ${{ matrix.bin }}
