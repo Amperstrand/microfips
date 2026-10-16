@@ -61,6 +61,7 @@ jobs:
       - run: cargo test -p fips-noise --features noise-xx
       - run: cargo test -p fips-fmp
       - run: cargo test -p fips-identity
+      - run: cargo test -p microfips-client --features std
       # http-demo tests disabled: nightly SocketAddr::ToString regression
       # - run: cargo test -p microfips-http-demo --features http
 

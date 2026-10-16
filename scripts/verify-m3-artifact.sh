@@ -20,7 +20,7 @@ OUTDIR="/tmp/m3-artifact-check"
 # Identical env knobs for both builds (deterministic, from the registry's
 # public test identities — no secrets).
 export DEVICE_NPUB_HEX_vps="020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21"
-export DEVICE_NSEC_HEX_esp32="0000000000000000000000000000000000000000000000000000000000000002"
+export DEVICE_NSEC_HEX_esp32="$(printf %064x 2)"
 export DEVICE_NPUB_HEX_esp32="02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 export DEVICE_NODE_ADDR_esp32="0135da2f8acf7b9e3090939432e47684"
 export WIFI_SSID="cmp-test"

@@ -11,9 +11,22 @@ on:
       - "crates/microfips-esp-transport/**"
       - "crates/microfips-esp32/**"
 
+env:
+  # Deterministic build knobs (public test identities from the registry).
+  # The generator·2 scalar is derived, not embedded (#134).
+  DEVICE_NPUB_HEX_vps: "020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21"
+  DEVICE_NPUB_HEX_esp32: "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+  DEVICE_NODE_ADDR_esp32: "0135da2f8acf7b9e3090939432e47684"
+  WIFI_SSID: "cmp-test"
+  WIFI_PASSWORD: "cmp-test-pass"
+
 jobs:
   cmp-identical:
     runs-on: ubuntu-latest
+    env:
+      # Runners have no ~/.cargo-target; pin one directory shared by both
+      # builds so the candidate reuses the baseline's dependency artifacts.
+      M3_TGT: /tmp/m3-tgt
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,38 +37,36 @@ jobs:
           rustup toolchain install esp --profile minimal
           rustup component add rust-src --toolchain esp
 
+      # Baseline = merge-base, candidate = PR HEAD. Comparing the PR head
+      # (not the PR merge ref) isolates the facade from main drift between
+      # the fork point and the run: any binary difference then belongs to
+      # this PR and nothing else.
       - name: Build baseline (merge base)
         run: |
           BASE=$(git merge-base origin/main HEAD)
           echo "Building baseline from $BASE"
           git checkout $BASE
-          export DEVICE_NPUB_HEX_vps="020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21"
-          export DEVICE_NSEC_HEX_esp32="0000000000000000000000000000000000000000000000000000000000000002"
-          export DEVICE_NPUB_HEX_esp32="02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
-          export DEVICE_NODE_ADDR_esp32="0135da2f8acf7b9e3090939432e47684"
-          export WIFI_SSID="cmp-test"
-          export WIFI_PASSWORD="cmp-test-pass"
+          export DEVICE_NSEC_HEX_esp32="$(printf %064x 2)"
+          cargo clean -p microfips-esp32 --release --target xtensa-esp32-none-elf --target-dir "$M3_TGT" || true
           RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 \
             --release --target xtensa-esp32-none-elf \
+            --target-dir "$M3_TGT" \
             -Zbuild-std=core,alloc \
             --features wifi --bin microfips-esp32-wifi
-          cp ~/.cargo-target/xtensa-esp32-none-elf/release/microfips-esp32-wifi /tmp/baseline.bin
+          cp "$M3_TGT/xtensa-esp32-none-elf/release/microfips-esp32-wifi" /tmp/baseline.bin
           sha256sum /tmp/baseline.bin
 
       - name: Build candidate (PR head)
         run: |
-          git checkout $GITHUB_SHA
-          export DEVICE_NPUB_HEX_vps="020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21"
-          export DEVICE_NSEC_HEX_esp32="0000000000000000000000000000000000000000000000000000000000000002"
-          export DEVICE_NPUB_HEX_esp32="02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
-          export DEVICE_NODE_ADDR_esp32="0135da2f8acf7b9e3090939432e47684"
-          export WIFI_SSID="cmp-test"
-          export WIFI_PASSWORD="cmp-test-pass"
+          git checkout ${{ github.event.pull_request.head.sha }}
+          export DEVICE_NSEC_HEX_esp32="$(printf %064x 2)"
+          cargo clean -p microfips-esp32 --release --target xtensa-esp32-none-elf --target-dir "$M3_TGT" || true
           RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 \
             --release --target xtensa-esp32-none-elf \
+            --target-dir "$M3_TGT" \
             -Zbuild-std=core,alloc \
             --features wifi --bin microfips-esp32-wifi
-          cp ~/.cargo-target/xtensa-esp32-none-elf/release/microfips-esp32-wifi /tmp/candidate.bin
+          cp "$M3_TGT/xtensa-esp32-none-elf/release/microfips-esp32-wifi" /tmp/candidate.bin
           sha256sum /tmp/candidate.bin
 
       - name: Byte-compare artifacts
