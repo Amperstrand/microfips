@@ -87,6 +87,18 @@ impl FspAppHandler for NoopFspApp {
     }
 }
 
+/// Responder-side duplicate-setup recovery cache (#232): the last
+/// accepted setup frame (FSP data bytes) and the full SessionAck
+/// datagram answered for it. While that handshake is still
+/// AwaitingMsg3, a byte-identical setup is the SAME initiator whose
+/// ack was lost (the initiator's retry cache resends exact bytes) —
+/// served by resending the cached ack. Mirrors the initiator's
+/// `last_setup` resend cache above.
+struct ResponderAckCache {
+    setup: ([u8; 512], usize),
+    ack: ([u8; SESSION_DATAGRAM_BODY_SIZE + 512], usize),
+}
+
 pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     pub nsec: [u8; 32],
     /// Link peer's x-only pubkey stamped into every PeerContext (#
@@ -121,6 +133,7 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     /// what the daemon's duplicate-msg1 path answers idempotently — the
     /// bbfa864 class). Without it the retry died permanently and silently.
     last_setup: Option<([u8; SESSION_DATAGRAM_BODY_SIZE + 512], usize)>,
+    last_ack: Option<ResponderAckCache>,
 }
 
 impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
@@ -140,6 +153,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             app,
             app_buf: [0u8; APP_BUF],
             last_setup: None,
+            last_ack: None,
         }
     }
 
@@ -176,6 +190,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             app,
             app_buf: [0u8; APP_BUF],
             last_setup: None,
+            last_ack: None,
         }
     }
 
@@ -184,6 +199,21 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             Some(last) => now.duration_since(last) < self.fsp_drain,
             None => false,
         }
+    }
+
+    /// The cached ack iff `fsp_data` is byte-identical to the setup that
+    /// produced it — the same-initiator retransmission case (#232).
+    /// Byte-identity is the only pre-msg3 initiator fingerprint available
+    /// (XK/XX statics only arrive in msg3); anything byte-different is
+    /// treated as a foreign initiator by the caller.
+    fn cached_ack_for_duplicate(&self, fsp_data: &[u8]) -> Option<(&[u8], usize)> {
+        let cache = self.last_ack.as_ref()?;
+        let (setup_buf, setup_len) = &cache.setup;
+        if fsp_data.len() != *setup_len || fsp_data != &setup_buf[..*setup_len] {
+            return None;
+        }
+        let (ack_buf, ack_len) = &cache.ack;
+        Some((&ack_buf[..*ack_len], *ack_len))
     }
 
     /// Stamp the link peer's x-only pubkey for responder-mode handlers
@@ -258,6 +288,25 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 if self.fsp_session.state() != FspSessionState::Idle
                     && self.session_live(Instant::now())
                 {
+                    // #232 exception: a byte-identical setup while the
+                    // handshake it created is still AwaitingMsg3 is the SAME
+                    // initiator retransmitting because our SessionAck was
+                    // lost — not a competing initiator. Resend the cached
+                    // ack (idempotent, no state reset). Dropping it instead
+                    // delayed recovery past the initiator's retry cadence
+                    // (first retry at 8s lands inside the 10s window; only
+                    // the ~16s drain-expired retry recovered), which cost
+                    // rapid same-initiator probes their whole 28s budget
+                    // (bench: 0/5 at 3s spacing). Foreign setups — any
+                    // byte-different frame — still fall through to the
+                    // silent drop, so the guard is otherwise intact.
+                    if self.fsp_session.state() == FspSessionState::AwaitingMsg3 {
+                        if let Some((ack_buf, ack_len)) = self.cached_ack_for_duplicate(fsp_data) {
+                            resp[..ack_len].copy_from_slice(ack_buf);
+                            self.session_activity = Some(Instant::now());
+                            return HandleResult::SendDatagram(ack_len);
+                        }
+                    }
                     return HandleResult::None;
                 }
                 if self.fsp_session.state() != FspSessionState::Idle {
@@ -275,6 +324,20 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 };
                 self.session_activity = Some(Instant::now());
                 resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&reply_body);
+                // Cache setup + ack so the same initiator's retransmission
+                // can be answered idempotently while this handshake is
+                // AwaitingMsg3 (#232). Overwritten on every accepted setup,
+                // so the cache always describes the current handshake.
+                if fsp_data.len() <= 512 {
+                    let ack_total = SESSION_DATAGRAM_BODY_SIZE + ack_len;
+                    let mut cache = ResponderAckCache {
+                        setup: ([0u8; 512], fsp_data.len()),
+                        ack: ([0u8; SESSION_DATAGRAM_BODY_SIZE + 512], ack_total),
+                    };
+                    cache.setup.0[..fsp_data.len()].copy_from_slice(fsp_data);
+                    cache.ack.0[..ack_total].copy_from_slice(&resp[..ack_total]);
+                    self.last_ack = Some(cache);
+                }
                 HandleResult::SendDatagram(SESSION_DATAGRAM_BODY_SIZE + ack_len)
             }
             0x03 => {
@@ -887,6 +950,143 @@ mod tests {
             responder.on_message(wire::MSG_SESSION_DATAGRAM, &foreign[..flen], &mut buf),
             HandleResult::SendDatagram(_)
         ));
+    }
+
+    /// #232: when the responder's SessionAck is lost, the SAME initiator
+    /// retransmits its byte-identical SessionSetup (its own retry cache
+    /// resends the exact bytes). Inside the drain window this used to be
+    /// silently dropped — recovery only via the next drain-expired retry
+    /// (~16s at an 8s retry cadence: the first retry at 8s lands inside
+    /// the 10s window), which pushed rapid same-initiator probe sequences
+    /// past their 28s budget (bench: 0/5 at 3s spacing). The duplicate
+    /// must be answered by RESENDING the cached ack — idempotent, no
+    /// state reset — so the initiator completes within one retry.
+    #[test]
+    fn duplicate_setup_inside_drain_resends_cached_ack() {
+        let mut responder = fresh_responder();
+        // Keep the drain window open for the whole test.
+        responder.fsp_drain = Duration::from_secs(3600);
+
+        // One live initiator, kept alive to finish the handshake after
+        // the recovered ack (mirrors dance_one_data_message's setup half).
+        let init_secret = [0x11u8; 32];
+        let resp_pub = ecdh_pubkey(&[0x22; 32]).unwrap();
+        let init_pub = ecdh_pubkey(&init_secret).unwrap();
+        let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
+        let resp_xonly: [u8; 32] = parity_normalize(&resp_pub)[1..].try_into().unwrap();
+        let init_addr = NodeAddr::from_pubkey_x(&init_xonly);
+        let resp_addr = NodeAddr::from_pubkey_x(&resp_xonly);
+
+        let mut initiator = FspInitiatorSession::new(&init_secret, &[0x44; 32], &resp_pub).unwrap();
+        let mut setup = [0u8; 512];
+        let setup_len = initiator
+            .build_setup(init_addr.as_bytes(), resp_addr.as_bytes(), &mut setup)
+            .unwrap();
+        let mut setup_payload = [0u8; 512];
+        setup_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        setup_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
+            .copy_from_slice(&setup[..setup_len]);
+        let frame_len = SESSION_DATAGRAM_BODY_SIZE + setup_len;
+
+        // Setup #1: accepted, SessionAck produced — and lost on the way back.
+        let mut buf = [0u8; 1024];
+        let ack1 = match responder.on_message(
+            wire::MSG_SESSION_DATAGRAM,
+            &setup_payload[..frame_len],
+            &mut buf,
+        ) {
+            HandleResult::SendDatagram(len) => buf[..len].to_vec(),
+            other => panic!("expected SessionAck, got {other:?}"),
+        };
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+
+        // The same initiator retries the IDENTICAL bytes; the responder is
+        // still AwaitingMsg3 inside the drain window.
+        let ack2 = match responder.on_message(
+            wire::MSG_SESSION_DATAGRAM,
+            &setup_payload[..frame_len],
+            &mut buf,
+        ) {
+            HandleResult::SendDatagram(len) => buf[..len].to_vec(),
+            other => panic!(
+                "duplicate setup inside the drain window must RESEND the cached ack, got {other:?}"
+            ),
+        };
+        assert_eq!(ack1, ack2, "resent ack must be byte-identical (idempotent)");
+        assert_eq!(
+            responder.fsp_session.state(),
+            FspSessionState::AwaitingMsg3,
+            "duplicate must not reset the half-open handshake"
+        );
+
+        // Full recovery inside one drain window: the resent ack completes
+        // the SAME initiator's handshake.
+        initiator
+            .handle_ack(&ack2[SESSION_DATAGRAM_BODY_SIZE..])
+            .unwrap();
+        let mut msg3 = [0u8; 512];
+        let msg3_len = initiator
+            .build_msg3(&responder.fsp_epoch, &mut msg3)
+            .unwrap();
+        let mut msg3_payload = [0u8; 512];
+        msg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        msg3_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+            .copy_from_slice(&msg3[..msg3_len]);
+        assert_eq!(
+            responder.on_message(
+                wire::MSG_SESSION_DATAGRAM,
+                &msg3_payload[..SESSION_DATAGRAM_BODY_SIZE + msg3_len],
+                &mut buf,
+            ),
+            HandleResult::None
+        );
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+        assert_eq!(initiator.state(), FspInitiatorState::Established);
+    }
+
+    /// #232 guard preservation: a FOREIGN setup (different initiator, so a
+    /// byte-different frame) inside the drain window is still silently
+    /// dropped while a cached ack exists — it must not receive the cached
+    /// ack, must not disturb the in-flight handshake, and must not consume
+    /// the cache.
+    #[test]
+    fn foreign_setup_inside_drain_still_rejected() {
+        let mut responder = fresh_responder();
+        responder.fsp_drain = Duration::from_secs(3600);
+
+        let (payload, len) = build_setup_frame([0x11; 32]);
+        let mut buf = [0u8; 1024];
+        assert!(matches!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
+            HandleResult::SendDatagram(_)
+        ));
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+
+        let (foreign, flen) = build_setup_frame([0x66; 32]);
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &foreign[..flen], &mut buf),
+            HandleResult::None,
+            "a foreign setup inside the drain window must still be dropped, not acked"
+        );
+        assert_eq!(
+            responder.fsp_session.state(),
+            FspSessionState::AwaitingMsg3,
+            "the in-flight handshake must survive the foreign setup"
+        );
+
+        // The original initiator's retry is still served afterwards — the
+        // foreign frame did not consume or invalidate the cached ack.
+        assert!(matches!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
+            HandleResult::SendDatagram(_)
+        ));
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
     }
 
     #[test]
