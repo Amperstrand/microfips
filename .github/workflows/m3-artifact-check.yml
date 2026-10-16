@@ -74,16 +74,23 @@ jobs:
           sha256sum /tmp/candidate.bin
 
       - name: Byte-compare artifacts
+        env:
+          # PRs that deliberately change firmware behavior label
+          # `firmware-change`; the DIFF is then expected and must be
+          # justified in the PR description.
+          EXPECTED: ${{ contains(toJson(github.event.pull_request.labels.*.name), 'firmware-change') && 'true' || 'false' }}
         run: |
           echo "=== cmp-identical artifact verification ==="
           echo "  baseline:  $(sha256sum /tmp/baseline.bin)"
           echo "  candidate: $(sha256sum /tmp/candidate.bin)"
           if cmp --silent /tmp/baseline.bin /tmp/candidate.bin; then
             echo "  RESULT: IDENTICAL ✓"
+          elif [ "$EXPECTED" = "true" ]; then
+            echo "  RESULT: DIFFER — expected (PR carries the firmware-change label)"
           else
             echo "  RESULT: DIFFER ✗"
             echo "  The M3 facade must not change firmware binaries."
             echo "  If this PR intentionally changes firmware behavior,"
-            echo "  update the expected artifacts and document why."
+            echo "  add the firmware-change label and document why."
             exit 1
           fi
