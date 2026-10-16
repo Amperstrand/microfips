@@ -25,8 +25,10 @@ std = [
 ]
 # MMP metrics layer (needed for /health-style reporting).
 mmp = ["microfips-protocol/mmp"]
-# Noise XX wire (forward-compat with upstream `next`).
-noise-xx = ["microfips-core/noise-xx"]
+# Noise XX wire (forward-compat with upstream `next`). Both edges are
+# required: the Node runtime gates its XX handshake + negotiation state on
+# microfips-protocol's own noise-xx, not just the core feature.
+noise-xx = ["microfips-core/noise-xx", "microfips-protocol/noise-xx"]
 
 [dev-dependencies]
 # For the host-seam tests: prove the traits work with OS-provided

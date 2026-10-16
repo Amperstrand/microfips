@@ -12,10 +12,20 @@ set -euo pipefail
 
 BASELINE_REF="${1:?usage: $0 <baseline_ref> <candidate_ref>}"
 CANDIDATE_REF="${2:?usage: $0 <baseline_ref> <candidate_ref>}"
+# Resolve both refs to commit IDs up front: after the baseline checkout
+# moves HEAD, a symbolic candidate such as "HEAD" would silently resolve
+# to the baseline and compare a revision against itself.
+BASELINE_SHA_REF=$(git rev-parse --verify "${BASELINE_REF}^{commit")
+CANDIDATE_SHA_REF=$(git rev-parse --verify "${CANDIDATE_REF}^{commit}")
+if [ "$BASELINE_SHA_REF" = "$CANDIDATE_SHA_REF" ]; then
+    echo "baseline and candidate resolve to the same commit ($BASELINE_SHA_REF) — refusing a vacuous comparison" >&2
+    exit 2
+fi
 TARGET="xtensa-esp32-none-elf"
 BIN="microfips-esp32-wifi"
 FEATURES="wifi"
 OUTDIR="/tmp/m3-artifact-check"
+TGT_DIR="${CARGO_TARGET_DIR:-/home/ubuntu/.cargo-target}"
 
 # Identical env knobs for both builds (deterministic, from the registry's
 # public test identities — no secrets).
@@ -34,27 +44,27 @@ build_ref() {
     git checkout --quiet "$ref"
     # Clean only the firmware crate to force a rebuild while reusing
     # dependency artifacts (fast enough for CI, deterministic for cmp).
-    cargo clean -p microfips-esp32 --release --target "$TARGET" 2>/dev/null || true
+    cargo clean -p microfips-esp32 --release --target "$TARGET" --target-dir "$TGT_DIR" 2>/dev/null || true
     . /home/ubuntu/export-esp.sh
     RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 \
-        --release --target "$TARGET" \
+        --release --target "$TARGET" --target-dir "$TGT_DIR" \
         -Zbuild-std=core,alloc \
         --features "$FEATURES" --bin "$BIN" 2>&1 | tail -1
-    cp "/home/ubuntu/.cargo-target/$TARGET/release/$BIN" "$output"
+    cp "$TGT_DIR/$TARGET/release/$BIN" "$output"
     sha256sum "$output"
 }
 
 echo "=== M3 artifact verification ==="
-echo "  baseline: $BASELINE_REF"
-echo "  candidate: $CANDIDATE_REF"
+echo "  baseline: $BASELINE_REF ($BASELINE_SHA_REF)"
+echo "  candidate: $CANDIDATE_REF ($CANDIDATE_SHA_REF)"
 echo "  target: $TARGET"
 echo "  binary: $BIN (features: $FEATURES)"
 echo ""
 
-build_ref "$BASELINE_REF" "$OUTDIR/baseline.bin"
+build_ref "$BASELINE_SHA_REF" "$OUTDIR/baseline.bin"
 BASELINE_SHA=$(sha256sum "$OUTDIR/baseline.bin" | awk '{print $1}')
 
-build_ref "$CANDIDATE_REF" "$OUTDIR/candidate.bin"
+build_ref "$CANDIDATE_SHA_REF" "$OUTDIR/candidate.bin"
 CANDIDATE_SHA=$(sha256sum "$OUTDIR/candidate.bin" | awk '{print $1}')
 
 echo ""
