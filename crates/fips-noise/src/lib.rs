@@ -2871,7 +2871,7 @@ mod responder_tests {
 
         let mut line = String::new();
         child_out.read_line(&mut line).unwrap();
-        let msg2 = unhex(&line.trim());
+        let msg2 = unhex(line.trim());
         assert!(
             msg2.len() > XX_HANDSHAKE_MSG2_SIZE,
             "upstream msg2 should carry negotiation extra"

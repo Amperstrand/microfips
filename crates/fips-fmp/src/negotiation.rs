@@ -284,6 +284,7 @@ mod tests {
         len: usize,
     }
 
+    #[cfg_attr(feature = "noise-xx", allow(dead_code))]
     impl Buf {
         fn new(data: &[u8]) -> Self {
             let mut bytes = [0u8; 80];

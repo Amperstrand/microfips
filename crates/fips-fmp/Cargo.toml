@@ -12,8 +12,12 @@ path = "src/lib.rs"
 [dependencies]
 fips-noise = { path = "../fips-noise" }
 fips-proto-defs = { git = "https://github.com/Amperstrand/fips-protocol-defs-mvp.git", rev = "2b606a8e7b2e78ebb91cf18b3e1a6d86c92bbe95" }
+log = { version = "0.4", optional = true }
 
 [features]
 default = []
 noise-xx = []
-std = []
+# std builds log the wire path; the optional dep must ride along (the
+# `#[cfg(feature = "std")] log::debug!` call sites compiled without it before
+# --all-features exposed the gap).
+std = ["dep:log"]
