@@ -32,6 +32,7 @@ pub enum WifiInitError {
     ConnectTimeout,
     DhcpTimeout,
     DnsFailed,
+    MissingCredentials,
 }
 
 pub struct WifiTransport {
@@ -151,6 +152,16 @@ pub async fn build_wifi_transport(
     wifi_password: &str,
 ) -> Result<(WifiTransport, [u8; 33]), WifiInitError> {
     crate::heap::init();
+
+    if wifi_ssid.is_empty() {
+        #[cfg(feature = "log")]
+        log::error!(
+            "WIFI_SSID is empty: no credentials were embedded at build time \
+             (set WIFI_SSID/WIFI_PASSWORD env at `cargo build`); failing fast \
+             instead of retrying a join that cannot succeed"
+        );
+        return Err(WifiInitError::MissingCredentials);
+    }
 
     const MAX_WIFI_RETRIES: u32 = 5;
     const WIFI_RETRY_BASE_SECS: u64 = 5;
