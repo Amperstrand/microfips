@@ -113,7 +113,7 @@ pub async fn run_led_wifi_node(
     spawner: embassy_executor::Spawner,
     rmt: esp_hal::rmt::Rmt<'static, esp_hal::Blocking>,
     gpio2: esp_hal::peripherals::GPIO2<'static>,
-    matrix_pin: esp_hal::peripherals::GPIO27<'static>,
+    matrix_pin: esp_hal::gpio::Output<'static>,
     wifi: esp_hal::peripherals::WIFI<'static>,
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
@@ -182,14 +182,7 @@ pub async fn run_led_wifi_node(
     };
     node.set_raw_framing(true);
 
-    let pixel = MatrixPixel::new(
-        rmt,
-        esp_hal::gpio::Output::new(
-            matrix_pin,
-            esp_hal::gpio::Level::Low,
-            esp_hal::gpio::OutputConfig::default(),
-        ),
-    );
+    let pixel = MatrixPixel::new(rmt, matrix_pin);
     let fsp = build_led_fsp(
         &config::DEVICE_NSEC,
         resp_eph,
