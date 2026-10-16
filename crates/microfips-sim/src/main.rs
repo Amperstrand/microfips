@@ -379,7 +379,12 @@ where
         done_clone.store(true, Ordering::Relaxed);
     });
 
-    #[embassy_executor::task(pool_size = 1)]
+    // The task pool is a process-global static: run_until can stop polling
+    // right after the test future completes, before run_task's epilogue
+    // returns the slot — so a slot can leak for the rest of the process and
+    // the NEXT block_on spawn would hit Busy. Size the pool for one leaked
+    // slot per test in the binary instead of one slot total.
+    #[embassy_executor::task(pool_size = 4)]
     async fn run_task(fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) {
         fut.await
     }
