@@ -17,6 +17,16 @@ use crate::node::{HandleResult, NodeEvent, NodeHandler};
 const FSP_START_DELAY_SECS: u64 = 5;
 const FSP_RETRY_SECS: u64 = 8;
 const FSP_MSG3_TIMEOUT_SECS: u64 = 2;
+/// Responder session-drain window: a NEW initiator's SessionSetup is rejected
+/// while the current session (or in-flight handshake) showed activity more
+/// recently than this. XK/XX cannot identify the initiator at setup time
+/// (its static only arrives in msg3), so without this guard two concurrent
+/// initiators reset each other's session state on every retry — each setup
+/// arriving mid-flight InvalidState-resets the other's handshake or kills the
+/// other's established keys, and neither completes (bench: 2/5 success at 3s
+/// spacing, 3/3 at 15s). Once the previous initiator goes quiet for this
+/// window, its retry cadence has drained and the new setup is accepted.
+const FSP_RESPONDER_DRAIN_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FspAppResult {
@@ -94,6 +104,13 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     pub initiator: Option<FspInitiatorSession>,
     pub target_addr: Option<[u8; 16]>,
     pub fsp_timer: Option<Instant>,
+    /// Last responder-side session activity (setup accepted, msg3 completed,
+    /// or a frame decrypted): drives the FSP_RESPONDER_DRAIN_SECS guard.
+    /// Public so tests can backdate it; production code only writes it.
+    pub session_activity: Option<Instant>,
+    /// Responder drain window (default FSP_RESPONDER_DRAIN_SECS). Public for
+    /// tests to shrink to milliseconds; production leaves it at the default.
+    pub fsp_drain: Duration,
     pub test_ping: bool,
     pub app: A,
     app_buf: [u8; APP_BUF],
@@ -117,6 +134,8 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             initiator: None,
             target_addr: None,
             fsp_timer: None,
+            session_activity: None,
+            fsp_drain: Duration::from_secs(FSP_RESPONDER_DRAIN_SECS),
             test_ping: false,
             app,
             app_buf: [0u8; APP_BUF],
@@ -151,10 +170,19 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             initiator,
             target_addr: Some(target_addr),
             fsp_timer: None,
+            session_activity: None,
+            fsp_drain: Duration::from_secs(FSP_RESPONDER_DRAIN_SECS),
             test_ping: false,
             app,
             app_buf: [0u8; APP_BUF],
             last_setup: None,
+        }
+    }
+
+    fn session_live(&self, now: Instant) -> bool {
+        match self.session_activity {
+            Some(last) => now.duration_since(last) < self.fsp_drain,
+            None => false,
         }
     }
 
@@ -182,10 +210,12 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             NodeEvent::Disconnected => {
                 self.initiator = None;
                 self.fsp_timer = None;
+                self.session_activity = None;
             }
             NodeEvent::Error => {
                 self.initiator = None;
                 self.fsp_timer = None;
+                self.session_activity = None;
             }
         }
     }
@@ -218,6 +248,21 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 if resp.len() <= SESSION_DATAGRAM_BODY_SIZE {
                     return HandleResult::None;
                 }
+                // Drain guard: the initiator is unidentifiable at setup time
+                // (its static only arrives in msg3), so a setup arriving while
+                // the current session or handshake was active inside the drain
+                // window must NOT reset it — otherwise two concurrent
+                // initiators tear each other down on every retry. Stay silent
+                // instead; the new initiator's own retry cadence re-sends the
+                // setup once the previous session has drained.
+                if self.fsp_session.state() != FspSessionState::Idle
+                    && self.session_live(Instant::now())
+                {
+                    return HandleResult::None;
+                }
+                if self.fsp_session.state() != FspSessionState::Idle {
+                    self.fsp_session.reset();
+                }
                 let ack_len = match self.fsp_session.handle_setup(
                     &self.nsec,
                     &self.fsp_ephemeral,
@@ -226,21 +271,9 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                     &mut resp[SESSION_DATAGRAM_BODY_SIZE..],
                 ) {
                     Ok(len) => len,
-                    Err(microfips_core::fsp::FspSessionError::InvalidState) => {
-                        self.fsp_session.reset();
-                        match self.fsp_session.handle_setup(
-                            &self.nsec,
-                            &self.fsp_ephemeral,
-                            &self.fsp_epoch,
-                            fsp_data,
-                            &mut resp[SESSION_DATAGRAM_BODY_SIZE..],
-                        ) {
-                            Ok(len) => len,
-                            Err(_) => return HandleResult::None,
-                        }
-                    }
                     Err(_) => return HandleResult::None,
                 };
+                self.session_activity = Some(Instant::now());
                 resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&reply_body);
                 HandleResult::SendDatagram(SESSION_DATAGRAM_BODY_SIZE + ack_len)
             }
@@ -248,6 +281,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 if self.fsp_session.handle_msg3(fsp_data).is_err() {
                     return HandleResult::None;
                 }
+                self.session_activity = Some(Instant::now());
                 HandleResult::None
             }
             0x00 => {
@@ -271,6 +305,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 else {
                     return HandleResult::None;
                 };
+                self.session_activity = Some(Instant::now());
                 let Some((_ts, inner_msg_type, _inner_flags, inner_payload)) =
                     microfips_core::fsp::fsp_strip_inner_header(&self.app_buf[..decrypted_len])
                 else {
@@ -726,6 +761,134 @@ mod tests {
         init_addr
     }
 
+    /// Build a fresh initiator's SessionSetup frame (XK msg1 + datagram body)
+    /// for `init_secret`, addressed to the responder's derived address.
+    fn build_setup_frame(init_secret: [u8; 32]) -> ([u8; 512], usize) {
+        let resp_pub = ecdh_pubkey(&[0x22; 32]).unwrap();
+        let init_pub = ecdh_pubkey(&init_secret).unwrap();
+        let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
+        let resp_xonly: [u8; 32] = parity_normalize(&resp_pub)[1..].try_into().unwrap();
+        let init_addr = NodeAddr::from_pubkey_x(&init_xonly);
+        let resp_addr = NodeAddr::from_pubkey_x(&resp_xonly);
+
+        let mut initiator = FspInitiatorSession::new(&init_secret, &[0x77; 32], &resp_pub).unwrap();
+        let mut setup = [0u8; 512];
+        let setup_len = initiator
+            .build_setup(init_addr.as_bytes(), resp_addr.as_bytes(), &mut setup)
+            .unwrap();
+        let mut payload = [0u8; 512];
+        payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
+            .copy_from_slice(&setup[..setup_len]);
+        (payload, SESSION_DATAGRAM_BODY_SIZE + setup_len)
+    }
+
+    fn fresh_responder() -> FspDualHandler<CapturePeers, 256> {
+        FspDualHandler::new_responder(
+            [0x22; 32],
+            [0x33; 32],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
+            CapturePeers::new(),
+        )
+    }
+
+    /// Regression: a second initiator's SessionSetup arriving while the
+    /// current session is active (inside the drain window) must be rejected
+    /// WITHOUT destroying the live session — the pre-drain-guard code
+    /// InvalidState-reset the established session on every such setup, so two
+    /// concurrent initiators tore each other down on every retry (bench: 2/5
+    /// success at 3s spacing).
+    #[test]
+    fn second_initiator_setup_rejected_while_session_active() {
+        let mut responder = fresh_responder();
+        // Keep the drain window open for the whole test.
+        responder.fsp_drain = Duration::from_secs(3600);
+        dance_one_data_message(&mut responder);
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+
+        let (payload, len) = build_setup_frame([0x66; 32]);
+        let mut buf = [0u8; 512];
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
+            HandleResult::None,
+            "fresh setup must be silently rejected while the session is live"
+        );
+        assert_eq!(
+            responder.fsp_session.state(),
+            FspSessionState::Established,
+            "the live session must survive a rejected foreign setup"
+        );
+
+        // A third foreign setup is still rejected, and the app handler saw
+        // nothing new (no foreign frame decrypted).
+        let before = responder.app.count;
+        let (payload2, len2) = build_setup_frame([0x77; 32]);
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload2[..len2], &mut buf),
+            HandleResult::None
+        );
+        assert_eq!(responder.app.count, before);
+    }
+
+    /// Once the drain window has passed with no activity, a new initiator's
+    /// setup is accepted (the old code only managed this by accident, after
+    /// the previous initiator's retries had exhausted).
+    #[test]
+    fn drained_session_accepts_new_initiator() {
+        let mut responder = fresh_responder();
+        responder.fsp_drain = Duration::from_secs(3600);
+        dance_one_data_message(&mut responder);
+
+        // Shrink the drain window instead of backdating an instant (the
+        // host time driver starts near zero; large subtractions overflow).
+        responder.fsp_drain = Duration::from_millis(1);
+
+        let (payload, len) = build_setup_frame([0x66; 32]);
+        let mut buf = [0u8; 512];
+        assert!(
+            matches!(
+                responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
+                HandleResult::SendDatagram(_)
+            ),
+            "a setup after the drain window must be answered with a SessionAck"
+        );
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+    }
+
+    /// A half-open handshake (setup accepted, msg3 never arrived) also holds
+    /// the drain guard — a foreign setup must not steal it while fresh, but
+    /// is accepted once it has drained.
+    #[test]
+    fn half_open_handshake_guards_then_drains() {
+        let mut responder = fresh_responder();
+        responder.fsp_drain = Duration::from_secs(3600);
+
+        let (payload, len) = build_setup_frame([0x11; 32]);
+        let mut buf = [0u8; 512];
+        assert!(matches!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
+            HandleResult::SendDatagram(_)
+        ));
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+
+        let (foreign, flen) = build_setup_frame([0x66; 32]);
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &foreign[..flen], &mut buf),
+            HandleResult::None,
+            "a live half-open handshake must not be stolen"
+        );
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+
+        responder.fsp_drain = Duration::from_millis(1);
+        assert!(matches!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &foreign[..flen], &mut buf),
+            HandleResult::SendDatagram(_)
+        ));
+    }
+
     #[test]
     fn peer_context_carries_dual_target_link_pubkey_and_src_addr() {
         let init_pub = ecdh_pubkey(&[0x11; 32]).unwrap();
@@ -770,8 +933,11 @@ mod tests {
         assert_eq!(captured[0].src_addr, Some(src));
 
         // Stamp the pinned peer and verify the next observed message
-        // carries it.
+        // carries it. The second dance models a NEW session after the first
+        // drained (the responder's drain guard would otherwise — correctly —
+        // reject the setup while this session is still live).
         responder.set_link_pubkey(init_xonly);
+        responder.session_activity = None;
         dance_one_data_message(&mut responder);
         let captured = responder.app.captured();
         assert!(captured.len() >= 2);
