@@ -33,9 +33,13 @@ jobs:
           fetch-depth: 0
 
       - name: Install esp toolchain
-        run: |
-          rustup toolchain install esp --profile minimal
-          rustup component add rust-src --toolchain esp
+        # `esp` is the esp-rs fork, not a rustup dist — install it the same
+        # way ci.yml's firmware job does.
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: false
 
       # Baseline = merge-base, candidate = PR HEAD. Comparing the PR head
       # (not the PR merge ref) isolates the facade from main drift between

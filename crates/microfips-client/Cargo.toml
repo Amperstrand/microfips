@@ -4,10 +4,6 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Single-dependency microfips client library: talk to FIPS devices over any byte-shaped transport from any Rust project on an ESP32 (or host)."
-# Enable the MMP metrics layer (needed for /health-style reporting).
-mmp = ["microfips-protocol/mmp"]
-# Enable the Noise XX wire (forward-compat with upstream `next`).
-noise-xx = ["microfips-core/noise-xx"]
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
@@ -27,6 +23,10 @@ std = [
     "dep:log",
     "dep:rand",
 ]
+# MMP metrics layer (needed for /health-style reporting).
+mmp = ["microfips-protocol/mmp"]
+# Noise XX wire (forward-compat with upstream `next`).
+noise-xx = ["microfips-core/noise-xx"]
 
 [dev-dependencies]
 # For the host-seam tests: prove the traits work with OS-provided
