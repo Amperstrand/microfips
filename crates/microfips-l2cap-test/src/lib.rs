@@ -584,40 +584,38 @@ mod tests {
         assert_eq!(L2CAP_MTU, 2048);
     }
 
-    #[test]
-    fn l2cap_frame_cap_covers_all_link_frames() {
+    const _: () = {
         assert!(L2CAP_FRAME_CAP >= 512, "must be >= old value");
         assert!(L2CAP_FRAME_CAP >= 200, "must cover MSG1 (114B)");
         assert!(L2CAP_FRAME_CAP >= 150, "must cover SessionSetup (148B)");
-    }
+    };
 
-    #[test]
-    fn l2cap_sdu_cap_is_frame_cap_plus_2() {
-        assert_eq!(L2CAP_SDU_CAP, L2CAP_FRAME_CAP + 2);
-    }
+    const _: () = assert!(L2CAP_SDU_CAP == L2CAP_FRAME_CAP + 2);
 
+    // u128 equality is not const-stable, so this stays a runtime check.
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn fips_service_uuid_matches() {
         assert_eq!(u128::from_le_bytes(FIPS_SERVICE_UUID_LE), FIPS_SERVICE_UUID);
     }
 
+    // Array equality is not const-stable, so this stays a runtime check.
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn fips_caps_service_uuid_is_fi() {
         assert_eq!(u16::from_le_bytes(FIPS_CAPS_SERVICE_UUID), 0x4946);
         assert_eq!(FIPS_CAPS_SERVICE_UUID, *b"FI");
     }
 
-    #[test]
-    fn l2cap_recv_timeout_sufficient() {
-        assert_eq!(L2CAP_RECV_TIMEOUT_SECS, 45);
+    const _: () = {
+        assert!(L2CAP_RECV_TIMEOUT_SECS == 45);
         assert!(L2CAP_RECV_TIMEOUT_SECS > 30);
-    }
+    };
 
-    #[test]
-    fn l2cap_send_timeout_reasonable() {
-        assert_eq!(L2CAP_SEND_TIMEOUT_SECS, 15);
+    const _: () = {
+        assert!(L2CAP_SEND_TIMEOUT_SECS == 15);
         assert!(L2CAP_SEND_TIMEOUT_SECS > CENTRAL_CONNECT_TIMEOUT_SECS);
-    }
+    };
 
     #[test]
     fn role_initial_state_prefers_central() {
@@ -649,14 +647,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn connection_interval_range_valid() {
-        assert_eq!(CONNECTION_INTERVAL_MIN_MS, 20);
-        assert_eq!(CONNECTION_INTERVAL_MAX_MS, 40);
+    const _: () = {
+        assert!(CONNECTION_INTERVAL_MIN_MS == 20);
+        assert!(CONNECTION_INTERVAL_MAX_MS == 40);
         assert!(CONNECTION_INTERVAL_MIN_MS * 10 >= 75);
         assert!(CONNECTION_INTERVAL_MAX_MS * 10 <= 40_000);
         assert!(CONNECTION_INTERVAL_MIN_MS <= CONNECTION_INTERVAL_MAX_MS);
-    }
+    };
 
     #[test]
     fn supervision_timeout_reasonable() {

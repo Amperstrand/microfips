@@ -27,9 +27,13 @@ not a parallel implementation to maintain forever.
 
 The weekly **fips-core canary** (issue #219, workflow `fips-core-canary`)
 watches these triggers: any one firing starts a port review for that
-crate. Canary status at time of writing: all three target families build
-(riscv32imc, xtensa-esp32s3, thumbv7em) — xtensa viability is proven,
-so adoption is a policy question, not a technical one. The per-area
+crate. Canary status at time of writing: thumbv7em and xtensa build
+(xtensa viability is proven, so adoption is a policy question, not a
+technical one); **riscv32imc is a KNOWN-FAIL** — fips-core uses
+`alloc::sync::Arc` (proto/lookup + transport types) and riscv32imc has no
+pointer atomics, so the fix must land in fips-core, not the consumer. The
+size probe measures the backend flash delta (ours k256 vs upstream
+secp256k1-sys): ~+75 KiB stripped on xtensa-esp32 at the current pin. The per-area
 verdicts, pros/cons and acceptance conditions live in
 [fips-core-adoption-audit.md](fips-core-adoption-audit.md); its one
 addition to this ladder is a canary binary-size measurement to inform

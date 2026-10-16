@@ -3460,7 +3460,6 @@ mod tests {
     fn test_handshake_with_responder() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         // Use fresh random keys to prove the handshake works with any valid keypair.
@@ -3637,7 +3636,6 @@ mod tests {
     fn test_xx_handshake_rejects_mismatched_responder_static() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         let initiator_secret = random_secret();
@@ -3720,7 +3718,6 @@ mod tests {
     fn test_handshake_msg1_wire_size() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         let initiator_secret = random_secret();
@@ -3820,7 +3817,6 @@ mod tests {
     fn test_session_emits_disconnected_after_transport_close() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         let initiator_secret = random_secret();
@@ -4649,7 +4645,6 @@ mod tests {
     fn test_tiebreaker_simultaneous_handshake_ik() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let (secret_a, secret_b) = distinct_secret_pair();
         let pub_a = microfips_core::noise::ecdh_pubkey(&secret_a).unwrap();
@@ -4692,7 +4687,6 @@ mod tests {
     fn test_tiebreaker_simultaneous_handshake() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let (secret_a, secret_b) = distinct_secret_pair();
         let pub_a = microfips_core::noise::ecdh_pubkey(&secret_a).unwrap();
@@ -4738,7 +4732,6 @@ mod tests {
     fn test_tiebreaker_winner_ignores_msg1() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         let (a, b) = distinct_secret_pair();
@@ -4842,7 +4835,6 @@ mod tests {
     fn test_tiebreaker_loser_becomes_responder() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
         use microfips_core::wire;
 
         let (a, b) = distinct_secret_pair();
@@ -4953,7 +4945,6 @@ mod tests {
     fn test_tiebreaker_counter_abort() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let (a, b) = distinct_secret_pair();
         let (local_secret, remote_secret) =
@@ -5277,7 +5268,6 @@ mod tests {
     fn test_scripted_peer_full_session_handshake_heartbeat_disconnect() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5323,7 +5313,6 @@ mod tests {
     fn test_scripted_peer_corrupted_msg2_causes_handshake_failure() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5359,7 +5348,6 @@ mod tests {
     fn test_scripted_peer_silent_disconnect() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5397,7 +5385,6 @@ mod tests {
     fn test_scripted_peer_rx_silence_ends_session() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::select::{select, Either};
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5454,7 +5441,6 @@ mod tests {
     fn test_scripted_peer_garbage_frame_ignored_in_steady() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5505,7 +5491,6 @@ mod tests {
     fn test_scripted_peer_datagram_exchange() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5564,7 +5549,6 @@ mod tests {
     fn test_scripted_peer_no_response_causes_handshake_timeout() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5599,7 +5583,6 @@ mod tests {
     fn test_scripted_peer_multiple_heartbeats_before_disconnect() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5649,7 +5632,6 @@ mod tests {
     fn test_replayed_established_frame_is_dropped() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5713,7 +5695,6 @@ mod tests {
     fn test_rekey_msg1_resend_is_idempotent() {
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -5824,7 +5805,6 @@ mod tests {
         use crate::test_harness::{build_test_frame_flags, success_timing};
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -6012,7 +5992,6 @@ mod tests {
         use crate::test_harness::success_timing;
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -6114,7 +6093,6 @@ mod tests {
         use crate::test_harness::build_test_frame_flags;
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();
@@ -6245,7 +6223,6 @@ mod tests {
         use crate::test_harness::build_test_frame_flags;
         use crate::transport::channel::pair as channel_pair;
         use embassy_futures::join::join;
-        use microfips_core::noise::ecdh_pubkey;
 
         let initiator_secret = random_secret();
         let responder_secret = random_secret();

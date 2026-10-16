@@ -65,7 +65,7 @@ fn frame_layouts_match_canonical_vectors() {
 fn ik_msg1_golden_matches_canonical() {
     const CANONICAL_MSG1_HEX: &str = "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f8fbabc9585161aace9b5957f305bdb278db340ca4389a1367b62ebfef36a1562f8baf6b700e6982034fe68dfeecc1a39d50186304acbfef02b0128a140ebb783ecb92b6c938d87a4f7";
     let msg1 = hex::decode(CANONICAL_MSG1_HEX).unwrap();
-    assert_eq!(msg1.len(), HANDSHAKE_MSG1_SIZE as usize);
+    assert_eq!(msg1.len(), HANDSHAKE_MSG1_SIZE);
     assert!(
         matches!(msg1[0], 0x02 | 0x03),
         "msg1 must lead with a compressed ephemeral pubkey"

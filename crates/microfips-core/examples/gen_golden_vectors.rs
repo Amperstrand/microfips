@@ -1,5 +1,4 @@
-use hex;
-use microfips_core::noise::{self, EPOCH_SIZE, PUBKEY_SIZE};
+use microfips_core::noise::{self, PUBKEY_SIZE};
 
 fn main() {
     let init_eph: [u8; 32] = [0x01; 32];
