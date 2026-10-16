@@ -1012,8 +1012,8 @@ unavoidable — make it cheap):
 ```bash
 cargo test -p microfips-core          # 234 tests: Noise, FMP, FSP, identity
 cargo test -p microfips-core -- --nocapture  # verbose output
-cargo test -p microfips-protocol --features std -- --test-threads=1  # 135 tests: framing, transport, node, ScriptedPeer (IK wire)
-cargo test -p microfips-protocol --features std,noise-xx -- --test-threads=1  # same suite on the XX wire (134 pass; the 1 cfg'd-out IK-only tiebreaker variant has an uncfg'd XX equivalent)
+cargo test -p microfips-protocol --features std -- --test-threads=1  # 161 tests: framing, transport, node, ScriptedPeer (IK wire)
+cargo test -p microfips-protocol --features std,noise-xx -- --test-threads=1  # same suite on the XX wire (165 pass; the 1 cfg'd-out IK-only tiebreaker variant has an uncfg'd XX equivalent)
 cargo nextest run -p microfips-protocol --features std --test-threads=1  # same, but a hung test FAILS instead of hanging the suite (see .config/nextest.toml)
 ```
 
@@ -1575,7 +1575,7 @@ ESP32-S3 pubkey from `device-registry.json` (verified 2026-04-10, NodeAddr `6bef
 ## CI Pipeline
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to main:
-- **test**: `cargo test -p microfips-core` (234 tests) + `cargo test -p microfips-protocol --features std` (135 tests) + `cargo test -p microfips-protocol --features std,noise-xx` (XX wire) + `cargo test -p fips-noise --features noise-xx` (37 XX crypto tests)
+- **test**: `cargo test -p microfips-core` (234 tests) + `cargo test -p microfips-protocol --features std` (161 tests) + `cargo test -p microfips-protocol --features std,noise-xx` (XX wire) + `cargo test -p fips-noise --features noise-xx` (37 XX crypto tests)
 - **build-host**: `cargo build -p microfips-link -p microfips-sim -p microfips-http-test --release` + upload artifacts
 - **lint**: `cargo clippy` + `cargo fmt --check` on all host crates (core, protocol, link, sim, http-test)
 - **sim-smoke**: verify `microfips-sim` starts and exits cleanly on EOF
