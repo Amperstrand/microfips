@@ -134,6 +134,7 @@ crates/microfips-esp-transport/src/espnow_wifi_gateway.rs:run_espnow_wifi_gatewa
 crates/microfips-esp-transport/src/relay_ap.rs:run_relay_ap_opts:install
 crates/microfips-esp-transport/src/run_tasks.rs:run_ble_node:install
 crates/microfips-esp-transport/src/run_tasks.rs:run_l2cap_node:install
+crates/microfips-esp-transport/src/run_tasks.rs:run_led_wifi_node:install
 crates/microfips-esp-transport/src/run_tasks.rs:run_wifi_node:install
 crates/microfips-esp-transport/src/run_tasks.rs:run_hybrid_node:install
 crates/microfips-esp-transport/src/run_tasks.rs:run_esp_now_node:install
@@ -176,7 +177,7 @@ done <"$tmp/files"
 cat >"$tmp/expected" <<'EOF'
 crates/microfips-esp-transport/src/espnow_wifi_gateway.rs:1
 crates/microfips-esp-transport/src/relay_ap.rs:1
-crates/microfips-esp-transport/src/run_tasks.rs:5
+crates/microfips-esp-transport/src/run_tasks.rs:6
 crates/microfips-esp32c3/src/run.rs:1
 crates/microfips-esp32s3/src/bin/mdns_spike.rs:1
 crates/microfips-esp32s3/src/run.rs:1

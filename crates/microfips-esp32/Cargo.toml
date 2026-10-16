@@ -39,6 +39,13 @@ name = "microfips-esp32-wifi"
 path = "src/bin/wifi.rs"
 required-features = ["wifi"]
 
+# LED showcase image (6035cec) — wifi-gated like its siblings; auto-discovery would compile it feature-less.
+[[bin]]
+name = "ledwifi"
+path = "src/bin/ledwifi.rs"
+required-features = ["wifi"]
+
+
 [[bin]]
 name = "microfips-esp32-espnow"
 path = "src/bin/espnow.rs"
