@@ -134,6 +134,11 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     /// bbfa864 class). Without it the retry died permanently and silently.
     last_setup: Option<([u8; SESSION_DATAGRAM_BODY_SIZE + 512], usize)>,
     last_ack: Option<ResponderAckCache>,
+    /// Src NodeAddr of the setup that created the current session — the
+    /// responder's only pre-msg3 handle on "who is on the other side"
+    /// besides the handshake bytes themselves (#232). A routing hint, not
+    /// an identity claim: Noise proves the initiator at msg3.
+    session_initiator: Option<[u8; 16]>,
 }
 
 impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
@@ -154,6 +159,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             app_buf: [0u8; APP_BUF],
             last_setup: None,
             last_ack: None,
+            session_initiator: None,
         }
     }
 
@@ -191,6 +197,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             app_buf: [0u8; APP_BUF],
             last_setup: None,
             last_ack: None,
+            session_initiator: None,
         }
     }
 
@@ -284,22 +291,21 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 // window must NOT reset it — otherwise two concurrent
                 // initiators tear each other down on every retry. Stay silent
                 // instead; the new initiator's own retry cadence re-sends the
-                // setup once the previous session has drained.
+                // setup once the previous session has drained. Two same-
+                // initiator exceptions apply (#232, both hardware-measured):
                 if self.fsp_session.state() != FspSessionState::Idle
                     && self.session_live(Instant::now())
                 {
-                    // #232 exception: a byte-identical setup while the
-                    // handshake it created is still AwaitingMsg3 is the SAME
-                    // initiator retransmitting because our SessionAck was
-                    // lost — not a competing initiator. Resend the cached
-                    // ack (idempotent, no state reset). Dropping it instead
+                    // (1) A byte-identical setup while the handshake it
+                    // created is still AwaitingMsg3 is the SAME initiator
+                    // retransmitting because our SessionAck was lost — not a
+                    // competing initiator. Resend the cached ack
+                    // (idempotent, no state reset). Dropping it instead
                     // delayed recovery past the initiator's retry cadence
                     // (first retry at 8s lands inside the 10s window; only
                     // the ~16s drain-expired retry recovered), which cost
                     // rapid same-initiator probes their whole 28s budget
-                    // (bench: 0/5 at 3s spacing). Foreign setups — any
-                    // byte-different frame — still fall through to the
-                    // silent drop, so the guard is otherwise intact.
+                    // (bench: 0/5 at 3s spacing).
                     if self.fsp_session.state() == FspSessionState::AwaitingMsg3 {
                         if let Some((ack_buf, ack_len)) = self.cached_ack_for_duplicate(fsp_data) {
                             resp[..ack_len].copy_from_slice(ack_buf);
@@ -307,7 +313,23 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                             return HandleResult::SendDatagram(ack_len);
                         }
                     }
-                    return HandleResult::None;
+                    // (2) A setup whose src NodeAddr matches the
+                    // initiator of the current session is the SAME node
+                    // reconnecting with fresh entropy — its previous
+                    // session was torn down without a wire teardown
+                    // (daemon probes do exactly this: the probe closes its
+                    // session unilaterally, and 3s later the next probe's
+                    // fresh setup would otherwise die against the 10s
+                    // window while the probe's session stage gives up at
+                    // ~5.7s — hardware: alternating fail/ok, 2/5). Let it
+                    // through to the reset+accept below. The src addr is a
+                    // routing hint only: identity is still proven at msg3,
+                    // and a foreign initiator (different src) keeps the
+                    // silent drop, so the #224 concurrent-initiator
+                    // protection is intact.
+                    if self.session_initiator != Some(src_addr) {
+                        return HandleResult::None;
+                    }
                 }
                 if self.fsp_session.state() != FspSessionState::Idle {
                     self.fsp_session.reset();
@@ -323,6 +345,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                     Err(_) => return HandleResult::None,
                 };
                 self.session_activity = Some(Instant::now());
+                self.session_initiator = Some(src_addr);
                 resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&reply_body);
                 // Cache setup + ack so the same initiator's retransmission
                 // can be answered idempotently while this handshake is
@@ -827,6 +850,18 @@ mod tests {
     /// Build a fresh initiator's SessionSetup frame (XK msg1 + datagram body)
     /// for `init_secret`, addressed to the responder's derived address.
     fn build_setup_frame(init_secret: [u8; 32]) -> ([u8; 512], usize) {
+        build_setup_frame_with_ephemeral(init_secret, [0x77; 32])
+    }
+
+    /// Same as [`build_setup_frame`], with an explicit initiator ephemeral —
+    /// the reconnect tests use a fresh ephemeral to model the SAME initiator
+    /// starting a NEW session (same identity/node addr, different handshake
+    /// bytes), which is what a daemon probe sequence looks like to the
+    /// responder.
+    fn build_setup_frame_with_ephemeral(
+        init_secret: [u8; 32],
+        ephemeral: [u8; 32],
+    ) -> ([u8; 512], usize) {
         let resp_pub = ecdh_pubkey(&[0x22; 32]).unwrap();
         let init_pub = ecdh_pubkey(&init_secret).unwrap();
         let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
@@ -834,7 +869,7 @@ mod tests {
         let init_addr = NodeAddr::from_pubkey_x(&init_xonly);
         let resp_addr = NodeAddr::from_pubkey_x(&resp_xonly);
 
-        let mut initiator = FspInitiatorSession::new(&init_secret, &[0x77; 32], &resp_pub).unwrap();
+        let mut initiator = FspInitiatorSession::new(&init_secret, &ephemeral, &resp_pub).unwrap();
         let mut setup = [0u8; 512];
         let setup_len = initiator
             .build_setup(init_addr.as_bytes(), resp_addr.as_bytes(), &mut setup)
@@ -1086,6 +1121,67 @@ mod tests {
             responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
             HandleResult::SendDatagram(_)
         ));
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+    }
+
+    /// #232 (probe path, hardware finding 2026-10-16): the SAME initiator
+    /// starting a NEW session (fresh ephemeral, so byte-different setup, same
+    /// src NodeAddr) while its OLD session is still Established inside the
+    /// drain window must be ACCEPTED — reset + fresh handshake. This is what
+    /// back-to-back daemon probes look like: each probe tears its session
+    /// down daemon-side without a wire teardown, and the next probe's setup
+    /// (3s later) otherwise dies against the 10s window while the probe's own
+    /// session stage gives up at ~5.7s (measured 0/5 → alternating 2/5).
+    #[test]
+    fn same_initiator_reconnect_inside_drain_replaces_established_session() {
+        let mut responder = fresh_responder();
+        responder.fsp_drain = Duration::from_secs(3600);
+        dance_one_data_message(&mut responder);
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+
+        // The SAME initiator ([0x11] identity → same src NodeAddr) opens a
+        // NEW session with a fresh ephemeral: different bytes, same identity.
+        let (payload, len) = build_setup_frame_with_ephemeral([0x11; 32], [0x88; 32]);
+        let mut buf = [0u8; 1024];
+        assert!(
+            matches!(
+                responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
+                HandleResult::SendDatagram(_)
+            ),
+            "same-initiator reconnect inside the drain window must get a fresh SessionAck"
+        );
+        assert_eq!(
+            responder.fsp_session.state(),
+            FspSessionState::AwaitingMsg3,
+            "the stale session must be replaced by the new handshake"
+        );
+    }
+
+    /// The same-initiator reconnect also applies to a half-open handshake:
+    /// if the initiator abandons an AwaitingMsg3 handshake (budget spent) and
+    /// starts over with fresh entropy, the fresh setup replaces the stale
+    /// half-open one instead of waiting out the drain window.
+    #[test]
+    fn same_initiator_fresh_setup_replaces_half_open() {
+        let mut responder = fresh_responder();
+        responder.fsp_drain = Duration::from_secs(3600);
+
+        let (payload, len) = build_setup_frame([0x11; 32]);
+        let mut buf = [0u8; 1024];
+        assert!(matches!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
+            HandleResult::SendDatagram(_)
+        ));
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+
+        let (fresh, flen) = build_setup_frame_with_ephemeral([0x11; 32], [0x99; 32]);
+        assert!(
+            matches!(
+                responder.on_message(wire::MSG_SESSION_DATAGRAM, &fresh[..flen], &mut buf),
+                HandleResult::SendDatagram(_)
+            ),
+            "same-initiator fresh setup must replace the stale half-open handshake"
+        );
         assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
     }
 
