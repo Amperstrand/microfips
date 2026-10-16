@@ -51,6 +51,15 @@ the crypto-backend decision.
    any Rust project on an ESP32 that wants to talk to fips devices over
    BLE or WiFi.
 
+## Verified interop milestones
+
+| Date | Daemon | MCU | Result |
+|------|--------|-----|--------|
+| 2026-10-15 | 0.6.0-dev (lab-keylog) | ATOM Matrix G*11 (WiFi) | LED service 4/4, both crypto layers |
+| 2026-10-16 | **v0.5.2 STABLE** | ATOM Matrix G*11 (WiFi) | LED 4/4, FSP probe |
+| 2026-10-16 | **v0.5.2 STABLE** | M5StickC Plus G*5 (WiFi) | Link, FSP probe, /health service |
+| 2026-10-16 | **v0.5.2 STABLE** | Dual MCU (G*11 + G*5) | Both simultaneously connected and responsive |
+
 ## Non-goals
 
 - Forking upstream fips or maintaining a competing protocol stack
