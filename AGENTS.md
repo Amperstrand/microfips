@@ -964,12 +964,24 @@ sleep 1
 # Flash (primary)
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash flash -p /dev/ttyUSB0 --chip esp32 target/xtensa-esp32-none-elf/release/microfips-esp32
 
-# Flash (fallback if espflash fails — uses esptool v5.2.0, already installed)
-esptool --chip esp32 --port /dev/ttyUSB0 --before default-reset -b 460800 write-flash 0x0 target/xtensa-esp32-none-elf/release/microfips-esp32
-
 # Monitor (optional, after flash)
 . /home/ubuntu/export-esp.sh && RUSTUP_TOOLCHAIN=esp espflash monitor -p /dev/ttyUSB0 --chip esp32
 ```
+
+**DANGER: do NOT fall back to `esptool write-flash 0x0 <elf>` (2026-10-16, #237).**
+esptool stores the RAW ELF at 0x0 while the ESP32 ROM boots the image at
+0x1000 — the write "verifies" against its own bytes, the old firmware at
+0x1000 keeps booting, and the flash session silently validates STALE
+firmware. After a full `erase_flash` the same command bricks the board to
+`flash read err, 1000` (`elf2image` + `write-flash 0x1000` also failed to
+persist on this bench's FT232 atoms — unexplained; do not trust it without
+a read-back check). If espflash is unavailable on the host with the board
+attached, use the standalone binary (`espflash` 4.4.0 in `/usr/local/bin`
+on ai-legion; the atom boards live there):
+`ssh ai-legion '/usr/local/bin/espflash flash -p /dev/serial/by-id/<serial> --chip esp32 --baud 115200 <image.elf>'`
+— proven on atom-a (#232 acceptance). Always verify a flash took effect by
+matching a boot-log line only the new build can emit (or the binary-scan
+pins) before drawing conclusions.
 
  **ESP32 serial port:** CP210x USB-serial (VID:PID `10c4:ea60`), detect with the script above — do NOT hardcode `/dev/ttyUSB*`.
 Always detect by VID:PID `10c4:ea60` (Silicon Labs CP210x):
