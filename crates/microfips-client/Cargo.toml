@@ -1,0 +1,41 @@
+[package]
+name = "microfips-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Single-dependency microfips client library: talk to FIPS devices over any byte-shaped transport from any Rust project on an ESP32 (or host)."
+
+[dependencies]
+microfips-core = { path = "../microfips-core" }
+microfips-protocol = { path = "../microfips-protocol" }
+microfips-service = { path = "../microfips-service" }
+fips-noise = { path = "../fips-noise" }
+fips-fmp = { path = "../fips-fmp" }
+fips-identity = { path = "../fips-identity" }
+log = { version = "0.4", optional = true }
+rand = { version = "0.9", optional = true }
+
+[features]
+std = [
+    "microfips-protocol/std",
+    "microfips-core/std",
+    "fips-noise/std",
+    "dep:log",
+    "dep:rand",
+]
+# MMP metrics layer (needed for /health-style reporting).
+mmp = ["microfips-protocol/mmp"]
+# Noise XX wire (forward-compat with upstream `next`).
+noise-xx = ["microfips-core/noise-xx"]
+
+[dev-dependencies]
+# For the host-seam tests: prove the traits work with OS-provided
+# implementations without requiring the caller to set up an embedded
+# executor or hardware TRNG.
+rand = "0.9"
+# Self dev-dependency — enables std_seams for the test build (looks circular, is idiomatic).
+microfips-client = { path = ".", features = ["std"] }
+
+[[test]]
+name = "host_seams"
+path = "tests/host_seams.rs"

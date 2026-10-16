@@ -1,0 +1,89 @@
+name: m3-artifact-check
+on:
+  pull_request:
+    paths:
+      - "crates/microfips-client/**"
+      - "crates/microfips-core/**"
+      - "crates/microfips-protocol/**"
+      - "crates/fips-noise/**"
+      - "crates/fips-fmp/**"
+      - "crates/fips-identity/**"
+      - "crates/microfips-esp-transport/**"
+      - "crates/microfips-esp32/**"
+
+env:
+  # Deterministic build knobs (public test identities from the registry).
+  # The generator·2 scalar is derived, not embedded (#134).
+  DEVICE_NPUB_HEX_vps: "020e7a0da01a255cde106a202ef4f573676ef9e24f1c8176d03ae83a2a3a037d21"
+  DEVICE_NPUB_HEX_esp32: "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+  DEVICE_NODE_ADDR_esp32: "0135da2f8acf7b9e3090939432e47684"
+  WIFI_SSID: "cmp-test"
+  WIFI_PASSWORD: "cmp-test-pass"
+
+jobs:
+  cmp-identical:
+    runs-on: ubuntu-latest
+    env:
+      # Runners have no ~/.cargo-target; pin one directory shared by both
+      # builds so the candidate reuses the baseline's dependency artifacts.
+      M3_TGT: /tmp/m3-tgt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install esp toolchain
+        # `esp` is the esp-rs fork, not a rustup dist — install it the same
+        # way ci.yml's firmware job does.
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: false
+
+      # Baseline = merge-base, candidate = PR HEAD. Comparing the PR head
+      # (not the PR merge ref) isolates the facade from main drift between
+      # the fork point and the run: any binary difference then belongs to
+      # this PR and nothing else.
+      - name: Build baseline (merge base)
+        run: |
+          BASE=$(git merge-base origin/main HEAD)
+          echo "Building baseline from $BASE"
+          git checkout $BASE
+          export DEVICE_NSEC_HEX_esp32="$(printf %064x 2)"
+          cargo clean -p microfips-esp32 --release --target xtensa-esp32-none-elf --target-dir "$M3_TGT" || true
+          RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 \
+            --release --target xtensa-esp32-none-elf \
+            --target-dir "$M3_TGT" \
+            -Zbuild-std=core,alloc \
+            --features wifi --bin microfips-esp32-wifi
+          cp "$M3_TGT/xtensa-esp32-none-elf/release/microfips-esp32-wifi" /tmp/baseline.bin
+          sha256sum /tmp/baseline.bin
+
+      - name: Build candidate (PR head)
+        run: |
+          git checkout ${{ github.event.pull_request.head.sha }}
+          export DEVICE_NSEC_HEX_esp32="$(printf %064x 2)"
+          cargo clean -p microfips-esp32 --release --target xtensa-esp32-none-elf --target-dir "$M3_TGT" || true
+          RUSTUP_TOOLCHAIN=esp cargo build -p microfips-esp32 \
+            --release --target xtensa-esp32-none-elf \
+            --target-dir "$M3_TGT" \
+            -Zbuild-std=core,alloc \
+            --features wifi --bin microfips-esp32-wifi
+          cp "$M3_TGT/xtensa-esp32-none-elf/release/microfips-esp32-wifi" /tmp/candidate.bin
+          sha256sum /tmp/candidate.bin
+
+      - name: Byte-compare artifacts
+        run: |
+          echo "=== cmp-identical artifact verification ==="
+          echo "  baseline:  $(sha256sum /tmp/baseline.bin)"
+          echo "  candidate: $(sha256sum /tmp/candidate.bin)"
+          if cmp --silent /tmp/baseline.bin /tmp/candidate.bin; then
+            echo "  RESULT: IDENTICAL ✓"
+          else
+            echo "  RESULT: DIFFER ✗"
+            echo "  The M3 facade must not change firmware binaries."
+            echo "  If this PR intentionally changes firmware behavior,"
+            echo "  update the expected artifacts and document why."
+            exit 1
+          fi

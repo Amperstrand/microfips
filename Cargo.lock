@@ -2333,6 +2333,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "microfips-client"
+version = "0.1.0"
+dependencies = [
+ "fips-fmp",
+ "fips-identity",
+ "fips-noise",
+ "log",
+ "microfips-client",
+ "microfips-core",
+ "microfips-protocol",
+ "microfips-service",
+ "rand",
+]
+
+[[package]]
 name = "microfips-core"
 version = "0.1.0"
 dependencies = [
