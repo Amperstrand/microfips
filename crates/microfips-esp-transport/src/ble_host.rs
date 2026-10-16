@@ -4,7 +4,7 @@ extern crate alloc;
 
 use portable_atomic::{AtomicBool, Ordering};
 
-use bt_hci::{FromHciBytes, FromHciBytesError, WriteHci};
+use bt_hci::{transport::PacketToController, ReadHciError};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -52,8 +52,8 @@ impl embedded_io::Error for BleHciError {
     }
 }
 
-impl From<FromHciBytesError> for BleHciError {
-    fn from(_: FromHciBytesError) -> Self {
+impl<E: embedded_io::Error> From<ReadHciError<E>> for BleHciError {
+    fn from(_: ReadHciError<E>) -> Self {
         Self::Parse
     }
 }
@@ -105,8 +105,10 @@ impl bt_hci::transport::Transport for BleHciTransport<'_> {
                 // `data` (past the kind byte) and stages borrows in `buf`.
                 // `data` must not alias `buf`, so the received payload is
                 // copied to a local staging slice first (<= 259 B).
-                let kind =
-                    bt_hci::transport::PacketKind::from_byte(rx[0]).ok_or(BleHciError::Parse)?;
+                // PacketKind::from_byte is private in bt-hci 0.10; parse via the public reader API.
+                let mut kind_rd: &[u8] = &rx[..1];
+                let kind = bt_hci::transport::PacketKind::read(&mut kind_rd)
+                    .map_err(|_| BleHciError::Parse)?;
                 let n = len - 1;
                 let mut staging = [0u8; 259];
                 staging[..n].copy_from_slice(&rx[1..len]);
@@ -167,7 +169,7 @@ pub async fn ble_host_task() {
 
     let controller: ExternalController<_, 20> =
         ExternalController::new(BleHciTransport::new(connector));
-    let mut resources: HostResources<_, DefaultPacketPool, 1, 2> = HostResources::new();
+    let mut resources: HostResources<DefaultPacketPool, 1, 2> = HostResources::new();
     let stack = trouble_host::new(controller, &mut resources)
         .set_random_address(Address::random([
             0xff,

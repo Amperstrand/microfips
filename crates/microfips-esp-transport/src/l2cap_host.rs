@@ -4,7 +4,7 @@ extern crate alloc;
 
 use portable_atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
-use bt_hci::{FromHciBytes, FromHciBytesError, WriteHci};
+use bt_hci::{transport::PacketToController, ReadHciError};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -75,8 +75,8 @@ impl embedded_io::Error for BleHciError {
     }
 }
 
-impl From<FromHciBytesError> for BleHciError {
-    fn from(_: FromHciBytesError) -> Self {
+impl<E: embedded_io::Error> From<ReadHciError<E>> for BleHciError {
+    fn from(_: ReadHciError<E>) -> Self {
         Self::Parse
     }
 }
@@ -113,7 +113,13 @@ impl bt_hci::transport::Transport for BleHciTransport<'_> {
         &self,
         rx: &'a mut [u8],
     ) -> Result<P, Self::Error> {
+        // The buffer is reborrowed from this raw pointer each loop
+        // iteration: bt-hci 0.10's read_hci takes `buf: &'a mut [u8]` by
+        // value, which would consume rx for 'a and forbid the retry loop.
+        // Sound because at most one &mut borrow is live at a time — a
+        // failed parse returns Err and drops the borrow before `continue`.
         let rx_ptr: *mut [u8] = rx;
+        let rx_len = rx.len();
         loop {
             // SAFETY: Obtaining a mutable reference from the UnsafeCell. This is safe because
             // embassy's cooperative async model guarantees read() and write() are not called
@@ -132,19 +138,24 @@ impl bt_hci::transport::Transport for BleHciTransport<'_> {
             // `data` must not alias `buf`, so the payload is copied to a
             // local staging slice first (<= 259 B). Malformed packets are
             // dropped and the read continues, matching the old behavior.
-            if len <= rx.len() {
-                let kind = match bt_hci::transport::PacketKind::from_byte(rx[0]) {
-                    Some(k) => k,
-                    None => {
+            if len <= rx_len {
+                // SAFETY: reborrow of rx for this iteration; no other borrow
+                // is live (the previous iteration's borrow ended in Err).
+                let rx_ref: &mut [u8] = unsafe { &mut *rx_ptr };
+                // PacketKind::from_byte is private in bt-hci 0.10; parse via the public reader API.
+                let mut kind_rd: &[u8] = &rx_ref[..1];
+                let kind = match bt_hci::transport::PacketKind::read(&mut kind_rd) {
+                    Ok(k) => k,
+                    Err(_) => {
                         log::warn!("bad packet kind, dropping");
                         continue;
                     }
                 };
                 let n = len - 1;
                 let mut staging = [0u8; 259];
-                staging[..n].copy_from_slice(&rx[1..len]);
+                staging[..n].copy_from_slice(&rx_ref[1..len]);
                 let mut rd: &[u8] = &staging[..n];
-                match P::read_hci(kind, &mut rd, rx) {
+                match P::read_hci(kind, &mut rd, rx_ref) {
                     Ok(pkt) => return Ok(pkt),
                     Err(_) => {
                         log::warn!("parse error, dropping packet");
@@ -656,7 +667,7 @@ pub async fn l2cap_host_task() {
     let controller: ExternalController<_, 20> =
         ExternalController::new(BleHciTransport::new(connector));
     log::info!("controller created");
-    let mut resources: HostResources<_, DefaultPacketPool, 1, 3> = HostResources::new();
+    let mut resources: HostResources<DefaultPacketPool, 1, 3> = HostResources::new();
     log::info!("host resources initialized");
     let stack = trouble_host::new(controller, &mut resources).register_l2cap_spsm(L2CAP_PSM);
     let stack = if USE_PUBLIC_BLE_ADDRESS {
