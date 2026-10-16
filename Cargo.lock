@@ -1804,6 +1804,7 @@ version = "0.1.0"
 dependencies = [
  "fips-noise",
  "fips-proto-defs",
+ "log",
 ]
 
 [[package]]
