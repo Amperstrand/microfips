@@ -1567,6 +1567,20 @@ hackathon-tooling's rust-toolchain policy. ESP32/xtensa builds explicitly set
 nightly is required for `-Zbuild-std`). CI jobs pin their own toolchains via
 `dtolnay/rust-toolchain@v1` independent of local files.
 
+**Portable-crate MSRV contract (2026-10-17):** `fips-noise`, `fips-fmp`, and
+`fips-identity` declare `rust-version = "1.94.1"`, matching upstream fips's
+pinned `rust-toolchain.toml` — these three crates exist so upstream fips can
+adopt them, so they must compile under upstream's toolchain. The CI job
+`msrv-portable-crates` enforces it (`cargo check --all-features` under
+1.94.1); bump both together only when upstream deliberately re-pins. The
+rest of this workspace intentionally stays on Amperstrand house-current
+stable (1.99 at adoption) — our other projects build against this repo's
+host toolchain and we do not want a repo-wide downgrade; nothing about wire
+interop depends on compiler version (the xx-interop, golden-vectors, and
+specquotes gates pin the wire, not the toolchain). ESP builds are
+unaffected: the `esp` fork is selected by env override, which beats any
+toolchain file.
+
 ## Actual MCU Keys (verified 2026-03-30)
 
 | MCU | Source | Pubkey (x-only, hex) | npub | NodeAddr |

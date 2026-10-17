@@ -2,6 +2,11 @@
 name = "fips-fmp"
 version = "0.1.0"
 edition = "2021"
+# MSRV = upstream fips's pinned toolchain (1.94.1 in its rust-toolchain.toml):
+# these crates exist so fips can adopt them, so they must compile there. The
+# rest of this workspace stays on Amperstrand house-current stable (1.99);
+# CI job `msrv-portable-crates` enforces this floor.
+rust-version = "1.94.1"
 description = "FIPS Messaging Protocol — link-layer wire format and framing (no_std)"
 license = "MIT"
 
