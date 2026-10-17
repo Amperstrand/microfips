@@ -12,6 +12,9 @@ microfips-service = { path = "../microfips-service" }
 fips-noise = { path = "../fips-noise" }
 fips-fmp = { path = "../fips-fmp" }
 fips-identity = { path = "../fips-identity" }
+# Same version pin as microfips-protocol's — the EntropyRng adapter names
+# rand_core::Error for the (infallible) try_fill_bytes.
+rand_core = { version = "0.6", default-features = false }
 log = { version = "0.4", optional = true }
 rand = { version = "0.9", optional = true }
 

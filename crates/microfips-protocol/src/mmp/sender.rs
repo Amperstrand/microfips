@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn test_build_report_empty() {
         let mut s = SenderState::new();
-        assert!(s.build_report(Instant::now()).is_none());
+        assert!(s.build_report(crate::clock::now_instant()).is_none());
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         s.record_sent(11, 1100, 600);
         s.record_sent(12, 1200, 400);
 
-        let report = s.build_report(Instant::now()).unwrap();
+        let report = s.build_report(crate::clock::now_instant()).unwrap();
         assert_eq!(report.interval_start_counter, 10);
         assert_eq!(report.interval_end_counter, 12);
         assert_eq!(report.interval_start_timestamp, 1000);
@@ -202,11 +202,11 @@ mod tests {
     fn test_build_report_resets_interval() {
         let mut s = SenderState::new();
         s.record_sent(1, 100, 500);
-        let _ = s.build_report(Instant::now());
-        assert!(s.build_report(Instant::now()).is_none());
+        let _ = s.build_report(crate::clock::now_instant());
+        assert!(s.build_report(crate::clock::now_instant()).is_none());
 
         s.record_sent(2, 200, 300);
-        let report = s.build_report(Instant::now()).unwrap();
+        let report = s.build_report(crate::clock::now_instant()).unwrap();
         assert_eq!(report.interval_start_counter, 2);
         assert_eq!(report.interval_bytes_sent, 300);
         assert_eq!(report.cumulative_packets_sent, 2);
@@ -216,14 +216,14 @@ mod tests {
     #[test]
     fn test_should_send_report_no_data() {
         let s = SenderState::new();
-        assert!(!s.should_send_report(Instant::now()));
+        assert!(!s.should_send_report(crate::clock::now_instant()));
     }
 
     #[test]
     fn test_should_send_report_first_time() {
         let mut s = SenderState::new();
         s.record_sent(1, 100, 500);
-        assert!(s.should_send_report(Instant::now()));
+        assert!(s.should_send_report(crate::clock::now_instant()));
     }
 
     #[test]

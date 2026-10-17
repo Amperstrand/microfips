@@ -7,12 +7,18 @@
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
+pub mod clock;
 pub mod error;
 pub mod framing;
 pub mod fsp_handler;
 pub mod node;
 pub mod peer_policy;
 pub mod transport;
+
+/// Host/test dev utilities (#235) — see the module docs. Pure helpers
+/// only; bare-metal images never compile this.
+#[cfg(any(test, feature = "std"))]
+pub mod dev;
 
 #[cfg(feature = "mmp")]
 pub mod mmp;

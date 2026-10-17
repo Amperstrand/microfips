@@ -6,7 +6,7 @@
 //! - Leaf-node-only: no routing, no spanning tree, no bloom filters.
 
 use embassy_futures::select::{select, Either};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Timer};
 use microfips_core::wire;
 
 use crate::error::ProtocolError;
@@ -228,7 +228,7 @@ struct ThroughputState {
     test_id: u32,
     frames_recv: u32,
     bytes_recv: u64,
-    started_at: Option<Instant>,
+    started_at: Option<embassy_time::Instant>,
     duration_secs: u8,
     active: bool,
 }
@@ -324,7 +324,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         match frame.msg_type {
             wire::MSG_SENDER_REPORT => {
                 if let Some(_sr) = microfips_core::mmp::SenderReport::decode(frame.payload) {
-                    let now = embassy_time::Instant::now();
+                    let now = crate::clock::now_instant();
                     if self.mmp.receiver.should_send_report(now) {
                         if let Some(rr) = self.mmp.receiver.build_report(now) {
                             let encoded = rr.encode();
@@ -341,7 +341,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             }
             wire::MSG_RECEIVER_REPORT => {
                 if let Some(rr) = microfips_core::mmp::ReceiverReport::decode(frame.payload) {
-                    let now = embassy_time::Instant::now();
+                    let now = crate::clock::now_instant();
                     let our_ts = now.as_millis() as u32;
                     let _first_rtt = self.mmp.metrics.process_receiver_report(&rr, our_ts, now);
                     if let Some(srtt_ms) = self.mmp.metrics.srtt_ms() {
@@ -505,7 +505,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
     pub async fn run<H: NodeHandler>(&mut self, handler: &mut H) -> ! {
         loop {
-            match self.policy.check_reconnect(Instant::now()) {
+            match self.policy.check_reconnect(crate::clock::now_instant()) {
                 PolicyVerdict::Allow => {}
                 PolicyVerdict::Backoff(delay) => {
                     log_steady!("policy: reconnect backoff {}ms", delay.as_millis());
@@ -517,7 +517,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     continue;
                 }
             }
-            self.policy.record_connect_attempt(Instant::now());
+            self.policy
+                .record_connect_attempt(crate::clock::now_instant());
             let _ = self.session(handler).await;
         }
     }
@@ -542,7 +543,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             Ok((mut ks, mut kr, them)) => {
                 self.rpos = 0;
                 self.rlen = 0;
-                self.policy.record_handshake_ok(Instant::now());
+                self.policy.record_handshake_ok(crate::clock::now_instant());
                 log_steady!("session: handshake ok, entering steady");
                 handler.on_event(NodeEvent::HandshakeOk).await;
                 let result = self.steady(epoch, &ks, &kr, them, handler).await;
@@ -556,7 +557,8 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                 result
             }
             Err(e) => {
-                self.policy.record_handshake_failure(Instant::now());
+                self.policy
+                    .record_handshake_failure(crate::clock::now_instant());
                 self.policy.reset_session();
                 log_steady!("session: handshake failed: {:?}", e);
                 handler.on_event(NodeEvent::Error).await;
@@ -1056,20 +1058,20 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             "steady: entered, next_hb in {}s",
             self.timing.heartbeat_interval_secs
         );
-        let mut next_hb = embassy_time::Instant::now() + Duration::from_secs(1);
-        let mut next_sr = embassy_time::Instant::now()
+        let mut next_hb = crate::clock::now_instant() + Duration::from_secs(1);
+        let mut next_sr = crate::clock::now_instant()
             + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
         #[cfg(all(feature = "noise-xx", not(feature = "mmp")))]
         #[allow(unused_mut, unused_variables)]
-        let mut next_rr = embassy_time::Instant::now()
+        let mut next_rr = crate::clock::now_instant()
             + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
         #[cfg(all(feature = "noise-xx", feature = "mmp"))]
-        let mut next_rr = embassy_time::Instant::now()
+        let mut next_rr = crate::clock::now_instant()
             + Duration::from_secs(self.timing.heartbeat_interval_secs / 2);
         #[allow(unused_mut, unused_variables)]
         let mut sr_start_ctr: u64 = 0;
         #[allow(unused_mut, unused_variables)]
-        let mut sr_start_ts: u32 = embassy_time::Instant::now().as_millis() as u32;
+        let mut sr_start_ts: u32 = crate::clock::now_instant().as_millis() as u32;
         let mut dec_buf = [0u8; MAX_FRAME_SIZE];
         // Key-epoch slots: rekey rotates these in place (fips trial-decrypt
         // cascade). `cur` is active; `pend` holds a completed rekey answer
@@ -1085,15 +1087,15 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         };
         let mut pend: Option<EpochSlot> = None;
         let mut prev: Option<EpochSlot> = None;
-        let mut prev_drain_base = embassy_time::Instant::now();
+        let mut prev_drain_base = crate::clock::now_instant();
         // #204: steady entry is itself a key-epoch boundary — after a
         // reconnect the peer may still be retrying frames sealed under the
         // previous session's epoch. Armed again at every in-run cutover.
         let mut bad_frame_grace_until =
-            embassy_time::Instant::now() + Duration::from_secs(self.timing.bad_frame_grace_secs);
+            crate::clock::now_instant() + Duration::from_secs(self.timing.bad_frame_grace_secs);
         #[cfg(all(feature = "noise-keylog", feature = "log"))]
         self.log_keylog(&cur.ks, &cur.kr);
-        let mut session_started = embassy_time::Instant::now();
+        let mut session_started = crate::clock::now_instant();
         let mut rekey_init: Option<RekeyInit> = None;
         // True while `pend` was armed by OUR initiation (timer-cutover is
         // the initiator's trigger; responder-armed pend waits for proof).
@@ -1117,10 +1119,10 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         // Refreshed on every authenticated frame. On transports where sends
         // keep succeeding after the peer is gone (e.g. ESP-NOW MAC-level
         // ACKs from a relay), RX silence is the only death signal.
-        let mut last_rx = embassy_time::Instant::now();
+        let mut last_rx = crate::clock::now_instant();
 
         loop {
-            let idle_secs = embassy_time::Instant::now()
+            let idle_secs = crate::clock::now_instant()
                 .saturating_duration_since(last_rx)
                 .as_secs();
             if idle_secs > self.timing.link_dead_timeout_secs {
@@ -1180,7 +1182,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         }
 
                         self.rpos = new_pos;
-                        if self.policy.check_frame_rate(Instant::now()) == PolicyVerdict::Reject {
+                        if self.policy.check_frame_rate(crate::clock::now_instant())
+                            == PolicyVerdict::Reject
+                        {
                             log_steady!("policy: rejected: frame rate");
                             continue;
                         }
@@ -1211,9 +1215,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                         let _ = self.send_frame(&buf[..len]).await;
                                     }
                                     // Cached msg1 = previously authenticated, still alive.
-                                    last_peer_rekey_at = Some(embassy_time::Instant::now());
+                                    last_peer_rekey_at = Some(crate::clock::now_instant());
                                     self.policy.record_good_frame();
-                                    last_rx = embassy_time::Instant::now();
+                                    last_rx = crate::clock::now_instant();
                                 } else {
                                     // #77: rate-bound the fresh-answer path —
                                     // each attempt costs two ECDH ops BEFORE
@@ -1221,7 +1225,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     // attempts are pure drops: no watchdog
                                     // feed, no policy charge (unauthenticated).
                                     let fresh_ok = last_fresh_answer_at.is_none_or(|t| {
-                                        embassy_time::Instant::now().duration_since(t)
+                                        crate::clock::now_instant().duration_since(t)
                                             >= Duration::from_millis(
                                                 self.timing.rekey_answer_min_interval_ms,
                                             )
@@ -1230,7 +1234,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                         log_steady!("steady: rekey answer suppressed (rate limit)");
                                     }
                                     if fresh_ok {
-                                        last_fresh_answer_at = Some(embassy_time::Instant::now());
+                                        last_fresh_answer_at = Some(crate::clock::now_instant());
                                         log_steady!("steady: rekey msg1 received, answering");
                                         let mut answered = false;
                                         #[cfg(not(feature = "noise-xx"))]
@@ -1267,9 +1271,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                         // a dead link "alive" for the storm's
                                         // duration. Only a Noise-accepted msg1 counts.
                                         if answered {
-                                            last_peer_rekey_at = Some(embassy_time::Instant::now());
+                                            last_peer_rekey_at = Some(crate::clock::now_instant());
                                             self.policy.record_good_frame();
-                                            last_rx = embassy_time::Instant::now();
+                                            last_rx = crate::clock::now_instant();
                                         }
                                     }
                                 }
@@ -1305,7 +1309,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     log_steady!("steady: rekey msg3 parse failed, discarded");
                                 }
                                 self.policy.record_good_frame();
-                                last_rx = embassy_time::Instant::now();
+                                last_rx = crate::clock::now_instant();
                                 continue;
                             }
                             Some(wire::FmpMessage::Msg2 {
@@ -1318,7 +1322,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     // Not ours (stale/foreign msg2): keep waiting.
                                     rekey_init = Some(ri);
                                     self.policy.record_good_frame();
-                                    last_rx = embassy_time::Instant::now();
+                                    last_rx = crate::clock::now_instant();
                                     continue;
                                 }
                                 let mut np2 = [0u8; 128];
@@ -1403,7 +1407,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                                     log_steady!("steady: rekey msg2 failed to parse, abandoning");
                                 }
                                 self.policy.record_good_frame();
-                                last_rx = embassy_time::Instant::now();
+                                last_rx = crate::clock::now_instant();
                                 continue;
                             }
                             _ => {}
@@ -1466,7 +1470,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             // window are dropped, not charged — the peer's
                             // in-flight retries are protocol noise, not an
                             // attack (the drop still applies).
-                            if embassy_time::Instant::now() < bad_frame_grace_until {
+                            if crate::clock::now_instant() < bad_frame_grace_until {
                                 log_steady!(
                                     "steady: stale-epoch frame dropped (grace, {}B)",
                                     frame_data.len()
@@ -1489,25 +1493,25 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             continue 'frames;
                         };
                         self.policy.record_good_frame();
-                        last_rx = embassy_time::Instant::now();
+                        last_rx = crate::clock::now_instant();
 
                         if from_pend {
                             // Authenticated decrypt against pending = the
                             // peer cut over (fips `handle_peer_kbit_flip`).
                             let new_cur = pend.take().expect("from_pend implies pend");
                             prev = Some(core::mem::replace(&mut cur, new_cur));
-                            prev_drain_base = embassy_time::Instant::now();
-                            session_started = embassy_time::Instant::now();
+                            prev_drain_base = crate::clock::now_instant();
+                            session_started = crate::clock::now_instant();
                             #[cfg(feature = "mmp")]
-                            self.mmp.reset_for_rekey(Instant::now());
+                            self.mmp.reset_for_rekey(crate::clock::now_instant());
                             log_steady!("steady: rekey cutover complete, K-bit flipped");
-                            bad_frame_grace_until = embassy_time::Instant::now()
+                            bad_frame_grace_until = crate::clock::now_instant()
                                 + Duration::from_secs(self.timing.bad_frame_grace_secs);
                             #[cfg(all(feature = "noise-keylog", feature = "log"))]
                             self.log_keylog(&cur.ks, &cur.kr);
                         } else if from_prev {
                             // Peer still sealing in the old epoch: hold it.
-                            prev_drain_base = embassy_time::Instant::now();
+                            prev_drain_base = crate::clock::now_instant();
                         }
 
                         #[cfg(feature = "mmp")]
@@ -1516,7 +1520,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                             frame.sender_timestamp,
                             frame.frame_bytes,
                             false,
-                            embassy_time::Instant::now(),
+                            crate::clock::now_instant(),
                         );
 
                         #[cfg(feature = "mmp")]
@@ -1550,7 +1554,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         self.rpos = 0;
                         self.rlen = 0;
                     }
-                    let now = embassy_time::Instant::now();
+                    let now = crate::clock::now_instant();
                     if now >= next_hb {
                         log_steady!(
                             "steady: sending heartbeat (recv branch, ctr={})",
@@ -1654,7 +1658,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                     return Err(ProtocolError::Disconnected);
                 }
                 Either::Second(()) => {
-                    let now = embassy_time::Instant::now();
+                    let now = crate::clock::now_instant();
                     // Initiator cutover: pend armed by OUR rekey promotes on
                     // the next tick-send (fips "first send after completion");
                     // responder-armed pend still waits for the decrypt proof.
@@ -1667,12 +1671,12 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         // stays armed and re-initiates every tick).
                         session_started = now;
                         #[cfg(feature = "mmp")]
-                        self.mmp.reset_for_rekey(Instant::now());
+                        self.mmp.reset_for_rekey(crate::clock::now_instant());
                         pend_self = false;
                         log_steady!(
                             "steady: rekey cutover complete (self-initiated), K-bit flipped"
                         );
-                        bad_frame_grace_until = embassy_time::Instant::now()
+                        bad_frame_grace_until = crate::clock::now_instant()
                             + Duration::from_secs(self.timing.bad_frame_grace_secs);
                         #[cfg(all(feature = "noise-keylog", feature = "log"))]
                         self.log_keylog(&cur.ks, &cur.kr);
@@ -1731,7 +1735,9 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
                         );
                         next_hb = self.send_heartbeat(&mut cur).await;
                         handler.on_event(NodeEvent::HeartbeatSent).await;
-                        if self.policy.check_silent_peer(Instant::now()) == PolicyVerdict::Reject {
+                        if self.policy.check_silent_peer(crate::clock::now_instant())
+                            == PolicyVerdict::Reject
+                        {
                             log_steady!("policy: rejected: silent peer");
                             self.send_disconnect(&mut cur, wire::DISC_REASON_RESOURCE_EXHAUSTION)
                                 .await;
@@ -1836,7 +1842,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         use microfips_core::wire;
         let c = slot.send_ctr;
         slot.send_ctr += 1;
-        let ts = embassy_time::Instant::now().as_millis() as u32;
+        let ts = crate::clock::now_instant().as_millis() as u32;
         let mut out = [0u8; 256];
         let msg_end = 1 + len;
         let mut msg_buf = [0u8; 512];
@@ -1889,7 +1895,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
         use microfips_core::wire;
         let c = slot.send_ctr;
         slot.send_ctr += 1;
-        let ts = embassy_time::Instant::now().as_millis() as u32;
+        let ts = crate::clock::now_instant().as_millis() as u32;
         let mut out = [0u8; 256];
         let msg_end = 1 + len;
         let mut msg_buf = [0u8; 512];
@@ -1936,7 +1942,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
 
         let c = slot.send_ctr;
         slot.send_ctr += 1;
-        let ts = embassy_time::Instant::now().as_millis() as u32;
+        let ts = crate::clock::now_instant().as_millis() as u32;
         let mut out = [0u8; 256];
         let mut inner_buf = [0u8; 32];
         let inner_len = match wire::prepend_inner_header(ts, &[wire::MSG_HEARTBEAT], &mut inner_buf)
@@ -1971,7 +1977,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     }
 
     fn next_heartbeat_deadline(&self) -> embassy_time::Instant {
-        embassy_time::Instant::now() + Duration::from_secs(self.timing.heartbeat_interval_secs)
+        crate::clock::now_instant() + Duration::from_secs(self.timing.heartbeat_interval_secs)
     }
 
     fn current_handshake_resend_timeout_ms(&self, resend_count: u32) -> u32 {
@@ -1992,7 +1998,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
     async fn send_disconnect(&mut self, slot: &mut EpochSlot, reason: u8) {
         let c = slot.send_ctr;
         slot.send_ctr += 1;
-        let ts = embassy_time::Instant::now().as_millis() as u32;
+        let ts = crate::clock::now_instant().as_millis() as u32;
         let mut out = [0u8; 256];
         let mut inner_buf = [0u8; 32];
         let inner_len =
@@ -2063,7 +2069,7 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             msg1,
             msg1_len,
             resends: 0,
-            next_resend_at: embassy_time::Instant::now()
+            next_resend_at: crate::clock::now_instant()
                 + Duration::from_millis(self.timing.handshake_resend_interval_ms),
         })
     }
@@ -2412,7 +2418,7 @@ fn handle_throughput_request(frame: &DecryptedFrame<'_>, throughput: &mut Throug
                 test_id,
                 frames_recv: 0,
                 bytes_recv: 0,
-                started_at: Some(Instant::now()),
+                started_at: Some(crate::clock::now_instant()),
                 duration_secs,
                 active: true,
             };
@@ -2446,7 +2452,9 @@ fn handle_throughput_stream(
         .saturating_add(frame.payload.len() as u64);
 
     let elapsed_us = match throughput.started_at {
-        Some(t) => Instant::now().as_micros().saturating_sub(t.as_micros()),
+        Some(t) => crate::clock::now_instant()
+            .as_micros()
+            .saturating_sub(t.as_micros()),
         None => return FrameAction::Continue,
     };
     let target_duration_us = u64::from(throughput.duration_secs) * 1_000_000;
@@ -2504,7 +2512,7 @@ fn dispatch_link_message<H: NodeHandler>(
         wire::MSG_RECEIVER_REPORT => FrameAction::Continue,
         wire::MSG_ECHO_REQUEST => {
             if let Some((send_ts, seq, payload)) = wire::parse_echo_request(frame.payload) {
-                let now_us = Instant::now().as_micros();
+                let now_us = crate::clock::now_instant().as_micros();
                 if let Some(resp_len) =
                     wire::build_echo_response(send_ts, now_us, seq, payload, resp)
                 {
@@ -2555,7 +2563,7 @@ fn dispatch_link_message<H: NodeHandler>(
         wire::MSG_RECEIVER_REPORT => FrameAction::Continue,
         wire::MSG_ECHO_REQUEST => {
             if let Some((send_ts, seq, payload)) = wire::parse_echo_request(frame.payload) {
-                let now_us = Instant::now().as_micros();
+                let now_us = crate::clock::now_instant().as_micros();
                 if let Some(resp_len) =
                     wire::build_echo_response(send_ts, now_us, seq, payload, resp)
                 {
@@ -3337,7 +3345,7 @@ mod tests {
             test_id: 0x12345678,
             frames_recv: 0,
             bytes_recv: 0,
-            started_at: Some(Instant::now()),
+            started_at: Some(crate::clock::now_instant()),
             duration_secs: 0,
             active: true,
         };
@@ -3997,7 +4005,7 @@ mod tests {
             let backoff_secs = (RECONNECT_BACKOFF_BASE_MS / 1000) + 1;
             Timer::after(Duration::from_secs(backoff_secs)).await;
 
-            let policy_verdict = node.policy.check_reconnect(Instant::now());
+            let policy_verdict = node.policy.check_reconnect(crate::clock::now_instant());
             match policy_verdict {
                 PolicyVerdict::Allow => {}
                 other => panic!(
@@ -4087,7 +4095,7 @@ mod tests {
                     random_secret(),
                     microfips_core::noise::ecdh_pubkey(&random_secret()).unwrap(),
                 );
-                node.policy.record_handshake_ok(Instant::now());
+                node.policy.record_handshake_ok(crate::clock::now_instant());
                 node.policy.force_past_session_start();
                 let mut handler = RecordingHandler::default();
                 let result = node
@@ -4207,7 +4215,7 @@ mod tests {
                 timing,
             );
             node.set_raw_framing(true);
-            node.policy.record_handshake_ok(Instant::now());
+            node.policy.record_handshake_ok(crate::clock::now_instant());
             let mut handler = RecordingHandler::default();
             let result = node
                 .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
@@ -4286,7 +4294,7 @@ mod tests {
                 timing,
             );
             node.set_raw_framing(true);
-            node.policy.record_handshake_ok(Instant::now());
+            node.policy.record_handshake_ok(crate::clock::now_instant());
             let mut handler = RecordingHandler::default();
             let result = node
                 .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
@@ -4388,7 +4396,7 @@ mod tests {
                 timing,
             );
             node.set_raw_framing(true);
-            node.policy.record_handshake_ok(Instant::now());
+            node.policy.record_handshake_ok(crate::clock::now_instant());
             let mut handler = RecordingHandler::default();
             let result = node
                 .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
@@ -4449,7 +4457,7 @@ mod tests {
                 timing,
             );
             node.set_raw_framing(true);
-            node.policy.record_handshake_ok(Instant::now());
+            node.policy.record_handshake_ok(crate::clock::now_instant());
             let mut handler = RecordingHandler::default();
             let result = node
                 .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
@@ -4505,7 +4513,7 @@ mod tests {
                 timing,
             );
             node.set_raw_framing(true);
-            node.policy.record_handshake_ok(Instant::now());
+            node.policy.record_handshake_ok(crate::clock::now_instant());
             let mut handler = RecordingHandler::default();
             let result = node
                 .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
@@ -4535,8 +4543,8 @@ mod tests {
 
         block_on(async move {
             let peer_task = async move {
-                let started = Instant::now();
-                let mut last_hb: Option<Instant> = None;
+                let started = crate::clock::now_instant();
+                let mut last_hb: Option<embassy_time::Instant> = None;
                 let mut reports_seen = 0u32;
                 let mut node_disconnects = 0u32;
                 let mut peer_hb_ctr: u64 = 5000;
@@ -4574,7 +4582,7 @@ mod tests {
                         );
                         send_test_frame(&mut peer, &hb).await;
                         peer_hb_ctr += 1;
-                        last_hb = Some(Instant::now());
+                        last_hb = Some(crate::clock::now_instant());
                     }
                     // Survive 2x the link_dead timeout + margin, then the
                     // peer ends the session cleanly.
@@ -4620,7 +4628,7 @@ mod tests {
                     .unwrap();
                     node.apply_fmp_negotiation(&neg[..neg_len]).unwrap();
                 }
-                node.policy.record_handshake_ok(Instant::now());
+                node.policy.record_handshake_ok(crate::clock::now_instant());
                 let mut handler = RecordingHandler::default();
                 let result = node
                     .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
@@ -5465,7 +5473,7 @@ mod tests {
                     initiator_secret,
                     responder_pub,
                 );
-                node.policy.record_handshake_ok(Instant::now());
+                node.policy.record_handshake_ok(crate::clock::now_instant());
                 node.policy.force_past_session_start();
                 let mut handler = RecordingHandler::default();
 
@@ -5652,7 +5660,7 @@ mod tests {
                     them,
                     0,
                     wire::MSG_HEARTBEAT,
-                    embassy_time::Instant::now().as_millis() as u32,
+                    crate::clock::now_instant().as_millis() as u32,
                     &[],
                     &ks,
                 );
@@ -5768,7 +5776,7 @@ mod tests {
                     node_new_idx,
                     0,
                     wire::MSG_HEARTBEAT,
-                    embassy_time::Instant::now().as_millis() as u32,
+                    crate::clock::now_instant().as_millis() as u32,
                     &[],
                     &c1,
                     wire::FLAG_KEY_EPOCH,
@@ -5941,7 +5949,7 @@ mod tests {
                 assert!(got_new_epoch, "node never cut over to the new epoch");
 
                 // Peer follows the cutover and ends the session on the new epoch.
-                let ts = embassy_time::Instant::now().as_millis() as u32;
+                let ts = crate::clock::now_instant().as_millis() as u32;
                 let hb = build_test_frame_flags(
                     node_new_idx,
                     0,
@@ -6176,7 +6184,7 @@ mod tests {
                 );
 
                 // Cutover proof ends the window behavior; clean shutdown after.
-                let ts = embassy_time::Instant::now().as_millis() as u32;
+                let ts = crate::clock::now_instant().as_millis() as u32;
                 let hb = build_test_frame_flags(
                     node_new_idx,
                     0,
@@ -6287,7 +6295,7 @@ mod tests {
                 // Peer is the rekey initiator: sends with c1, receives with c2.
                 let peer_ks = c1;
                 let _peer_kr = c2;
-                let ts = embassy_time::Instant::now().as_millis() as u32;
+                let ts = crate::clock::now_instant().as_millis() as u32;
 
                 // Peer has cut over: first frame sealed in the NEW epoch,
                 // K-bit set. The node's pending-decrypt promotes it.

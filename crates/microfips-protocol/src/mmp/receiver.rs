@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn test_record_recv_basic() {
         let mut r = ReceiverState::new(32);
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         r.record_recv(1, 100, 500, false, now);
         r.record_recv(2, 200, 600, false, now + Duration::from_millis(100));
 
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn test_reorder_detection() {
         let mut r = ReceiverState::new(32);
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         r.record_recv(5, 500, 100, false, now);
         r.record_recv(3, 300, 100, false, now + Duration::from_millis(10));
 
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn test_ecn_counting() {
         let mut r = ReceiverState::new(32);
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         r.record_recv(1, 100, 100, true, now);
         r.record_recv(2, 200, 100, false, now);
         r.record_recv(3, 300, 100, true, now);
@@ -365,13 +365,13 @@ mod tests {
     #[test]
     fn test_build_report_empty() {
         let mut r = ReceiverState::new(32);
-        assert!(r.build_report(Instant::now()).is_none());
+        assert!(r.build_report(crate::clock::now_instant()).is_none());
     }
 
     #[test]
     fn test_build_report() {
         let mut r = ReceiverState::new(32);
-        let t0 = Instant::now();
+        let t0 = crate::clock::now_instant();
         r.record_recv(1, 100, 500, false, t0);
         r.record_recv(2, 200, 600, false, t0 + Duration::from_millis(100));
 
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn test_build_report_resets_interval() {
         let mut r = ReceiverState::new(32);
-        let t0 = Instant::now();
+        let t0 = crate::clock::now_instant();
         r.record_recv(1, 100, 500, false, t0);
         let _ = r.build_report(t0);
 
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn test_should_send_report_timing() {
         let mut r = ReceiverState::new(32);
-        let t0 = Instant::now();
+        let t0 = crate::clock::now_instant();
 
         assert!(!r.should_send_report(t0));
 
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn test_build_report_suppresses_rtt_echo_when_dwell_overflows() {
         let mut r = ReceiverState::new(32);
-        let t0 = Instant::now();
+        let t0 = crate::clock::now_instant();
         r.record_recv(1, 100, 500, false, t0);
 
         let report = r
