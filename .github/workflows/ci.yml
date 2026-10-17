@@ -273,6 +273,14 @@ jobs:
       - name: Console-channel policy guard
         run: bash scripts/check-console-policy.sh
 
+      # #237: esptool must never write a raw ELF (unsuffixed cargo artifacts
+      # included) — the "0x0-ELF fallback" silently validates stale firmware.
+      # Bash only — no build, no toolchain.
+      - name: esptool raw-ELF flash guard
+        run: |
+          bash scripts/check-esptool-elf-flash.sh --self-test
+          bash scripts/check-esptool-elf-flash.sh
+
   sim-smoke:
     name: Simulator Smoke Test
     runs-on: ubuntu-latest
