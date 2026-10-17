@@ -67,6 +67,21 @@ if [ "${1:-}" = "--self-test" ]; then
         grep -qF 'verify_flash_boot.sh' "$REPO/$script" || {
             echo "self-test FAIL: $script does not call verify_flash_boot.sh"; exit 1; }
     done
+    # scan-mode exclusion: the guard's own file quotes the trap patterns as
+    # self-test fixtures above and must not trip the scan — while the same
+    # trap in any other tracked file must still fail it.
+    tmprepo="$(mktemp -d)"
+    trap 'rm -rf "$tmp" "$tmprepo"' EXIT
+    git -C "$tmprepo" init -q
+    mkdir -p "$tmprepo/scripts"
+    cp "$0" "$tmprepo/scripts/check-flash-policy.sh"
+    git -C "$tmprepo" add -A
+    ( cd "$tmprepo" && bash scripts/check-flash-policy.sh ) >/dev/null 2>&1 \
+        || { echo "self-test FAIL: scan flags the guard's own self-test fixtures"; exit 1; }
+    printf 'esptool write-flash 0x0 fw.elf\n' > "$tmprepo/scripts/trap.sh"
+    git -C "$tmprepo" add -A
+    ( cd "$tmprepo" && bash scripts/check-flash-policy.sh ) >/dev/null 2>&1 \
+        && { echo "self-test FAIL: self-exclusion hides traps in other files"; exit 1; }
     echo "check-flash-policy self-test: PASS"
     exit 0
 fi
@@ -76,6 +91,9 @@ FAILED=0
 cd "$REPO" || { echo "FLASH-POLICY VIOLATION: no repo" >&2; exit 1; }
 while IFS= read -r f; do
     case "$f" in
+        # The guard quotes the trap patterns as self-test fixtures; it names
+        # the trap to forbid it, it does not flash anything.
+        scripts/check-flash-policy.sh) ;;
         *.sh|*.py|*.md|*.yml|*.yaml|*.toml|Makefile) check_file "$f" ;;
     esac
 done < <(git ls-files)
