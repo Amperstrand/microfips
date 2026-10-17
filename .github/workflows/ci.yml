@@ -279,6 +279,12 @@ jobs:
       - name: mmp footprint canary
         run: bash scripts/check-mmp-footprint.sh
 
+      # #237: the esptool 0x0-ELF trap (raw ELF at 0x0; ROM boots 0x1000 —
+      # silently validates stale firmware) must not re-enter the tree, and
+      # the flash entrypoints must keep their fail-closed boot verification.
+      - name: Flash policy guard
+        run: bash scripts/check-flash-policy.sh --self-test && bash scripts/check-flash-policy.sh
+
   sim-smoke:
     name: Simulator Smoke Test
     runs-on: ubuntu-latest
