@@ -44,6 +44,13 @@ pub const PHASE_SESSION_MSG3: u8 = 0x03;
 
 // FIPS: bd08505 protocol/session.rs:SessionSetup::encode()
 pub const FSP_MSG_DATA: u8 = 0x10;
+// FIPS next e0cc0c86 core/src/proto/fsp/wire.rs (SessionMessageType):
+// SenderReport = 0x11, ReceiverReport = 0x12 — the 0x10-0x1F "data and
+// metrics" inner-message range. Provenance paraphrase: the session
+// message-type enum is next-lineage and not in the vendored 0aef8ea2
+// specquotes sources.
+pub const FSP_MSG_SESSION_SENDER_REPORT: u8 = 0x11;
+pub const FSP_MSG_SESSION_RECEIVER_REPORT: u8 = 0x12;
 
 // FIPS: bd08505 node/session_wire.rs:FspCommonPrefix::parse()
 pub const FLAG_COORDS_PRESENT: u8 = 0x01;

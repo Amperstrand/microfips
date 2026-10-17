@@ -134,6 +134,10 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     /// bbfa864 class). Without it the retry died permanently and silently.
     last_setup: Option<([u8; SESSION_DATAGRAM_BODY_SIZE + 512], usize)>,
     last_ack: Option<ResponderAckCache>,
+    /// Session-layer reception counters for the #233 ReceiverReport
+    /// responder (cumulative + interval fields of the report body).
+    session_rx_packets: u64,
+    session_rx_bytes: u64,
     /// Src NodeAddr of the setup that created the current session — the
     /// responder's only pre-msg3 handle on "who is on the other side"
     /// besides the handshake bytes themselves (#232). A routing hint, not
@@ -159,6 +163,8 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             app_buf: [0u8; APP_BUF],
             last_setup: None,
             last_ack: None,
+            session_rx_packets: 0,
+            session_rx_bytes: 0,
             session_initiator: None,
         }
     }
@@ -197,6 +203,8 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             app_buf: [0u8; APP_BUF],
             last_setup: None,
             last_ack: None,
+            session_rx_packets: 0,
+            session_rx_bytes: 0,
             session_initiator: None,
         }
     }
@@ -404,6 +412,55 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 if resp.len() <= app_offset {
                     return HandleResult::None;
                 }
+                // #233: session-layer SenderReports (inner msg_type 0x11)
+                // are measurement traffic, not app traffic — the LED/app
+                // handler dropped them there and the daemon's probe RTT
+                // stage saw "no receiver report of any kind within the
+                // budget". Answer each one with a session ReceiverReport
+                // (0x12) echoing the peer's interval-end timestamp: RTT =
+                // peer_now - timestamp_echo - dwell. Upstream's own
+                // responder emits session RRs periodically
+                // (fips session.rs:801 dispatches SRs as informational;
+                // the RR send at :1708 rides the session timers); a leaf
+                // cannot afford that machinery, so we reply on the SR —
+                // the daemon's SR cadence paces us identically, and its
+                // handle_session_receiver_report accepts any arriving RR.
+                if inner_msg_type == microfips_core::fsp::FSP_MSG_SESSION_SENDER_REPORT {
+                    let Some(sr) = microfips_core::mmp::SessionSenderReport::decode(inner_payload)
+                    else {
+                        return HandleResult::None;
+                    };
+                    self.session_rx_packets = self.session_rx_packets.saturating_add(1);
+                    self.session_rx_bytes = self
+                        .session_rx_bytes
+                        .saturating_add(inner_payload.len() as u64);
+                    let rr = microfips_core::mmp::ReceiverReport {
+                        highest_counter: sr.interval_end_counter,
+                        cumulative_packets_recv: self.session_rx_packets,
+                        cumulative_bytes_recv: self.session_rx_bytes,
+                        timestamp_echo: sr.interval_end_timestamp,
+                        dwell_time: 0,
+                        max_burst_loss: 0,
+                        mean_burst_loss: 0,
+                        jitter: 0,
+                        ecn_ce_count: 0,
+                        owd_trend: 0,
+                        burst_loss_count: 0,
+                        cumulative_reorder_count: 0,
+                        interval_packets_recv: 1,
+                        interval_bytes_recv: inner_payload.len() as u32,
+                    };
+                    let body = microfips_core::mmp::encode_session_receiver_report(&rr);
+                    return self
+                        .send_session_reply(
+                            microfips_core::fsp::FSP_MSG_SESSION_RECEIVER_REPORT,
+                            &body,
+                            &k_send,
+                            &reply_body,
+                            resp,
+                        )
+                        .unwrap_or(HandleResult::None);
+                }
                 // Mesh IPv6 (shim port 256): answer ICMPv6 echo so `ping <fips-addr>`
                 // reaches a leaf without an IP stack. Everything else goes to the app.
                 let shim_reply = if inner_msg_type == microfips_core::fsp::FSP_MSG_DATA {
@@ -575,6 +632,54 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             }
         }
         HandleResult::None
+    }
+
+    /// Encrypt and queue one established-phase session datagram reply
+    /// (inner header + AEAD) — the same plumbing the app-reply path
+    /// uses, exposed for the #233 session ReceiverReport responder.
+    fn send_session_reply(
+        &mut self,
+        msg_type: u8,
+        body: &[u8],
+        k_send: &[u8; 32],
+        reply_body: &[u8],
+        resp: &mut [u8],
+    ) -> Option<HandleResult> {
+        let plaintext_len = microfips_core::fsp::fsp_prepend_inner_header(
+            0,
+            msg_type,
+            0x00,
+            body,
+            &mut self.app_buf,
+        );
+        if plaintext_len == 0 {
+            return None;
+        }
+        let send_ctr = self.fsp_session.next_send_counter();
+        let header = microfips_core::fsp::build_fsp_header(
+            send_ctr,
+            0x00,
+            (plaintext_len + microfips_core::noise::TAG_SIZE) as u16,
+        );
+        let ciphertext_offset = SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE;
+        let max_ciphertext = resp.len().saturating_sub(ciphertext_offset);
+        if max_ciphertext < plaintext_len + microfips_core::noise::TAG_SIZE {
+            return None;
+        }
+        let ciphertext_len = noise::aead_encrypt(
+            k_send,
+            send_ctr,
+            &header,
+            &self.app_buf[..plaintext_len],
+            &mut resp[ciphertext_offset
+                ..ciphertext_offset + plaintext_len + microfips_core::noise::TAG_SIZE],
+        )
+        .ok()?;
+        resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(reply_body);
+        resp[SESSION_DATAGRAM_BODY_SIZE..ciphertext_offset].copy_from_slice(&header);
+        Some(HandleResult::SendDatagram(
+            ciphertext_offset + ciphertext_len,
+        ))
     }
 
     fn my_addr(&self) -> Option<[u8; 16]> {
@@ -1254,6 +1359,166 @@ mod tests {
             ),
             "after fake time crosses the drain window the setup is admitted"
         );
+    }
+
+    /// #233 proof: the responder answers a session-layer SenderReport
+    /// (inner msg_type 0x11) with a session ReceiverReport (0x12) that
+    /// echoes the SR's interval-end timestamp — the echo the daemon's
+    /// probe RTT stage needs (RTT = peer_now - timestamp_echo - dwell).
+    /// Pre-fix, the SR fell through to the app handler (LED → None) and
+    /// the stage saw "no receiver report of any kind". Round-trips the
+    /// full crypto: initiator-encrypted SR in, responder-encrypted RR
+    /// out, decrypted with the session's peer key.
+    #[test]
+    fn session_sender_report_is_answered_with_receiver_report() {
+        use microfips_core::fsp::{
+            build_fsp_header, fsp_prepend_inner_header, parse_fsp_encrypted_header,
+            FSP_MSG_SESSION_RECEIVER_REPORT, FSP_MSG_SESSION_SENDER_REPORT,
+            SESSION_DATAGRAM_BODY_SIZE,
+        };
+        use microfips_core::mmp::report::SESSION_SENDER_REPORT_SIZE;
+        use microfips_core::mmp::SessionSenderReport;
+        use microfips_core::noise::aead_decrypt;
+
+        let mut responder = fresh_responder();
+        let mut buf = [0u8; 1024];
+
+        // Inline dance keeping the initiator alive (its k_send/k_recv
+        // drive both directions of the established session).
+        let secret = [0x11u8; 32];
+        let resp_pub = ecdh_pubkey(&[0x22; 32]).unwrap();
+        let init_pub = ecdh_pubkey(&secret).unwrap();
+        let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
+        let resp_xonly: [u8; 32] = parity_normalize(&resp_pub)[1..].try_into().unwrap();
+        let init_addr = NodeAddr::from_pubkey_x(&init_xonly);
+        let resp_addr = NodeAddr::from_pubkey_x(&resp_xonly);
+        let mut initiator = FspInitiatorSession::new(&secret, &[0x44; 32], &resp_pub).unwrap();
+
+        let mut setup = [0u8; 512];
+        let setup_len = initiator
+            .build_setup(init_addr.as_bytes(), resp_addr.as_bytes(), &mut setup)
+            .unwrap();
+        let mut payload = [0u8; 512];
+        payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
+            .copy_from_slice(&setup[..setup_len]);
+        let ack_len = match responder.on_message(
+            wire::MSG_SESSION_DATAGRAM,
+            &payload[..SESSION_DATAGRAM_BODY_SIZE + setup_len],
+            &mut buf,
+        ) {
+            HandleResult::SendDatagram(len) => len,
+            other => panic!("expected SessionAck, got {other:?}"),
+        };
+        initiator
+            .handle_ack(&buf[SESSION_DATAGRAM_BODY_SIZE..ack_len])
+            .unwrap();
+        let mut msg3 = [0u8; 512];
+        let msg3_len = initiator
+            .build_msg3(&responder.fsp_epoch, &mut msg3)
+            .unwrap();
+        let mut msg3_payload = [0u8; 512];
+        msg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        msg3_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+            .copy_from_slice(&msg3[..msg3_len]);
+        assert_eq!(
+            responder.on_message(
+                wire::MSG_SESSION_DATAGRAM,
+                &msg3_payload[..SESSION_DATAGRAM_BODY_SIZE + msg3_len],
+                &mut buf,
+            ),
+            HandleResult::None
+        );
+        assert_eq!(initiator.state(), FspInitiatorState::Established);
+        let (k_recv, k_send) = initiator.session_keys().unwrap();
+
+        // A session SenderReport from the daemon's side: interval-end
+        // timestamp 0xAABBCCDD is the value the RTT math must echo.
+        let sr = SessionSenderReport {
+            interval_start_counter: 0,
+            interval_end_counter: 41,
+            interval_start_timestamp: 1_000,
+            interval_end_timestamp: 0xAABB_CCDD,
+            interval_bytes_sent: 480,
+            cumulative_packets_sent: 12,
+            cumulative_bytes_sent: 9_600,
+        };
+        let mut sr_body = [0u8; SESSION_SENDER_REPORT_SIZE];
+        sr_body[2..10].copy_from_slice(&sr.interval_start_counter.to_le_bytes());
+        sr_body[10..18].copy_from_slice(&sr.interval_end_counter.to_le_bytes());
+        sr_body[18..22].copy_from_slice(&sr.interval_start_timestamp.to_le_bytes());
+        sr_body[22..26].copy_from_slice(&sr.interval_end_timestamp.to_le_bytes());
+        sr_body[26..30].copy_from_slice(&sr.interval_bytes_sent.to_le_bytes());
+        sr_body[30..38].copy_from_slice(&sr.cumulative_packets_sent.to_le_bytes());
+        sr_body[38..46].copy_from_slice(&sr.cumulative_bytes_sent.to_le_bytes());
+
+        let mut inner = [0u8; 128];
+        let inner_len =
+            fsp_prepend_inner_header(0, FSP_MSG_SESSION_SENDER_REPORT, 0x00, &sr_body, &mut inner);
+        assert!(inner_len > 0);
+        let ctr = initiator.next_send_counter();
+        let header = build_fsp_header(
+            ctr,
+            0x00,
+            (inner_len + microfips_core::noise::TAG_SIZE) as u16,
+        );
+        let mut frame = [0u8; 256];
+        let frame_len =
+            noise::aead_encrypt(&k_send, ctr, &header, &inner[..inner_len], &mut frame[..])
+                .unwrap();
+        let mut sr_datagram = [0u8; 512];
+        sr_datagram[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        sr_datagram[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE]
+            .copy_from_slice(&header);
+        sr_datagram[SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE
+            ..SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE + frame_len]
+            .copy_from_slice(&frame[..frame_len]);
+
+        let reply_len = match responder.on_message(
+            wire::MSG_SESSION_DATAGRAM,
+            &sr_datagram[..SESSION_DATAGRAM_BODY_SIZE + FSP_HEADER_SIZE + frame_len],
+            &mut buf,
+        ) {
+            HandleResult::SendDatagram(len) => len,
+            other => panic!("session SR must be answered with an RR, got {other:?}"),
+        };
+
+        // Decrypt the responder's RR with the initiator's receive key and
+        // verify the echo.
+        let fsp_frame = &buf[SESSION_DATAGRAM_BODY_SIZE..reply_len];
+        let Some((_flags, rctr, rheader, renc)) = parse_fsp_encrypted_header(fsp_frame) else {
+            panic!("reply is not an encrypted session frame");
+        };
+        let mut plain = [0u8; 256];
+        let plen = aead_decrypt(&k_recv, rctr, rheader, renc, &mut plain).unwrap();
+        let Some((_ts, msg_type, _flags, body)) =
+            microfips_core::fsp::fsp_strip_inner_header(&plain[..plen])
+        else {
+            panic!("reply has no inner header");
+        };
+        assert_eq!(
+            msg_type, FSP_MSG_SESSION_RECEIVER_REPORT,
+            "the reply must be a session ReceiverReport"
+        );
+        // Session RR body layout: [2 reserved][highest u64][cum_pkts u64]
+        // [cum_bytes u64][timestamp_echo u32 @26..30][dwell u16 @30]…
+        assert_eq!(body.len(), 66);
+        let echo = u32::from_le_bytes(body[26..30].try_into().unwrap());
+        assert_eq!(
+            echo, 0xAABB_CCDD,
+            "timestamp_echo must carry the SR's interval-end timestamp"
+        );
+        let cum_pkts = u64::from_le_bytes(body[10..18].try_into().unwrap());
+        assert_eq!(cum_pkts, 1, "reception counters must reflect the SR");
     }
 
     #[test]

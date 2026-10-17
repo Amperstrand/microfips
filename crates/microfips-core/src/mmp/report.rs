@@ -217,6 +217,76 @@ impl ReceiverReport {
     }
 }
 
+// ============================================================================
+// Session-layer report codecs (FSP inner msg_type 0x11/0x12, #233)
+// ============================================================================
+
+/// FIPS next e0cc0c86 core/src/proto/mmp/wire.rs: 46-byte body layout —
+/// [2 reserved][start_counter u64][end_counter u64][start_ts u32]
+/// [end_ts u32][interval_bytes u32][cum_pkts u64][cum_bytes u64].
+pub const SESSION_SENDER_REPORT_SIZE: usize = 46;
+/// FIPS next e0cc0c86 core/src/proto/mmp/wire.rs: 66-byte body layout —
+/// [2 reserved] then the ReceiverReport fields (see
+/// encode_session_receiver_report).
+pub const SESSION_RECEIVER_REPORT_SIZE: usize = 66;
+
+/// Session-layer SenderReport (inner msg_type 0x11): what the session
+/// peer says it sent. The leaf responder decodes it to echo the peer's
+/// interval-end timestamp back in its ReceiverReport (#233 — the
+/// daemon's RTT stage computes RTT from that echo plus dwell).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionSenderReport {
+    pub interval_start_counter: u64,
+    pub interval_end_counter: u64,
+    pub interval_start_timestamp: u32,
+    pub interval_end_timestamp: u32,
+    pub interval_bytes_sent: u32,
+    pub cumulative_packets_sent: u64,
+    pub cumulative_bytes_sent: u64,
+}
+
+impl SessionSenderReport {
+    pub fn decode(body: &[u8]) -> Option<Self> {
+        if body.len() < SESSION_SENDER_REPORT_SIZE {
+            return None;
+        }
+        let p = &body[2..];
+        Some(Self {
+            interval_start_counter: u64::from_le_bytes(p[0..8].try_into().ok()?),
+            interval_end_counter: u64::from_le_bytes(p[8..16].try_into().ok()?),
+            interval_start_timestamp: u32::from_le_bytes(p[16..20].try_into().ok()?),
+            interval_end_timestamp: u32::from_le_bytes(p[20..24].try_into().ok()?),
+            interval_bytes_sent: u32::from_le_bytes(p[24..28].try_into().ok()?),
+            cumulative_packets_sent: u64::from_le_bytes(p[28..36].try_into().ok()?),
+            cumulative_bytes_sent: u64::from_le_bytes(p[36..44].try_into().ok()?),
+        })
+    }
+}
+
+/// Encode a ReceiverReport into the 66-byte session-layer body (inner
+/// msg_type 0x12). Field-for-field the FIPS next layout; loss/jitter
+/// fields pass through from the link-layer report the caller filled.
+pub fn encode_session_receiver_report(r: &ReceiverReport) -> [u8; SESSION_RECEIVER_REPORT_SIZE] {
+    let mut out = [0u8; SESSION_RECEIVER_REPORT_SIZE];
+    let p = &mut out[2..];
+    p[0..8].copy_from_slice(&r.highest_counter.to_le_bytes());
+    p[8..16].copy_from_slice(&r.cumulative_packets_recv.to_le_bytes());
+    p[16..24].copy_from_slice(&r.cumulative_bytes_recv.to_le_bytes());
+    p[24..28].copy_from_slice(&r.timestamp_echo.to_le_bytes());
+    p[28..30].copy_from_slice(&r.dwell_time.to_le_bytes());
+    p[30..32].copy_from_slice(&r.max_burst_loss.to_le_bytes());
+    p[32..34].copy_from_slice(&r.mean_burst_loss.to_le_bytes());
+    // [34..36] reserved
+    p[36..40].copy_from_slice(&r.jitter.to_le_bytes());
+    p[40..44].copy_from_slice(&r.ecn_ce_count.to_le_bytes());
+    p[44..48].copy_from_slice(&r.owd_trend.to_le_bytes());
+    p[48..52].copy_from_slice(&r.burst_loss_count.to_le_bytes());
+    p[52..56].copy_from_slice(&r.cumulative_reorder_count.to_le_bytes());
+    p[56..60].copy_from_slice(&r.interval_packets_recv.to_le_bytes());
+    p[60..64].copy_from_slice(&r.interval_bytes_recv.to_le_bytes());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
