@@ -1140,7 +1140,16 @@ impl<T: Transport, R: RngCore + CryptoRng> Node<T, R> {
             #[cfg(feature = "noise-xx")]
             let base_deadline = next_hb.min(next_sr).min(next_rr);
             let deadline = tick.unwrap_or(base_deadline).min(base_deadline);
-            let hb_fut = Timer::at(deadline);
+            // The deadline lives in the installed clock's epoch (#235,
+            // Codex P1 on PR #238): a custom provider may use ANY epoch,
+            // while Timer::at interprets its argument in the DRIVER's —
+            // an epoch-shifted clock armed this wait epoch-offset far in
+            // the future and wedged the steady loop. Wait the RELATIVE
+            // distance instead: epoch-independent, and an already-passed
+            // deadline fires immediately exactly like Timer::at in the
+            // past did.
+            let hb_fut =
+                Timer::after(deadline.saturating_duration_since(crate::clock::now_instant()));
 
             match select(rx_fut, hb_fut).await {
                 Either::First(Ok(n)) => {
@@ -4519,6 +4528,91 @@ mod tests {
                 .steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
                 .await;
             assert_eq!(result, Err(ProtocolError::Disconnected));
+        });
+    }
+
+    /// #235 / Codex P1 on PR #238: the steady loop must not arm Embassy
+    /// timers with seam-epoch deadlines. A custom clock may use ANY epoch
+    /// (the trait permits it); this test installs one shifted +10,000,000 ms
+    /// and requires the node to still emit frames on its real cadence —
+    /// pre-fix, `Timer::at(deadline)` interpreted the shifted deadline in
+    /// the driver's epoch, arming the first frame ~10,000 s out: NOTHING
+    /// arrived before link-death, which is exactly what this asserts
+    /// against (first frame within 3.5 s of real time).
+    #[test]
+    fn custom_clock_epoch_does_not_wedge_steady_timers() {
+        use crate::transport::channel::pair as channel_pair;
+        use embassy_futures::join::join;
+        use std::sync::atomic::Ordering;
+
+        static OFFSET_MS: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(10_000_000);
+        static CLOCK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        fn shifted_now_ms() -> u64 {
+            // Real time, viewed from a provider whose epoch starts
+            // 10,000,000 ms earlier — monotonic, arbitrary-epoch, and its
+            // RELATIVE cadence matches real time (so the fix's duration-
+            // based wait still fires ~on schedule).
+            // Raw driver read — NOT crate::clock::now_ms(), which would
+            // recurse into this very provider (found the hard way: stack
+            // overflow).
+            embassy_time::Instant::now().as_millis() + OFFSET_MS.load(Ordering::Relaxed)
+        }
+
+        let _lock = CLOCK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        crate::clock::install(shifted_now_ms);
+        struct ClockReset;
+        impl Drop for ClockReset {
+            fn drop(&mut self) {
+                crate::clock::reset_default();
+            }
+        }
+        let _reset = ClockReset;
+
+        let (transport, mut peer) = channel_pair();
+
+        block_on(async move {
+            let key = [0x24; 32];
+            let them = wire::SessionIndex::new(9);
+            let timing = NodeTiming {
+                heartbeat_interval_secs: 1,
+                link_dead_timeout_secs: 5,
+                ..NodeTiming::default()
+            };
+            let mut node = Node::with_timing(
+                transport,
+                TestRng::new(b"epoch-shift"),
+                crate::test_harness::deterministic_secret(0x31),
+                [0x02; 33],
+                timing,
+            );
+            node.set_raw_framing(true);
+            node.policy.record_handshake_ok(crate::clock::now_instant());
+            let mut handler = RecordingHandler::default();
+
+            let node_task = async {
+                // Real wall-clock bound for the whole steady run: link_dead
+                // (5s of seam time = 5s real — the shifted clock runs at
+                // the real rate) tears it down even if nothing else does.
+                node.steady(1u64.to_le_bytes(), &key, &key, them, &mut handler)
+                    .await
+            };
+            let peer_task = async {
+                let mut buf = [0u8; 1024];
+                let got = embassy_futures::select::select(
+                    peer.recv(&mut buf),
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(3_500)),
+                )
+                .await;
+                matches!(got, embassy_futures::select::Either::First(Ok(n)) if n > 0)
+            };
+            let (_res, saw_frame) = join(node_task, peer_task).await;
+            assert!(
+                saw_frame,
+                "no frame within 3.5s of real time under a +10M ms epoch clock — \
+                 the steady timer was armed in the wrong epoch (Codex P1)"
+            );
         });
     }
 
