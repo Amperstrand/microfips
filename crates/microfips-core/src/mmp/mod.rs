@@ -5,7 +5,9 @@ pub mod algorithms;
 pub mod report;
 
 pub use algorithms::{compute_etx, DualEwma, JitterEstimator, SpinBitState, SrttEstimator};
-pub use report::{ReceiverReport, SenderReport};
+pub use report::{
+    encode_session_receiver_report, ReceiverReport, SenderReport, SessionSenderReport,
+};
 
 // Timing constants (milliseconds)
 pub const DEFAULT_COLD_START_INTERVAL_MS: u64 = 200;
