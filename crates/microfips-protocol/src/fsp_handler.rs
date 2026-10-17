@@ -1681,4 +1681,181 @@ mod tests {
             "resend must keep the state machine coherent for the ack"
         );
     }
+    /// #229 landing repro: two concurrent initiators, alternating setups
+    /// at the bench's 3s spacing ratio, no longer tear each other's
+    /// sessions down. Drain window shrunk to 1s (the pub `fsp_drain`
+    /// field) with steps at 3s/1s-ratio offsets and ≥200ms decision
+    /// margins — same shape as the 10s/3s bench cadence, CI-safe. (Once
+    /// the #235 clock seam merges, this matrix converts to zero-sleep
+    /// fake time; kept independent here so this fix lands unstacked.)
+    ///
+    /// | step | event | expected |
+    /// |---|---|---|
+    /// | t0    | A setup→ack→msg3 | A Established |
+    /// | +0.2s | B setup (A live) | DROPPED, **A still Established** (pre-guard: reset — the 2/5 bench symptom) |
+    /// | +0.2s | garbage phase-0x01 frame (A live) | DROPPED, A survives (the "garbage destroyed sessions" hazard) |
+    /// | +0.4s | B retry | DROPPED, A survives |
+    /// | +1.2s | B setup (A drained ≥1s) | ACCEPTED → B Established |
+    /// | +1.4s | A fresh setup (B live) | DROPPED, B survives — symmetric, no ping-pong either direction |
+    /// | +1.6s | A retry | DROPPED, B survives |
+    /// | +2.4s | A setup (B drained) | ACCEPTED → A re-Established |
+    ///
+    /// Both survivors are the anti-teardown core: pre-guard code
+    /// InvalidState-reset the live session on ANY setup (by construction
+    /// RED there); the drain window is what the guard actually changed.
+    /// Hardware counterpart (2026-10-16 bench, run dir hw-232-20261016):
+    /// post-kill 5×3s sessions 5/5 with the guard vs 3/5 persistent wedge
+    /// without, and the #232 D-phase console shows a foreign initiator's
+    /// byte-identical 207B retries dropped `-> None` while a live session
+    /// held.
+    #[test]
+    fn concurrent_initiators_no_longer_tear_each_other_down() {
+        let mut responder = fresh_responder();
+        // 10s → 1s: the bench ratio (3s spacing vs 10s window) becomes
+        // 0.2s-vs-1s with the same ordering.
+        responder.fsp_drain = Duration::from_millis(1_000);
+        let mut buf = [0u8; 1024];
+
+        fn settle(ms: u64) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+
+        // t0: initiator A completes a full session.
+        dance_one_data_message(&mut responder);
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+
+        // +0.2s: B's first attempt against A's live session — the exact
+        // pre-guard teardown trigger. B = 0x66, A = 0x11 (dance's secret).
+        settle(200);
+        let (b1, b1_len) = build_setup_frame([0x66; 32]);
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &b1[..b1_len], &mut buf),
+            HandleResult::None,
+            "B's setup while A is live must be dropped"
+        );
+        assert_eq!(
+            responder.fsp_session.state(),
+            FspSessionState::Established,
+            "A's session must SURVIVE B's setup (the #229 regression)"
+        );
+
+        // Same instant: a garbage phase-0x01 frame must not destroy A
+        // either — pre-guard, even junk setups reset live sessions.
+        let mut garbage = [0u8; SESSION_DATAGRAM_BODY_SIZE + 8];
+        garbage[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            &NodeAddr([0x99; 16]).0,
+            &NodeAddr([0x22; 16]).0,
+        ));
+        garbage[SESSION_DATAGRAM_BODY_SIZE] = 0x01;
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &garbage, &mut buf),
+            HandleResult::None,
+            "garbage setup must be dropped, not processed"
+        );
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+
+        // +0.4s: B retries inside A's window — still dropped, A survives.
+        settle(200);
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &b1[..b1_len], &mut buf),
+            HandleResult::None
+        );
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+
+        // +1.2s: A drained (window 1s). B's retry is admitted and
+        // completes — the "second initiator succeeds deterministically
+        // once the first goes idle" acceptance.
+        settle(800);
+        dance_with_identity(&mut responder, [0x66; 32], [0x77; 32], &mut buf);
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+
+        // +1.4s: A returns with fresh entropy while B is live — dropped;
+        // B survives. Symmetry: neither direction can ping-pong.
+        settle(200);
+        let (a2, a2_len) = build_setup_frame_with_ephemeral([0x11; 32], [0x88; 32]);
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &a2[..a2_len], &mut buf),
+            HandleResult::None,
+            "A's fresh setup while B is live must be dropped (cross-initiator)"
+        );
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+
+        // +1.6s: A retries — still dropped.
+        settle(200);
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &a2[..a2_len], &mut buf),
+            HandleResult::None
+        );
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+
+        // +2.4s: B drained (last activity ~+1.2s). A is re-admitted and
+        // re-establishes.
+        settle(800);
+        dance_with_identity(&mut responder, [0x11; 32], [0x88; 32], &mut buf);
+        assert_eq!(responder.fsp_session.state(), FspSessionState::Established);
+    }
+
+    /// Full FSP session (setup → ack → msg3) from a live initiator with
+    /// the given secret + ephemeral — the parameterized form of
+    /// dance_one_data_message's handshake half, for the interleaving
+    /// matrix where each phase needs its own live initiator object.
+    fn dance_with_identity(
+        responder: &mut FspDualHandler<CapturePeers, 256>,
+        secret: [u8; 32],
+        ephemeral: [u8; 32],
+        buf: &mut [u8; 1024],
+    ) {
+        let resp_pub = ecdh_pubkey(&[0x22; 32]).unwrap();
+        let init_pub = ecdh_pubkey(&secret).unwrap();
+        let init_xonly: [u8; 32] = parity_normalize(&init_pub)[1..].try_into().unwrap();
+        let resp_xonly: [u8; 32] = parity_normalize(&resp_pub)[1..].try_into().unwrap();
+        let init_addr = NodeAddr::from_pubkey_x(&init_xonly);
+        let resp_addr = NodeAddr::from_pubkey_x(&resp_xonly);
+
+        let mut initiator = FspInitiatorSession::new(&secret, &ephemeral, &resp_pub).unwrap();
+        let mut setup = [0u8; 512];
+        let setup_len = initiator
+            .build_setup(init_addr.as_bytes(), resp_addr.as_bytes(), &mut setup)
+            .unwrap();
+        let mut payload = [0u8; 512];
+        payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
+            .copy_from_slice(&setup[..setup_len]);
+
+        let ack_len = match responder.on_message(
+            wire::MSG_SESSION_DATAGRAM,
+            &payload[..SESSION_DATAGRAM_BODY_SIZE + setup_len],
+            buf,
+        ) {
+            HandleResult::SendDatagram(len) => len,
+            other => panic!("expected SessionAck, got {other:?}"),
+        };
+        initiator
+            .handle_ack(&buf[SESSION_DATAGRAM_BODY_SIZE..ack_len])
+            .unwrap();
+
+        let mut msg3 = [0u8; 512];
+        let msg3_len = initiator
+            .build_msg3(&responder.fsp_epoch, &mut msg3)
+            .unwrap();
+        let mut msg3_payload = [0u8; 512];
+        msg3_payload[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&build_session_datagram_body(
+            init_addr.as_bytes(),
+            resp_addr.as_bytes(),
+        ));
+        msg3_payload[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
+            .copy_from_slice(&msg3[..msg3_len]);
+        assert_eq!(
+            responder.on_message(
+                wire::MSG_SESSION_DATAGRAM,
+                &msg3_payload[..SESSION_DATAGRAM_BODY_SIZE + msg3_len],
+                buf,
+            ),
+            HandleResult::None
+        );
+        assert_eq!(initiator.state(), FspInitiatorState::Established);
+    }
 }
