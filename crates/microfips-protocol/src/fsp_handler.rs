@@ -238,8 +238,9 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             NodeEvent::HandshakeOk => {
                 self.fsp_session.reset();
                 if self.initiator.is_some() {
-                    self.fsp_timer =
-                        Some(Instant::now() + Duration::from_secs(FSP_START_DELAY_SECS));
+                    self.fsp_timer = Some(
+                        crate::clock::now_instant() + Duration::from_secs(FSP_START_DELAY_SECS),
+                    );
                 }
             }
             NodeEvent::HeartbeatSent => {}
@@ -294,7 +295,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 // setup once the previous session has drained. Two same-
                 // initiator exceptions apply (#232, both hardware-measured):
                 if self.fsp_session.state() != FspSessionState::Idle
-                    && self.session_live(Instant::now())
+                    && self.session_live(crate::clock::now_instant())
                 {
                     // (1) A byte-identical setup while the handshake it
                     // created is still AwaitingMsg3 is the SAME initiator
@@ -309,7 +310,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                     if self.fsp_session.state() == FspSessionState::AwaitingMsg3 {
                         if let Some((ack_buf, ack_len)) = self.cached_ack_for_duplicate(fsp_data) {
                             resp[..ack_len].copy_from_slice(ack_buf);
-                            self.session_activity = Some(Instant::now());
+                            self.session_activity = Some(crate::clock::now_instant());
                             return HandleResult::SendDatagram(ack_len);
                         }
                     }
@@ -344,7 +345,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                     Ok(len) => len,
                     Err(_) => return HandleResult::None,
                 };
-                self.session_activity = Some(Instant::now());
+                self.session_activity = Some(crate::clock::now_instant());
                 self.session_initiator = Some(src_addr);
                 resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&reply_body);
                 // Cache setup + ack so the same initiator's retransmission
@@ -367,7 +368,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 if self.fsp_session.handle_msg3(fsp_data).is_err() {
                     return HandleResult::None;
                 }
-                self.session_activity = Some(Instant::now());
+                self.session_activity = Some(crate::clock::now_instant());
                 HandleResult::None
             }
             0x00 => {
@@ -391,7 +392,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 else {
                     return HandleResult::None;
                 };
-                self.session_activity = Some(Instant::now());
+                self.session_activity = Some(crate::clock::now_instant());
                 let Some((_ts, inner_msg_type, _inner_flags, inner_payload)) =
                     microfips_core::fsp::fsp_strip_inner_header(&self.app_buf[..decrypted_len])
                 else {
@@ -522,7 +523,8 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                                     ..SESSION_DATAGRAM_BODY_SIZE + msg3_len]
                                     .copy_from_slice(&msg3_buf[..msg3_len]);
                                 self.fsp_timer = Some(
-                                    Instant::now() + Duration::from_secs(FSP_MSG3_TIMEOUT_SECS),
+                                    crate::clock::now_instant()
+                                        + Duration::from_secs(FSP_MSG3_TIMEOUT_SECS),
                                 );
                                 return HandleResult::SendDatagram(dg_len);
                             }
@@ -539,7 +541,8 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 }
             }
             FspInitiatorState::AwaitingEstablished => {
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                self.fsp_timer =
+                    Some(crate::clock::now_instant() + Duration::from_secs(FSP_RETRY_SECS));
             }
             FspInitiatorState::Established => {
                 if fsp_phase == 0x00 {
@@ -617,7 +620,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
         resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
         resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + fsp_total]
             .copy_from_slice(&fsp_packet[..fsp_total]);
-        self.fsp_timer = Some(Instant::now() + Duration::from_secs(10));
+        self.fsp_timer = Some(crate::clock::now_instant() + Duration::from_secs(10));
         HandleResult::SendDatagram(dg_len)
     }
 }
@@ -685,7 +688,8 @@ impl<A: FspAppHandler, const APP_BUF: usize> NodeHandler for FspDualHandler<A, A
                 let mut cached = ([0u8; SESSION_DATAGRAM_BODY_SIZE + 512], dg_len);
                 cached.0[..dg_len].copy_from_slice(&resp[..dg_len]);
                 self.last_setup = Some(cached);
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                self.fsp_timer =
+                    Some(crate::clock::now_instant() + Duration::from_secs(FSP_RETRY_SECS));
                 HandleResult::SendDatagram(dg_len)
             }
             FspInitiatorState::AwaitingAck => {
@@ -697,15 +701,18 @@ impl<A: FspAppHandler, const APP_BUF: usize> NodeHandler for FspDualHandler<A, A
                 if let Some((buf, len)) = &self.last_setup {
                     let len = *len;
                     resp[..len].copy_from_slice(&buf[..len]);
-                    self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                    self.fsp_timer =
+                        Some(crate::clock::now_instant() + Duration::from_secs(FSP_RETRY_SECS));
                     HandleResult::SendDatagram(len)
                 } else {
-                    self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                    self.fsp_timer =
+                        Some(crate::clock::now_instant() + Duration::from_secs(FSP_RETRY_SECS));
                     HandleResult::None
                 }
             }
             FspInitiatorState::AwaitingEstablished => {
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                self.fsp_timer =
+                    Some(crate::clock::now_instant() + Duration::from_secs(FSP_RETRY_SECS));
                 HandleResult::None
             }
             FspInitiatorState::Established => self.send_ping(resp),
@@ -1183,6 +1190,70 @@ mod tests {
             "same-initiator fresh setup must replace the stale half-open handshake"
         );
         assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+    }
+
+    /// #235: an installed clock provider drives the runtime's real timing
+    /// paths — the drain guard included. A fake clock time-travels past
+    /// the 10s window with ZERO real sleeping: the guard holds at fake
+    /// t+3s and admits the foreign setup at fake t+11s. Before the seam,
+    /// this behavior was only reachable by waiting out real time.
+    #[test]
+    fn installed_clock_drives_fsp_drain_window() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Mutex;
+
+        static STEP_MS: AtomicU64 = AtomicU64::new(1_000);
+        static CLOCK_TESTS: Mutex<()> = Mutex::new(());
+
+        fn step_now_ms() -> u64 {
+            STEP_MS.load(Ordering::Relaxed)
+        }
+
+        // Serialize clock installs against other tests in this binary that
+        // might swap providers (the suite runs --test-threads=1 by policy;
+        // the mutex also makes a parallel default run sound).
+        let _lock = CLOCK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        crate::clock::install(step_now_ms);
+        struct ClockReset;
+        impl Drop for ClockReset {
+            fn drop(&mut self) {
+                crate::clock::reset_default();
+            }
+        }
+        let _reset = ClockReset;
+
+        STEP_MS.store(1_000, Ordering::Relaxed);
+        let mut responder = fresh_responder();
+        // default fsp_drain (10s) — deliberately NOT shrunk: fake time
+        // crosses it, real time never could inside a test budget.
+
+        let (payload, len) = build_setup_frame([0x11; 32]);
+        let mut buf = [0u8; 512];
+        assert!(matches!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &payload[..len], &mut buf),
+            HandleResult::SendDatagram(_)
+        ));
+        assert_eq!(responder.fsp_session.state(), FspSessionState::AwaitingMsg3);
+
+        // Fake t+3s: foreign setup still guarded.
+        STEP_MS.store(4_000, Ordering::Relaxed);
+        let (foreign, flen) = build_setup_frame([0x66; 32]);
+        assert_eq!(
+            responder.on_message(wire::MSG_SESSION_DATAGRAM, &foreign[..flen], &mut buf),
+            HandleResult::None,
+            "inside the fake window the guard must hold"
+        );
+
+        // Fake t+11s: the window has drained — the same foreign setup is
+        // admitted, with zero real time elapsed in this test.
+        STEP_MS.store(12_000, Ordering::Relaxed);
+        assert!(
+            matches!(
+                responder.on_message(wire::MSG_SESSION_DATAGRAM, &foreign[..flen], &mut buf),
+                HandleResult::SendDatagram(_)
+            ),
+            "after fake time crosses the drain window the setup is admitted"
+        );
     }
 
     #[test]

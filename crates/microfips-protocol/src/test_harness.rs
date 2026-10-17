@@ -86,30 +86,10 @@ impl NodeHandler for RecordingHandler {
     }
 }
 
-pub fn deterministic_secret(last: u8) -> [u8; 32] {
-    let mut secret = [0u8; 32];
-    secret[31] = last;
-    secret
-}
-
-pub fn generate_valid_eph<R: RngCore + CryptoRng>(rng: &mut R) -> [u8; 32] {
-    loop {
-        let mut eph = [0u8; 32];
-        rng.fill_bytes(&mut eph);
-        if ecdh_pubkey(&eph).is_ok() {
-            return eph;
-        }
-    }
-}
-
-pub fn allocate_session_index<R: RngCore>(rng: &mut R) -> wire::SessionIndex {
-    loop {
-        let idx = rng.next_u32();
-        if idx != 0 {
-            return wire::SessionIndex::new(idx);
-        }
-    }
-}
+// The pure draw helpers live in `crate::dev` (std-visible for the #235
+// facade tests); re-exported here so the suite's existing imports keep
+// their paths.
+pub use crate::dev::{allocate_session_index, deterministic_secret, generate_valid_eph};
 
 pub struct HandshakeFixture {
     pub msg1: Vec<u8>,
@@ -346,7 +326,7 @@ pub fn build_established_frame(
     payload: &[u8],
     key: &[u8; 32],
 ) -> Vec<u8> {
-    let timestamp = embassy_time::Instant::now().as_millis() as u32;
+    let timestamp = crate::clock::now_instant().as_millis() as u32;
     let mut inner = [0u8; 256];
     let mut out = [0u8; 256];
     let mut msg = std::vec![msg_type];
@@ -731,7 +711,7 @@ impl ScriptedPeer {
             them,
             self.send_ctr,
             wire::MSG_HEARTBEAT,
-            embassy_time::Instant::now().as_millis() as u32,
+            crate::clock::now_instant().as_millis() as u32,
             &[],
             &ks,
         );
@@ -746,7 +726,7 @@ impl ScriptedPeer {
             them,
             self.send_ctr,
             wire::MSG_DISCONNECT,
-            embassy_time::Instant::now().as_millis() as u32,
+            crate::clock::now_instant().as_millis() as u32,
             &[reason],
             &ks,
         );
@@ -761,7 +741,7 @@ impl ScriptedPeer {
             them,
             self.send_ctr,
             wire::MSG_SESSION_DATAGRAM,
-            embassy_time::Instant::now().as_millis() as u32,
+            crate::clock::now_instant().as_millis() as u32,
             payload,
             &ks,
         );

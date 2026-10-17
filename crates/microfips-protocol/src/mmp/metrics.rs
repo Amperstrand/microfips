@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn test_rtt_from_echo() {
         let mut m = MmpMetrics::new();
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         let rr = make_rr(10, 10, 5000, 1000, 5, 0);
         m.process_receiver_report(&rr, 1050, now);
 
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn test_loss_rate_computation() {
         let mut m = MmpMetrics::new();
-        let t0 = Instant::now();
+        let t0 = crate::clock::now_instant();
 
         let rr1 = make_rr(100, 100, 50_000, 0, 0, 0);
         m.process_receiver_report(&rr1, 0, t0);
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn test_no_rtt_without_echo() {
         let mut m = MmpMetrics::new();
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         let rr = make_rr(10, 10, 5000, 0, 0, 0);
         m.process_receiver_report(&rr, 1000, now);
         assert!(m.srtt_ms().is_none());
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn test_goodput_bps() {
         let mut m = MmpMetrics::new();
-        let t0 = Instant::now();
+        let t0 = crate::clock::now_instant();
 
         let rr1 = make_rr(100, 100, 50_000, 0, 0, 0);
         m.process_receiver_report(&rr1, 0, t0);
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn test_ignores_duplicate_receiver_report_after_valid_sample() {
         let mut m = MmpMetrics::new();
-        let t0 = Instant::now();
+        let t0 = crate::clock::now_instant();
 
         let rr1 = make_rr(10, 10, 5_000, 1_000, 5, 0);
         m.process_receiver_report(&rr1, 1_050, t0);

@@ -68,7 +68,7 @@ impl PeerPolicy {
     }
 
     pub(crate) fn with_timing(timing: PeerPolicyTiming) -> Self {
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         Self {
             timing,
             last_connect: None,
@@ -266,13 +266,16 @@ mod tests {
     fn test_new_policy_allows_connect() {
         let policy = PeerPolicy::new();
 
-        assert_eq!(policy.check_reconnect(Instant::now()), PolicyVerdict::Allow);
+        assert_eq!(
+            policy.check_reconnect(crate::clock::now_instant()),
+            PolicyVerdict::Allow
+        );
     }
 
     #[test]
     fn test_rapid_reconnect_backoff() {
         let mut policy = PeerPolicy::new();
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         policy.record_connect_attempt(now);
 
         assert_backoff(policy.check_reconnect(now), MIN_RECONNECT_MS);
@@ -281,7 +284,7 @@ mod tests {
     #[test]
     fn test_backoff_increases_with_failures() {
         let mut policy = PeerPolicy::new();
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         policy.record_handshake_failure(now);
 
         assert_backoff(
@@ -306,7 +309,7 @@ mod tests {
     #[test]
     fn test_backoff_caps_at_max() {
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
         let last_failure = start;
 
         policy.record_handshake_failure(last_failure);
@@ -323,7 +326,7 @@ mod tests {
     #[test]
     fn test_handshake_ok_resets_failures() {
         let mut policy = PeerPolicy::new();
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
         policy.record_handshake_failure(now);
         let second_failure = now + Duration::from_millis(MIN_RECONNECT_MS);
         policy.record_handshake_failure(second_failure);
@@ -346,7 +349,7 @@ mod tests {
         // no floor. The base reconnect interval stamps at the attempt that
         // started the session; `record_handshake_ok` must NOT clear it.
         let mut policy = PeerPolicy::new();
-        let attempt = Instant::now();
+        let attempt = crate::clock::now_instant();
         policy.record_connect_attempt(attempt);
 
         // Session established quickly and torn down 1s in (< base interval).
@@ -372,7 +375,7 @@ mod tests {
         // a later success, the required wait is the base floor from the
         // success stamp, never the exponential failure backoff.
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
         for _ in 0..4 {
             policy.record_handshake_failure(start);
         }
@@ -383,7 +386,7 @@ mod tests {
     #[test]
     fn test_reconnect_rejected_after_total_failure_limit() {
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
 
         for attempt in 0..MAX_TOTAL_RECONNECT_ATTEMPTS {
             policy.record_handshake_failure(start + Duration::from_secs(attempt as u64));
@@ -396,7 +399,7 @@ mod tests {
     #[test]
     fn test_failure_window_resets_consecutive_failures() {
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
 
         for failure in 0..3 {
             policy.record_handshake_failure(start + Duration::from_secs(failure));
@@ -411,7 +414,7 @@ mod tests {
     #[test]
     fn test_frame_rate_within_limit() {
         let mut policy = PeerPolicy::new();
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
 
         for _ in 0..FRAME_RATE_MAX {
             assert_eq!(policy.check_frame_rate(now), PolicyVerdict::Allow);
@@ -421,7 +424,7 @@ mod tests {
     #[test]
     fn test_frame_rate_exceeded() {
         let mut policy = PeerPolicy::new();
-        let now = Instant::now();
+        let now = crate::clock::now_instant();
 
         for _ in 0..FRAME_RATE_MAX {
             assert_eq!(policy.check_frame_rate(now), PolicyVerdict::Allow);
@@ -433,7 +436,7 @@ mod tests {
     #[test]
     fn test_frame_rate_window_reset() {
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
 
         for _ in 0..FRAME_RATE_MAX {
             assert_eq!(policy.check_frame_rate(start), PolicyVerdict::Allow);
@@ -447,7 +450,7 @@ mod tests {
     #[test]
     fn test_silent_peer_not_detected_early() {
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
         policy.record_handshake_ok(start);
         policy.record_heartbeat();
 
@@ -458,7 +461,7 @@ mod tests {
     #[test]
     fn test_silent_peer_detected() {
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
         policy.record_handshake_ok(start);
         policy.record_heartbeat();
 
@@ -469,7 +472,7 @@ mod tests {
     #[test]
     fn test_silent_peer_not_detected_with_data() {
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
         policy.record_handshake_ok(start);
         policy.record_heartbeat();
         policy.record_data_frame();
@@ -487,7 +490,7 @@ mod tests {
             link_dead_timeout_secs: 7,
         };
         let mut policy = PeerPolicy::with_timing(timing);
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
 
         policy.record_connect_attempt(start);
         assert_backoff(policy.check_reconnect(start), 2_000);
@@ -560,7 +563,7 @@ mod tests {
     #[test]
     fn test_session_reset_clears_counters() {
         let mut policy = PeerPolicy::new();
-        let start = Instant::now();
+        let start = crate::clock::now_instant();
         policy.record_handshake_ok(start);
         policy.record_heartbeat();
         policy.record_data_frame();
