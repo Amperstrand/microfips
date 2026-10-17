@@ -273,6 +273,12 @@ jobs:
       - name: Console-channel policy guard
         run: bash scripts/check-console-policy.sh
 
+      # #234: the facade's mmp opt-in must control the protocol's mmp layer
+      # at the feature-resolution level (and firmware feature sets stay put).
+      # Resolution only — no toolchain builds.
+      - name: mmp footprint canary
+        run: bash scripts/check-mmp-footprint.sh
+
   sim-smoke:
     name: Simulator Smoke Test
     runs-on: ubuntu-latest

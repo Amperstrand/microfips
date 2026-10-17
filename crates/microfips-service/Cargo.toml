@@ -6,7 +6,13 @@ description = "Transport-neutral request/response service layer for microfips"
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
-microfips-protocol = { path = "../microfips-protocol" }
+# default-features = false (#234): protocol's default includes `mmp` —
+# this edge previously force-enabled it for every service consumer
+# (including the facade's --no-default-features builds and the ESP32
+# firmware manifests). Consumers that want mmp enable it explicitly;
+# the ESP crates keep it via their own direct protocol edges, so the
+# firmware feature set is unchanged.
+microfips-protocol = { path = "../microfips-protocol", default-features = false }
 
 [dev-dependencies]
 microfips-core = { path = "../microfips-core", features = ["std"] }

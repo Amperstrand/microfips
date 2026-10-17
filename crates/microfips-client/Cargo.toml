@@ -7,12 +7,17 @@ description = "Single-dependency microfips client library: talk to FIPS devices 
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
-microfips-protocol = { path = "../microfips-protocol" }
+# default-features = false: protocol's default includes `mmp` — the
+# facade's mmp opt-in (#234) must be the ONLY path that turns it on for
+# facade consumers, or the advertised footprint reduction controls
+# nothing.
+microfips-protocol = { path = "../microfips-protocol", default-features = false }
 microfips-service = { path = "../microfips-service" }
 fips-noise = { path = "../fips-noise" }
 fips-fmp = { path = "../fips-fmp" }
 fips-identity = { path = "../fips-identity" }
-# Same version pin as microfips-protocol's — the EntropyRng adapter names
+# Same version pin as microfips-protocol's — the EntropyRng adapter
+# (#238) and the mmp_footprint probe's local RNG (#234) both name
 # rand_core::Error for the (infallible) try_fill_bytes.
 rand_core = { version = "0.6", default-features = false }
 log = { version = "0.4", optional = true }
