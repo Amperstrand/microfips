@@ -6,6 +6,12 @@ on:
   pull_request:
   schedule:
     - cron: "31 4 * * *"
+  # On-demand re-run of the full-history scheduled scan (issue #245): the
+  # reusable workflow falls through to `gitleaks git .` (full history) for
+  # non-push/non-PR events, and checks out the dispatched ref's .gitleaks.toml
+  # — use `gh workflow run gitleaks.yml --ref <branch>` to verify allowlist
+  # changes without waiting for the nightly cron.
+  workflow_dispatch:
 
 jobs:
   gitleaks:
