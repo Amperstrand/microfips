@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -847,3 +848,43 @@ jobs:
           echo "| Extended Firmware | \`${{ needs.build-firmware-extended.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scheduled lane health (main)
+        # The scheduled lanes live in separate workflows, so their verdicts are
+        # invisible to this job's needs-list — the same aggregate-visibility
+        # gap class as #205/#207. On main pushes (this workflow's push trigger
+        # is main-only), gate "main is green" on each lane's latest scheduled
+        # run (#245). PR runs skip the gate: a PR cannot fix or cause a
+        # scheduled-lane failure.
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          lanes="gitleaks.yml shc-reaper.yml fips-core-canary.yml protocol-drift.yml"
+          red=0
+          {
+            echo ""
+            echo "## Scheduled lane health (main)"
+            echo ""
+            echo "| Lane | Latest scheduled run | Verdict |"
+            echo "|------|----------------------|---------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for lane in $lanes; do
+            IFS=$'\t' read -r verdict url < <(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${lane}/runs?event=schedule&branch=main&per_page=1" \
+              --jq 'if (.workflow_runs | length) == 0 then ["never-run", ""] else [.workflow_runs[0].conclusion // "in-progress", .workflow_runs[0].html_url] end | @tsv') || true
+            verdict="${verdict:-unreachable}"
+            echo "| ${lane} | ${url:-n/a} | ${verdict} |" >> "$GITHUB_STEP_SUMMARY"
+            case "$verdict" in
+              success|in-progress|never-run) ;;
+              *)
+                echo "::error::scheduled lane ${lane}: latest scheduled run is ${verdict} (${url:-no url})"
+                red=1
+                ;;
+            esac
+          done
+          if [ "$red" -ne 0 ]; then
+            echo "::error::one or more scheduled lanes are red on main — see the Scheduled lane health table above"
+            exit 1
+          fi
