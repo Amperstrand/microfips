@@ -388,10 +388,10 @@ pub async fn run_esp_now_node(
     let (trng_source, trng) = crate::runner::init_trng(rng_periph, adc1);
     log::info!("trng ready");
 
-    let (wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
+    let wifi_controller =
+        esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("wifi init failed");
     let transport = crate::esp_now_transport::EspNowTransport::new(
-        interfaces.esp_now,
+        wifi_controller.esp_now(),
         wifi_controller,
         config::ESP_NOW_CHANNEL,
     );

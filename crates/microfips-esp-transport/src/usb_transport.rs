@@ -1,4 +1,4 @@
-use esp_hal::usb_serial_jtag::{UsbSerialJtagRx, UsbSerialJtagTx};
+use esp_hal::usb::usb_serial_jtag::{UsbSerialJtagRx, UsbSerialJtagTx};
 use esp_hal::Async;
 use microfips_protocol::transport::Transport;
 
