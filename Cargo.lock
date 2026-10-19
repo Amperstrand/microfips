@@ -2737,9 +2737,9 @@ dependencies = [
 
 [[package]]
 name = "picoserve"
-version = "0.20.0"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "488d2b0845ec602bfc939258cffd1805400e5fc368937ff790e65ce3258e6269"
+checksum = "59fb416fcd483bf1db5aa8d90506aa6967b9d0128e2646a929538d24d117433e"
 dependencies = [
  "const-sha1",
  "embedded-io-async 0.7.0",
