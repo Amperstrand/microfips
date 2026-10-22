@@ -41,7 +41,9 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_radio::wifi::ap::AccessPointConfig;
 use esp_radio::wifi::scan::ScanConfig;
-use esp_radio::wifi::{AuthenticationMethod, Config as WifiConfig, Interface, WifiController};
+use esp_radio::wifi::{
+    AuthenticationMethodConfig, Config as WifiConfig, Interface, Ssid, WifiController,
+};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
 use microfips_esp_common::dhcp_server::{DhcpServer, DhcpServerConfig, MAX_REPLY_LEN};
 use microfips_esp_common::dns::resolve_vps_ipv4;
@@ -174,7 +176,7 @@ mod heapless_label {
 }
 
 #[embassy_executor::task(pool_size = 2)]
-async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
+async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await;
 }
 
@@ -351,6 +353,7 @@ async fn pick_uplink_bssid(
     ssid: &str,
     own_ap_mac: [u8; 6],
 ) -> Option<[u8; 6]> {
+    let ssid = Ssid::try_from(ssid).ok()?;
     let config = ScanConfig::default().with_ssid(ssid).with_max(8);
     let results = with_timeout(Duration::from_secs(10), controller.scan_async(&config))
         .await
@@ -369,13 +372,15 @@ fn apply_config(
     uplink_password: &str,
     bssid: Option<[u8; 6]>,
 ) {
-    let mut sta = crate::wifi_transport::station_config(uplink_ssid, uplink_password);
+    let mut sta = crate::wifi_transport::station_config(uplink_ssid, uplink_password)
+        .expect("valid uplink credentials");
     if let Some(b) = bssid {
         sta = sta.with_bssid(b);
     }
+    let ap_ssid = Ssid::try_from(crate::config::RELAY_AP_SSID).expect("valid relay AP SSID");
     let ap = AccessPointConfig::default()
-        .with_ssid(crate::config::RELAY_AP_SSID)
-        .with_auth_method(AuthenticationMethod::None)
+        .with_ssid(ap_ssid)
+        .with_authentication(AuthenticationMethodConfig::Open)
         .with_max_connections(DHCP_POOL_SIZE as u16);
     if let Err(e) = controller.set_config(&WifiConfig::AccessPointStation(sta, ap)) {
         log::error!("relay: set_config failed: {:?}", e);
@@ -618,9 +623,11 @@ async fn run_relay_ap_opts(
     static PEER_BUF: StaticCell<[u8; 4096]> = StaticCell::new();
     static PEER_SOCKET: StaticCell<UdpSocket<'static>> = StaticCell::new();
 
-    let (mut controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
-    let own_ap_mac = interfaces.access_point.mac_address();
+    let mut controller =
+        esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("wifi init failed");
+    let sta_interface = Interface::station();
+    let ap_interface = Interface::access_point();
+    let own_ap_mac = ap_interface.mac_address();
     let labels: &'static Labels = LABELS.init(Labels {
         instance: heapless_label::Label::new("fips-relay-", own_ap_mac),
         host: heapless_label::Label::new("fips-relay-", own_ap_mac),
@@ -628,7 +635,7 @@ async fn run_relay_ap_opts(
 
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
     let (sta_stack, sta_runner) = embassy_net::new(
-        interfaces.station,
+        sta_interface,
         Config::dhcpv4(Default::default()),
         STA_RESOURCES.init(StackResources::new()),
         seed,
@@ -639,7 +646,7 @@ async fn run_relay_ap_opts(
         dns_servers: Default::default(),
     });
     let (ap_stack, ap_runner) = embassy_net::new(
-        interfaces.access_point,
+        ap_interface,
         ap_config,
         AP_RESOURCES.init(StackResources::new()),
         seed ^ 0x9e37_79b9_7f4a_7c15,
@@ -732,6 +739,7 @@ async fn run_relay_ap_opts(
         crate::runner::NodeOpts {
             raw_framing: true,
             peer_sent_first: false,
+            ..Default::default()
         },
     )
     .await

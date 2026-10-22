@@ -56,7 +56,7 @@ pub async fn run_usb_node(
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
-    use esp_hal::usb_serial_jtag::UsbSerialJtag;
+    use esp_hal::usb::usb_serial_jtag::UsbSerialJtag;
     use microfips_esp_transport::usb_transport::UsbTransport;
 
     // Deliberately NO `logger::init()` here: this binary's transport *is* the

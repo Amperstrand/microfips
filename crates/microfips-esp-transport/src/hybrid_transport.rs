@@ -19,7 +19,7 @@ use embassy_futures::select::{select, Either};
 use embassy_net::udp::UdpSocket;
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
-use esp_radio::wifi::WifiController;
+use esp_radio::wifi::{Interface, WifiController};
 use microfips_esp_common::config::WIFI_DHCP_TIMEOUT_SECS;
 use microfips_esp_common::mdns::{discover_fips, DiscoveryFilter};
 use microfips_esp_common::udp_transport::{UdpTransport, UdpTransportError};
@@ -170,9 +170,7 @@ impl HybridTransport {
 }
 
 #[embassy_executor::task]
-async fn hybrid_net_task(
-    mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface<'static>>,
-) {
+async fn hybrid_net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface>) {
     runner.run().await;
 }
 
@@ -203,21 +201,26 @@ pub async fn build_hybrid_transport(
     static HY_TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static HY_TX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
 
-    let (mut controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
-    let esp_now = interfaces.esp_now;
+    let mut controller =
+        esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("wifi init failed");
+    // esp-radio 1.0 (upstream #6281): EspNow no longer borrows the
+    // controller — the hybrid keeps pieces and full &mut controller
+    // reconnection simultaneously. This is the wall that kept hybrid on
+    // 0.18 (see ESP-RADIO-1.0-MIGRATION.md in the esp-radio-1.0-beta PR).
+    let esp_now = controller.esp_now();
 
     let resources = HY_RESOURCES.init(StackResources::new());
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
     let (stack, runner) = embassy_net::new(
-        interfaces.station,
+        Interface::station(),
         Config::dhcpv4(Default::default()),
         resources,
         seed,
     );
     spawner.spawn(hybrid_net_task(runner).expect("spawn net task failed"));
 
-    let station_config = crate::wifi_transport::station_config(wifi_ssid, wifi_password);
+    let station_config = crate::wifi_transport::station_config(wifi_ssid, wifi_password)
+        .expect("valid wifi credentials");
     controller
         .set_config(&WifiConfig::Station(station_config))
         .expect("set wifi station config");

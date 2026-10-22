@@ -29,10 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install esp toolchain
-        run: |
-          rustup toolchain install esp --profile minimal
-          rustup component add rust-src --toolchain esp
+      - name: Install Xtensa toolchain
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: false
 
       - name: Build ${{ matrix.name }}
         run: |

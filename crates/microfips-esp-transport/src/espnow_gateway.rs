@@ -17,7 +17,7 @@
 use embassy_time::{with_timeout, Duration};
 use embedded_io_async::{Read, Write};
 use esp_hal::peripherals::{USB_DEVICE, WIFI};
-use esp_hal::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx};
+use esp_hal::usb::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx};
 use esp_hal::Async;
 use esp_radio::esp_now::{EspNowManager, EspNowReceiver, EspNowSender, BROADCAST_ADDRESS};
 use microfips_esp_common::espnow_frag::{
@@ -38,10 +38,7 @@ const USB_WRITE_TIMEOUT_MS: u64 = 500;
 
 /// Host → radio: parse length-prefixed frames from USB, fragment, send.
 #[embassy_executor::task]
-async fn usb_to_espnow_task(
-    mut usb_rx: UsbSerialJtagRx<'static, Async>,
-    mut sender: EspNowSender<'static>,
-) {
+async fn usb_to_espnow_task(mut usb_rx: UsbSerialJtagRx<'static, Async>, mut sender: EspNowSender) {
     let mut fragmenter = Fragmenter::new();
     let mut acc = [0u8; 2 + MAX_MESSAGE];
     let mut acc_len = 0usize;
@@ -102,9 +99,9 @@ async fn usb_to_espnow_task(
 /// reassembly state, and the previous owner is unregistered from the
 /// radio table when the slot moves.
 async fn espnow_to_usb(
-    mut receiver: EspNowReceiver<'static>,
+    mut receiver: EspNowReceiver,
     mut usb_tx: UsbSerialJtagTx<'static, Async>,
-    manager: EspNowManager<'static>,
+    manager: EspNowManager,
 ) -> ! {
     let mut reassembler = SrcReassembler::new();
     let mut slot = PeerSlot::new();
@@ -147,12 +144,13 @@ pub async fn run_espnow_gateway(
     // TrngSource must outlive the WiFi driver; this function never returns.
     let (_trng_source, _trng) = crate::runner::init_trng(rng_periph, adc1);
 
-    let (wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
-    // Dropping the controller stops the radio; the gateway runs forever.
+    let wifi_controller =
+        esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("wifi init failed");
+    let esp_now = wifi_controller.esp_now();
+    // The EspNow guard keeps the radio initialized; dropping the
+    // controller's remaining handle stops nothing while esp_now lives,
+    // and the gateway runs forever.
     core::mem::forget(wifi_controller);
-
-    let esp_now = interfaces.esp_now;
     let _ = esp_now.set_channel(crate::config::ESP_NOW_CHANNEL);
     let (manager, sender, receiver) = esp_now.split();
 

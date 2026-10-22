@@ -45,17 +45,15 @@ fn scan_npub(data: &[u8]) -> Option<&str> {
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
+async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await;
 }
 
 #[esp_rtos::main]
 async fn main(spawner: embassy_executor::Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    let sw_ints =
-        esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     let timg0 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, sw_ints.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     microfips_esp_transport::heap::init();
     microfips_esp_transport::logger::init();
@@ -64,8 +62,9 @@ async fn main(spawner: embassy_executor::Spawner) {
     log::info!("=== mDNS spike starting ===");
 
     static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
-    let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(peripherals.WIFI, Default::default()).expect("wifi::new failed");
+    let mut wifi_controller =
+        esp_radio::wifi::WifiController::new(peripherals.WIFI, Default::default())
+            .expect("wifi init failed");
     let seed = {
         use rand_core::RngCore;
         let mut s = [0u8; 8];
@@ -73,7 +72,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         u64::from_le_bytes(s)
     };
     let (stack, runner) = embassy_net::new(
-        interfaces.station,
+        Interface::station(),
         Config::dhcpv4(Default::default()),
         RESOURCES.init(StackResources::new()),
         seed,
@@ -81,8 +80,12 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(net_task(runner).expect("spawn net task"));
 
     let station_config = StationConfig::default()
-        .with_ssid(config::WIFI_SSID)
-        .with_password(alloc::string::String::from(config::WIFI_PASSWORD));
+        .with_ssid(esp_radio::wifi::Ssid::try_from(config::WIFI_SSID).expect("valid ssid"))
+        .with_authentication(esp_radio::wifi::AuthenticationMethodConfig::Wpa2Personal(
+            config::WIFI_PASSWORD
+                .try_into()
+                .expect("valid wifi password"),
+        ));
     wifi_controller
         .set_config(&WifiConfig::Station(station_config))
         .expect("set wifi station config");

@@ -30,7 +30,7 @@ use static_cell::StaticCell;
 static PEER_MAC: AtomicU64 = AtomicU64::new(0);
 
 #[embassy_executor::task]
-async fn gw_net_task(mut runner: Runner<'static, Interface<'static>>) {
+async fn gw_net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await;
 }
 
@@ -38,7 +38,7 @@ async fn gw_net_task(mut runner: Runner<'static, Interface<'static>>) {
 #[embassy_executor::task]
 async fn udp_to_espnow_task(
     socket: &'static UdpSocket<'static>,
-    mut sender: EspNowSender<'static>,
+    mut sender: EspNowSender,
     daemon: IpEndpoint,
 ) {
     let mut fragmenter = Fragmenter::new();
@@ -125,14 +125,14 @@ pub async fn run_espnow_wifi_gateway(
     static GW_TX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
     static GW_SOCKET: StaticCell<UdpSocket<'static>> = StaticCell::new();
 
-    let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, Default::default()).expect("wifi::new failed");
-    let esp_now = interfaces.esp_now;
+    let mut wifi_controller =
+        esp_radio::wifi::WifiController::new(wifi, Default::default()).expect("wifi init failed");
+    let esp_now = wifi_controller.esp_now();
 
     let resources = GW_RESOURCES.init(StackResources::new());
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
     let (stack, runner) = embassy_net::new(
-        interfaces.station,
+        Interface::station(),
         Config::dhcpv4(Default::default()),
         resources,
         seed,
@@ -142,7 +142,8 @@ pub async fn run_espnow_wifi_gateway(
     let station_config = crate::wifi_transport::station_config(
         crate::config::WIFI_SSID,
         crate::config::WIFI_PASSWORD,
-    );
+    )
+    .expect("valid wifi credentials");
     wifi_controller
         .set_config(&WifiConfig::Station(station_config))
         .expect("set wifi station config");
@@ -237,9 +238,9 @@ pub async fn run_espnow_wifi_gateway(
 /// touch reassembly state, and the previous owner is unregistered from
 /// the radio table when the slot moves.
 async fn espnow_to_udp(
-    mut receiver: EspNowReceiver<'static>,
+    mut receiver: EspNowReceiver,
     socket: &'static UdpSocket<'static>,
-    manager: EspNowManager<'static>,
+    manager: EspNowManager,
     daemon: IpEndpoint,
 ) -> ! {
     let mut reassembler = SrcReassembler::new();

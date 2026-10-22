@@ -20,7 +20,7 @@ use portable_atomic::{AtomicU8, Ordering};
 
 /// Register `mac` for unicast (MAC-level ACK/retry). Best-effort: on
 /// failure the caller's sends fall back to broadcast.
-pub(crate) fn ensure_radio_peer(manager: &EspNowManager<'_>, mac: [u8; 6]) {
+pub(crate) fn ensure_radio_peer(manager: &EspNowManager, mac: [u8; 6]) {
     if manager.peer_exists(&mac) {
         return;
     }
@@ -35,7 +35,7 @@ pub(crate) fn ensure_radio_peer(manager: &EspNowManager<'_>, mac: [u8; 6]) {
 
 /// Drive the radio peer table from a sticky [`PeerSlot`] verdict so the
 /// table holds at most one unicast peer (#77).
-pub(crate) fn apply_slot_action(manager: &EspNowManager<'_>, action: PeerSlotAction) {
+pub(crate) fn apply_slot_action(manager: &EspNowManager, action: PeerSlotAction) {
     match action {
         PeerSlotAction::Ignore | PeerSlotAction::Keep => {}
         PeerSlotAction::Register(mac) => ensure_radio_peer(manager, mac),
@@ -65,9 +65,9 @@ const SWEEP_MAX_CHANNEL: u8 = 13;
 static RETAINED_CHANNEL: AtomicU8 = AtomicU8::new(0);
 
 pub struct EspNowTransport {
-    manager: EspNowManager<'static>,
-    sender: EspNowSender<'static>,
-    receiver: EspNowReceiver<'static>,
+    manager: EspNowManager,
+    sender: EspNowSender,
+    receiver: EspNowReceiver,
     fragmenter: Fragmenter,
     reassembler: SrcReassembler,
     /// MAC of the far side, learned from its first frame. `None` = broadcast.
@@ -102,11 +102,7 @@ impl EspNowTransport {
 
     /// Wrap an initialized ESP-NOW interface. `channel` must match the far
     /// side (both radios are unassociated, so nothing else pins it).
-    pub fn new(
-        esp_now: EspNow<'static>,
-        wifi_controller: WifiController<'static>,
-        channel: u8,
-    ) -> Self {
+    pub fn new(esp_now: EspNow, wifi_controller: WifiController<'static>, channel: u8) -> Self {
         if let Err(_e) = esp_now.set_channel(channel) {
             #[cfg(feature = "log")]
             log::error!("ESP-NOW: set_channel({}) failed: {:?}", channel, _e);
@@ -119,7 +115,7 @@ impl EspNowTransport {
     /// Like [`Self::new`], but without taking the WiFi controller and
     /// without touching the channel — for embedding in a transport that
     /// manages the controller (and possibly an association) itself.
-    pub(crate) fn new_shared(esp_now: EspNow<'static>, channel: u8) -> Self {
+    pub(crate) fn new_shared(esp_now: EspNow, channel: u8) -> Self {
         // The explicit ESP_NOW_CHANNEL knob means fixed-channel deployments
         // (USB-bridged gateway); anything else may start from the retained
         // channel and try hard there before sweeping.

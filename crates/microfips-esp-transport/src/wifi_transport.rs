@@ -4,7 +4,9 @@ use embassy_time::{with_timeout, Duration, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Trng;
 use esp_radio::wifi::sta::StationConfig;
-use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
+use esp_radio::wifi::{
+    AuthenticationMethodConfig, Config as WifiConfig, Interface, Ssid, WifiController,
+};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
 use microfips_esp_common::dns::resolve_vps_ipv4;
 use microfips_esp_common::mdns::{discover_fips, DiscoveryFilter};
@@ -14,16 +16,22 @@ use static_cell::StaticCell;
 
 /// Station config for `ssid`/`password`. An empty password means an open
 /// network: esp-radio's default auth threshold is WPA2, which would reject
-/// the AP with `NoAccessPointFoundInAuthmodeThreshold`.
-pub(crate) fn station_config(ssid: &str, password: &str) -> StationConfig {
-    let cfg = StationConfig::default()
-        .with_ssid(ssid)
-        .with_password(alloc::string::String::from(password));
-    if password.is_empty() {
-        cfg.with_auth_method(esp_radio::wifi::AuthenticationMethod::None)
+/// the AP with `NoAccessPointFoundInAuthmodeThreshold`. Fallible since
+/// esp-radio 1.0: `Ssid`/`Password` are typed and length-validated.
+pub(crate) fn station_config(ssid: &str, password: &str) -> Result<StationConfig, WifiInitError> {
+    let ssid = Ssid::try_from(ssid).map_err(|_| WifiInitError::InvalidCredentials)?;
+    let authentication = if password.is_empty() {
+        AuthenticationMethodConfig::Open
     } else {
-        cfg
-    }
+        AuthenticationMethodConfig::Wpa2Personal(
+            password
+                .try_into()
+                .map_err(|_| WifiInitError::InvalidCredentials)?,
+        )
+    };
+    Ok(StationConfig::default()
+        .with_ssid(ssid)
+        .with_authentication(authentication))
 }
 
 #[derive(Debug)]
@@ -33,6 +41,7 @@ pub enum WifiInitError {
     DhcpTimeout,
     DnsFailed,
     MissingCredentials,
+    InvalidCredentials,
 }
 
 pub struct WifiTransport {
@@ -137,7 +146,7 @@ impl Transport for WifiTransport {
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
+async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await;
 }
 
@@ -179,11 +188,11 @@ pub async fn build_wifi_transport(
     // Calling `set_power_saving(None)` ourselves after `set_config` instead broke the FSP
     // data path on esp-radio 0.18/esp32s3 (link up, session datagrams stalled).
     let controller_config = esp_radio::wifi::ControllerConfig::default().with_initial_config(
-        WifiConfig::Station(station_config(wifi_ssid, wifi_password)),
+        WifiConfig::Station(station_config(wifi_ssid, wifi_password)?),
     );
-    let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(wifi, controller_config).expect("wifi::new failed");
-    let wifi_device = interfaces.station;
+    let mut wifi_controller =
+        WifiController::new(wifi, controller_config).expect("wifi init failed");
+    let wifi_device = Interface::station();
 
     let resources = RESOURCES.init(StackResources::new());
     let seed = trng.random() as u64 | ((trng.random() as u64) << 32);
