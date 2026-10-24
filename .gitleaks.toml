@@ -24,3 +24,10 @@ paths = [
   '''docs/architecture\.md''',
   '''tools/test-ble-pipeline\.sh''',
 ]
+
+[[allowlists]]
+description = "Strategy-doc prose names the secp256k1-sys crate on the xtensa arch; the generic-api-key heuristic reads 'API drift, secp256k1-sys-on-xtensa' as key:value — the captured 'secret' is a crate name, never a credential (historical commit ebf1bb8, triaged in issue #245; match-scoped so the detector stays live on that file)"
+regexTarget = "match"
+regexes = [
+  '''secp256k1-sys-on-xtensa''',
+]
