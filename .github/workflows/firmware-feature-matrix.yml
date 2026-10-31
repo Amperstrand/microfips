@@ -6,6 +6,7 @@ on:
       - "crates/microfips-esp32/**"
       - "crates/microfips-esp32s3/**"
       - "crates/microfips-esp32c3/**"
+      - ".github/workflows/firmware-feature-matrix.yml"
 
 jobs:
   esp32-feature-matrix:
@@ -30,9 +31,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install esp toolchain
-        run: |
-          rustup toolchain install esp --profile minimal
-          rustup component add rust-src --toolchain esp
+        # `esp` is the esp-rs fork, not a rustup dist — install it the same
+        # way ci.yml's build-esp32 job does. `rustup toolchain install esp`
+        # fails on clean runners ("invalid toolchain name: 'esp'", #259), and
+        # rust-src ships preinstalled in the espup dist (the extra
+        # `rustup component add` also fails against a custom toolchain).
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: false
 
       - name: Build ${{ matrix.name }}
         run: |
