@@ -1,5 +1,6 @@
 /target
 **/*.rs.bk
+.embuild/
 Cargo.lock
 .cargo/config.toml.local
 probe-rs/

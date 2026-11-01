@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -876,3 +877,24 @@ jobs:
           echo "| Extended Firmware | \`${{ needs.build-firmware-extended.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scheduled lane health (main)
+        # The scheduled lanes live in separate workflows, so their verdicts are
+        # invisible to this job's needs-list — the same aggregate-visibility
+        # gap class as #205/#207. On main pushes (this workflow's push trigger
+        # is main-only), gate "main is green" on each lane's latest scheduled
+        # run (#245). PR runs skip the gate: a PR cannot fix or cause a
+        # scheduled-lane failure.
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Codex P2 on #247: the inline gate passed 'in-progress' (a null
+          # conclusion — queued or running) as green; a lane that failed
+          # after this check stayed silently green. The extracted gate
+          # selftests its verdict contract first, then polls any
+          # unfinished lane to a conclusion within a bounded budget —
+          # still-running surfaces as its own red 'unresolved' verdict.
+          scripts/scheduled_lane_gate.sh --selftest
+          scripts/scheduled_lane_gate.sh
