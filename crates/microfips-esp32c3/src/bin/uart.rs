@@ -14,6 +14,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
     microfips_esp32c3::run::run_uart_node(
         peripherals.GPIO2,
         peripherals.UART0,
+        peripherals.GPIO21,
+        peripherals.GPIO20,
         peripherals.RNG,
         peripherals.ADC1,
     )
