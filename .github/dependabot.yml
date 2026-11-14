@@ -1,15 +1,14 @@
+# 2026-11-14 fleet rollout (owner decision, green-PR interview): updates
+# arrive GROUPED weekly instead of per-package PR streams — ends the
+# dependabot churn class behind the 40-PR backlog the fleet review triaged.
 version: 2
 updates:
-  - package-ecosystem: "cargo"
+  - package-ecosystem: cargo
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    ignore:
-      - dependency-name: "rand_core"
-        versions: [">=0.7"]
-      - dependency-name: "rand"
-        versions: [">=0.9"]
-      - dependency-name: "esp-radio"
-        versions: [">=0.18"]
+      interval: weekly
+    groups:
+      cargo-dependencies:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build(deps)"
