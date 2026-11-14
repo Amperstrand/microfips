@@ -10,5 +10,5 @@ microfips-core = { path = "../microfips-core", features = ["std"] }
 microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-service = { path = "../microfips-service" }
 k256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
-rand = "0.9"
+rand = "0.10"
 hex = "0.4"
