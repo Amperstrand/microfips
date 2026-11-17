@@ -95,9 +95,7 @@ impl ReplayWindow {
             for i in (word_shift..self.bitmap.len()).rev() {
                 self.bitmap[i] = self.bitmap[i - word_shift];
             }
-            for i in 0..word_shift {
-                self.bitmap[i] = 0;
-            }
+            self.bitmap[..word_shift].fill(0);
         }
 
         if bit_shift > 0 {
