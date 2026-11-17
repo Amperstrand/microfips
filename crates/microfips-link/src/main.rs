@@ -6,7 +6,7 @@ use k256::SecretKey;
 use microfips_core::identity::{load_peer_pub, load_secret};
 use microfips_core::noise;
 use microfips_core::wire;
-use rand::RngCore;
+use rand::Rng;
 
 fn keygen() -> ExitCode {
     let mut rng = rand::rng();

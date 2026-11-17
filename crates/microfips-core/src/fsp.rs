@@ -1385,7 +1385,7 @@ mod tests {
 
     fn test_keys() -> ([u8; 32], [u8; 32], [u8; 32]) {
         use k256::SecretKey;
-        use rand::RngCore;
+        use rand::Rng;
 
         let mut rng = rand::rng();
         let mut gen_key = || -> [u8; 32] {
@@ -1520,7 +1520,7 @@ mod tests {
         let responder_pub = ecdh_pubkey(&responder_secret).unwrap();
         let (initiator_eph, _) = {
             use k256::SecretKey;
-            use rand::RngCore;
+            use rand::Rng;
             let mut key = [0u8; 32];
             loop {
                 rand::rng().fill_bytes(&mut key);

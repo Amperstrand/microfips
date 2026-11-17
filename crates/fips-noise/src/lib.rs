@@ -1516,7 +1516,7 @@ impl NoiseXxResponder {
 #[cfg(test)]
 fn test_keypair() -> ([u8; 32], [u8; PUBKEY_SIZE]) {
     use k256::SecretKey;
-    use rand::RngCore;
+    use rand::Rng;
 
     let mut rng = rand::rng();
     let mut secret = [0u8; 32];

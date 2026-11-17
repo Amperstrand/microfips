@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use embassy_time::{Duration, Instant, Timer};
 use k256::SecretKey;
-use rand::RngCore;
+use rand::Rng;
 
 use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
