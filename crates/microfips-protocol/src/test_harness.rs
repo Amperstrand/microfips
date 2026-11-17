@@ -36,24 +36,24 @@ impl TestRng {
 
     pub fn from_os_rng() -> Self {
         Self {
-            inner: Mutex::new(rand::rngs::StdRng::from_os_rng()),
+            inner: Mutex::new(rand::rngs::StdRng::from_rng(&mut rand::rng())),
         }
     }
 }
 
 impl RngCore for TestRng {
     fn next_u32(&mut self) -> u32 {
-        use rand::RngCore;
+        use rand::Rng;
         self.inner.lock().unwrap().next_u32()
     }
 
     fn next_u64(&mut self) -> u64 {
-        use rand::RngCore;
+        use rand::Rng;
         self.inner.lock().unwrap().next_u64()
     }
 
     fn fill_bytes(&mut self, buf: &mut [u8]) {
-        use rand::RngCore;
+        use rand::Rng;
         self.inner.lock().unwrap().fill_bytes(buf)
     }
 
@@ -445,7 +445,7 @@ pub fn decrypt_test_frame(key: &[u8; 32], frame: &[u8]) -> (u8, std::vec::Vec<u8
 /// Generate a fresh random secp256k1 secret key for testing.
 pub fn random_secret() -> [u8; 32] {
     use k256::SecretKey;
-    use rand::RngCore;
+    use rand::Rng;
     let mut key = [0u8; 32];
     loop {
         rand::rng().fill_bytes(&mut key);
@@ -690,7 +690,7 @@ impl ScriptedPeer {
         use microfips_core::wire;
         let mut noise_payload = [0u8; 80];
         {
-            use rand::RngCore;
+            use rand::Rng;
             rand::rng().fill_bytes(&mut noise_payload);
         }
         let mut msg2_buf = [0u8; 256];

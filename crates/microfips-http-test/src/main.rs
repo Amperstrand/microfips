@@ -7,7 +7,7 @@ use microfips_core::identity::{load_peer_pub, load_secret, NodeAddr};
 use microfips_core::noise;
 use microfips_core::wire;
 use microfips_service::{decode_response, encode_request, ServiceMethod};
-use rand::RngCore;
+use rand::Rng;
 
 fn make_session_datagram_body(src: &[u8; 16], dst: &[u8; 16]) -> [u8; SESSION_DATAGRAM_BODY_SIZE] {
     let mut body = [0u8; SESSION_DATAGRAM_BODY_SIZE];

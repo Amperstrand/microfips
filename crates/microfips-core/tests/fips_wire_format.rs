@@ -17,7 +17,7 @@ use microfips_core::wire;
 
 fn gen_key() -> [u8; 32] {
     use k256::SecretKey;
-    use rand::RngCore;
+    use rand::Rng;
     let mut key = [0u8; 32];
     loop {
         rand::rng().fill_bytes(&mut key);

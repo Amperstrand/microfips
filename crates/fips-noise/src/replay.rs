@@ -95,16 +95,14 @@ impl ReplayWindow {
             for i in (word_shift..self.bitmap.len()).rev() {
                 self.bitmap[i] = self.bitmap[i - word_shift];
             }
-            for i in 0..word_shift {
-                self.bitmap[i] = 0;
-            }
+            self.bitmap[..word_shift].fill(0);
         }
 
         if bit_shift > 0 {
             let mut carry = 0u64;
-            for i in 0..self.bitmap.len() {
-                let new_carry = self.bitmap[i] >> (64 - bit_shift);
-                self.bitmap[i] = (self.bitmap[i] << bit_shift) | carry;
+            for word in self.bitmap.iter_mut() {
+                let new_carry = *word >> (64 - bit_shift);
+                *word = (*word << bit_shift) | carry;
                 carry = new_carry;
             }
         }

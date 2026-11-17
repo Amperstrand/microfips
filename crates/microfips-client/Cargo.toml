@@ -21,7 +21,7 @@ fips-identity = { path = "../fips-identity" }
 # rand_core::Error for the (infallible) try_fill_bytes.
 rand_core = { version = "0.6", default-features = false }
 log = { version = "0.4", optional = true }
-rand = { version = "0.9", optional = true }
+rand = { version = "0.10", optional = true }
 
 [features]
 std = [
@@ -42,7 +42,7 @@ noise-xx = ["microfips-core/noise-xx", "microfips-protocol/noise-xx"]
 # For the host-seam tests: prove the traits work with OS-provided
 # implementations without requiring the caller to set up an embedded
 # executor or hardware TRNG.
-rand = "0.9"
+rand = "0.10"
 # Self dev-dependency — enables std_seams for the test build (looks circular, is idiomatic).
 microfips-client = { path = ".", features = ["std"] }
 

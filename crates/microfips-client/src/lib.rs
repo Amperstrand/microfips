@@ -75,7 +75,7 @@ pub mod std_seams {
 
     impl EntropySource for OsEntropy {
         fn fill(dest: &mut [u8]) {
-            use rand::RngCore;
+            use rand::Rng;
             rand::rng().fill_bytes(dest);
         }
     }

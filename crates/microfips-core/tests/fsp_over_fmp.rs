@@ -14,7 +14,7 @@ use microfips_core::noise::{
     XX_HANDSHAKE_MSG3_SIZE,
 };
 use microfips_core::wire;
-use rand::RngCore;
+use rand::Rng;
 
 const INIT_SECRET: [u8; 32] = STM32_NSEC;
 const RESP_SECRET: [u8; 32] = [0x22; 32];
