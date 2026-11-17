@@ -1,0 +1,27 @@
+# cargo-deny configuration — advisory lane bring-up (ops session
+# amperstrand-ops#49, tollgate-s3-rs #14 precedent).
+#
+# Policy: unmaintained crates are handled via explicit dated ignore
+# entries below (NOT `unmaintained = "none"`): we want each
+# unmaintained dependency visible with a reason and revisit condition.
+
+[advisories]
+ignore = [
+    # (2026-11-17) lane bring-up (ops#49, tollgate-s3-rs #14 precedent):
+    # paste unmaintained (RUSTSEC-2024-0436): pulled in by esp-hal 1.1.x
+    # (via esp-phy / esp-radio). No safe upgrade; pastey fork swap is
+    # esp-rs's call. Revisit when esp-hal drops paste or adopts pastey.
+    "RUSTSEC-2024-0436",
+    # (2026-11-17) lane bring-up: bare-metal 0.2.5 deprecated
+    # (RUSTSEC-2026-0110): via cortex-m 0.7.9 <- embassy-executor 0.10
+    # <- esp-rtos 0.3. No safe upgrade inside the esp-hal 1.x / embassy
+    # 0.10 dependency line. Revisit when cortex-m 0.8+ / an embassy
+    # release drops bare-metal.
+    "RUSTSEC-2026-0110",
+    # (2026-11-17) lane bring-up: unsafe-libyaml unmaintained
+    # (RUSTSEC-2024-0449): via serde_yaml 0.9.34+deprecated, a
+    # build-dependency of esp-config 0.7.0 (esp-hal ecosystem). No safe
+    # upgrade (serde_yaml itself is deprecated). Revisit when esp-config
+    # migrates off serde_yaml.
+    "RUSTSEC-2024-0449",
+]
