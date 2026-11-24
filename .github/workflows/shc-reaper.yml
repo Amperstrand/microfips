@@ -6,7 +6,7 @@ name: SHC VM Reaper
 # cancels microfips-ci-* VMs older than the threshold.
 on:
   schedule:
-    - cron: '17 3 * * *'
+    - cron: '33 3 * * *'
   workflow_dispatch:
 
 permissions:
