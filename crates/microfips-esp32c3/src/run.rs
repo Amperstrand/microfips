@@ -6,6 +6,8 @@ use microfips_esp_transport::uart_transport::UartTransport;
 pub async fn run_uart_node(
     gpio2: esp_hal::peripherals::GPIO2<'static>,
     uart0: esp_hal::peripherals::UART0<'static>,
+    gpio21: esp_hal::peripherals::GPIO21<'static>,
+    gpio20: esp_hal::peripherals::GPIO20<'static>,
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
@@ -28,6 +30,11 @@ pub async fn run_uart_node(
         .with_baudrate(UART_BAUDRATE);
     let uart = esp_hal::uart::Uart::new(uart0, uart_config)
         .unwrap()
+        // C3 UART0 defaults = U0TXD/U0RXD (GPIO21/20) — the USB-UART
+        // bridge lines. Without this routing the FIFO works but no FIPS
+        // frames reach the wired host bridge (#256, #263).
+        .with_tx(gpio21)
+        .with_rx(gpio20)
         .into_async();
     let (rx, tx) = uart.split();
     let transport = UartTransport { tx, rx };
