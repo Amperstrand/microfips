@@ -1,0 +1,35 @@
+name: Deny
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'deny.toml'
+      - '**/Cargo.toml'
+      - '.github/workflows/deny.yml'
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'deny.toml'
+      - '**/Cargo.toml'
+      - '.github/workflows/deny.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  deny:
+    runs-on: [self-hosted, legion-vm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+      # Lockfile-based check only — no firmware/ESP toolchain or system
+      # deps needed (unlike ci.yml's build jobs).
+      - run: cargo deny check
