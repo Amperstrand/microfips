@@ -138,6 +138,13 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     /// responder (cumulative + interval fields of the report body).
     session_rx_packets: u64,
     session_rx_bytes: u64,
+    /// (#264) Highest AEAD nonce counter successfully decrypted — the
+    /// replay-tracking floor. A captured valid data frame replayed at
+    /// intervals under the drain window used to refresh session_activity
+    /// and keep a half-open session alive indefinitely; the activity
+    /// refresh now requires the counter to ADVANCE (a replay decrypts at
+    /// the same nonce counter, which does not).
+    session_last_recv_counter: u64,
     /// Src NodeAddr of the setup that created the current session — the
     /// responder's only pre-msg3 handle on "who is on the other side"
     /// besides the handshake bytes themselves (#232). A routing hint, not
@@ -165,6 +172,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             last_ack: None,
             session_rx_packets: 0,
             session_rx_bytes: 0,
+            session_last_recv_counter: 0,
             session_initiator: None,
         }
     }
@@ -205,6 +213,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             last_ack: None,
             session_rx_packets: 0,
             session_rx_bytes: 0,
+            session_last_recv_counter: 0,
             session_initiator: None,
         }
     }
@@ -400,7 +409,16 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
                 else {
                     return HandleResult::None;
                 };
-                self.session_activity = Some(crate::clock::now_instant());
+                // (#264) The drain activity refresh requires the nonce
+                // counter to ADVANCE: a decrypted frame at a counter we
+                // have already seen is a REPLAY — it still reaches the app
+                // layer (idempotent by design there), but it no longer
+                // refreshes session_activity, so a replayed frame cannot
+                // keep a half-open session alive past its drain window.
+                if counter > self.session_last_recv_counter || self.session_last_recv_counter == 0 {
+                    self.session_last_recv_counter = counter;
+                    self.session_activity = Some(crate::clock::now_instant());
+                }
                 let Some((_ts, inner_msg_type, _inner_flags, inner_payload)) =
                     microfips_core::fsp::fsp_strip_inner_header(&self.app_buf[..decrypted_len])
                 else {
