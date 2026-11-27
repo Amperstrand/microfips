@@ -384,8 +384,8 @@ pub fn dispatch_request_no_disconnect<H: ServiceHandler>(
             }
             response_bytes[0] = SERVICE_VERSION;
             response_bytes[1] = SERVICE_KIND_RESPONSE;
-            response_bytes[2..4].copy_from_slice(
-                &ServiceStatus::PAYLOAD_TOO_LARGE.as_u16().to_le_bytes());
+            response_bytes[2..4]
+                .copy_from_slice(&ServiceStatus::PAYLOAD_TOO_LARGE.as_u16().to_le_bytes());
             response_bytes[4] = ContentType::Text.as_u8();
             response_bytes[5] = 0;
             response_bytes[6..8].copy_from_slice(&0u16.to_le_bytes());
