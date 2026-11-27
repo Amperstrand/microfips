@@ -365,6 +365,36 @@ pub fn dispatch_request<H: ServiceHandler>(
     }
 }
 
+/// (#260) dispatch_request, but BufferTooSmall never reaches the session
+/// layer as a hard failure: an oversized-but-parseable request maps to a
+/// structured PAYLOAD_TOO_LARGE response (status-only, empty body) instead
+/// of FspAppResult::Disconnect — a peer forcing repeated session teardowns
+/// was the hazard. All other errors keep their encode_response mapping.
+pub fn dispatch_request_no_disconnect<H: ServiceHandler>(
+    handler: &mut H,
+    request_bytes: &[u8],
+    response_bytes: &mut [u8],
+) -> Result<usize, ServiceError> {
+    match dispatch_request(handler, request_bytes, response_bytes) {
+        Err(ServiceError::BufferTooSmall) => {
+            // The response buffer was big enough for the header (checked
+            // inside dispatch_request); write a status-only response.
+            if response_bytes.len() < SERVICE_RESPONSE_HEADER_LEN {
+                return Err(ServiceError::BufferTooSmall);
+            }
+            response_bytes[0] = SERVICE_VERSION;
+            response_bytes[1] = SERVICE_KIND_RESPONSE;
+            response_bytes[2..4].copy_from_slice(
+                &ServiceStatus::PAYLOAD_TOO_LARGE.as_u16().to_le_bytes());
+            response_bytes[4] = ContentType::Text.as_u8();
+            response_bytes[5] = 0;
+            response_bytes[6..8].copy_from_slice(&0u16.to_le_bytes());
+            Ok(SERVICE_RESPONSE_HEADER_LEN)
+        }
+        other => other,
+    }
+}
+
 pub struct FspServiceAdapter<H> {
     inner: H,
 }
@@ -404,7 +434,13 @@ impl<H: ServiceHandler> FspAppHandler for FspServiceAdapter<H> {
         }
 
         self.inner.on_peer(peer);
-        match dispatch_request(&mut self.inner, payload, response) {
+        // (#260 P2) BufferTooSmall maps to a structured PAYLOAD_TOO_LARGE
+        // reply, NOT a session Disconnect — a peer forcing repeated
+        // teardowns was the hazard. Other errors keep the encode_response
+        // mapping; only a response-buffer-too-small-for-the-error-text
+        // still Disconnects (unreachable in practice: the header check
+        // inside dispatch_request ran first).
+        match dispatch_request_no_disconnect(&mut self.inner, payload, response) {
             Ok(len) => FspAppResult::Reply {
                 msg_type: FSP_MSG_DATA,
                 len,
