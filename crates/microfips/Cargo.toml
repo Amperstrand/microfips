@@ -6,6 +6,12 @@ description = "Minimal FIPS leaf node on STM32F469I-DISCO"
 
 [features]
 default = ["board-f469"]
+# (#260 P1) The alloc-based HTTP demo service — off by default: main.rs is
+# #![no_std] with no global allocator, so the demo's alloc::format!/Vec
+# handlers were allocator-dependent code linked into the firmware path.
+# Enable this feature only on hosted/alloc targets that want the demo
+# endpoints.
+http-demo = ["dep:microfips-http-demo"]
 board-f469 = [
     "embassy-stm32/stm32f469ni",
     "dep:embassy-stm32f469i-disco",
@@ -32,7 +38,7 @@ defmt = [
 
 [dependencies]
 microfips-core = { path = "../microfips-core" }
-microfips-http-demo = { path = "../microfips-http-demo" }
+microfips-http-demo = { path = "../microfips-http-demo", optional = true }
 microfips-protocol = { path = "../microfips-protocol" }
 microfips-service = { path = "../microfips-service" }
 rand_core = { version = "0.6", default-features = false }

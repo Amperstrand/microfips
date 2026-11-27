@@ -37,7 +37,10 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::Builder;
 use static_cell::StaticCell;
 
+#[cfg(not(feature = "http-demo"))]
+use crate::handler::NoService;
 use microfips_core::identity::{STM32_NSEC, VPS_NPUB};
+#[cfg(feature = "http-demo")]
 use microfips_http_demo::DemoService;
 use microfips_protocol::fsp_handler::FspDualHandler;
 use microfips_protocol::node::Node;
@@ -220,7 +223,10 @@ async fn main(_spawner: Spawner) {
             &ESP32_NPUB,
             ESP32_NODE_ADDR,
             1u64.to_le_bytes(),
+            #[cfg(feature = "http-demo")]
             FspServiceAdapter::new(DemoService::new()),
+            #[cfg(not(feature = "http-demo"))]
+            FspServiceAdapter::new(NoService),
         ),
     };
 
