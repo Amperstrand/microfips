@@ -14,6 +14,12 @@ pub struct NodeOpts {
     pub peer_sent_first: bool,
     /// Self-initiated rekey cadence (secs, 0 = off) — from config::REKEY_AFTER_SECS.
     pub rekey_after_secs: u64,
+    /// (#265) Heartbeat cadence in seconds — 0 = the protocol default
+    /// (10s). The L2CAP firmware path passes a value under the BLE
+    /// supervision timeout (4s per l2cap_host.rs:852) so subsequent
+    /// keepalives fire at a cadence that cannot exceed the connection's
+    /// supervision window.
+    pub heartbeat_interval_secs: u64,
 }
 
 impl Default for NodeOpts {
@@ -21,6 +27,7 @@ impl Default for NodeOpts {
         Self {
             raw_framing: false,
             peer_sent_first: false,
+            heartbeat_interval_secs: 0,
             rekey_after_secs: crate::config::REKEY_AFTER_SECS,
         }
     }
@@ -53,9 +60,17 @@ pub async fn run_node<T: microfips_protocol::transport::Transport>(
     trng.fill_bytes(&mut init_eph);
 
     let rng = EspRng(trng);
-    let mut node = if opts.rekey_after_secs > 0 {
+    // (#265) An explicit heartbeat cadence or a rekey cadence both route
+    // through with_timing; the L2CAP path's <4s heartbeat keeps keepalives
+    // inside the BLE supervision timeout.
+    let mut node = if opts.rekey_after_secs > 0 || opts.heartbeat_interval_secs > 0 {
         let timing = microfips_protocol::node::NodeTiming {
             rekey_after_secs: opts.rekey_after_secs,
+            heartbeat_interval_secs: if opts.heartbeat_interval_secs > 0 {
+                opts.heartbeat_interval_secs
+            } else {
+                microfips_protocol::node::DEFAULT_HEARTBEAT_INTERVAL_SECS
+            },
             ..microfips_protocol::node::NodeTiming::default()
         };
         Node::with_timing(transport, rng, DEVICE_NSEC, peer_pub, timing)
