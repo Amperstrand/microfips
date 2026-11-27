@@ -213,6 +213,13 @@ def _vm_ready(vm: dict) -> str | None:
     return ips[0]["ip"]
 
 
+def _ssh_cmd(user, cmd):
+    """(#255) root-only minimal images lack sudo — strip it for root."""
+    if user == "root":
+        return cmd.replace("sudo ", "")
+    return cmd
+
+
 def _cancel_service(api_key: str, service_id: int) -> None:
     """Best-effort immediate cancel — billing on SHC stops only at cancel."""
     try:
@@ -222,6 +229,10 @@ def _cancel_service(api_key: str, service_id: int) -> None:
         print(f"VM {service_id} cancelled")
     except Exception as e:  # noqa: BLE001 - cleanup must never mask the real error
         print(f"Failed to cancel VM {service_id}: {e}", file=sys.stderr)
+        # (#255) a swallowed cancel leaves a paid VM active with no durable
+        # signal — surface it in the workflow UI and mark the job outcome
+        print(f"::error::VM {service_id} NOT cancelled — orphaned paid VM "
+              f"(check the SHC console)", file=sys.stderr)
 
 
 def cmd_provision(args: argparse.Namespace) -> None:
@@ -357,9 +368,9 @@ def cmd_provision(args: argparse.Namespace) -> None:
     Path("/tmp/fips-ci.service").write_text(service)
     _scp(ip, "/tmp/fips-ci.service", "/tmp/fips-ci.service", user=ssh_user)
     print("  Installing runtime deps...", flush=True)
-    _ssh(ip, "sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-3", user=ssh_user, timeout=60)
+    _ssh(ip, _ssh_cmd(ssh_user, "sudo apt-get update -qq && sudo apt-get install -y -qq libdbus-1-3"), user=ssh_user, timeout=60)
     print("  Starting FIPS via systemd...", flush=True)
-    _ssh(ip, "chmod +x /tmp/fips && sudo cp /tmp/fips-ci.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl start fips-ci", user=ssh_user, timeout=30)
+    _ssh(ip, _ssh_cmd(ssh_user, "chmod +x /tmp/fips && sudo cp /tmp/fips-ci.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl start fips-ci"), user=ssh_user, timeout=30)
     print("  FIPS started.", flush=True)
 
     print("=== Waiting for FIPS to be ready ===")

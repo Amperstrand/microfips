@@ -51,7 +51,7 @@ jobs:
       # this PR and nothing else.
       - name: Build baseline (merge base)
         run: |
-          BASE=$(git merge-base origin/main HEAD)
+          BASE=$(git merge-base origin/main "${{ github.event.pull_request.head.sha || github.sha }}")
           echo "Building baseline from $BASE"
           git checkout $BASE
           export DEVICE_NSEC_HEX_esp32="$(printf %064x 2)"

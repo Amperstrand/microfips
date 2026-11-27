@@ -1373,7 +1373,7 @@ dependencies = [
  "document-features",
  "enumset",
  "esp-config",
- "esp-sync 0.2.1",
+ "esp-sync",
  "linked_list_allocator",
  "rlsf",
 ]
@@ -1440,7 +1440,7 @@ dependencies = [
  "esp-metadata-generated 0.4.0",
  "esp-riscv-rt",
  "esp-rom-sys",
- "esp-sync 0.2.1",
+ "esp-sync",
  "esp-synopsys-usb-otg",
  "esp32 0.40.2",
  "esp32c2",
@@ -1505,7 +1505,7 @@ dependencies = [
  "esp-config",
  "esp-hal",
  "esp-metadata-generated 0.4.0",
- "esp-sync 0.2.1",
+ "esp-sync",
  "esp-wifi-sys-esp32",
  "esp-wifi-sys-esp32c3",
  "esp-wifi-sys-esp32s3",
@@ -1516,13 +1516,13 @@ dependencies = [
 
 [[package]]
 name = "esp-println"
-version = "0.18.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebf772a41bc642b57399632aa06ab55391de35b2b8fcbb1b270d282fbd0fe5ff"
+checksum = "42dee1e9ac7c3539bf6464db1707b0edd7557168f98278cf3c84fe70e63c6ce6"
 dependencies = [
  "document-features",
- "esp-metadata-generated 0.5.1",
- "esp-sync 0.3.0",
+ "esp-metadata-generated 0.4.0",
+ "esp-sync",
  "log",
  "portable-atomic",
 ]
@@ -1551,7 +1551,7 @@ dependencies = [
  "esp-metadata-generated 0.4.0",
  "esp-phy",
  "esp-radio-rtos-driver",
- "esp-sync 0.2.1",
+ "esp-sync",
  "esp-wifi-sys-esp32",
  "esp-wifi-sys-esp32c3",
  "esp-wifi-sys-esp32s3",
@@ -1574,7 +1574,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bd75cd9073a90ffaa53db0bf17df7dc14164f2407a6ff36c725d2d1f78ff494"
 dependencies = [
  "cfg-if",
- "esp-sync 0.2.1",
+ "esp-sync",
  "portable-atomic",
 ]
 
@@ -1622,7 +1622,7 @@ dependencies = [
  "esp-metadata-generated 0.4.0",
  "esp-radio-rtos-driver",
  "esp-rom-sys",
- "esp-sync 0.2.1",
+ "esp-sync",
  "portable-atomic",
  "riscv",
  "xtensa-lx",
@@ -1640,21 +1640,6 @@ dependencies = [
  "embassy-sync 0.7.2",
  "embassy-sync 0.8.0",
  "esp-metadata-generated 0.4.0",
- "riscv",
- "xtensa-lx",
-]
-
-[[package]]
-name = "esp-sync"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "064fd57eed12b5cbb669b3935e1f647fd6945b89938116d61153fb45fd703422"
-dependencies = [
- "document-features",
- "embassy-sync 0.6.2",
- "embassy-sync 0.7.2",
- "embassy-sync 0.8.0",
- "esp-metadata-generated 0.5.1",
  "riscv",
  "xtensa-lx",
 ]
