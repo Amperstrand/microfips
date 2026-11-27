@@ -101,6 +101,10 @@ pub async fn run_l2cap_node(
         peer_pub,
         crate::runner::NodeOpts {
             rekey_after_secs: crate::config::REKEY_AFTER_SECS,
+            // (#265) keepalives at 3s — inside the BLE supervision timeout
+            // (4s, l2cap_host.rs SUPERVISION_TIMEOUT_MS) so the default
+            // 10s cadence can never exceed the connection's window.
+            heartbeat_interval_secs: 3,
             raw_framing: true,
             peer_sent_first,
         },
@@ -351,6 +355,7 @@ pub async fn run_hybrid_node(
         peer_npub,
         crate::runner::NodeOpts {
             rekey_after_secs: crate::config::REKEY_AFTER_SECS,
+            heartbeat_interval_secs: 0,
             raw_framing: true,
             peer_sent_first: false,
         },
@@ -410,6 +415,7 @@ pub async fn run_esp_now_node(
         VPS_NPUB,
         crate::runner::NodeOpts {
             rekey_after_secs: crate::config::REKEY_AFTER_SECS,
+            heartbeat_interval_secs: 0,
             raw_framing: true,
             peer_sent_first: false,
         },
